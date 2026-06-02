@@ -42,6 +42,7 @@ Example:
 		viewName, _ := cmd.Flags().GetString("view")
 		forFilter, _ := cmd.Flags().GetString("for")
 		projectFilter, _ := cmd.Flags().GetString("project")
+		scopeKey, _ := cmd.Flags().GetString("scope")
 
 		autoSyncPull()
 
@@ -83,6 +84,30 @@ Example:
 
 			items = filterByProject(items, projectFilter)
 
+			// Scope gate (ready-a55): restrict the list to what the given
+			// grant-holder is authorized to claim. The campfire creator is always
+			// allowed; otherwise the key needs an active grant covering "claim".
+			if scopeKey != "" {
+				if len(scopeKey) != 64 || !isHex(scopeKey) {
+					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
+				}
+				campfireID, _, ok := projectRoot()
+				if !ok {
+					return fmt.Errorf("--scope requires a campfire project")
+				}
+				client, err := requireClient()
+				if err != nil {
+					return fmt.Errorf("--scope requires a campfire client: %w", err)
+				}
+				allowed, note := scopeForKey(client, campfireID, scopeKey)
+				if !allowed {
+					if !jsonOutput {
+						fmt.Fprintln(os.Stderr, note)
+					}
+					items = nil
+				}
+			}
+
 			sortByPriorityETA(items)
 
 			if jsonOutput {
@@ -114,6 +139,7 @@ func init() {
 	readyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, delegated, my-work")
 	readyCmd.Flags().String("for", "", "filter by 'for' party (default: current identity; pass \"\" to show all)")
 	readyCmd.Flags().String("project", "", "filter by project")
+	readyCmd.Flags().String("scope", "", "show only items the given grant-holder pubkey is authorized to claim")
 	rootCmd.AddCommand(readyCmd)
 }
 

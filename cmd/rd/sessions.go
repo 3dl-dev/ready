@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	trust "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/spf13/cobra"
 )
 
@@ -129,6 +131,55 @@ func messagesOf(r *protocol.ReadResult) []protocol.Message {
 		return nil
 	}
 	return r.Messages
+}
+
+// scopeClient is the slice of protocol.Client that scopeForKey needs.
+type scopeClient interface {
+	GetMembership(campfireID string) (*store.Membership, error)
+	Read(req protocol.ReadRequest) (*protocol.ReadResult, error)
+}
+
+// scopeForKey reports whether keyHex is authorized to claim work items in the
+// campfire (used by `rd ready --scope`), and a note when it is not. The campfire
+// creator (root principal) is always allowed; otherwise the key must hold an
+// active (non-revoked, non-expired) delegation grant whose OpPattern covers
+// "claim". A key with no grant is reported as out of scope for this view.
+func scopeForKey(client scopeClient, campfireID, keyHex string) (bool, string) {
+	if m, err := client.GetMembership(campfireID); err == nil && m != nil && m.CreatorPubkey == keyHex {
+		return true, ""
+	}
+	grants, _ := client.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{delegationGrantTag}})
+	revokes, _ := client.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{identityRevokedTag}})
+	for _, h := range activeGrantHolders(messagesOf(grants), messagesOf(revokes), time.Now()) {
+		if h.Pubkey == keyHex {
+			if opPatternCovers(h.OpPattern, "claim") {
+				return true, ""
+			}
+			return false, fmt.Sprintf("grant for %s does not cover 'claim' (scope: %s:%s)", shortKey(keyHex), h.Convention, h.OpPattern)
+		}
+	}
+	return false, fmt.Sprintf("no active grant for %s (revoked, expired, or not a granted identity)", shortKey(keyHex))
+}
+
+// opPatternCovers matches a cf-authority OpPattern against an operation. "*"
+// matches any operation; otherwise the pattern is pipe-alternation of exact ops.
+func opPatternCovers(pattern, op string) bool {
+	if pattern == "*" {
+		return true
+	}
+	for _, alt := range strings.Split(pattern, "|") {
+		if alt == "*" || alt == op {
+			return true
+		}
+	}
+	return false
+}
+
+func shortKey(k string) string {
+	if len(k) > 12 {
+		return k[:12] + "..."
+	}
+	return k
 }
 
 // identityRevokedTag carries {"child_pubkey": hex} revoking a grant-holder
