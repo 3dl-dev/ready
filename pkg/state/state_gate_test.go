@@ -3,7 +3,7 @@ package state_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/state"
 )
 

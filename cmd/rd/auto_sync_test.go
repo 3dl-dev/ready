@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 )

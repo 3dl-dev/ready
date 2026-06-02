@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
-	cffs "github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cffs "github.com/campfire-net/campfire/cf-protocol/transport/fs"
 
 	"github.com/campfire-net/ready/pkg/conventionserver"
 )

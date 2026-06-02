@@ -8,12 +8,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // fakeReadClient implements campfireReader by returning a pre-configured set
@@ -38,10 +40,13 @@ func (f *fakeReadClient) Read(_ protocol.ReadRequest) (*protocol.ReadResult, err
 // fakeAdmitClient implements campfireAdmitter with configurable behavior.
 // Records calls to Admit for verification.
 type fakeAdmitClient struct {
-	membership     *store.Membership
-	membershipErr  error
-	admitErr       error
-	admitCalls     []protocol.AdmitRequest
+	membership    *store.Membership
+	membershipErr error
+	admitErr      error
+	admitCalls    []protocol.AdmitRequest
+	sendCalls     []protocol.SendRequest
+	sendErr       error
+	pubKeyHex     string
 }
 
 func (f *fakeAdmitClient) GetMembership(_ string) (*store.Membership, error) {
@@ -54,6 +59,22 @@ func (f *fakeAdmitClient) GetMembership(_ string) (*store.Membership, error) {
 func (f *fakeAdmitClient) Admit(req protocol.AdmitRequest) error {
 	f.admitCalls = append(f.admitCalls, req)
 	return f.admitErr
+}
+
+func (f *fakeAdmitClient) Send(req protocol.SendRequest) (*message.Message, error) {
+	f.sendCalls = append(f.sendCalls, req)
+	if f.sendErr != nil {
+		return nil, f.sendErr
+	}
+	return &message.Message{ID: fmt.Sprintf("fake-msg-%d", len(f.sendCalls))}, nil
+}
+
+func (f *fakeAdmitClient) PublicKeyHex() string {
+	if f.pubKeyHex != "" {
+		return f.pubKeyHex
+	}
+	// A deterministic valid 64-char hex key (32 bytes) so buildDelegationGrant succeeds.
+	return strings.Repeat("ab", 32)
 }
 
 // makeGrantMsg builds a protocol.Message with a work:role-grant payload

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
-	"github.com/campfire-net/campfire/pkg/store"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 
 	"github.com/campfire-net/ready/pkg/rdconfig"
 )

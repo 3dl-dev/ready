@@ -7,9 +7,10 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/spf13/cobra"
 
 	"github.com/campfire-net/ready/pkg/rdconfig"
@@ -247,10 +248,13 @@ func admitFromJoinRequest(itemID, role, denyReason string) error {
 }
 
 // campfireAdmitter is the subset of protocol.Client used by admitMemberWithRole.
-// Defined here so tests can inject a fake.
+// Defined here so tests can inject a fake. Send + PublicKeyHex support the
+// cf-authority delegation:grant dual-write posted on admit (ready-02b).
 type campfireAdmitter interface {
 	GetMembership(campfireID string) (*store.Membership, error)
 	Admit(req protocol.AdmitRequest) error
+	Send(req protocol.SendRequest) (*message.Message, error)
+	PublicKeyHex() string
 }
 
 // admitThenGrant performs the atomic admit-then-grant sequence for the
@@ -293,6 +297,15 @@ func admitThenGrant(ctx context.Context, client campfireAdmitter, exec *conventi
 		return "", fmt.Errorf("posting role-grant: %w", grantErr)
 	}
 
+	// Dual-write the cf-authority delegation grant (ready-02b). Best-effort: the
+	// member is already recognized via the legacy work:role-grant above, so a
+	// delegation-grant failure must not fail admit during the migration.
+	if dgID, dgErr := postDelegationGrant(client, campfireID, pubKeyHex, grantRole); dgErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not post delegation grant (member still recognized via role-grant): %v\n", dgErr)
+	} else if dgID != "" {
+		fmt.Fprintf(os.Stderr, "  delegation grant: %s\n", truncateID(dgID, 12))
+	}
+
 	return grantResult.MessageID, nil
 }
 
@@ -318,6 +331,15 @@ func admitMemberWithRole(client campfireAdmitter, campfireID, pubKeyHex, role, l
 		Role:            role,
 	}); err != nil {
 		return fmt.Errorf("admitting to %s: %w", label, err)
+	}
+
+	// Dual-write the cf-authority delegation grant (ready-02b). Best-effort.
+	grantRole := role
+	if grantRole == "" {
+		grantRole = "member"
+	}
+	if _, dgErr := postDelegationGrant(client, campfireID, pubKeyHex, grantRole); dgErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not post delegation grant: %v\n", dgErr)
 	}
 
 	displayKey := pubKeyHex

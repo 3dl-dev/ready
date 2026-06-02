@@ -23,14 +23,21 @@ func TestE2E_JoinAutoSyncPull(t *testing.T) {
 	ownerProjectDir := t.TempDir()
 	memberProjectDir := t.TempDir()
 
-	// Shared HOME so both identities share the beacon directory (~/.campfire/beacons/).
+	// Shared HOME and a shared beacon directory so the two isolated CF_HOME
+	// identities can discover each other's campfire. As of cf 0.30+,
+	// beacon.DefaultBeaconDir() is CF_HOME-scoped (isolated --cf-home
+	// invocations no longer scan the global beacon dir), so simulating a
+	// shared-filesystem multi-machine join requires an explicit shared
+	// CF_BEACON_DIR — the same knob real separate machines on a shared mount use.
 	sharedHome := os.Getenv("HOME")
+	sharedBeaconDir := t.TempDir()
 
 	envFor := func(cfHome string) []string {
 		return []string{
 			"PATH=" + os.Getenv("PATH"),
 			"HOME=" + sharedHome,
 			"CF_HOME=" + cfHome,
+			"CF_BEACON_DIR=" + sharedBeaconDir,
 		}
 	}
 

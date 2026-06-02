@@ -21,7 +21,7 @@ package provenance
 import (
 	"encoding/json"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // roleGrantPayload mirrors the fields in a work:role-grant message payload.

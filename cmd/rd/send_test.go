@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	campfirepkg "github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	campfirepkg "github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 
 	"github.com/campfire-net/ready/pkg/jsonl"
 )
@@ -311,7 +311,8 @@ func TestSendPrebuiltMessage_PreservesID(t *testing.T) {
 
 	// Build a message with a known ID — simulating a MutationRecord from mutations.jsonl.
 	// We construct it the same way buildFlusher does: directly set fields then sign.
-	knownID := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	// cf 0.30+ requires message IDs to be UUID format (validated on store write).
+	knownID := "deadbeef-dead-beef-dead-beefdeadbeef"
 	tags := []string{"work:create"}
 	antecedents := []string{}
 	payload := []byte(`{"op":"flush-test"}`)
@@ -634,7 +635,8 @@ func TestBuildFlusher_SigningIsolation(t *testing.T) {
 	copy(id.PublicKey, newPub)
 
 	// Send a pending record via the flusher.
-	knownID := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	// cf 0.30+ requires message IDs to be UUID format (validated on store write).
+	knownID := "aabbccdd-eeff-0011-2233-445566778899"
 	rec := jsonl.MutationRecord{
 		MsgID:       knownID,
 		CampfireID:  campfireID,

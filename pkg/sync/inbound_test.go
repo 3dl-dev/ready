@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 
 	"github.com/campfire-net/ready/pkg/jsonl"
 	rdSync "github.com/campfire-net/ready/pkg/sync"

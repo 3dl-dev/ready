@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // WorkTagPrefix is the tag namespace for all work management convention operations.

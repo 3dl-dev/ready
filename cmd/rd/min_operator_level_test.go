@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // staticProvenanceChecker is a simple ProvenanceChecker that returns a fixed level

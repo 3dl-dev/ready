@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	campfirepkg "github.com/campfire-net/campfire/pkg/campfire"
+	campfirepkg "github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/views"
 )
