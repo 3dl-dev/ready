@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	cfauthprov "github.com/campfire-net/campfire/cf-conventions/cf-authority/provenance"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
+	cfprov "github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/mattn/go-isatty"
@@ -288,12 +290,26 @@ func requireExecutor() (*convention.Executor, *protocol.Client, error) {
 			}
 			checker, checkerErr := provenance.NewStoreChecker(s, campfireID, creatorKey)
 			if checkerErr == nil {
-				exec = exec.WithProvenance(checker)
+				// Wire cf-authority's production ProvenanceCheckerV2 (ready-cd9),
+				// backed by rd's role-based level source. Numeric levels are
+				// preserved, so min_operator_level gating is unchanged.
+				exec = exec.WithProvenanceV2(cfauthprov.NewChecker(rdLevelSource{checker}))
 			}
 		}
 	}
 
 	return exec, client, nil
+}
+
+// rdLevelSource adapts rd's role-based StoreChecker (Level → int) to the
+// cf-authority provenance.LevelSource interface (Level → cfprov.Level). The
+// numeric level is preserved, so min_operator_level comparisons are unchanged.
+type rdLevelSource struct {
+	inner *provenance.StoreChecker
+}
+
+func (s rdLevelSource) Level(keyHex string) cfprov.Level {
+	return cfprov.Level(s.inner.Level(keyHex))
 }
 
 // loadDeclaration loads a convention declaration by operation name from the
