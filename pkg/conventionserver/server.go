@@ -97,6 +97,10 @@ type Server struct {
 	// done is closed after all worker goroutines have exited (after Shutdown returns).
 	done chan struct{}
 
+	// gate is the cf-authority grant gate (ready-197), built in Start from the
+	// campfire creator as root principal. Nil means serve un-gated (legacy).
+	gate convention.GateEvaluator
+
 	// wg tracks all running worker goroutines.
 	wg sync.WaitGroup
 }
@@ -178,6 +182,10 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = err
 	}
 
+	// Build the cf-authority grant gate (ready-197). Best-effort: if the campfire
+	// creator can't be resolved, leave the gate nil and serve un-gated (legacy).
+	s.gate = s.buildGate()
+
 	for _, op := range allOperations {
 		op := op
 		s.wg.Add(1)
@@ -258,9 +266,31 @@ func (s *Server) serveOperation(ctx context.Context, opName string) error {
 
 	srv := convention.NewServer(s.client, decl).
 		WithPollInterval(s.pollInterval)
+	if s.gate != nil {
+		srv = srv.WithGateEvaluator(s.gate)
+	}
 
 	srv.RegisterHandler(opName, s.makeHandler(opName))
 	return srv.Serve(ctx, s.campfireID)
+}
+
+// buildGate constructs the cf-authority grant gate from the campfire creator as
+// root principal. Returns nil (serve un-gated) if membership or the creator key
+// is unavailable, so the server degrades gracefully to legacy behavior.
+func (s *Server) buildGate() convention.GateEvaluator {
+	m, err := s.client.GetMembership(s.campfireID)
+	if err != nil || m == nil || m.CreatorPubkey == "" {
+		return nil
+	}
+	root, err := hex.DecodeString(m.CreatorPubkey)
+	if err != nil || len(root) != ed25519.PublicKeySize {
+		return nil
+	}
+	g := newGrantGate(s.client, s.campfireID, ed25519.PublicKey(root))
+	if g == nil {
+		return nil
+	}
+	return g
 }
 
 // makeHandler returns a HandlerFunc that fulfills incoming operation requests.
