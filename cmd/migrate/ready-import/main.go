@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/ready/pkg/jsonl"
 	"github.com/campfire-net/ready/pkg/state"
 )
@@ -194,7 +194,7 @@ func main() {
 	}
 
 	// Initialize campfire client.
-	client, _, err := protocol.Init(cfHomeDir, protocol.WithNoWalkUp())
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		fatalf("initializing campfire client: %v", err)
 	}

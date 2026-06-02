@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/resolve"
 )

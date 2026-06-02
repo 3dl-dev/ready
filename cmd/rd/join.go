@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	discovery "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
 
 	"github.com/campfire-net/ready/pkg/rdconfig"
@@ -190,11 +191,15 @@ func resolveTransportDir(campfireID string) string {
 		scanDirs = append(scanDirs, filepath.Join(projectDir, ".campfire", "beacons"))
 	}
 
+	// Use the cf-discovery Tier-1 surface (ScanFresh) rather than a raw
+	// beacon.Scan: it filters expired beacons and applies the discovery layer's
+	// signature/tamper checks, so we no longer reimplement beacon discovery here.
+	now := time.Now()
 	for _, dir := range scanDirs {
 		if dir == "" {
 			continue
 		}
-		beacons, err := beacon.Scan(dir)
+		beacons, err := discovery.ScanFresh(dir, now)
 		if err != nil {
 			continue
 		}

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // Status values as defined in the convention spec §4.4.

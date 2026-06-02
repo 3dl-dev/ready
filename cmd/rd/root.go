@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/conventionserver"
@@ -304,7 +304,7 @@ func loadDeclaration(name string) (*convention.Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
-	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "")
+	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		return nil, fmt.Errorf("parsing declaration %q: %w", name, err)
 	}

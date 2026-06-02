@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/ready/pkg/declarations"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 )
@@ -102,13 +102,19 @@ func TestE2E_OrgObserver_ListSeesOnlySummaryCampfire(t *testing.T) {
 	// --- Setup: owner identity ---
 	ownerCFHome := t.TempDir()
 	observerCFHome := t.TempDir()
+	// Shared beacon dir so the two isolated CF_HOME identities can discover each
+	// other's campfire. As of cf 0.30+, beacon.DefaultBeaconDir() is CF_HOME-scoped,
+	// so cross-CF_HOME discovery on a shared filesystem requires an explicit
+	// shared CF_BEACON_DIR (the env-var knob real separate machines would use).
 	sharedHome := os.Getenv("HOME")
+	sharedBeaconDir := t.TempDir()
 
 	envFor := func(cfHome string) []string {
 		return []string{
 			"PATH=" + os.Getenv("PATH"),
 			"HOME=" + sharedHome,
 			"CF_HOME=" + cfHome,
+			"CF_BEACON_DIR=" + sharedBeaconDir,
 		}
 	}
 
@@ -258,7 +264,7 @@ func TestE2E_SummaryBindDeclaration_ParsesWithoutError(t *testing.T) {
 	}
 
 	// Parse via convention.Parse — the same function used in production.
-	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "")
+	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("convention.Parse for summary-bind declaration failed: %v\ndata: %s", err, data)
 	}

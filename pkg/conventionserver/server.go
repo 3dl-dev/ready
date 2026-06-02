@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // authorizationMatrix maps operation name to its minimum operator level.
@@ -432,7 +432,7 @@ func loadEmbeddedDeclaration(name string) (*convention.Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
-	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "")
+	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		return nil, fmt.Errorf("parsing declaration %q: %w", name, err)
 	}
