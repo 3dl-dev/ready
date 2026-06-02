@@ -22,6 +22,7 @@ Example:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
+		auditFlag, _ := cmd.Flags().GetBool("audit")
 
 		autoSyncPull()
 
@@ -129,6 +130,15 @@ Example:
 			fmt.Printf("\nContext:\n%s\n", item.Context)
 		}
 		if len(item.History) > 0 {
+			// --audit: annotate each history entry with the cf-authority scope the
+			// actor acted under. Silent (no annotation) for non-pubkey actors and
+			// items whose actors carry no delegation grant.
+			var auth *authorityResolver
+			if auditFlag {
+				if client, cErr := requireClient(); cErr == nil {
+					auth = loadAuthorityResolver(client, item.CampfireID)
+				}
+			}
 			fmt.Printf("\nHistory:\n")
 			for _, h := range item.History {
 				actor := h.ChangedBy
@@ -137,7 +147,13 @@ Example:
 				if h.Note != "" {
 					note = " — " + h.Note
 				}
-				fmt.Printf("  [%s] %s → %s by %s%s\n", ts, h.FromStatus, h.ToStatus, actor, note)
+				authNote := ""
+				if auth != nil {
+					if label := auth.label(actor); label != "" {
+						authNote = "  [authority: " + label + "]"
+					}
+				}
+				fmt.Printf("  [%s] %s → %s by %s%s%s\n", ts, h.FromStatus, h.ToStatus, actor, note, authNote)
 			}
 		}
 		fmt.Printf("\nCampfire: %s\n", formatCampfireIDForDisplay(item.CampfireID))
@@ -147,5 +163,6 @@ Example:
 }
 
 func init() {
+	showCmd.Flags().Bool("audit", false, "annotate each history entry with the cf-authority grant scope its actor acted under")
 	rootCmd.AddCommand(showCmd)
 }

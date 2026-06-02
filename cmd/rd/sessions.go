@@ -182,6 +182,84 @@ func shortKey(k string) string {
 	return k
 }
 
+// authorityResolver renders the cf-authority attribution for an actor pubkey
+// (used by `rd show --audit`): owner, granted scope, expired, revoked, or none.
+type authorityResolver struct {
+	creator    string
+	revoked    map[string]bool
+	grantByKey map[string]trust.GrantPayload
+	now        time.Time
+}
+
+// newAuthorityResolver builds the resolver from the campfire creator and the
+// delegation:grant / identity:revoked messages. Pure for testability.
+func newAuthorityResolver(creator string, grants, revokes []protocol.Message, now time.Time) *authorityResolver {
+	r := &authorityResolver{
+		creator:    creator,
+		revoked:    make(map[string]bool),
+		grantByKey: make(map[string]trust.GrantPayload),
+		now:        now,
+	}
+	for _, msg := range revokes {
+		var p struct {
+			ChildPubkey string `json:"child_pubkey"`
+		}
+		if err := json.Unmarshal(msg.Payload, &p); err == nil && p.ChildPubkey != "" {
+			r.revoked[p.ChildPubkey] = true
+		}
+	}
+	for _, msg := range grants {
+		gp, err := trust.UnmarshalGrantPayloadCBOR(msg.Payload)
+		if err != nil || len(gp.Capabilities) == 0 {
+			continue
+		}
+		r.grantByKey[hex.EncodeToString(gp.ChildPubkey)] = gp
+	}
+	return r
+}
+
+// label returns a short authority description for an actor, or "" for actors
+// that are not pubkeys (e.g. "system" or an email).
+func (r *authorityResolver) label(actor string) string {
+	if len(actor) != 64 || !isHex(actor) {
+		return ""
+	}
+	if actor == r.creator {
+		return "owner (root principal)"
+	}
+	if r.revoked[actor] {
+		return "revoked"
+	}
+	gp, ok := r.grantByKey[actor]
+	if !ok {
+		return "no delegation grant"
+	}
+	cap := gp.Capabilities[0]
+	if cap.Until <= r.now.UnixNano() {
+		return "grant expired"
+	}
+	return fmt.Sprintf("%s:%s", cap.Convention, cap.OpPattern)
+}
+
+// loadAuthorityResolver reads the campfire's grants/revocations/creator and
+// builds an authorityResolver. Returns nil on any read failure (so callers can
+// degrade to non-annotated output).
+func loadAuthorityResolver(client scopeClient, campfireID string) *authorityResolver {
+	var creator string
+	if m, err := client.GetMembership(campfireID); err == nil && m != nil {
+		creator = m.CreatorPubkey
+	}
+	grants, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{delegationGrantTag}})
+	if err != nil {
+		return nil
+	}
+	revokes, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{identityRevokedTag}})
+	if err != nil {
+		return nil
+	}
+	return newAuthorityResolver(creator, messagesOf(grants), messagesOf(revokes), time.Now())
+}
+
 // identityRevokedTag carries {"child_pubkey": hex} revoking a grant-holder
 // (posted by rd kill). delegationGrantTag is defined in delegation_grant.go.
 const identityRevokedTag = "identity:revoked"
