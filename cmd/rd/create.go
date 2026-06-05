@@ -95,7 +95,7 @@ Note: use --context for descriptions, not --description.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Helpful redirect for --description (agents may use bd's flag name).
 		if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-			return fmt.Errorf("--description is not a flag on rd create. The field is called 'context' in Ready. Use --context-file <path> or set context after creation with rd update")
+			return fmt.Errorf("--description is not a flag on rd create. The field is called 'context' in Ready. Use --context or set context after creation with rd update")
 		}
 
 		id, _ := cmd.Flags().GetString("id")
@@ -128,6 +128,27 @@ Note: use --context for descriptions, not --description.`,
 		}
 		if priority == "" {
 			return fmt.Errorf("--priority is required")
+		}
+
+		// Declaration-derived enum validation — runs BEFORE any store open or
+		// JSONL write. The alias rewrite hook (ready-b0c) should run before
+		// this call (between the required-field checks above and this block).
+		// Call sequence: parse flags → alias rewrite → ValidateEnumFlags → withAgentAndStore.
+		{
+			decl, err := loadDeclaration("create")
+			if err != nil {
+				return fmt.Errorf("loading create declaration for validation: %w", err)
+			}
+			enumFlags := map[string]string{
+				"type":     itemType,
+				"priority": priority,
+			}
+			if level != "" {
+				enumFlags["level"] = level
+			}
+			if err := ValidateEnumFlags(decl, enumFlags); err != nil {
+				return err
+			}
 		}
 
 		// Normalize ETA to UTC if provided.
