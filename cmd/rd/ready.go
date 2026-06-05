@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -37,12 +38,15 @@ Example:
   rd ready
   rd ready --view overdue
   rd ready --view my-work --json
-  rd ready --for ""                show all items, not just mine`,
+  rd ready --for ""                show all items, not just mine
+  rd ready --label bug             ready items tagged 'bug'
+  rd ready --label bug --label p0  ready items tagged both 'bug' AND 'p0'`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewName, _ := cmd.Flags().GetString("view")
 		forFilter, _ := cmd.Flags().GetString("for")
 		projectFilter, _ := cmd.Flags().GetString("project")
 		scopeKey, _ := cmd.Flags().GetString("scope")
+		labelFilters, _ := cmd.Flags().GetStringArray("label")
 
 		autoSyncPull()
 
@@ -83,6 +87,17 @@ Example:
 			}
 
 			items = filterByProject(items, projectFilter)
+
+			// Apply label filters (AND semantics: item must carry all requested atoms).
+			if len(labelFilters) > 0 {
+				for _, atom := range labelFilters {
+					items = views.Apply(items, views.LabelFilter(atom))
+				}
+				// Emit a stderr hint for any atom not in the registry when result is empty.
+				if len(items) == 0 {
+					printUnknownLabelHints(labelFilters, nil, s)
+				}
+			}
 
 			// Scope gate (ready-a55): restrict the list to what the given
 			// grant-holder is authorized to claim. The campfire creator is always
@@ -140,6 +155,7 @@ func init() {
 	readyCmd.Flags().String("for", "", "filter by 'for' party (default: current identity; pass \"\" to show all)")
 	readyCmd.Flags().String("project", "", "filter by project")
 	readyCmd.Flags().String("scope", "", "show only items the given grant-holder pubkey is authorized to claim")
+	readyCmd.Flags().StringArray("label", nil, "filter by label atom (repeatable, AND semantics)")
 	rootCmd.AddCommand(readyCmd)
 }
 
@@ -187,12 +203,18 @@ func priorityOrder(p string) int {
 }
 
 // printItemTable prints items in a compact table format.
+// Labels, when present, are appended as a compact suffix on the title cell:
+// e.g. "Fix auth bug  [bug,security]". The fixed-width columns are never widened.
 func printItemTable(items []*state.Item) {
 	for _, item := range items {
 		eta := formatETA(item.ETA)
 		status := item.Status
+		title := item.Title
+		if len(item.Labels) > 0 {
+			title = title + "  [" + strings.Join(item.Labels, ",") + "]"
+		}
 		fmt.Printf("  %-16s  %-8s  %-10s  %-10s  %s\n",
-			item.ID, item.Priority, status, eta, item.Title)
+			item.ID, item.Priority, status, eta, title)
 	}
 }
 
