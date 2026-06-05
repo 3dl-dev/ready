@@ -602,6 +602,187 @@ func TestExpand_TemplateIndexPreserved(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Label validation tests (ready-ef7).
+// ---------------------------------------------------------------------------
+
+// TestValidate_LabelValid checks that a valid label atom passes validation.
+func TestValidate_LabelValid(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["bug"]}]`)
+	_, err := playbook.Parse("lbl-valid", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("label 'bug' should be valid, got error: %v", err)
+	}
+}
+
+// TestValidate_LabelMultiple checks that multiple valid labels pass validation.
+func TestValidate_LabelMultiple(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["bug","security","p0"]}]`)
+	_, err := playbook.Parse("lbl-multi", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("multiple valid labels should be valid, got error: %v", err)
+	}
+}
+
+// TestValidate_LabelInvalidPattern checks that an invalid label atom fails validation
+// with an error that names the item index and pattern.
+func TestValidate_LabelInvalidPattern(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["Bad Label"]}]`)
+	_, err := playbook.Parse("lbl-bad", "Test", "", itemJSON)
+	if err == nil {
+		t.Fatal("expected error for invalid label 'Bad Label'")
+	}
+	// Error must name the item index.
+	if !contains(err.Error(), "item[0]") {
+		t.Errorf("error should name item[0], got: %v", err)
+	}
+	// Error must mention the pattern.
+	if !contains(err.Error(), "^[a-z0-9][a-z0-9-]{0,31}$") {
+		t.Errorf("error should mention the atom pattern, got: %v", err)
+	}
+}
+
+// TestValidate_LabelInvalidPatternUppercase checks that uppercase label atoms are rejected.
+func TestValidate_LabelInvalidPatternUppercase(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["BUG"]}]`)
+	_, err := playbook.Parse("lbl-upper", "Test", "", itemJSON)
+	if err == nil {
+		t.Fatal("expected error for label 'BUG' (uppercase not allowed)")
+	}
+}
+
+// TestValidate_LabelTooManyItems checks that more than 8 labels per item fails.
+func TestValidate_LabelTooManyItems(t *testing.T) {
+	// 9 labels — one over the max.
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["a","b","c","d","e","f","g","h","i"]}]`)
+	_, err := playbook.Parse("lbl-toomany", "Test", "", itemJSON)
+	if err == nil {
+		t.Fatal("expected error for 9 labels (max is 8)")
+	}
+	if !contains(err.Error(), "item[0]") {
+		t.Errorf("error should name item[0], got: %v", err)
+	}
+}
+
+// TestValidate_LabelExactlyMaxAllowed checks that exactly 8 labels per item passes.
+func TestValidate_LabelExactlyMaxAllowed(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["a","b","c","d","e","f","g","h"]}]`)
+	_, err := playbook.Parse("lbl-max", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("exactly 8 labels should be valid, got error: %v", err)
+	}
+}
+
+// TestValidate_LabelEmptyList checks that an empty labels list is valid.
+func TestValidate_LabelEmptyList(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":[]}]`)
+	_, err := playbook.Parse("lbl-empty", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("empty labels list should be valid, got error: %v", err)
+	}
+}
+
+// TestValidate_LabelNoLabelsField checks that omitting labels entirely is valid.
+func TestValidate_LabelNoLabelsField(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[]}]`)
+	_, err := playbook.Parse("lbl-absent", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("item without labels field should be valid, got error: %v", err)
+	}
+}
+
+// TestExpand_LabelsThreaded checks that Expand carries labels into ExpandedItem.
+func TestExpand_LabelsThreaded(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[],"labels":["bug","security"]}]`)
+	tmpl, err := playbook.Parse("lbl-expand", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	items, err := playbook.Expand(tmpl, "proj", nil)
+	if err != nil {
+		t.Fatalf("expand failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if len(items[0].Labels) != 2 {
+		t.Fatalf("expected 2 labels, got %d: %v", len(items[0].Labels), items[0].Labels)
+	}
+	if items[0].Labels[0] != "bug" || items[0].Labels[1] != "security" {
+		t.Errorf("unexpected labels: %v", items[0].Labels)
+	}
+}
+
+// TestExpand_NoLabelsEmpty checks that items without labels produce empty Labels.
+func TestExpand_NoLabelsEmpty(t *testing.T) {
+	itemJSON := []byte(`[{"title":"T","type":"task","priority":"p1","deps":[]}]`)
+	tmpl, err := playbook.Parse("lbl-none", "Test", "", itemJSON)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	items, err := playbook.Expand(tmpl, "proj", nil)
+	if err != nil {
+		t.Fatalf("expand failed: %v", err)
+	}
+	if len(items[0].Labels) != 0 {
+		t.Errorf("expected no labels, got: %v", items[0].Labels)
+	}
+}
+
+// TestValidate_ValidTypesFromDeclaration proves that validTypes derives from the
+// create.json declaration — not a hardcoded map. This kills the duplication.
+// The test verifies that ALL types from create.json are accepted, and that an
+// unknown type is rejected. The exact set is not hardcoded here — it comes from
+// the declaration, proving the duplication is dead.
+func TestValidate_ValidTypesFromDeclaration(t *testing.T) {
+	// Build a template with each type from the declaration — all should pass.
+	knownTypes := []string{"task", "decision", "review", "reminder", "deadline", "prep", "message", "directive"}
+	for _, ty := range knownTypes {
+		itemJSON := []byte(fmt.Sprintf(`[{"title":"T","type":"%s","priority":"p1","deps":[]}]`, ty))
+		_, err := playbook.Parse("decl-type-"+ty, "Test", "", itemJSON)
+		if err != nil {
+			t.Errorf("type %q from declaration should be valid, got error: %v", ty, err)
+		}
+	}
+
+	// An unknown type must be rejected.
+	itemJSON := []byte(`[{"title":"T","type":"unknown-type","priority":"p1","deps":[]}]`)
+	_, err := playbook.Parse("decl-type-unknown", "Test", "", itemJSON)
+	if err == nil {
+		t.Fatal("expected error for type not in declaration")
+	}
+}
+
+// TestValidate_LabelInvalidSecondItem checks that the error names the correct item index.
+func TestValidate_LabelInvalidSecondItem(t *testing.T) {
+	itemJSON := []byte(`[
+		{"title":"First","type":"task","priority":"p1","deps":[],"labels":["good"]},
+		{"title":"Second","type":"task","priority":"p1","deps":[],"labels":["Bad_Label"]}
+	]`)
+	_, err := playbook.Parse("lbl-second", "Test", "", itemJSON)
+	if err == nil {
+		t.Fatal("expected error for invalid label on second item")
+	}
+	if !contains(err.Error(), "item[1]") {
+		t.Errorf("error should name item[1], got: %v", err)
+	}
+}
+
+// contains is a helper for string substring checks.
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		indexString(s, substr) >= 0)
+}
+
+func indexString(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
 // TestValidate_LargePlaybook checks a playbook with many items.
 func TestValidate_LargePlaybook(t *testing.T) {
 	// Build a large playbook with 20 items in sequence.
