@@ -377,6 +377,41 @@ func (h *Harness) Delegate(createMsgID, toParty string) string {
 // Query methods.
 // ---------------------------------------------------------------------------
 
+// RoleGrant sends a work:role-grant message granting role to pubkey.
+// role is one of: "maintainer", "contributor", "revoked".
+func (h *Harness) RoleGrant(pubkey, role string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"pubkey":     pubkey,
+		"role":       role,
+		"granted_at": "2026-01-01T00:00:00Z",
+	}
+	return h.addMessage("work:role-grant", payload, nil)
+}
+
+// LabelDefine sends a work:label-define message.
+// desc may be empty.
+func (h *Harness) LabelDefine(label, desc string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"label": label,
+	}
+	if desc != "" {
+		payload["description"] = desc
+	}
+	return h.addMessage("work:label-define", payload, nil)
+}
+
+// DeriveAll calls state.DeriveAllFromStore and returns the full DeriveResult.
+func (h *Harness) DeriveAll() *state.DeriveResult {
+	h.t.Helper()
+	result, err := state.DeriveAllFromStore(h.Store, h.CampfireID)
+	if err != nil {
+		h.t.Fatalf("storetest: DeriveAllFromStore: %v", err)
+	}
+	return result
+}
+
 // Derive calls state.DeriveFromStore and returns the full item map.
 func (h *Harness) Derive() map[string]*state.Item {
 	h.t.Helper()
