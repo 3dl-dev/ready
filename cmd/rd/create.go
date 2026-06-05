@@ -110,6 +110,7 @@ Note: use --context for descriptions, not --description.`,
 		parentID, _ := cmd.Flags().GetString("parent-id")
 		eta, _ := cmd.Flags().GetString("eta")
 		due, _ := cmd.Flags().GetString("due")
+		labelSlice, _ := cmd.Flags().GetStringArray("label")
 
 		// Title: positional arg or --title flag, not both.
 		if len(args) > 0 && title != "" {
@@ -238,6 +239,10 @@ Note: use --context for descriptions, not --description.`,
 			if due != "" {
 				argsMap["due"] = due
 			}
+			if len(labelSlice) > 0 {
+				// Join multiple --label flags into the comma-scalar format expected by the declaration.
+				argsMap["labels"] = strings.Join(labelSlice, ",")
+			}
 
 			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
 			if err != nil {
@@ -286,5 +291,6 @@ func init() {
 	createCmd.Flags().String("due", "", "hard deadline in RFC3339 format")
 	createCmd.Flags().String("description", "", "")
 	_ = createCmd.Flags().MarkHidden("description")
+	createCmd.Flags().StringArray("label", nil, "label atom to attach (repeatable, e.g. --label bug --label security)")
 	rootCmd.AddCommand(createCmd)
 }

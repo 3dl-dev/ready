@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,14 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/declarations"
 )
+
+// labelAtomPattern is the per-atom validation pattern for label names.
+// A valid atom is lowercase alphanumeric with hyphens, 1-32 characters,
+// starting with a letter or digit (not a hyphen).
+// This pattern is checked at DERIVE TIME (read-side). The write-side (executor)
+// validates the composite comma-separated scalar pattern; registry membership
+// is a read-side concern only because the executor cannot see campfire data.
+var labelAtomPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 // Status values as defined in the convention spec §4.4.
 const (
@@ -115,6 +124,20 @@ type Item struct {
 	// and from ImportHistory entries embedded in work:update messages.
 	History []HistoryEntry `json:"history,omitempty"`
 
+	// Labels is the set of registry-validated label atoms attached to this item.
+	// Labels are validated at derive time: each atom must (a) match the atom pattern
+	// ^[a-z0-9][a-z0-9-]{0,31}$ and (b) exist in the campfire label registry.
+	// Labels that fail either check are dropped and recorded in LabelWarnings.
+	// NOTE: write-side (convention executor) validates the composite pattern only;
+	// registry membership is a read-side (derive-time) concern because the executor
+	// cannot see campfire-specific data. Documents the write/read enforcement split.
+	Labels []string `json:"labels,omitempty"`
+
+	// LabelWarnings records labels that were dropped at derive time because they
+	// failed pattern validation or were not present in the label registry.
+	// Advisory only — the item still materializes with its other fields intact.
+	LabelWarnings []string `json:"label_warnings,omitempty"`
+
 	// CrossCampfireWarnings lists advisory messages about cross-campfire dependencies
 	// that could not be resolved (e.g., not a member of the target campfire, network
 	// error). Cross-campfire deps are always NON-BLOCKING — the item stays actionable.
@@ -151,6 +174,9 @@ type createPayload struct {
 	ETA      string `json:"eta"`
 	Due      string `json:"due"`
 	Gate     string `json:"gate"`
+	// Labels is the raw comma-separated label scalar from the convention arg.
+	// Parsed and validated during handleWorkCreate.
+	Labels string `json:"labels,omitempty"`
 }
 
 // statusPayload mirrors the fields in a work:status message payload.
@@ -561,7 +587,7 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 	for _, m := range msgs {
 		switch {
 		case hasTag(m.Tags, "work:create"):
-			handleWorkCreate(campfireID, m, rs)
+			handleWorkCreate(campfireID, m, rs, registry)
 		case hasTag(m.Tags, "work:status"):
 			handleWorkStatus(m, rs)
 		case hasTag(m.Tags, "work:claim"):
@@ -692,7 +718,8 @@ func buildRoleMap(msgs []store.MessageRecord) map[string]roleInfo {
 }
 
 // handleWorkCreate processes a work:create message and adds the new item to rs.
-func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState) {
+// registry is the label registry built in Pass 1; used for derive-time label enforcement.
+func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
 	var p createPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -725,6 +752,29 @@ func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState)
 		Gate:        p.Gate,
 		CreatedAt:   m.Timestamp,
 		UpdatedAt:   m.Timestamp,
+	}
+	// Derive-time label enforcement (read-side trust gate).
+	// Write-side (executor) validates the composite pattern only.
+	// Registry membership is enforced HERE because the executor cannot see campfire data.
+	// Non-registry and malformed labels are DROPPED and recorded as warnings.
+	if p.Labels != "" {
+		for _, atom := range strings.Split(p.Labels, ",") {
+			atom = strings.TrimSpace(atom)
+			if atom == "" {
+				continue
+			}
+			if !labelAtomPattern.MatchString(atom) {
+				item.LabelWarnings = append(item.LabelWarnings,
+					fmt.Sprintf("label %q dropped: fails pattern validation", atom))
+				continue
+			}
+			if _, inRegistry := registry[atom]; !inRegistry {
+				item.LabelWarnings = append(item.LabelWarnings,
+					fmt.Sprintf("label %q dropped: not in label registry", atom))
+				continue
+			}
+			item.Labels = appendUnique(item.Labels, atom)
+		}
 	}
 	item.History = append(item.History, HistoryEntry{
 		Timestamp:  time.Unix(0, m.Timestamp).UTC().Format(time.RFC3339),
