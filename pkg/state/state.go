@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/ready/pkg/declarations"
 )
 
 // Status values as defined in the convention spec §4.4.
@@ -28,6 +29,34 @@ const (
 	StatusCancelled = "cancelled"
 	StatusFailed    = "failed"
 )
+
+// LabelDef is a single label atom in the per-campfire registry.
+// Seed atoms have DefinedBy == "seed" and DefinedAt == 0.
+// User-defined atoms carry the defining operator's pubkey and message timestamp.
+type LabelDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	DefinedBy   string `json:"defined_by"`  // "seed" or pubkey hex
+	DefinedAt   int64  `json:"defined_at"`  // unix nanos; 0 for seed atoms
+}
+
+// DeriveResult holds the full derived state from a campfire message log:
+// the work item map and the label registry.
+type DeriveResult struct {
+	items    map[string]*Item
+	registry map[string]LabelDef
+}
+
+// Items returns the derived work item map (item ID → *Item).
+func (r *DeriveResult) Items() map[string]*Item {
+	return r.items
+}
+
+// LabelRegistry returns the derived label registry (label name → LabelDef).
+// The registry includes seed atoms plus any user-defined atoms from work:label-define messages.
+func (r *DeriveResult) LabelRegistry() map[string]LabelDef {
+	return r.registry
+}
 
 // TerminalStatuses is the set of statuses where an item is no longer active.
 var TerminalStatuses = map[string]bool{
@@ -507,10 +536,20 @@ type blockEdgeKey struct {
 //
 // Three-pass approach:
 // Pass 1: Build the role map from work:role-grant messages. Latest grant per pubkey wins.
+//         Also build the label registry (seed + work:label-define messages).
 // Pass 2: Replay operations, with fulfillment gating for consequential ops (close, delegate, gate-resolve).
 // Pass 3: Stranded-item reclaim — flip active items owned by revoked members back to inbox.
+//
+// Deprecated: use DeriveAll to also get the label registry.
 func Derive(campfireID string, msgs []store.MessageRecord) map[string]*Item {
+	return DeriveAll(campfireID, msgs).items
+}
+
+// DeriveAll replays all work convention messages and returns a DeriveResult
+// containing both the item map and the label registry.
+func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 	roleMap := buildRoleMap(msgs)
+	registry := buildLabelRegistry(msgs)
 
 	rs := &replayState{
 		items:         make(map[string]*Item),
@@ -547,7 +586,64 @@ func Derive(campfireID string, msgs []store.MessageRecord) map[string]*Item {
 	applyBlockStatus(rs)
 	applyStrandedItemReclaim(rs.items, roleMap)
 
-	return rs.items
+	return &DeriveResult{
+		items:    rs.items,
+		registry: registry,
+	}
+}
+
+// labelDefinePayload mirrors the fields in a work:label-define message payload.
+type labelDefinePayload struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// buildLabelRegistry scans msgs for work:label-define messages and constructs
+// the label registry map. Seed atoms (from declarations.LoadSeedLabels) are
+// always included. A later label-define for an existing name overwrites the entry
+// (demand-then-promote flow: retroactive legitimization is intentional).
+// Registry membership is timestamp-independent — all messages are scanned
+// in a single pass regardless of order.
+func buildLabelRegistry(msgs []store.MessageRecord) map[string]LabelDef {
+	registry := make(map[string]LabelDef)
+
+	// Populate seed atoms first.
+	seedLabels, _ := declarations.LoadSeedLabels()
+	for _, sl := range seedLabels {
+		registry[sl.Name] = LabelDef{
+			Name:        sl.Name,
+			Description: sl.Description,
+			DefinedBy:   "seed",
+			DefinedAt:   0,
+		}
+	}
+
+	// Overlay user-defined atoms from work:label-define messages.
+	// Later timestamps win for the same label name.
+	for _, m := range msgs {
+		if !hasTag(m.Tags, "work:label-define") {
+			continue
+		}
+		var p labelDefinePayload
+		if err := json.Unmarshal(m.Payload, &p); err != nil {
+			continue
+		}
+		if p.Label == "" {
+			continue
+		}
+		existing, ok := registry[p.Label]
+		// Seed atoms and entries with a later timestamp win over earlier ones.
+		if !ok || existing.DefinedAt == 0 || m.Timestamp >= existing.DefinedAt {
+			registry[p.Label] = LabelDef{
+				Name:        p.Label,
+				Description: p.Description,
+				DefinedBy:   m.Sender,
+				DefinedAt:   m.Timestamp,
+			}
+		}
+	}
+
+	return registry
 }
 
 // buildRoleMap scans msgs for work:role-grant messages and returns a map of
@@ -980,6 +1076,16 @@ func DeriveFromStore(s store.Store, campfireID string) (map[string]*Item, error)
 		return nil, err
 	}
 	return Derive(campfireID, msgs), nil
+}
+
+// DeriveAllFromStore loads all messages from the given campfire and returns a
+// DeriveResult containing both the item map and the label registry.
+func DeriveAllFromStore(s store.Store, campfireID string) (*DeriveResult, error) {
+	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{})
+	if err != nil {
+		return nil, err
+	}
+	return DeriveAll(campfireID, msgs), nil
 }
 
 // DeriveFromJSONL reads all MutationRecords from the given JSONL file path,

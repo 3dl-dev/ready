@@ -1,0 +1,8 @@
+[
+  {"name": "bug",           "description": "Something is not working as expected"},
+  {"name": "feature",       "description": "New capability or enhancement"},
+  {"name": "question",      "description": "Needs clarification or a decision"},
+  {"name": "security",      "description": "Security-related concern or finding"},
+  {"name": "sweep-finding", "description": "Finding from an automated or manual sweep"},
+  {"name": "blog-candidate","description": "Noteworthy event candidate for a blog post"}
+]
