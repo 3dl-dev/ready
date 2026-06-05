@@ -1138,6 +1138,38 @@ func DeriveAllFromStore(s store.Store, campfireID string) (*DeriveResult, error)
 	return DeriveAll(campfireID, msgs), nil
 }
 
+// DeriveAllFromJSONL is like DeriveFromJSONLWithCampfire but returns a full
+// DeriveResult (items + label registry) instead of only the item map.
+// Use this when you need the label registry from a JSONL-only project (no store).
+//
+// Returns a DeriveResult with an empty registry when the file does not exist.
+func DeriveAllFromJSONL(path, campfireID string) (*DeriveResult, error) {
+	records, err := readMutations(path)
+	if err != nil {
+		return DeriveAll(campfireID, nil), nil //nolint:nilerr — missing file is valid
+	}
+	if len(records) == 0 {
+		return DeriveAll(campfireID, nil), nil
+	}
+	if campfireID == "" {
+		campfireID = records[0].CampfireID
+	}
+	msgs := make([]store.MessageRecord, len(records))
+	for i, r := range records {
+		msgs[i] = store.MessageRecord{
+			ID:          r.MsgID,
+			CampfireID:  r.CampfireID,
+			Timestamp:   r.Timestamp,
+			Payload:     []byte(r.Payload),
+			Tags:        r.Tags,
+			Sender:      r.Sender,
+			Antecedents: r.Antecedents,
+			ReceivedAt:  r.Timestamp,
+		}
+	}
+	return DeriveAll(campfireID, msgs), nil
+}
+
 // DeriveFromJSONL reads all MutationRecords from the given JSONL file path,
 // converts them to store.MessageRecord, and derives item state by replaying
 // the mutation log. The campfireID is inferred from the first record's

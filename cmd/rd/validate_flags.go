@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -37,14 +38,20 @@ func ValidateEnumFlags(decl *convention.Declaration, flagValues map[string]strin
 			continue
 		}
 		if !enumContains(arg.Values, val) {
+			// The alias note is scoped to --type errors only: aliases are a type-level
+			// concept (e.g. "bug" → task+label), not a priority or level concept.
+			note := ""
+			if arg.Name == "type" {
+				note = " (note: aliases like \"bug\" are rewritten by rd — check rd help create)"
+			}
 			errs = append(errs, fmt.Sprintf(
-				"--%s %q is not valid; accepted values: %s (note: aliases like \"bug\" are rewritten by rd — check rd help create)",
-				arg.Name, val, formatEnumValues(arg.Values),
+				"--%s %q is not valid; accepted values: %s%s",
+				arg.Name, val, formatEnumValues(arg.Values), note,
 			))
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+		return errors.New(strings.Join(errs, "\n"))
 	}
 	return nil
 }

@@ -167,6 +167,9 @@ func TestValidateEnumFlags_DerivesFromDeclaration(t *testing.T) {
 // The test uses isolateTempDir so that readyProjectDir() resolves to the temp dir
 // (walking up from cwd, it finds .ready/ there). This means the assertion checks
 // the exact directory that the live command code would write to — not a proxy.
+//
+// Note: "bug" is now a type alias (rewrites to task+label:bug), so this test uses
+// "incident" — not an alias, not a valid type — to exercise the rejection path.
 func TestCreate_InvalidType_NoJSONLWrite(t *testing.T) {
 	// Chdir to a temp dir so readyProjectDir() resolves here.
 	projectDir := isolateTempDir(t)
@@ -187,9 +190,8 @@ func TestCreate_InvalidType_NoJSONLWrite(t *testing.T) {
 		}
 	}
 
-	// Set the invalid --type flag and a valid --priority so that only the
-	// type enum validation fires (not a missing-flag error).
-	if err := createCmd.Flags().Set("type", "bug"); err != nil {
+	// Set an invalid --type that is not an alias (not "bug") and not a valid type.
+	if err := createCmd.Flags().Set("type", "incident"); err != nil {
 		t.Fatalf("setting --type flag: %v", err)
 	}
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
@@ -205,7 +207,7 @@ func TestCreate_InvalidType_NoJSONLWrite(t *testing.T) {
 
 	// Must return an error (non-zero exit in CLI terms).
 	if err == nil {
-		t.Fatal("createCmd.RunE: expected error for invalid --type 'bug', got nil")
+		t.Fatal("createCmd.RunE: expected error for invalid --type 'incident', got nil")
 	}
 
 	// The error must be the enum validation error, not a store/identity error —
@@ -295,10 +297,13 @@ func TestCreate_ValidType_HarnessCanDetectWrites(t *testing.T) {
 // This is the end-to-end regression test: it exercises the real createCmd.RunE, not
 // a standalone mirror. An invalid type must cause createCmd to return error without
 // reaching withAgentAndStore.
+//
+// Note: "bug" is now a type alias (rewrites to task+label:bug), so this test uses
+// "incident" — not an alias, not a valid type — to exercise the rejection path.
 func TestCreateCmd_InvalidType_ExitsBeforeStore(t *testing.T) {
 	// Set flags directly on createCmd so RunE can read them.
 	// We use the Set method to avoid cobra's argument parsing.
-	if err := createCmd.Flags().Set("type", "bug"); err != nil {
+	if err := createCmd.Flags().Set("type", "incident"); err != nil {
 		// If "type" flag isn't registered yet, this will fail; that's a bug.
 		t.Fatalf("setting --type flag: %v", err)
 	}
@@ -314,7 +319,7 @@ func TestCreateCmd_InvalidType_ExitsBeforeStore(t *testing.T) {
 	// Execute RunE with a title as positional arg.
 	err := createCmd.RunE(createCmd, []string{"Test item"})
 	if err == nil {
-		t.Fatal("createCmd.RunE: expected error for invalid --type 'bug', got nil")
+		t.Fatal("createCmd.RunE: expected error for invalid --type 'incident', got nil")
 	}
 	errMsg := err.Error()
 	// Must mention type and list valid values.

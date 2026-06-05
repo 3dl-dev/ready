@@ -1,0 +1,5 @@
+{
+  "type_aliases": {
+    "bug": {"type": "task", "labels": ["bug"]}
+  }
+}
