@@ -400,3 +400,171 @@ func TestLabels_OtherItemsUnaffected(t *testing.T) {
 		t.Error("expected LabelWarnings on item with dropped unregistered label")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix 1 derive assertion: 9 fully-registered atoms all materialize.
+//
+// The executor write-side pattern (^[a-z0-9][a-z0-9,-]*$) has no atom-count
+// cap — it intentionally accepts 9+ atoms because nested quantifiers are
+// prohibited by the campfire executor. The 8-atom cap from the original
+// composite pattern was descoped when that pattern was rejected by the
+// executor. Derive time has NO atom-count cap: all registered atoms survive.
+// ---------------------------------------------------------------------------
+
+// TestLabels_NineRegisteredAtoms_AllMaterialize verifies that when 9 atoms are
+// injected via RawCreate and ALL 9 are in the label registry, all 9 survive
+// derive-time enforcement. Derive-time has no atom-count cap — it filters only
+// by pattern validity and registry membership. Atom-count capping was descoped
+// along with the composite write-side pattern.
+func TestLabels_NineRegisteredAtoms_AllMaterialize(t *testing.T) {
+	h := storetest.New(t)
+
+	// Register all 9 atoms. Without registry membership each would be dropped.
+	// label1..label9 are user-defined here (not seed labels).
+	atoms := []string{"label1", "label2", "label3", "label4", "label5", "label6", "label7", "label8", "label9"}
+	for _, atom := range atoms {
+		h.LabelDefine(atom, "registered for 9-atom derive test")
+	}
+
+	nineLabels := strings.Join(atoms, ",")
+	if strings.Count(nineLabels, ",") != 8 {
+		t.Fatalf("test setup: expected 9 atoms (8 commas), got %d commas", strings.Count(nineLabels, ","))
+	}
+
+	// Inject via RawCreate — bypasses write-side atom-count gate (if any).
+	_ = h.RawCreate("item-nine-reg", "Nine registered labels", "p2", map[string]interface{}{
+		"labels": nineLabels,
+	})
+
+	result, err := state.DeriveAllFromStore(h.Store, h.CampfireID)
+	if err != nil {
+		t.Fatalf("DeriveAllFromStore: %v", err)
+	}
+	item, ok := result.Items()["item-nine-reg"]
+	if !ok {
+		t.Fatal("item 'item-nine-reg' not found in derived state")
+	}
+
+	// All 9 registered atoms must materialize — no derive-time atom-count cap exists.
+	if len(item.Labels) != 9 {
+		t.Errorf("Labels count=%d, want 9 (all 9 registered atoms must survive derive): %v",
+			len(item.Labels), item.Labels)
+	}
+	if len(item.LabelWarnings) != 0 {
+		t.Errorf("LabelWarnings should be empty (all atoms registered): %v", item.LabelWarnings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 2: derive-level boundary test for 32/33-char atom length.
+//
+// labelAtomPattern is ^[a-z0-9][a-z0-9-]{0,31}$ — 1 + up to 31 = max 32 chars.
+// A 33-char atom must be DROPPED with a warning naming the atom.
+// A 32-char atom that is registered must MATERIALIZE.
+// ---------------------------------------------------------------------------
+
+// TestLabels_AtomLengthBoundary_33Dropped_32Kept verifies the derive-time
+// atom length boundary at 32 characters (pattern: ^[a-z0-9][a-z0-9-]{0,31}$).
+// A 33-char atom is dropped with a warning naming the atom; a 32-char registered
+// atom materializes without warnings.
+func TestLabels_AtomLengthBoundary_33Dropped_32Kept(t *testing.T) {
+	h := storetest.New(t)
+
+	// 32 chars: 'a' + 31 'b's — exactly at the boundary.
+	atom32 := "a" + strings.Repeat("b", 31)
+	if len(atom32) != 32 {
+		t.Fatalf("test setup: atom32 has length %d, want 32", len(atom32))
+	}
+	// Register the 32-char atom so it passes the registry gate.
+	h.LabelDefine(atom32, "32-char boundary atom")
+
+	// 33 chars: 'a' + 32 'b's — one over the limit, fails pattern.
+	atom33 := "a" + strings.Repeat("b", 32)
+	if len(atom33) != 33 {
+		t.Fatalf("test setup: atom33 has length %d, want 33", len(atom33))
+	}
+	// No LabelDefine for atom33 — it would fail the pattern gate before registry anyway.
+
+	_ = h.RawCreate("item-boundary", "Atom length boundary", "p2", map[string]interface{}{
+		"labels": atom32 + "," + atom33,
+	})
+
+	result, err := state.DeriveAllFromStore(h.Store, h.CampfireID)
+	if err != nil {
+		t.Fatalf("DeriveAllFromStore: %v", err)
+	}
+	item, ok := result.Items()["item-boundary"]
+	if !ok {
+		t.Fatal("item 'item-boundary' not found in derived state")
+	}
+
+	// The 32-char atom must materialize (registered, pattern-valid).
+	if len(item.Labels) != 1 || item.Labels[0] != atom32 {
+		t.Errorf("Labels=%v, want [%s] (32-char registered atom must materialize)", item.Labels, atom32)
+	}
+
+	// The 33-char atom must be dropped, and the warning must name the atom.
+	if len(item.LabelWarnings) == 0 {
+		t.Error("expected LabelWarnings for the 33-char atom that exceeds pattern limit")
+	}
+	warnText := strings.Join(item.LabelWarnings, " ")
+	if !strings.Contains(warnText, atom33) {
+		t.Errorf("LabelWarnings=%v should name the dropped 33-char atom %q", item.LabelWarnings, atom33)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 3: derive-level double-comma test.
+//
+// The write-side pattern ^[a-z0-9][a-z0-9,-]*$ permits commas inside the
+// scalar, so "a,,b" passes the write-side gate. At derive time, splitting on
+// "," produces an empty atom "" which the code handles via `if atom == "" {
+// continue }`. No warning is emitted for empty atoms — only non-empty atoms
+// that fail pattern or registry produce warnings.
+// ---------------------------------------------------------------------------
+
+// TestLabels_DoubleComma_EmptyAtomSilentlySkipped verifies that a labels value
+// with a double comma (e.g., "a,,b") produces only the valid atoms in
+// Item.Labels and emits NO warning for the empty atom — the empty string is
+// silently skipped via `if atom == "" { continue }` in the derive loop.
+func TestLabels_DoubleComma_EmptyAtomSilentlySkipped(t *testing.T) {
+	h := storetest.New(t)
+	// "a" and "b" are user-defined labels (not seed labels).
+	h.LabelDefine("a", "single-char label a")
+	h.LabelDefine("b", "single-char label b")
+
+	// "a,,b" — double comma produces an empty atom between the two valid ones.
+	_ = h.RawCreate("item-doublecomma", "Double comma labels", "p1", map[string]interface{}{
+		"labels": "a,,b",
+	})
+
+	result, err := state.DeriveAllFromStore(h.Store, h.CampfireID)
+	if err != nil {
+		t.Fatalf("DeriveAllFromStore: %v", err)
+	}
+	item, ok := result.Items()["item-doublecomma"]
+	if !ok {
+		t.Fatal("item 'item-doublecomma' not found in derived state")
+	}
+
+	// Both "a" and "b" must materialize.
+	labelSet := make(map[string]bool)
+	for _, l := range item.Labels {
+		labelSet[l] = true
+	}
+	if !labelSet["a"] {
+		t.Errorf("Labels=%v missing 'a' (should materialize as registered)", item.Labels)
+	}
+	if !labelSet["b"] {
+		t.Errorf("Labels=%v missing 'b' (should materialize as registered)", item.Labels)
+	}
+	if len(item.Labels) != 2 {
+		t.Errorf("Labels=%v, want exactly [a b] (2 items, no empty atom)", item.Labels)
+	}
+
+	// No warning for the empty atom — it is silently skipped, not warned about.
+	if len(item.LabelWarnings) != 0 {
+		t.Errorf("LabelWarnings should be empty (empty atom silently skipped, a and b are registered): %v",
+			item.LabelWarnings)
+	}
+}

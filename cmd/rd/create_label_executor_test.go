@@ -138,14 +138,18 @@ func TestCreateLabels_NineLabels_ExecutorAcceptsButDeriveDrops(t *testing.T) {
 		"labels":   nineLabels,
 	}
 
-	// Write-side accepts: the simplified pattern ^[a-z0-9][a-z0-9,-]*$ does not
-	// enforce atom count (nested quantifiers are prohibited by the executor).
+	// Write-side accepts: the simplified pattern ^[a-z0-9][a-z0-9,-]*$ intentionally
+	// accepts 9 atoms. Nested quantifiers (needed for strict atom-count enforcement)
+	// are prohibited by the campfire executor, so atom-count capping lives exclusively
+	// at derive time via registry membership checks. The write-side gate is pattern +
+	// max_length only; it does NOT enforce the 8-atom limit.
 	_, err = exec.Execute(context.Background(), decl, "cf-test-campfire", argsMap)
 	if err != nil {
-		t.Logf("Note: executor rejected 9-atom labels arg; this is also acceptable if the pattern evolves")
-		// This is acceptable — both behaviours (accept or reject) are consistent
-		// with the security model since derive-time is the authoritative gate.
+		t.Errorf("executor should accept 9-atom labels arg — write-side pattern ^[a-z0-9][a-z0-9,-]*$ has no atom-count cap; got error: %v", err)
 	}
+	// Derive-time behavior is verified in pkg/state TestLabels_NineRegisteredAtoms_AllMaterialize:
+	// when all 9 atoms are registered, all 9 survive derive — no derive-time atom-count cap exists.
+	// Atom-count capping was descoped along with the composite pattern (which the executor rejected).
 }
 
 // TestCreateLabels_EightLabels_Accepted verifies that 8 labels are accepted
