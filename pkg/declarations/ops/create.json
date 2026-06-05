@@ -1,6 +1,6 @@
 {
   "convention": "work",
-  "version": "0.3",
+  "version": "0.4",
   "operation": "create",
   "description": "Create a new work item",
   "args": [
@@ -15,7 +15,8 @@
     {"name": "project", "type": "string", "max_length": 64},
     {"name": "parent_id", "type": "string", "max_length": 64},
     {"name": "eta", "type": "string", "max_length": 32},
-    {"name": "due", "type": "string", "max_length": 32}
+    {"name": "due", "type": "string", "max_length": 32},
+    {"name": "labels", "type": "string", "max_length": 263, "pattern": "^[a-z0-9][a-z0-9,-]*$"}
   ],
   "produces_tags": [
     {"tag": "work:create", "cardinality": "exactly_one"},

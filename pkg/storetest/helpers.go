@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,6 +137,7 @@ type createConfig struct {
 	parentID string
 	eta      string
 	due      string
+	labels   []string
 }
 
 // CreateOpt is a functional option for the Create method.
@@ -184,6 +186,13 @@ func WithETA(eta string) CreateOpt {
 // WithDue sets the due field.
 func WithDue(due string) CreateOpt {
 	return func(c *createConfig) { c.due = due }
+}
+
+// WithLabels sets the labels field as a comma-separated scalar.
+// Labels are joined with commas in the payload. Derive-time enforcement
+// will drop any labels that are malformed or not in the registry.
+func WithLabels(labels ...string) CreateOpt {
+	return func(c *createConfig) { c.labels = labels }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +266,31 @@ func (h *Harness) Create(id, title, priority string, opts ...CreateOpt) string {
 	if cfg.due != "" {
 		payload["due"] = cfg.due
 	}
+	if len(cfg.labels) > 0 {
+		payload["labels"] = strings.Join(cfg.labels, ",")
+	}
 	return h.addMessage("work:create", payload, nil)
+}
+
+// RawCreate injects a work:create message directly into the store, bypassing
+// the convention executor. This is the bypass path — equivalent to the
+// ready-1c2 pending.jsonl flush that writes raw via transport, skipping
+// executor validation. Used to test that derive-time enforcement catches
+// labels that the write-side gate never saw.
+func (h *Harness) RawCreate(id, title, priority string, rawPayload map[string]interface{}) string {
+	h.t.Helper()
+	// Merge required fields with caller-provided raw payload (caller wins).
+	merged := map[string]interface{}{
+		"id":       id,
+		"title":    title,
+		"priority": priority,
+		"type":     "task",
+		"for":      "baron@3dl.dev",
+	}
+	for k, v := range rawPayload {
+		merged[k] = v
+	}
+	return h.addMessage("work:create", merged, nil)
 }
 
 // Claim sends a work:claim message referencing the given create message ID.
