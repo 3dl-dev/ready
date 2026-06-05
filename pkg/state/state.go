@@ -606,6 +606,10 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 			handleWorkGate(m, rs)
 		case hasTag(m.Tags, "work:gate-resolve"):
 			handleWorkGateResolve(msgs, m, rs, roleMap)
+		case hasTag(m.Tags, "work:label-add"):
+			handleWorkLabelAdd(m, rs, registry)
+		case hasTag(m.Tags, "work:label-remove"):
+			handleWorkLabelRemove(m, rs, registry)
 		}
 	}
 
@@ -785,6 +789,67 @@ func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState,
 	})
 	rs.items[p.ID] = item
 	rs.msgIndex[m.ID] = p.ID
+}
+
+// labelMutPayload mirrors the fields in a work:label-add or work:label-remove payload.
+type labelMutPayload struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// handleWorkLabelAdd processes a work:label-add message, adding the label to the item
+// identified by payload.ID (the item ID). Enforcement is identical to handleWorkCreate:
+// pattern-invalid and unregistered labels are dropped with a warning.
+func handleWorkLabelAdd(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+	var p labelMutPayload
+	if err := json.Unmarshal(m.Payload, &p); err != nil {
+		return
+	}
+	if p.ID == "" || p.Label == "" {
+		return
+	}
+	item, ok := rs.items[p.ID]
+	if !ok {
+		// Nonexistent item: silently ignore, no phantom item created.
+		return
+	}
+	// Enforce the same pattern + registry gate as handleWorkCreate.
+	if !labelAtomPattern.MatchString(p.Label) {
+		item.LabelWarnings = append(item.LabelWarnings,
+			fmt.Sprintf("label %q dropped: fails pattern validation", p.Label))
+		return
+	}
+	if _, inRegistry := registry[p.Label]; !inRegistry {
+		item.LabelWarnings = append(item.LabelWarnings,
+			fmt.Sprintf("label %q dropped: not in label registry", p.Label))
+		return
+	}
+	item.Labels = appendUnique(item.Labels, p.Label)
+}
+
+// handleWorkLabelRemove processes a work:label-remove message, removing the label
+// from the item identified by payload.ID. Removing a label not present is idempotent.
+func handleWorkLabelRemove(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+	var p labelMutPayload
+	if err := json.Unmarshal(m.Payload, &p); err != nil {
+		return
+	}
+	if p.ID == "" || p.Label == "" {
+		return
+	}
+	item, ok := rs.items[p.ID]
+	if !ok {
+		// Nonexistent item: silently ignore, no phantom item created.
+		return
+	}
+	// Remove the label if present; no-op if absent.
+	var filtered []string
+	for _, l := range item.Labels {
+		if l != p.Label {
+			filtered = append(filtered, l)
+		}
+	}
+	item.Labels = filtered
 }
 
 // handleWorkStatus processes a work:status message, updating item status and waiting fields.
