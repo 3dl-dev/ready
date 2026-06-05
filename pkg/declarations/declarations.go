@@ -4,6 +4,7 @@ package declarations
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -11,6 +12,24 @@ import (
 
 //go:embed ops/*.json
 var opsFS embed.FS
+
+//go:embed seed_labels.json
+var seedLabelsData []byte
+
+// SeedLabel is a label atom that is implicitly defined in every campfire.
+type SeedLabel struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// LoadSeedLabels returns the built-in seed label atoms.
+func LoadSeedLabels() ([]SeedLabel, error) {
+	var labels []SeedLabel
+	if err := json.Unmarshal(seedLabelsData, &labels); err != nil {
+		return nil, fmt.Errorf("parsing seed_labels.json: %w", err)
+	}
+	return labels, nil
+}
 
 // All returns all convention:operation declaration payloads as raw JSON.
 func All() ([][]byte, error) {

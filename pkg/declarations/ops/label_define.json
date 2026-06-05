@@ -1,0 +1,16 @@
+{
+  "convention": "work",
+  "version": "0.4",
+  "operation": "label-define",
+  "description": "Define a label in the per-campfire label registry",
+  "args": [
+    {"name": "label", "type": "string", "required": true, "max_length": 32, "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"},
+    {"name": "description", "type": "string", "max_length": 256}
+  ],
+  "produces_tags": [
+    {"tag": "work:label-define", "cardinality": "exactly_one"}
+  ],
+  "antecedents": "none",
+  "signing": "member_key",
+  "min_operator_level": 2
+}
