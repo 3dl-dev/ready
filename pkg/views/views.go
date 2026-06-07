@@ -159,6 +159,21 @@ func FocusFilter(gateType string) Filter {
 	}
 }
 
+// LabelFilter returns a Filter that matches items carrying the given label atom.
+// Matching is exact (no substring/glob). An item matches if atom appears in
+// its Labels slice. The caller is responsible for AND-composing multiple
+// LabelFilter predicates when more than one atom is requested.
+func LabelFilter(atom string) Filter {
+	return func(item *state.Item) bool {
+		for _, l := range item.Labels {
+			if l == atom {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // Apply filters items using the provided filter function.
 func Apply(items []*state.Item, f Filter) []*state.Item {
 	var result []*state.Item

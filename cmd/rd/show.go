@@ -118,6 +118,9 @@ Example:
 		if item.WaitingOn != "" {
 			fmt.Printf("Waiting on: %s (%s)\n", item.WaitingOn, item.WaitingType)
 		}
+		if len(item.Labels) > 0 {
+			fmt.Printf("Labels:   %s\n", strings.Join(item.Labels, ", "))
+		}
 		// Cross-campfire dep display: resolved and unresolved.
 		for _, cd := range crossDeps {
 			if cd.Item != nil {
