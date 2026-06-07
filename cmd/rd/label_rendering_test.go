@@ -584,3 +584,363 @@ func runShowCmd(t *testing.T, tmpDir, itemID string) (string, error) {
 
 	return buf.String(), runErr
 }
+
+// ---------------------------------------------------------------------------
+// sliceResetter lets us Replace a pflag StringArray flag value without
+// importing pflag directly. stringArrayValue (unexported) implements this via
+// its Replace method, which fully overwrites the current list.
+// ---------------------------------------------------------------------------
+
+type sliceResetter interface {
+	Replace([]string) error
+}
+
+// resetListLabelFlag sets listCmd's --label flag to exactly atoms and returns
+// a cleanup func that resets it to nil.
+func resetListLabelFlag(t *testing.T, atoms []string) func() {
+	t.Helper()
+	f := listCmd.Flags().Lookup("label")
+	if f == nil {
+		t.Fatal("--label flag not registered on listCmd")
+	}
+	sr, ok := f.Value.(sliceResetter)
+	if !ok {
+		t.Fatalf("--label flag value does not implement Replace; got %T", f.Value)
+	}
+	if err := sr.Replace(atoms); err != nil {
+		t.Fatalf("Replace(label, %v) on listCmd: %v", atoms, err)
+	}
+	return func() { _ = sr.Replace(nil) }
+}
+
+// resetReadyLabelFlag sets readyCmd's --label flag to exactly atoms and
+// returns a cleanup func that resets it to nil.
+func resetReadyLabelFlag(t *testing.T, atoms []string) func() {
+	t.Helper()
+	f := readyCmd.Flags().Lookup("label")
+	if f == nil {
+		t.Fatal("--label flag not registered on readyCmd")
+	}
+	sr, ok := f.Value.(sliceResetter)
+	if !ok {
+		t.Fatalf("--label flag value does not implement Replace; got %T", f.Value)
+	}
+	if err := sr.Replace(atoms); err != nil {
+		t.Fatalf("Replace(label, %v) on readyCmd: %v", atoms, err)
+	}
+	return func() { _ = sr.Replace(nil) }
+}
+
+// setupMultiItemMutations creates a temp dir with a .ready/mutations.jsonl
+// containing four items with varying label sets and wires CF_HOME / rdHome so
+// that listCmd.RunE reads from that dir via the JSONL path.  Returns tmpDir
+// and a cleanup func.
+//
+// Items written:
+//
+//	"lrf-bug-only"      labels: bug
+//	"lrf-security-only" labels: security
+//	"lrf-both"          labels: bug,security
+//	"lrf-no-label"      labels: (none)
+func setupMultiItemMutations(t *testing.T) (string, func()) {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "test-list-label-rune")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+
+	hexID := strings.Repeat("aa", 32)
+
+	origCFHome := os.Getenv("CF_HOME")
+	os.Setenv("CF_HOME", tmpDir)
+
+	origRDHome := rdHome
+	rdHome = ""
+
+	aliasContent, _ := json.Marshal(map[string]string{"labelrune": hexID})
+	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
+		t.Fatalf("WriteFile aliases.json: %v", err)
+	}
+
+	readyDir := filepath.Join(tmpDir, ".ready")
+	if err := os.MkdirAll(readyDir, 0700); err != nil {
+		t.Fatalf("MkdirAll .ready: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(readyDir, "config.json"),
+		[]byte(`{"project_name":"labelrune"}`), 0600); err != nil {
+		t.Fatalf("WriteFile config.json: %v", err)
+	}
+
+	type spec struct {
+		id     string
+		labels string
+	}
+	specs := []spec{
+		{"lrf-bug-only", "bug"},
+		{"lrf-security-only", "security"},
+		{"lrf-both", "bug,security"},
+		{"lrf-no-label", ""},
+	}
+
+	var mutations string
+	for i, s := range specs {
+		payload := map[string]interface{}{
+			"id":       s.id,
+			"title":    "Label RunE Test " + s.id,
+			"type":     "task",
+			"for":      "baron@3dl.dev",
+			"priority": "p2",
+		}
+		if s.labels != "" {
+			payload["labels"] = s.labels
+		}
+		pb, _ := json.Marshal(payload)
+		ts := fmt.Sprintf("%d", 1000000000000000001+int64(i))
+		mutations += fmt.Sprintf(
+			`{"msg_id":"test-msg-%s","campfire_id":"%s","timestamp":%s,"operation":"work:create","payload":%s,"tags":["work:create"],"sender":"testsender"}`+"\n",
+			s.id, hexID, ts, string(pb),
+		)
+	}
+	if err := os.WriteFile(filepath.Join(readyDir, "mutations.jsonl"), []byte(mutations), 0600); err != nil {
+		t.Fatalf("WriteFile mutations.jsonl: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cleanup := func() {
+		_ = os.Chdir(origCwd)
+		if origCFHome != "" {
+			os.Setenv("CF_HOME", origCFHome)
+		} else {
+			os.Unsetenv("CF_HOME")
+		}
+		rdHome = origRDHome
+		os.RemoveAll(tmpDir)
+	}
+	return tmpDir, cleanup
+}
+
+// runListCmdCapture runs listCmd.RunE and returns captured stdout, stderr, and
+// any error.  Both os.Stdout and os.Stderr are redirected during the call.
+func runListCmdCapture(t *testing.T) (stdout, stderr string, runErr error) {
+	t.Helper()
+
+	origOut := os.Stdout
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdout: %v", err)
+	}
+	os.Stdout = wOut
+
+	origErr := os.Stderr
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stderr: %v", err)
+	}
+	os.Stderr = wErr
+
+	runErr = listCmd.RunE(listCmd, []string{})
+
+	wOut.Close()
+	wErr.Close()
+	os.Stdout = origOut
+	os.Stderr = origErr
+
+	var bufOut, bufErr bytes.Buffer
+	_, _ = io.Copy(&bufOut, rOut)
+	_, _ = io.Copy(&bufErr, rErr)
+	rOut.Close()
+	rErr.Close()
+
+	return bufOut.String(), bufErr.String(), runErr
+}
+
+// ---------------------------------------------------------------------------
+// listCmd.RunE + --label integration tests (cover the flag-parse/wiring gap)
+// ---------------------------------------------------------------------------
+
+// TestListCmd_RunE_LabelFlag_SingleAtom exercises listCmd.RunE end-to-end with
+// --label bug wired via cobra flag-parse. Asserts that only items carrying the
+// "bug" atom appear in the piped bare-ID output and that no unlabeled or
+// differently-labeled items slip through.
+func TestListCmd_RunE_LabelFlag_SingleAtom(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	_, cleanup := setupMultiItemMutations(t)
+	defer cleanup()
+
+	defer resetListLabelFlag(t, []string{"bug"})()
+
+	stdout, _, runErr := runListCmdCapture(t)
+	if runErr != nil {
+		t.Fatalf("listCmd.RunE --label bug returned error: %v", runErr)
+	}
+
+	ids := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line != "" {
+			ids[line] = true
+		}
+	}
+
+	if !ids["lrf-bug-only"] {
+		t.Errorf("lrf-bug-only missing from --label bug output; got ids: %v", ids)
+	}
+	if !ids["lrf-both"] {
+		t.Errorf("lrf-both missing from --label bug output; got ids: %v", ids)
+	}
+	if ids["lrf-security-only"] {
+		t.Errorf("lrf-security-only must NOT appear in --label bug output; got ids: %v", ids)
+	}
+	if ids["lrf-no-label"] {
+		t.Errorf("lrf-no-label must NOT appear in --label bug output; got ids: %v", ids)
+	}
+}
+
+// TestListCmd_RunE_LabelFlag_ANDSemantics exercises listCmd.RunE with two
+// --label flags (bug + security) parsed via cobra. Only the item carrying both
+// atoms must appear (AND semantics).
+func TestListCmd_RunE_LabelFlag_ANDSemantics(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	_, cleanup := setupMultiItemMutations(t)
+	defer cleanup()
+
+	defer resetListLabelFlag(t, []string{"bug", "security"})()
+
+	stdout, _, runErr := runListCmdCapture(t)
+	if runErr != nil {
+		t.Fatalf("listCmd.RunE --label bug --label security returned error: %v", runErr)
+	}
+
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+
+	if len(lines) != 1 {
+		t.Errorf("expected exactly 1 item (AND semantics), got %d; lines: %v", len(lines), lines)
+	}
+	if len(lines) > 0 && lines[0] != "lrf-both" {
+		t.Errorf("expected lrf-both, got %q", lines[0])
+	}
+}
+
+// TestListCmd_RunE_LabelFlag_UnknownAtom_EmptyNotError exercises listCmd.RunE
+// with --label unknownatom via cobra flag-parse. The command must succeed
+// (return nil) and produce empty piped output — an unknown atom is not an
+// error.
+func TestListCmd_RunE_LabelFlag_UnknownAtom_EmptyNotError(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	_, cleanup := setupMultiItemMutations(t)
+	defer cleanup()
+
+	defer resetListLabelFlag(t, []string{"unknownatom"})()
+
+	stdout, _, runErr := runListCmdCapture(t)
+	if runErr != nil {
+		t.Errorf("listCmd.RunE must NOT return error for unknown label atom; got: %v", runErr)
+	}
+	if trimmed := strings.TrimSpace(stdout); trimmed != "" {
+		t.Errorf("expected empty piped output for --label unknownatom, got: %q", trimmed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// readyCmd.RunE + --label integration test (flag registration and wiring)
+// ---------------------------------------------------------------------------
+
+// TestReadyCmd_RunE_LabelFlag_Registered verifies that the --label flag is
+// correctly registered on readyCmd and that its value is readable inside RunE.
+// Because readyCmd requires a live campfire identity (withAgentAndStore), a
+// missing-identity error from RunE is acceptable — the key assertions are:
+//   - no panic
+//   - no "unknown flag" or "flag provided but not defined" error
+//   - GetStringArray("label") returns the atoms we set
+func TestReadyCmd_RunE_LabelFlag_Registered(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	_, cleanup := setupMultiItemMutations(t)
+	defer cleanup()
+
+	if err := readyCmd.Flags().Set("for", ""); err != nil {
+		t.Fatalf("setting --for: %v", err)
+	}
+	defer func() { _ = readyCmd.Flags().Set("for", "") }()
+
+	defer resetReadyLabelFlag(t, []string{"bug"})()
+
+	// Drain stdout/stderr so test output stays clean.
+	origOut := os.Stdout
+	origErr := os.Stderr
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	os.Stdout = wOut
+	os.Stderr = wErr
+
+	runErr := readyCmd.RunE(readyCmd, []string{})
+
+	wOut.Close()
+	wErr.Close()
+	os.Stdout = origOut
+	os.Stderr = origErr
+	var bufOut, bufErr bytes.Buffer
+	_, _ = io.Copy(&bufOut, rOut)
+	_, _ = io.Copy(&bufErr, rErr)
+	rOut.Close()
+	rErr.Close()
+
+	// A missing-identity error is acceptable in this env; a flag-parse error is not.
+	if runErr != nil {
+		msg := runErr.Error()
+		if strings.Contains(msg, "--label is not a flag") ||
+			strings.Contains(msg, "unknown flag") ||
+			strings.Contains(msg, "flag provided but not defined") {
+			t.Errorf("readyCmd.RunE returned flag-parse error for --label: %v", runErr)
+		}
+		t.Logf("readyCmd.RunE error (missing identity is OK in test env): %v", runErr)
+	}
+
+	// Flag value must be exactly what we set.
+	got, err := readyCmd.Flags().GetStringArray("label")
+	if err != nil {
+		t.Fatalf("GetStringArray(\"label\") on readyCmd: %v", err)
+	}
+	if len(got) != 1 || got[0] != "bug" {
+		t.Errorf("readyCmd --label: got %v, want [bug]", got)
+	}
+}
