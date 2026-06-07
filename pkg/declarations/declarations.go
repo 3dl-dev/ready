@@ -10,6 +10,44 @@ import (
 	"strings"
 )
 
+// argDescriptor mirrors the minimal fields needed to extract enum values
+// from a convention:operation declaration arg.
+type argDescriptor struct {
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	Values []string `json:"values,omitempty"`
+}
+
+// declarationArgs is a minimal parse of a declaration JSON — only what is
+// needed to extract arg enum values.
+type declarationArgs struct {
+	Args []argDescriptor `json:"args"`
+}
+
+// ArgEnumValues returns the enum values for the named arg in the named
+// operation declaration. Returns nil if the operation or arg is not found,
+// or if the arg is not of type "enum".
+// The operation name follows the same convention as Load (e.g. "create").
+func ArgEnumValues(operation, argName string) ([]string, error) {
+	data, err := Load(operation)
+	if err != nil {
+		return nil, err
+	}
+	var decl declarationArgs
+	if err := json.Unmarshal(data, &decl); err != nil {
+		return nil, fmt.Errorf("parsing declaration %q: %w", operation, err)
+	}
+	for _, arg := range decl.Args {
+		if arg.Name == argName {
+			if arg.Type != "enum" {
+				return nil, fmt.Errorf("arg %q in %q is not an enum (type=%q)", argName, operation, arg.Type)
+			}
+			return arg.Values, nil
+		}
+	}
+	return nil, fmt.Errorf("arg %q not found in declaration %q", argName, operation)
+}
+
 //go:embed ops/*.json
 var opsFS embed.FS
 

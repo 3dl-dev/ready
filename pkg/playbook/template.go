@@ -8,10 +8,20 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/campfire-net/ready/pkg/declarations"
 )
 
 // itemIDPattern is the required pattern for work item IDs.
 var itemIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,63}$`)
+
+// labelAtomPattern validates a single label atom.
+// Must match the per-atom pattern defined in pkg/state: ^[a-z0-9][a-z0-9-]{0,31}$
+var labelAtomPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// maxLabelsPerItem is the maximum number of label atoms permitted on a single
+// template item.
+const maxLabelsPerItem = 8
 
 // TemplateItem is a single item in a playbook template.
 type TemplateItem struct {
@@ -20,6 +30,12 @@ type TemplateItem struct {
 	Level    string `json:"level,omitempty"`
 	Priority string `json:"priority"`
 	Context  string `json:"context,omitempty"`
+	// Labels is the set of label atoms to attach to the item when engaged.
+	// Each atom must match ^[a-z0-9][a-z0-9-]{0,31}$ and at most 8 are allowed.
+	// Registry membership is not checked at template-validation time — it is
+	// enforced at derive time (pkg/state). Engage emits a UX warning for atoms
+	// absent from the target registry.
+	Labels []string `json:"labels,omitempty"`
 	// Deps is a list of 0-based indices into the template items array.
 	// An item at index I with Deps=[J] means item J must be done before item I.
 	Deps []int `json:"deps,omitempty"`
@@ -92,10 +108,18 @@ func (t *PlaybookTemplate) Validate() error {
 		return fmt.Errorf("playbook must have at least one item")
 	}
 
-	validTypes := map[string]bool{
-		"task": true, "decision": true, "review": true, "reminder": true,
-		"deadline": true, "prep": true, "message": true, "directive": true,
+	// Derive validTypes from the embedded create.json declaration — kills the
+	// hardcoded vocabulary duplicate (cascade from ready-a92 design ruling).
+	typeValues, err := declarations.ArgEnumValues("create", "type")
+	if err != nil {
+		return fmt.Errorf("loading type enum from create declaration: %w", err)
 	}
+	validTypes := make(map[string]bool, len(typeValues))
+	for _, v := range typeValues {
+		validTypes[v] = true
+	}
+	validTypesSlice := typeValues // kept for error messages
+
 	validLevels := map[string]bool{"epic": true, "task": true, "subtask": true, "": true}
 	validPriorities := map[string]bool{"p0": true, "p1": true, "p2": true, "p3": true}
 
@@ -104,13 +128,23 @@ func (t *PlaybookTemplate) Validate() error {
 			return fmt.Errorf("item[%d]: title is required", i)
 		}
 		if !validTypes[item.Type] {
-			return fmt.Errorf("item[%d]: invalid type %q: must be one of task, decision, review, reminder, deadline, prep, message, directive", i, item.Type)
+			return fmt.Errorf("item[%d]: invalid type %q: must be one of %s", i, item.Type, strings.Join(validTypesSlice, ", "))
 		}
 		if !validLevels[item.Level] {
 			return fmt.Errorf("item[%d]: invalid level %q: must be one of epic, task, subtask", i, item.Level)
 		}
 		if !validPriorities[item.Priority] {
 			return fmt.Errorf("item[%d]: invalid priority %q: must be one of p0, p1, p2, p3", i, item.Priority)
+		}
+		// Label validation: per-atom pattern check + max 8 per item.
+		// Registry membership is NOT checked here — enforce at derive time (pkg/state).
+		if len(item.Labels) > maxLabelsPerItem {
+			return fmt.Errorf("item[%d]: too many labels (%d); max is %d", i, len(item.Labels), maxLabelsPerItem)
+		}
+		for _, atom := range item.Labels {
+			if !labelAtomPattern.MatchString(atom) {
+				return fmt.Errorf("item[%d]: invalid label %q: must match ^[a-z0-9][a-z0-9-]{0,31}$", i, atom)
+			}
 		}
 		for _, dep := range item.Deps {
 			if dep < 0 || dep >= len(t.Items) {

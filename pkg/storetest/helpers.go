@@ -422,6 +422,63 @@ func (h *Harness) RoleGrant(pubkey, role string) string {
 	return h.addMessage("work:role-grant", payload, nil)
 }
 
+// AddLabel sends a work:label-add message for the given item ID and label.
+// itemID is the work item's ID string (e.g. "ready-94a"), not a message ID.
+func (h *Harness) AddLabel(itemID, label string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"id":    itemID,
+		"label": label,
+	}
+	return h.addMessage("work:label-add", payload, nil)
+}
+
+// RemoveLabel sends a work:label-remove message for the given item ID and label.
+// itemID is the work item's ID string (e.g. "ready-94a"), not a message ID.
+func (h *Harness) RemoveLabel(itemID, label string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"id":    itemID,
+		"label": label,
+	}
+	return h.addMessage("work:label-remove", payload, nil)
+}
+
+// RawAddLabel injects a work:label-add message directly into the store, bypassing
+// the convention executor. Used to test derive-time enforcement for labels that
+// the write-side gate never validated (bypass path).
+// itemID is the work item's ID string.
+func (h *Harness) RawAddLabel(itemID, label string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"id":    itemID,
+		"label": label,
+	}
+	return h.addMessage("work:label-add", payload, nil)
+}
+
+// RawAddLabelByItemID injects a work:label-add message targeting an item by its
+// item ID string. Used to test nonexistent item paths.
+func (h *Harness) RawAddLabelByItemID(itemID, label string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"id":    itemID,
+		"label": label,
+	}
+	return h.addMessage("work:label-add", payload, nil)
+}
+
+// RawRemoveLabelByItemID injects a work:label-remove message targeting an item by
+// its item ID string. Used to test nonexistent item paths.
+func (h *Harness) RawRemoveLabelByItemID(itemID, label string) string {
+	h.t.Helper()
+	payload := map[string]interface{}{
+		"id":    itemID,
+		"label": label,
+	}
+	return h.addMessage("work:label-remove", payload, nil)
+}
+
 // LabelDefine sends a work:label-define message.
 // desc may be empty.
 func (h *Harness) LabelDefine(label, desc string) string {

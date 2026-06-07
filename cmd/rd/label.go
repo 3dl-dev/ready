@@ -28,7 +28,9 @@ can define additional labels.
 
 Commands:
   rd label define <name> [--description "..."]   Define a new label
-  rd label list                                   List the registry`,
+  rd label list                                   List the registry
+  rd label add <item-id> <label>                  Add a label to an existing item
+  rd label remove <item-id> <label>               Remove a label from an existing item`,
 }
 
 var labelDefineCmd = &cobra.Command{
@@ -131,8 +133,8 @@ Example:
 
 		// Sort labels for stable output: seeds first (alphabetical), then user-defined (by name).
 		type labelEntry struct {
-			name      string
-			def       state.LabelDef
+			name string
+			def  state.LabelDef
 		}
 		var seeds, userDefined []labelEntry
 		for name, def := range registry {
@@ -325,11 +327,120 @@ func countLabelDemand(label string) int {
 	return count
 }
 
+var labelAddCmd = &cobra.Command{
+	Use:   "add <item-id> <label>",
+	Short: "Add a label to an existing item",
+	Long: `Add a label to an existing work item.
+
+The label must be registered in the campfire label registry (see rd label list).
+Any member can add labels to items — only DEFINING new label atoms is grant-gated.
+
+Example:
+  rd label add ready-94a bug
+  rd label add ready-94a blog-candidate`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		itemID := args[0]
+		label := args[1]
+
+		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
+			exec, _, err := requireExecutor()
+			if err != nil {
+				return err
+			}
+			decl, err := loadDeclaration("label-add")
+			if err != nil {
+				return err
+			}
+
+			argsMap := map[string]any{
+				"id":    itemID,
+				"label": label,
+			}
+
+			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
+			if err != nil {
+				return err
+			}
+
+			if jsonOutput {
+				out := map[string]interface{}{
+					"item_id":     itemID,
+					"label":       label,
+					"msg_id":      msg.ID,
+					"campfire_id": campfireID,
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			fmt.Printf("label %q added to %s\n", label, itemID)
+			return nil
+		})
+	},
+}
+
+var labelRemoveCmd = &cobra.Command{
+	Use:   "remove <item-id> <label>",
+	Short: "Remove a label from an existing item",
+	Long: `Remove a label from an existing work item.
+
+Removing a label that is not present is idempotent — no error is returned.
+
+Example:
+  rd label remove ready-94a bug
+  rd label remove ready-94a blog-candidate`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		itemID := args[0]
+		label := args[1]
+
+		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
+			exec, _, err := requireExecutor()
+			if err != nil {
+				return err
+			}
+			decl, err := loadDeclaration("label-remove")
+			if err != nil {
+				return err
+			}
+
+			argsMap := map[string]any{
+				"id":    itemID,
+				"label": label,
+			}
+
+			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
+			if err != nil {
+				return err
+			}
+
+			if jsonOutput {
+				out := map[string]interface{}{
+					"item_id":     itemID,
+					"label":       label,
+					"msg_id":      msg.ID,
+					"campfire_id": campfireID,
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			fmt.Printf("label %q removed from %s\n", label, itemID)
+			return nil
+		})
+	},
+}
+
 func init() {
 	labelDefineCmd.Flags().String("description", "", "human-readable description of the label")
 	labelCmd.AddCommand(labelDefineCmd)
 	labelCmd.AddCommand(labelListCmd)
 	labelProposeCmd.Flags().String("reason", "", "reason for proposing this label")
 	labelCmd.AddCommand(labelProposeCmd)
+	labelCmd.AddCommand(labelAddCmd)
+	labelCmd.AddCommand(labelRemoveCmd)
 	rootCmd.AddCommand(labelCmd)
 }

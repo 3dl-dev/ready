@@ -22,6 +22,10 @@ type ExpandedItem struct {
 	Priority string
 	// Context with variables substituted.
 	Context string
+	// Labels are the label atoms to attach to this item.
+	// These are the raw template labels — registry membership is enforced at
+	// derive time (pkg/state). Engage emits UX warnings for absent atoms.
+	Labels []string
 	// TemplateIndex is the 0-based index in the template items array.
 	TemplateIndex int
 	// Deps are the IDs of items that must complete before this one.
@@ -66,6 +70,7 @@ func Expand(t *PlaybookTemplate, project string, variables map[string]string) ([
 			Level:         item.Level,
 			Priority:      item.Priority,
 			Context:       substitute(item.Context, variables),
+			Labels:        item.Labels,
 			TemplateIndex: i,
 			Deps:          deps,
 		}
