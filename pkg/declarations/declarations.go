@@ -54,6 +54,9 @@ var opsFS embed.FS
 //go:embed seed_labels.json
 var seedLabelsData []byte
 
+//go:embed aliases.json
+var aliasesData []byte
+
 // SeedLabel is a label atom that is implicitly defined in every campfire.
 type SeedLabel struct {
 	Name        string `json:"name"`
@@ -67,6 +70,26 @@ func LoadSeedLabels() ([]SeedLabel, error) {
 		return nil, fmt.Errorf("parsing seed_labels.json: %w", err)
 	}
 	return labels, nil
+}
+
+// TypeAlias describes how a type alias is rewritten: canonical type + labels to append.
+type TypeAlias struct {
+	Type   string   `json:"type"`
+	Labels []string `json:"labels"`
+}
+
+// aliasFile is the shape of aliases.json.
+type aliasFile struct {
+	TypeAliases map[string]TypeAlias `json:"type_aliases"`
+}
+
+// LoadTypeAliases returns the map of type-alias name → TypeAlias from the embedded aliases.json.
+func LoadTypeAliases() (map[string]TypeAlias, error) {
+	var af aliasFile
+	if err := json.Unmarshal(aliasesData, &af); err != nil {
+		return nil, fmt.Errorf("parsing aliases.json: %w", err)
+	}
+	return af.TypeAliases, nil
 }
 
 // All returns all convention:operation declaration payloads as raw JSON.

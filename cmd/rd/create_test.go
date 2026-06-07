@@ -445,29 +445,33 @@ func TestCreate_PositionalTitle(t *testing.T) {
 // TestCreate_DescriptionFlag_HelpfulError verifies that --description on rd create
 // returns a helpful error directing agents to use --context or rd update, not a
 // generic "unknown flag". Agents familiar with bd use --description; Ready uses 'context'.
+//
+// This test exercises the real createCmd.RunE (not a standalone mirror) so that
+// the regression-protection covers the actual create.go check (ready-155 fix).
 func TestCreate_DescriptionFlag_HelpfulError(t *testing.T) {
-	// Build a minimal cobra command that mirrors the --description check in createCmd.RunE.
-	// We use a standalone command to avoid needing a live store.
-	cmd := &cobra.Command{
-		Use:  "create",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if desc, _ := cmd.Flags().GetString("description"); desc != "" {
-				return fmt.Errorf("--description is not a flag on rd create. The field is called 'context' in Ready. Use --context-file <path> or set context after creation with rd update")
-			}
-			return nil
-		},
+	// Set --description on the real createCmd so RunE can read it.
+	if err := createCmd.Flags().Set("description", "my task description"); err != nil {
+		t.Fatalf("setting --description flag: %v", err)
 	}
-	cmd.Flags().String("description", "", "")
-	_ = cmd.Flags().MarkHidden("description")
+	defer func() {
+		_ = createCmd.Flags().Set("description", "")
+	}()
 
-	cmd.SetArgs([]string{"--description", "my task description"})
-	err := cmd.Execute()
+	// Execute the real RunE — must fail on --description before reaching store.
+	err := createCmd.RunE(createCmd, []string{"Test item"})
 	if err == nil {
 		t.Fatal("expected error when --description is used on rd create, got nil")
 	}
-	if !strings.Contains(err.Error(), "context") {
-		t.Errorf("expected error to mention 'context', got: %q", err.Error())
+
+	// Must mention --context (the correct flag name).
+	if !strings.Contains(err.Error(), "--context") {
+		t.Errorf("expected error to mention '--context', got: %q", err.Error())
 	}
+	// Must NOT mention --context-file (stale wording corrected in ready-155).
+	if strings.Contains(err.Error(), "--context-file") {
+		t.Errorf("error must NOT mention '--context-file' (stale message); got: %q", err.Error())
+	}
+	// Must mention rd update (the alternative path for adding context).
 	if !strings.Contains(err.Error(), "rd update") {
 		t.Errorf("expected error to mention 'rd update', got: %q", err.Error())
 	}

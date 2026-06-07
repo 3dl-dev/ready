@@ -13,6 +13,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -131,10 +132,16 @@ Note: use --context for descriptions, not --description.`,
 			return fmt.Errorf("--priority is required")
 		}
 
+		// Alias rewrite: runs BEFORE enum validation so aliased types (e.g. "bug")
+		// are rewritten to canonical values (e.g. "task" + label "bug") before the
+		// declaration enum check sees them.
+		// Call sequence: parse flags → [alias rewrite] → ValidateEnumFlags → withAgentAndStore.
+		if _, err := rewriteTypeAlias(&itemType, &labelSlice); err != nil {
+			return err
+		}
+
 		// Declaration-derived enum validation — runs BEFORE any store open or
-		// JSONL write. The alias rewrite hook (ready-b0c) should run before
-		// this call (between the required-field checks above and this block).
-		// Call sequence: parse flags → alias rewrite → ValidateEnumFlags → withAgentAndStore.
+		// JSONL write. Alias rewrite has already normalized the type above.
 		{
 			decl, err := loadDeclaration("create")
 			if err != nil {
@@ -175,6 +182,28 @@ Note: use --context for descriptions, not --description.`,
 				forParty = agentID.PublicKeyHex()
 			} else if forParty == "" {
 				return fmt.Errorf("--for: value cannot be empty")
+			}
+
+			// Client-side label validation against the registry (when labels are provided).
+			// Registry is derived from the campfire store or JSONL; falls back gracefully
+			// when unavailable (fresh checkout, offline) per spec: never hard-fail on missing registry.
+			if len(labelSlice) > 0 {
+				var registry map[string]state.LabelDef
+				campfireID, _, hasCampfire := projectRoot()
+				if hasCampfire && campfireID != "" {
+					if result, err := state.DeriveAllFromStore(s, campfireID); err == nil {
+						registry = result.LabelRegistry()
+					}
+				} else if path := jsonlPath(); path != "" {
+					// JSONL-only mode: load registry from mutations file.
+					campfireID, _, _ := projectRoot()
+					if result, err := state.DeriveAllFromJSONL(path, campfireID); err == nil {
+						registry = result.LabelRegistry()
+					}
+				}
+				if err := validateLabelsAgainstRegistry(labelSlice, registry, agentID.PublicKeyHex()); err != nil {
+					return err
+				}
 			}
 
 			// Load existing IDs for collision detection.
