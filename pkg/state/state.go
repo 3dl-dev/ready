@@ -54,6 +54,10 @@ type LabelDef struct {
 type DeriveResult struct {
 	items    map[string]*Item
 	registry map[string]LabelDef
+	// warnings holds advisory messages that could not be attached to a specific item
+	// (e.g., label-add/remove targeting a nonexistent item ID — signals deleted item,
+	// typo, or race in a distributed log).
+	warnings []string
 }
 
 // Items returns the derived work item map (item ID → *Item).
@@ -65,6 +69,12 @@ func (r *DeriveResult) Items() map[string]*Item {
 // The registry includes seed atoms plus any user-defined atoms from work:label-define messages.
 func (r *DeriveResult) LabelRegistry() map[string]LabelDef {
 	return r.registry
+}
+
+// Warnings returns advisory messages recorded during derivation that could not be
+// attached to a specific item (e.g., label-add/remove targeting a nonexistent item ID).
+func (r *DeriveResult) Warnings() []string {
+	return r.warnings
 }
 
 // TerminalStatuses is the set of statuses where an item is no longer active.
@@ -540,6 +550,10 @@ type replayState struct {
 
 	// gateMsgIndex maps a gate message ID → item ID, used by work:gate-resolve.
 	gateMsgIndex map[string]string
+
+	// warnings accumulates advisory messages that cannot be attached to a specific item
+	// (e.g., label-add/remove targeting a nonexistent item ID).
+	warnings []string
 }
 
 // blockEdge records a single blocker→blocked dependency.
@@ -606,6 +620,10 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 			handleWorkGate(m, rs)
 		case hasTag(m.Tags, "work:gate-resolve"):
 			handleWorkGateResolve(msgs, m, rs, roleMap)
+		case hasTag(m.Tags, "work:label-add"):
+			handleWorkLabelAdd(m, rs, registry)
+		case hasTag(m.Tags, "work:label-remove"):
+			handleWorkLabelRemove(m, rs, registry)
 		}
 	}
 
@@ -615,6 +633,7 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 	return &DeriveResult{
 		items:    rs.items,
 		registry: registry,
+		warnings: rs.warnings,
 	}
 }
 
@@ -785,6 +804,73 @@ func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState,
 	})
 	rs.items[p.ID] = item
 	rs.msgIndex[m.ID] = p.ID
+}
+
+// labelMutPayload mirrors the fields in a work:label-add or work:label-remove payload.
+type labelMutPayload struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// handleWorkLabelAdd processes a work:label-add message, adding the label to the item
+// identified by payload.ID (the item ID). Enforcement is identical to handleWorkCreate:
+// pattern-invalid and unregistered labels are dropped with a warning.
+func handleWorkLabelAdd(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+	var p labelMutPayload
+	if err := json.Unmarshal(m.Payload, &p); err != nil {
+		return
+	}
+	if p.ID == "" || p.Label == "" {
+		return
+	}
+	item, ok := rs.items[p.ID]
+	if !ok {
+		// Nonexistent item: record a warning for observability (signals deleted item,
+		// typo, or race in a distributed log). No phantom item is created.
+		rs.warnings = append(rs.warnings,
+			fmt.Sprintf("label-add targeting nonexistent item %q ignored", p.ID))
+		return
+	}
+	// Enforce the same pattern + registry gate as handleWorkCreate.
+	if !labelAtomPattern.MatchString(p.Label) {
+		item.LabelWarnings = append(item.LabelWarnings,
+			fmt.Sprintf("label %q dropped: fails pattern validation", p.Label))
+		return
+	}
+	if _, inRegistry := registry[p.Label]; !inRegistry {
+		item.LabelWarnings = append(item.LabelWarnings,
+			fmt.Sprintf("label %q dropped: not in label registry", p.Label))
+		return
+	}
+	item.Labels = appendUnique(item.Labels, p.Label)
+}
+
+// handleWorkLabelRemove processes a work:label-remove message, removing the label
+// from the item identified by payload.ID. Removing a label not present is idempotent.
+func handleWorkLabelRemove(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+	var p labelMutPayload
+	if err := json.Unmarshal(m.Payload, &p); err != nil {
+		return
+	}
+	if p.ID == "" || p.Label == "" {
+		return
+	}
+	item, ok := rs.items[p.ID]
+	if !ok {
+		// Nonexistent item: record a warning for observability (signals deleted item,
+		// typo, or race in a distributed log). No phantom item is created.
+		rs.warnings = append(rs.warnings,
+			fmt.Sprintf("label-remove targeting nonexistent item %q ignored", p.ID))
+		return
+	}
+	// Remove the label if present; no-op if absent.
+	var filtered []string
+	for _, l := range item.Labels {
+		if l != p.Label {
+			filtered = append(filtered, l)
+		}
+	}
+	item.Labels = filtered
 }
 
 // handleWorkStatus processes a work:status message, updating item status and waiting fields.
