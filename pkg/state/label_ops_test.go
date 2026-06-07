@@ -220,14 +220,16 @@ func TestLabelOps_Add_MalformedLabel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Nonexistent item ID: no panic, no phantom item.
+// Nonexistent item ID: warning recorded, no panic, no phantom item.
 // ---------------------------------------------------------------------------
 
 // TestLabelOps_Add_NonexistentItemID verifies that label-add for a nonexistent item
-// ID produces no panic and no phantom item in derived state.
+// ID records a warning in DeriveResult.Warnings(), produces no panic, and creates no
+// phantom item. The test is mutation-sensitive: removing the warning emission from
+// handleWorkLabelAdd causes this test to fail on the warning assertions.
 func TestLabelOps_Add_NonexistentItemID(t *testing.T) {
 	h := storetest.New(t)
-	// Inject label-add referencing a msg that doesn't exist in the log
+	// Inject label-add referencing an item ID that does not exist in the log.
 	h.RawAddLabelByItemID("nonexistent-item-id", "bug")
 
 	result := h.DeriveAll()
@@ -237,11 +239,28 @@ func TestLabelOps_Add_NonexistentItemID(t *testing.T) {
 	if _, ok := items["nonexistent-item-id"]; ok {
 		t.Error("phantom item 'nonexistent-item-id' must not be created by label-add")
 	}
-	// No panics — the test reaching this line proves that.
+
+	// A warning must be recorded — observability for deleted item / typo / race.
+	warnings := result.Warnings()
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning for label-add targeting nonexistent item, got none")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "nonexistent-item-id") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("warning should mention 'nonexistent-item-id', got: %v", warnings)
+	}
 }
 
 // TestLabelOps_Remove_NonexistentItemID verifies that label-remove for a nonexistent
-// item ID produces no panic and no phantom item.
+// item ID records a warning in DeriveResult.Warnings(), produces no panic, and creates
+// no phantom item. Symmetric to the add case; the warning emission in
+// handleWorkLabelRemove must be present for this test to pass.
 func TestLabelOps_Remove_NonexistentItemID(t *testing.T) {
 	h := storetest.New(t)
 	h.RawRemoveLabelByItemID("nonexistent-item-id", "bug")
@@ -251,6 +270,22 @@ func TestLabelOps_Remove_NonexistentItemID(t *testing.T) {
 
 	if _, ok := items["nonexistent-item-id"]; ok {
 		t.Error("phantom item 'nonexistent-item-id' must not be created by label-remove")
+	}
+
+	// A warning must be recorded.
+	warnings := result.Warnings()
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning for label-remove targeting nonexistent item, got none")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "nonexistent-item-id") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("warning should mention 'nonexistent-item-id', got: %v", warnings)
 	}
 }
 

@@ -54,6 +54,10 @@ type LabelDef struct {
 type DeriveResult struct {
 	items    map[string]*Item
 	registry map[string]LabelDef
+	// warnings holds advisory messages that could not be attached to a specific item
+	// (e.g., label-add/remove targeting a nonexistent item ID — signals deleted item,
+	// typo, or race in a distributed log).
+	warnings []string
 }
 
 // Items returns the derived work item map (item ID → *Item).
@@ -65,6 +69,12 @@ func (r *DeriveResult) Items() map[string]*Item {
 // The registry includes seed atoms plus any user-defined atoms from work:label-define messages.
 func (r *DeriveResult) LabelRegistry() map[string]LabelDef {
 	return r.registry
+}
+
+// Warnings returns advisory messages recorded during derivation that could not be
+// attached to a specific item (e.g., label-add/remove targeting a nonexistent item ID).
+func (r *DeriveResult) Warnings() []string {
+	return r.warnings
 }
 
 // TerminalStatuses is the set of statuses where an item is no longer active.
@@ -540,6 +550,10 @@ type replayState struct {
 
 	// gateMsgIndex maps a gate message ID → item ID, used by work:gate-resolve.
 	gateMsgIndex map[string]string
+
+	// warnings accumulates advisory messages that cannot be attached to a specific item
+	// (e.g., label-add/remove targeting a nonexistent item ID).
+	warnings []string
 }
 
 // blockEdge records a single blocker→blocked dependency.
@@ -619,6 +633,7 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 	return &DeriveResult{
 		items:    rs.items,
 		registry: registry,
+		warnings: rs.warnings,
 	}
 }
 
@@ -810,7 +825,10 @@ func handleWorkLabelAdd(m store.MessageRecord, rs *replayState, registry map[str
 	}
 	item, ok := rs.items[p.ID]
 	if !ok {
-		// Nonexistent item: silently ignore, no phantom item created.
+		// Nonexistent item: record a warning for observability (signals deleted item,
+		// typo, or race in a distributed log). No phantom item is created.
+		rs.warnings = append(rs.warnings,
+			fmt.Sprintf("label-add targeting nonexistent item %q ignored", p.ID))
 		return
 	}
 	// Enforce the same pattern + registry gate as handleWorkCreate.
@@ -839,7 +857,10 @@ func handleWorkLabelRemove(m store.MessageRecord, rs *replayState, registry map[
 	}
 	item, ok := rs.items[p.ID]
 	if !ok {
-		// Nonexistent item: silently ignore, no phantom item created.
+		// Nonexistent item: record a warning for observability (signals deleted item,
+		// typo, or race in a distributed log). No phantom item is created.
+		rs.warnings = append(rs.warnings,
+			fmt.Sprintf("label-remove targeting nonexistent item %q ignored", p.ID))
 		return
 	}
 	// Remove the label if present; no-op if absent.
