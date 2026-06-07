@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -15,6 +16,29 @@ import (
 
 	"github.com/campfire-net/ready/pkg/state"
 )
+
+// sanitizeForTerminal replaces control characters (0x00–0x1f and 0x7f) with '?'
+// before writing to the terminal. This prevents ANSI injection, cursor manipulation,
+// CR overwrite, and prompt injection from user-controlled strings rendered in the
+// text output path. The render gate is independent of the write-side pattern
+// (bypassable via raw-flush) — trusted-vocabulary read contract.
+func sanitizeForTerminal(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool {
+		return r <= 0x1f || r == 0x7f
+	}) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r <= 0x1f || r == 0x7f {
+			b.WriteByte('?')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 var labelCmd = &cobra.Command{
 	Use:   "label",
@@ -183,7 +207,10 @@ Example:
 			if e.def.DefinedAt != 0 {
 				definedAt = time.Unix(0, e.def.DefinedAt).UTC().Format(time.RFC3339)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.def.Name, e.def.Description, definedBy, definedAt)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+				sanitizeForTerminal(e.def.Name),
+				sanitizeForTerminal(e.def.Description),
+				definedBy, definedAt)
 		}
 		return w.Flush()
 	},
