@@ -9,6 +9,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/playbook"
+	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 
@@ -70,6 +71,15 @@ Example:
 				return fmt.Errorf("expanding playbook: %w", err)
 			}
 
+			// Load the label registry for UX-level warning on absent labels.
+			// Derive is the enforcement gate; this is best-effort UX only.
+			var labelRegistry map[string]state.LabelDef
+			if cfID, _, ok := projectRoot(); ok && cfID != "" {
+				if dr, drErr := state.DeriveAllFromStore(s, cfID); drErr == nil {
+					labelRegistry = dr.LabelRegistry()
+				}
+			}
+
 			createDecl, err := loadDeclaration("create")
 			if err != nil {
 				return err
@@ -93,6 +103,18 @@ Example:
 				}
 				if item.Level != "" {
 					argsMap["level"] = item.Level
+				}
+				if len(item.Labels) > 0 {
+					// Warn about labels not present in the target campfire registry.
+					// Derive will drop them — this surface makes it visible at engage time.
+					if labelRegistry != nil {
+						for _, atom := range item.Labels {
+							if _, inReg := labelRegistry[atom]; !inReg {
+								fmt.Fprintf(os.Stderr, "warning: label %q on item %s is not in the target campfire registry; it will be dropped at derive time\n", atom, item.ID)
+							}
+						}
+					}
+					argsMap["labels"] = strings.Join(item.Labels, ",")
 				}
 
 				msg, _, err := executeConventionOp(agentID, s, exec, createDecl, argsMap)
