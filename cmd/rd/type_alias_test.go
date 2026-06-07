@@ -19,6 +19,7 @@ import (
 
 	"github.com/campfire-net/ready/pkg/declarations"
 	"github.com/campfire-net/ready/pkg/state"
+	"github.com/spf13/pflag"
 )
 
 // ---------------------------------------------------------------------------
@@ -393,6 +394,140 @@ func TestValidateEnumFlags_Priority_NoAliasNote(t *testing.T) {
 	// But the error must still list valid priorities.
 	if !strings.Contains(errMsg, "priority") {
 		t.Errorf("error should mention 'priority', got: %q", errMsg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end: createCmd.RunE with --label not-in-registry
+// Veracity gap fix (ready-b0c): demand logged + rejection fires + no mutation write.
+// ---------------------------------------------------------------------------
+
+// TestCreate_UnknownLabel_E2E_ExitDemandNoWrite is the end-to-end integration test
+// for the unknown-label rejection path. It runs the real createCmd.RunE (not a
+// standalone function call) and asserts ALL THREE of the veracity invariants:
+//
+//  1. Non-zero/error return — rejection was signalled to the caller.
+//  2. .ready/label-demand.jsonl was written with a record for the unknown atom.
+//  3. .ready/mutations.jsonl and .ready/pending.jsonl do NOT exist — the
+//     rejection happened before any campfire mutation was written.
+//
+// Setup:
+//   - isolateTempDir: cwd → temp dir; readyProjectDir() resolves here.
+//   - .ready/ created: readyProjectDir finds it; jsonlPath() returns a path.
+//   - No .campfire/root: hasCampfire == false → JSONL code path in create.go.
+//   - rdHome → fresh cfHome: requireClient() auto-generates identity so
+//     withAgentAndStore can load it; protocolClient is reset for test isolation.
+//   - mutations.jsonl absent: DeriveAllFromJSONL returns seed-label registry
+//     (non-nil, doesn't contain "notinregistry" → validation fires).
+func TestCreate_UnknownLabel_E2E_ExitDemandNoWrite(t *testing.T) {
+	// --- Environment isolation ---
+	projectDir := isolateTempDir(t)
+	readyDir := filepath.Join(projectDir, ".ready")
+	if err := os.MkdirAll(readyDir, 0755); err != nil {
+		t.Fatalf("MkdirAll .ready: %v", err)
+	}
+
+	// Observed paths (must not exist after rejection).
+	mutationsJSONL := filepath.Join(readyDir, "mutations.jsonl")
+	pendingJSONL := filepath.Join(readyDir, "pending.jsonl")
+	demandJSONL := filepath.Join(readyDir, "label-demand.jsonl")
+
+	// Confirm none of these exist pre-test.
+	for _, f := range []string{mutationsJSONL, pendingJSONL, demandJSONL} {
+		if _, err := os.Stat(f); err == nil {
+			t.Fatalf("unexpected pre-existing file: %s", f)
+		}
+	}
+
+	// --- Identity: set rdHome to a fresh temp dir; requireClient auto-generates ---
+	cfHome := t.TempDir()
+	origRDHome := rdHome
+	rdHome = cfHome
+	t.Cleanup(func() { rdHome = origRDHome })
+
+	origClient := protocolClient
+	protocolClient = nil
+	t.Cleanup(func() {
+		if protocolClient != nil {
+			protocolClient.Close()
+		}
+		protocolClient = origClient
+	})
+
+	if _, err := requireClient(); err != nil {
+		t.Fatalf("requireClient (identity setup): %v", err)
+	}
+
+	// --- Flag setup ---
+	if err := createCmd.Flags().Set("type", "task"); err != nil {
+		t.Fatalf("Set --type: %v", err)
+	}
+	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
+		t.Fatalf("Set --priority: %v", err)
+	}
+	if err := createCmd.Flags().Set("label", "notinregistry"); err != nil {
+		t.Fatalf("Set --label: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = createCmd.Flags().Set("type", "")
+		_ = createCmd.Flags().Set("priority", "")
+		// Reset StringArray flag to empty slice via SliceValue interface.
+		if sv, ok := createCmd.Flags().Lookup("label").Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil)
+		}
+	})
+
+	// --- Run the real command entry point ---
+	runErr := createCmd.RunE(createCmd, []string{"Test unknown label"})
+
+	// (1) Must return an error.
+	if runErr == nil {
+		t.Fatal("createCmd.RunE: expected error for --label notinregistry, got nil")
+	}
+
+	// The error must be the label-registry rejection, not an identity/store error —
+	// proving it fires inside withAgentAndStore after identity is loaded but before
+	// any convention op (write) is executed.
+	errMsg := runErr.Error()
+	if !strings.Contains(errMsg, "notinregistry") {
+		t.Errorf("error should name the unknown label 'notinregistry', got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "rd label propose") {
+		t.Errorf("error should suggest 'rd label propose', got: %q", errMsg)
+	}
+
+	// (2) label-demand.jsonl must exist and contain a record for "notinregistry".
+	if _, err := os.Stat(demandJSONL); err != nil {
+		t.Fatalf("label-demand.jsonl must exist after unknown-label rejection, got: %v", err)
+	}
+	f, err := os.Open(demandJSONL)
+	if err != nil {
+		t.Fatalf("opening label-demand.jsonl: %v", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	var demandFound bool
+	for dec.More() {
+		var rec struct {
+			Label string `json:"label"`
+		}
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatalf("decoding demand record: %v", err)
+		}
+		if rec.Label == "notinregistry" {
+			demandFound = true
+		}
+	}
+	if !demandFound {
+		t.Error("label-demand.jsonl must contain a record for 'notinregistry'")
+	}
+
+	// (3) mutations.jsonl and pending.jsonl must NOT exist — rejection happened
+	// before any campfire convention op was executed.
+	for _, f := range []string{mutationsJSONL, pendingJSONL} {
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("%s must NOT exist after label-registry rejection, but it does", f)
+		}
 	}
 }
 
