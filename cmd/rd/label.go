@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -131,22 +134,7 @@ Example:
 
 		registry := result.LabelRegistry()
 
-		// Sort labels for stable output: seeds first (alphabetical), then user-defined (by name).
-		type labelEntry struct {
-			name string
-			def  state.LabelDef
-		}
-		var seeds, userDefined []labelEntry
-		for name, def := range registry {
-			if def.DefinedBy == "seed" {
-				seeds = append(seeds, labelEntry{name, def})
-			} else {
-				userDefined = append(userDefined, labelEntry{name, def})
-			}
-		}
-		sort.Slice(seeds, func(i, j int) bool { return seeds[i].name < seeds[j].name })
-		sort.Slice(userDefined, func(i, j int) bool { return userDefined[i].name < userDefined[j].name })
-		entries := append(seeds, userDefined...)
+		entries := sortedLabelEntries(registry)
 
 		if jsonOutput {
 			type jsonLabel struct {
@@ -172,21 +160,86 @@ Example:
 			return enc.Encode(out)
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tDESCRIPTION\tDEFINED-BY\tDEFINED-AT")
-		for _, e := range entries {
-			definedBy := e.def.DefinedBy
-			if definedBy != "seed" {
-				definedBy = truncateID(definedBy, 12)
-			}
-			definedAt := ""
-			if e.def.DefinedAt != 0 {
-				definedAt = time.Unix(0, e.def.DefinedAt).UTC().Format(time.RFC3339)
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.def.Name, e.def.Description, definedBy, definedAt)
-		}
-		return w.Flush()
+		return renderLabelTable(os.Stdout, entries)
 	},
+}
+
+// labelEntry pairs a registry name with its definition for stable rendering.
+type labelEntry struct {
+	name string
+	def  state.LabelDef
+}
+
+// sortedLabelEntries returns registry entries in stable display order: seed
+// atoms first (alphabetical), then user-defined atoms (alphabetical).
+func sortedLabelEntries(registry map[string]state.LabelDef) []labelEntry {
+	var seeds, userDefined []labelEntry
+	for name, def := range registry {
+		if def.DefinedBy == "seed" {
+			seeds = append(seeds, labelEntry{name, def})
+		} else {
+			userDefined = append(userDefined, labelEntry{name, def})
+		}
+	}
+	sort.Slice(seeds, func(i, j int) bool { return seeds[i].name < seeds[j].name })
+	sort.Slice(userDefined, func(i, j int) bool { return userDefined[i].name < userDefined[j].name })
+	return append(seeds, userDefined...)
+}
+
+// renderLabelTable writes the human-readable registry table to w. Each
+// description is run through sanitizeLabelText before printing.
+func renderLabelTable(w io.Writer, entries []labelEntry) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tDESCRIPTION\tDEFINED-BY\tDEFINED-AT")
+	for _, e := range entries {
+		definedBy := e.def.DefinedBy
+		if definedBy != "seed" {
+			definedBy = truncateID(definedBy, 12)
+		}
+		definedAt := ""
+		if e.def.DefinedAt != 0 {
+			definedAt = time.Unix(0, e.def.DefinedAt).UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.def.Name, sanitizeLabelText(e.def.Description), definedBy, definedAt)
+	}
+	return tw.Flush()
+}
+
+// sanitizeLabelText neutralizes terminal control sequences in registry-derived
+// free-form text before it is printed. Label NAMES are pattern-constrained at
+// the write gate and at derive (I2), so they render raw safely — but the label
+// DESCRIPTION is free-form. The write-side pattern in label_define.json rejects
+// control characters, yet that gate can be bypassed by a raw campfire flush
+// (ready-1c2 / buildLabelRegistry admits any work:label-define without re-checking
+// provenance), so the read path MUST also be safe: this is the trusted-vocabulary
+// read contract. Any non-printable rune is replaced with an escaped \xNN/\uNNNN
+// form so an embedded ANSI/ESC payload cannot hijack the terminal or inject
+// instructions into an agent reading `rd label list`.
+func sanitizeLabelText(s string) string {
+	hasNonPrintable := false
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			hasNonPrintable = true
+			break
+		}
+	}
+	if !hasNonPrintable {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+			continue
+		}
+		if r > 0xff {
+			fmt.Fprintf(&b, "\\u%04x", r)
+		} else {
+			fmt.Fprintf(&b, "\\x%02x", r)
+		}
+	}
+	return b.String()
 }
 
 // labelProposeCmd creates a p3 decision item requesting promotion of a new label
