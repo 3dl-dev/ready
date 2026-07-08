@@ -1,0 +1,36 @@
+==> building rd
+==> rd init --offline (JSONL-only project; no campfire needed)
+
+==> STEP 1: rd create with RD_NOSTR=1 -> publish 30302 card + 1630 status to the LIVE relay + local log
+==> created item: proj-6f8
+PASS published to relay + appended 3 signed events to the authoritative local log
+==> event kinds in the local log:
+          1 1630
+          1 30301
+          1 30302
+
+==> STEP 2: RELAY-OFFLINE read — reconstruct from the LOCAL LOG with the relay unreachable
+    id:       proj-6f8
+    title:    keystone round-trip
+    status:   inbox
+    priority: p1
+    type:     task
+PASS authority = LOCAL LOG: state reconstructed with the relay offline
+
+==> STEP 3: CLEAN-CACHE read — WIPE the local log, then reconcile the card+status FROM the live relay
+    id:       proj-6f8
+    title:    keystone round-trip
+    status:   inbox
+    priority: p1
+    type:     task
+    (reconciled: fetched=4 added=2 relay_errors=0)
+PASS relay = CACHE: wiped local log rebuilt from the relay; state matches
+
+PASS ALL ready-a13 ROUND-TRIP STEPS PASSED
+
+SUMMARY
+  item id:            proj-6f8
+  wire mapping:       project=30301 board, item=30302 card, status=s tag + NIP-34 1630
+  authoritative:      local append-only signed-event log (.ready/nostr-log.jsonl)
+  relay-offline read: PASS (state from local log)
+  clean-cache read:   PASS (state re-fetched from live relay into a fresh log)
