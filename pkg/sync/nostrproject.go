@@ -72,17 +72,26 @@ func (opts ProjectOptions) trusts(pubkey string) bool {
 // or forged line in the log cannot influence the projection. This is the
 // read-side trust gate mirroring pkg/state's derive-time enforcement.
 func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.Item {
-	type ranked struct {
-		ev  *nostr.Event
-		idx int
-	}
 	// Winning card per item, and the ordered list of authoritative status events.
-	winningCard := map[string]ranked{}
-	statusEvents := map[string][]ranked{}
-	// author of the winning card per item (for status-authority checks).
-	for idx, e := range events {
+	winningCard := map[string]*nostr.Event{}
+	statusEvents := map[string][]*nostr.Event{}
+	// DEDUP BY EVENT ID (ready-f92): re-ingesting the same signed event MUST be a
+	// no-op. The local log AppendUnique already dedups on the write side, but the
+	// projection is also fed by MergeFrom/reconcile unions and callers may pass an
+	// event set with repeats; without this guard a duplicated status event would be
+	// replayed twice and fabricate a phantom history entry (and a duplicated card
+	// would still win, harmlessly, but the loop would do redundant work). Projection
+	// is therefore idempotent on the event id: the FIRST occurrence of an id is
+	// authoritative, later copies of the identical id are skipped. Because the id is
+	// a content hash, two lines sharing an id are byte-identical, so "first wins" is
+	// order-independent — it does not reintroduce an append-order dependence.
+	seen := map[string]bool{}
+	for _, e := range events {
 		if e == nil {
 			continue
+		}
+		if seen[e.ID] {
+			continue // duplicate event id — already projected (idempotent)
 		}
 		if err := e.Verify(); err != nil {
 			continue // forged/tampered line — ignore
@@ -99,21 +108,22 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		if itemID == "" {
 			continue
 		}
+		seen[e.ID] = true
 		switch {
 		case e.Kind == KindCard:
 			cur, ok := winningCard[itemID]
-			if !ok || newerThan(e, idx, cur.ev, cur.idx) {
-				winningCard[itemID] = ranked{ev: e, idx: idx}
+			if !ok || newerThan(e, cur) {
+				winningCard[itemID] = e
 			}
 		case isStatusKind(e.Kind):
-			statusEvents[itemID] = append(statusEvents[itemID], ranked{ev: e, idx: idx})
+			statusEvents[itemID] = append(statusEvents[itemID], e)
 		}
 	}
 
 	out := make(map[string]*state.Item, len(winningCard))
 	for itemID, card := range winningCard {
-		author := card.ev.PubKey
-		item := itemFromCard(card.ev)
+		author := card.PubKey
+		item := itemFromCard(card)
 
 		// Status authority + FULL HISTORY REPLAY (ready-b5f): collect every status
 		// event authored by the item AUTHOR or a board MAINTAINER — not just the
@@ -124,35 +134,44 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		// (close-with-reason survives exactly as published). A non-authoritative
 		// (non-author/non-maintainer) status event is excluded entirely — it never
 		// contributes state OR history, matching the NIP-34 authority rule.
-		var authoritative []ranked
+		var authoritative []*nostr.Event
 		for _, s := range statusEvents[itemID] {
-			if s.ev.PubKey != author && !opts.Maintainers[s.ev.PubKey] {
+			if s.PubKey != author && !opts.Maintainers[s.PubKey] {
 				continue // not authoritative
 			}
 			authoritative = append(authoritative, s)
 		}
+		// DETERMINISTIC ORDERING (ready-f92): sort by (created_at asc, event-id asc)
+		// — NEVER by log-append index. created_at is second-granularity, so
+		// concurrent same-second transitions are ordered by event id (a content
+		// hash), a stable total order that is a pure function of the event SET. This
+		// is what makes replay CONVERGENT: the local log's append order, a relay
+		// reconcile's fetch order, and a cross-machine MergeFrom union all project
+		// the IDENTICAL history and current status, because none of them can change
+		// the (created_at, id) key of any event. The old append-index tie-break
+		// diverged whenever two machines held the same event set in different order.
 		sort.Slice(authoritative, func(i, j int) bool {
 			a, b := authoritative[i], authoritative[j]
-			if a.ev.CreatedAt != b.ev.CreatedAt {
-				return a.ev.CreatedAt < b.ev.CreatedAt
+			if a.CreatedAt != b.CreatedAt {
+				return a.CreatedAt < b.CreatedAt
 			}
-			return a.idx < b.idx
+			return a.ID < b.ID
 		})
 
 		prevStatus := ""
 		for _, s := range authoritative {
-			toStatus := tagValue(s.ev, "status")
+			toStatus := tagValue(s, "status")
 			if toStatus == "" {
 				toStatus = prevStatus
 			}
 			item.History = append(item.History, state.HistoryEntry{
-				Timestamp:  time.Unix(s.ev.CreatedAt, 0).UTC().Format(time.RFC3339),
+				Timestamp:  time.Unix(s.CreatedAt, 0).UTC().Format(time.RFC3339),
 				FromStatus: prevStatus,
 				ToStatus:   toStatus,
-				ChangedBy:  s.ev.PubKey,
-				Note:       s.ev.Content,
+				ChangedBy:  s.PubKey,
+				Note:       s.Content,
 			})
-			item.UpdatedAt = maxInt64(item.UpdatedAt, s.ev.CreatedAt*int64(time.Second))
+			item.UpdatedAt = maxInt64(item.UpdatedAt, s.CreatedAt*int64(time.Second))
 			prevStatus = toStatus
 		}
 		if len(authoritative) > 0 {
@@ -237,14 +256,23 @@ func appendUniqueStr(slice []string, val string) []string {
 	return append(slice, val)
 }
 
-// newerThan reports whether event a (at log index ai) is newer than event b (bi)
-// under the (created_at, log-index) ordering — created_at first (seconds), then
-// append order as the authoritative tiebreak.
-func newerThan(a *nostr.Event, ai int, b *nostr.Event, bi int) bool {
+// newerThan reports whether card event a should REPLACE the current winner b under
+// the deterministic latest-wins order (ready-f92). The primary key is created_at
+// (seconds). On a created_at TIE the NIP-01 replaceable-event rule applies: the
+// event with the LOWEST id (lexicographically first hex) is retained as canonical,
+// so a beats b on a tie iff a.ID < b.ID.
+//
+// This tie-break is a pure function of the two events — it does NOT depend on
+// log-append index, relay fetch order, or merge order — which is exactly why two
+// machines holding the identical event set project the identical winning card for
+// same-second competing edits (the convergence bug from ready-b6a/523). It also
+// matches strfry's own NIP-33 replaceable tie-break, so the relay's retained event
+// and the locally projected winner agree.
+func newerThan(a, b *nostr.Event) bool {
 	if a.CreatedAt != b.CreatedAt {
 		return a.CreatedAt > b.CreatedAt
 	}
-	return ai > bi
+	return a.ID < b.ID
 }
 
 // itemFromCard materializes a *state.Item from a 30302 card event's tags/content.

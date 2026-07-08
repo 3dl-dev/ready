@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/campfire-net/ready/pkg/jsonl"
 	"github.com/campfire-net/ready/pkg/nostr"
@@ -29,7 +30,34 @@ const (
 	// (offline). They are already durable in the log; this is only the relay
 	// publish retry queue.
 	NostrPendingFile = "nostr-pending.jsonl"
+
+	// MaxCreatedAtSkew bounds how far into the FUTURE an inbound (relay-reconciled,
+	// git-merged, or negentropy-synced) event's created_at may be relative to the
+	// admitting machine's wall clock (ready-f92 skew/monotonicity bound).
+	//
+	// Latest-wins projection keys on created_at (seconds). A validly-signed event
+	// with an implausibly far-future created_at would otherwise win forever and be
+	// unbeatable by honest edits — a trivial state-pin/replay attack, or the same
+	// effect from a grossly clock-skewed writer. AppendUnique rejects any inbound
+	// event stamped beyond now+MaxCreatedAtSkew, so it never reaches the local
+	// authoritative log and never influences projection.
+	//
+	// The bound is applied ONLY at ingestion (a point-in-time admission decision),
+	// never at projection: once an event is in the log, ProjectItems stays a PURE
+	// function of the event set, so two machines projecting the same log always
+	// converge (skew-filtering at projection would make the result depend on each
+	// machine's read-time wall clock). Local self-writes go through Append (not
+	// AppendUnique) and are trusted against the local clock by construction.
+	MaxCreatedAtSkew = 15 * time.Minute
 )
+
+// admissibleCreatedAt reports whether an inbound event may enter the local log
+// under the future-skew bound: its created_at must not exceed now+MaxCreatedAtSkew.
+// Past-dated events are always admissible (staleness is handled deterministically
+// by latest-wins + the id tie-break at projection, not by dropping old events).
+func admissibleCreatedAt(e *nostr.Event, now time.Time) bool {
+	return e.CreatedAt <= now.Add(MaxCreatedAtSkew).Unix()
+}
 
 // NostrLog is an append-only, signed-event log persisted as JSONL.
 type NostrLog struct {
@@ -74,9 +102,19 @@ func (l *NostrLog) Append(e *nostr.Event) error {
 	return f.Sync()
 }
 
-// AppendUnique appends only events whose id is not already present in the log.
-// Returns the number of events actually appended. Used by relay reconcile to
-// cache-fill without duplicating events (relays dedupe by id; so does the log).
+// AppendUnique appends only events whose id is not already present in the log, and
+// whose created_at is within the future-skew bound. Returns the number of events
+// actually appended. This is the single admission choke point for every inbound
+// merge from an untrusted source — relay reconcile, git-JSONL MergeFrom, and NIP-77
+// negentropy download all funnel through here — so it enforces two ingestion-time
+// invariants (ready-f92):
+//
+//   - DEDUP by event id: re-ingesting an already-known event is a no-op (relays
+//     dedupe by id; so does the log). This also gives replay idempotence — refeeding
+//     a stale-but-valid event that is already in the log adds nothing.
+//   - FUTURE-SKEW REJECTION: an event stamped implausibly far in the future
+//     (now+MaxCreatedAtSkew) is dropped so it cannot pin latest-wins state. Skew is
+//     read once at the start of the pass so a single call is internally consistent.
 func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 	existing, err := l.ReadAll()
 	if err != nil {
@@ -86,10 +124,14 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 	for _, e := range existing {
 		known[e.ID] = true
 	}
+	now := time.Now()
 	added := 0
 	for _, e := range events {
 		if e == nil || known[e.ID] {
 			continue
+		}
+		if !admissibleCreatedAt(e, now) {
+			continue // far-future created_at — reject (skew/replay defense)
 		}
 		if err := l.Append(e); err != nil {
 			return added, err
