@@ -1,0 +1,48 @@
+# ready-41d — LIVE nostr sign/publish/verify proof output
+# Generated: 2026-07-08T13:55:11Z by scripts/nostr-sign-demo.sh
+# Relays discovered from pkg/rdconfig (ws://192.168.2.40:7777, ws://192.168.2.41:7777)
+
+
+==> STEP 1: cross-check Go signer vs nak (id + schnorr sig must match byte-for-byte)
+==> go  id=8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+==> nak id=8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+PASS Go signer and nak agree on id AND sig (canonical NIP-01 serialization + BIP-340 correct)
+
+==> STEP 2: LIVE loop against a real strfry relay via the Go publisher
+==> relay: ws://192.168.2.40:7777 (discovered from pkg/rdconfig, not hardcoded)
+EVENT_ID 02a83668c7d847050da8ee5bf5581a5df734fa87329c9a8707336861d40eaf93
+PUBKEY   a422fca3ace9d56b82a27dda2c10938706ba486d2eebc5f0a8f6731e5ae6805e
+RELAY_OK true (ws://192.168.2.40:7777) msg=""
+VERIFY_ACCEPT ok (independent re-derive id + schnorr verify on relay-served event)
+VERIFY_REJECT ok (tampered byte rejected)
+PASS LIVE relay accepted the Go-signed event; independent verify ACCEPTED; tamper REJECTED
+
+PASS ALL NOSTR SIGN/PUBLISH/VERIFY PROOF STEPS PASSED
+
+SUMMARY
+  relay:                 ws://192.168.2.40:7777
+  cross-check id (Go=nak): 8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+  live event id:         02a83668c7d847050da8ee5bf5581a5df734fa87329c9a8707336861d40eaf93
+
+# --- Repeat against relay-b to prove both live strfry nodes accept ---
+
+==> STEP 1: cross-check Go signer vs nak (id + schnorr sig must match byte-for-byte)
+==> go  id=8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+==> nak id=8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+PASS Go signer and nak agree on id AND sig (canonical NIP-01 serialization + BIP-340 correct)
+
+==> STEP 2: LIVE loop against a real strfry relay via the Go publisher
+==> relay: ws://192.168.2.41:7777 (discovered from pkg/rdconfig, not hardcoded)
+EVENT_ID f1048c3f59181b98d9233a56902854b4e739f158ac10c9753fceca03ee4177d2
+PUBKEY   00f93ea19ec09a0f3ab4ca77d49db22b5f306e86e881b428e6a8d3c1b35bddff
+RELAY_OK true (ws://192.168.2.41:7777) msg=""
+VERIFY_ACCEPT ok (independent re-derive id + schnorr verify on relay-served event)
+VERIFY_REJECT ok (tampered byte rejected)
+PASS LIVE relay accepted the Go-signed event; independent verify ACCEPTED; tamper REJECTED
+
+PASS ALL NOSTR SIGN/PUBLISH/VERIFY PROOF STEPS PASSED
+
+SUMMARY
+  relay:                 ws://192.168.2.41:7777
+  cross-check id (Go=nak): 8a9c5183269244fb77abc6d0c5a7ea8aaa179f94b4ce30fcdad191b09f602b2b
+  live event id:         f1048c3f59181b98d9233a56902854b4e739f158ac10c9753fceca03ee4177d2
