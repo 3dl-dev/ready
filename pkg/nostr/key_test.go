@@ -3,6 +3,7 @@ package nostr
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -101,6 +102,73 @@ func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
 	}
 	if k1.SecretHex() != k2.SecretHex() {
 		t.Fatalf("LoadOrCreatePortfolioKey regenerated instead of loading existing key")
+	}
+}
+
+// TestLoadOrCreatePortfolioKey_ConcurrentFirstCallersConverge is the ready-53f
+// regression test: it reproduces the TOCTOU race where N goroutines all race
+// LoadOrCreatePortfolioKey against the SAME fresh (nonexistent) path. Against
+// the old "os.Stat then SaveKeyFile" implementation, multiple goroutines
+// observe the file missing, each generates its own random key, and the last
+// SaveKeyFile write wins — silently overwriting the others, so some
+// goroutines return a secret that does not match what ends up on disk (an
+// identity mismatch). The fixed implementation must have every goroutine
+// converge on exactly one secret, and exactly one key file must exist on
+// disk. Run with -race to also catch any data race in the create path.
+func TestLoadOrCreatePortfolioKey_ConcurrentFirstCallersConverge(t *testing.T) {
+	cfHome := filepath.Join(t.TempDir(), ".cf")
+	path := DefaultKeyPath(cfHome)
+
+	const n = 32
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		secrets = make(map[string]int)
+		errs    []error
+	)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			k, err := LoadOrCreatePortfolioKey(path)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			secrets[k.SecretHex()]++
+		}()
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		t.Errorf("LoadOrCreatePortfolioKey concurrent call failed: %v", err)
+	}
+	if len(secrets) != 1 {
+		t.Fatalf("concurrent first-time callers diverged: got %d distinct secrets (%v), want exactly 1 — this is the ready-53f TOCTOU: concurrent callers must converge on ONE key", len(secrets), secrets)
+	}
+
+	// Confirm the winning secret is what's actually persisted on disk, and
+	// that a fresh load agrees with every goroutine's in-memory result.
+	onDisk, err := LoadKeyFile(path)
+	if err != nil {
+		t.Fatalf("load persisted key: %v", err)
+	}
+	var winner string
+	for s := range secrets {
+		winner = s
+	}
+	if onDisk.SecretHex() != winner {
+		t.Fatalf("persisted key %q does not match the secret every goroutine converged on %q", onDisk.SecretHex(), winner)
+	}
+
+	entries, err := os.ReadDir(cfHome)
+	if err != nil {
+		t.Fatalf("read cf home: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one file in %s, found %d: %v", cfHome, len(entries), entries)
 	}
 }
 
