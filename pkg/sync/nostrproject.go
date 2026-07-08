@@ -106,7 +106,78 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		}
 		out[itemID] = item
 	}
+	applyDepAndGateStatus(out)
 	return out
+}
+
+// applyDepAndGateStatus is the final projection pass, mirroring pkg/state's
+// applyBlockStatus exactly (substrate swap — same semantics, different source):
+//   - each item's declared deps (raw "i" tags, stashed in item.BlockedBy by
+//     itemFromCard) are resolved against the other items in this projection;
+//   - an item is set to StatusBlocked when at least one declared blocker is
+//     itself present and non-terminal; BlockedBy/Blocks are populated for every
+//     resolvable edge regardless of the blocker's terminal state (matches
+//     pkg/state: BlockedBy records the dependency, not just active blockers);
+//   - unresolvable deps (blocker not present in this event set — e.g. not yet
+//     ingested) are dropped, same as an unknown campfire block edge.
+//   - GateMsgID is (re)derived from the winning card's event id whenever the
+//     item is waiting on a gate, so views.GatesFilter's "non-empty GateMsgID"
+//     check behaves the same as the campfire-derived path.
+func applyDepAndGateStatus(items map[string]*state.Item) {
+	type edge struct{ blockerID, blockedID string }
+	var edges []edge
+	for id, item := range items {
+		for _, dep := range item.BlockedBy {
+			edges = append(edges, edge{blockerID: dep, blockedID: id})
+		}
+		item.BlockedBy = nil // rebuilt below from validated edges only
+	}
+	for _, e := range edges {
+		blocker, blockerOK := items[e.blockerID]
+		blocked, blockedOK := items[e.blockedID]
+		if !blockerOK || !blockedOK {
+			continue
+		}
+		if state.IsTerminal(blocked) {
+			continue
+		}
+		if !state.IsTerminal(blocker) {
+			blocked.Status = state.StatusBlocked
+		}
+		blocked.BlockedBy = appendUniqueStr(blocked.BlockedBy, e.blockerID)
+		blocker.Blocks = appendUniqueStr(blocker.Blocks, e.blockedID)
+	}
+
+	for _, item := range items {
+		if item.Status == state.StatusWaiting {
+			if item.WaitingSince == "" {
+				item.WaitingSince = time.Unix(0, item.UpdatedAt).UTC().Format(time.RFC3339)
+			}
+			if item.WaitingType == "gate" {
+				item.GateMsgID = item.MsgID
+			} else {
+				item.GateMsgID = ""
+			}
+		} else {
+			// Blocking (or any other non-waiting status) supersedes a declared
+			// wait/gate, same as pkg/state's applyBlockStatus running after
+			// handleWorkGate: the final status wins.
+			item.WaitingOn = ""
+			item.WaitingType = ""
+			item.WaitingSince = ""
+			item.GateMsgID = ""
+		}
+	}
+}
+
+// appendUniqueStr appends val to slice only if not already present.
+func appendUniqueStr(slice []string, val string) []string {
+	for _, v := range slice {
+		if v == val {
+			return slice
+		}
+	}
+	return append(slice, val)
 }
 
 // newerThan reports whether event a (at log index ai) is newer than event b (bi)
@@ -137,6 +208,12 @@ func itemFromCard(e *nostr.Event) *state.Item {
 		Description: e.Content,
 		CreatedAt:   tsNano,
 		UpdatedAt:   tsNano,
+		// Raw declared deps ("i" tags) -- resolved into validated BlockedBy/Blocks
+		// (and blocked-status) by applyDepAndGateStatus once all items are known.
+		BlockedBy:   tagValues(e, "i"),
+		Gate:        tagValue(e, "gate"),
+		WaitingType: tagValue(e, "waiting_type"),
+		WaitingOn:   tagValue(e, "waiting_on"),
 	}
 	if p := tagValue(e, "p"); p != "" {
 		item.By = p

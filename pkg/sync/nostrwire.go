@@ -92,6 +92,22 @@ type CardSpec struct {
 	Context string
 	// BoardD is the board (project) "d" identifier this card belongs to.
 	BoardD string
+
+	// Deps lists the item IDs that BLOCK this item (rd dep add <this> <blocker>).
+	// Each becomes a NIP-100 "i" (inter-card relationship) tag. NIP-100 leaves the
+	// "i" tag's interpretation to the app; rd's reading is "the referenced item
+	// must reach a terminal status before this one is unblocked" -- the same
+	// semantics as the campfire work:block edge it replaces.
+	Deps []string
+	// Gate carries rd's escalation category (budget, design, scope, review,
+	// human, stall) when set. Not part of NIP-34/NIP-100 -- an rd extension tag
+	// ("gate"), per the epic's DEVIATIONS TO DECIDE list.
+	Gate string
+	// WaitingType / WaitingOn describe why status=waiting (e.g. "gate" pending
+	// human resolution via rd gate/rd approve, or a routine wait like "vendor").
+	// rd extension tags ("waiting_type" / "waiting_on"); not part of NIP-34/NIP-100.
+	WaitingType string
+	WaitingOn   string
 }
 
 // BoardSpec describes an rd project/campfire as a NIP-100 board (30301).
@@ -170,6 +186,20 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	if spec.Assignee != "" {
 		tags = append(tags, []string{"p", spec.Assignee})
 	}
+	for _, dep := range spec.Deps {
+		if dep != "" {
+			tags = append(tags, []string{"i", dep})
+		}
+	}
+	if spec.Gate != "" {
+		tags = append(tags, []string{"gate", spec.Gate})
+	}
+	if spec.WaitingType != "" {
+		tags = append(tags, []string{"waiting_type", spec.WaitingType})
+	}
+	if spec.WaitingOn != "" {
+		tags = append(tags, []string{"waiting_on", spec.WaitingOn})
+	}
 	e := &nostr.Event{
 		Kind:      KindCard,
 		CreatedAt: createdAt,
@@ -224,6 +254,18 @@ func tagValue(e *nostr.Event, name string) string {
 		}
 	}
 	return ""
+}
+
+// tagValues returns the values of every tag whose name matches, in tag order.
+// Used for repeatable tags (e.g. "i" — one per blocking dependency).
+func tagValues(e *nostr.Event, name string) []string {
+	var out []string
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == name {
+			out = append(out, t[1])
+		}
+	}
+	return out
 }
 
 // isStatusKind reports whether a kind is one of the NIP-34 status kinds.

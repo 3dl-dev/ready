@@ -11,6 +11,7 @@ import (
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/campfire-net/ready/pkg/views"
 	"github.com/spf13/cobra"
 )
 
@@ -236,13 +237,17 @@ var nostrPublishCmd = &cobra.Command{
 		}
 		board := boardSpecForProject(dir, pub.Key.PubKeyHex())
 		card := rdSync.CardSpec{
-			ItemID:   item.ID,
-			Title:    item.Title,
-			Status:   item.Status,
-			Priority: item.Priority,
-			Type:     item.Type,
-			Context:  item.Context,
-			BoardD:   board.BoardD,
+			ItemID:      item.ID,
+			Title:       item.Title,
+			Status:      item.Status,
+			Priority:    item.Priority,
+			Type:        item.Type,
+			Context:     item.Context,
+			BoardD:      board.BoardD,
+			Deps:        item.BlockedBy,
+			Gate:        item.Gate,
+			WaitingType: item.WaitingType,
+			WaitingOn:   item.WaitingOn,
 		}
 		res, err := pub.PublishItem(context.Background(), &board, card, time.Now().Unix())
 		if err != nil {
@@ -263,9 +268,131 @@ var nostrPublishCmd = &cobra.Command{
 	},
 }
 
+// nostrReadyCmd is the ready-82c proof surface: it computes the SAME named-view
+// readiness set as `rd ready`, but sourced entirely from the nostr projection
+// (ProjectItems over the local authoritative log, optionally cache-filled from
+// relays) instead of the campfire-backed derive path. Filtering, scoping-by-
+// identity, sorting and output formatting are intentionally identical to
+// readyCmd (cmd/rd/ready.go) — this is a substrate swap, not a new feature.
+var nostrReadyCmd = &cobra.Command{
+	Use:   "ready",
+	Short: "Compute the attention-engine readiness set from the nostr projection (ready-82c)",
+	Long: `Like 'rd ready', but the item set is projected from the nostr event log
+instead of the campfire-backed store. Proves the dependency- and gate-aware
+attention engine (pkg/views + pkg/state.Item) computes the same readiness set
+regardless of substrate.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		viewName, _ := cmd.Flags().GetString("view")
+		reconcileFlag, _ := cmd.Flags().GetBool("reconcile")
+
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("no .ready project directory found")
+		}
+		k, err := nostrKey()
+		if err != nil {
+			return err
+		}
+		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+
+		if reconcileFlag {
+			ctx := context.Background()
+			r, err := rdSync.ReconcileAll(ctx, nostrReadRelays(), log, k.PubKeyHex(), nostr.DefaultTimeout)
+			if err != nil {
+				return err
+			}
+			if debugOutput {
+				fmt.Fprintf(os.Stderr, "nostr: reconcile-all fetched=%d added=%d relay_errors=%d\n", r.Fetched, r.Added, len(r.RelayErrors))
+			}
+		}
+
+		events, err := log.ReadAll()
+		if err != nil {
+			return err
+		}
+		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
+			Maintainers: map[string]bool{k.PubKeyHex(): true},
+		})
+		items := make([]*state.Item, 0, len(itemsByID))
+		for _, item := range itemsByID {
+			items = append(items, item)
+		}
+
+		if viewName == "" {
+			viewName = views.ViewReady
+		}
+		filter := views.Named(viewName, k.PubKeyHex())
+		if filter == nil {
+			return fmt.Errorf("unknown view %q: choose from %v", viewName, views.AllNames())
+		}
+		items = views.Apply(items, filter)
+		sortByPriorityETA(items)
+
+		if jsonOutput {
+			return outputItemsJSON(items)
+		}
+		for _, item := range items {
+			fmt.Println(item.ID)
+		}
+		return nil
+	},
+}
+
+// nostrSeedDemoCmd is ground-source proof infrastructure for ready-82c: it
+// publishes a small, fixed dep+gate graph (matching
+// pkg/sync.TestNostrProjection_ReadinessParity) directly to the local nostr
+// log + configured relays. It exists ONLY to drive the demo shell script
+// (scripts/demo_nostr_readiness.sh) against a LIVE relay -- it is not a
+// production write path (rd dep add / rd gate do not publish nostr events
+// today; that plumbing is out of scope for ready-82c, which is the read-side
+// attention-engine substrate swap). Hidden from --help.
+var nostrSeedDemoCmd = &cobra.Command{
+	Use:    "seed-demo",
+	Short:  "internal: seed a fixed dep+gate graph for the ready-82c live-relay demo",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pub, ok, err := nostrPublisher()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no project dir for publisher")
+		}
+		dir, _ := readyProjectDir()
+		board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+		ctx := context.Background()
+		cards := []rdSync.CardSpec{
+			{ItemID: "ready-t01", Title: "t01", Status: state.StatusActive, Priority: "p0", Type: "task", BoardD: board.BoardD},
+			{ItemID: "ready-t02", Title: "t02", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: board.BoardD, Deps: []string{"ready-t01"}},
+			{ItemID: "ready-t03", Title: "t03", Status: state.StatusWaiting, Priority: "p1", Type: "task", BoardD: board.BoardD, Gate: "human", WaitingType: "gate", WaitingOn: "needs sign-off"},
+			{ItemID: "ready-t04", Title: "t04", Status: state.StatusDone, Priority: "p2", Type: "task", BoardD: board.BoardD},
+			{ItemID: "ready-t05", Title: "t05", Status: state.StatusActive, Priority: "p2", Type: "task", BoardD: board.BoardD, Deps: []string{"ready-t04"}},
+		}
+		now := time.Now().Unix()
+		for i, card := range cards {
+			var boardArg *rdSync.BoardSpec
+			if i == 0 {
+				boardArg = &board // publish the board once, alongside the first card
+			}
+			res, err := pub.PublishItem(ctx, boardArg, card, now+int64(i))
+			if err != nil {
+				return fmt.Errorf("publish %s: %w", card.ItemID, err)
+			}
+			for _, ev := range res.Events {
+				fmt.Printf("published %s kind %d id %s relay-accepted=%v\n", card.ItemID, ev.Kind, ev.EventID, ev.AnyRelay)
+			}
+		}
+		return nil
+	},
+}
+
 func init() {
 	nostrShowCmd.Flags().Bool("reconcile", false, "cache-fill from read relays before reconstructing (local log stays authoritative)")
+	nostrReadyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, gates")
+	nostrReadyCmd.Flags().Bool("reconcile", false, "cache-fill ALL items from read relays before computing readiness")
 	nostrCmd.AddCommand(nostrShowCmd)
 	nostrCmd.AddCommand(nostrPublishCmd)
+	nostrCmd.AddCommand(nostrReadyCmd)
+	nostrCmd.AddCommand(nostrSeedDemoCmd)
 	rootCmd.AddCommand(nostrCmd)
 }
