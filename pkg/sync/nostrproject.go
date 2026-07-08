@@ -33,6 +33,36 @@ import (
 // of each item's winning card is treated as the item author.
 type ProjectOptions struct {
 	Maintainers map[string]bool
+
+	// Trusted is the read-side authorization allowlist (ready-d53 web-of-trust):
+	// the set of author pubkeys whose events may influence projected state at all.
+	//
+	// schnorr Verify (already enforced below) proves an event is internally
+	// consistent, NOT that its author is authorized — any generated key produces
+	// events that Verify. Without this gate a foreign key could publish a 30302
+	// card for someone else's item; because the card projection is latest-wins
+	// across ALL authors, that forged card would win, and worse, its author would
+	// then be treated as the item AUTHOR — making the attacker's own status events
+	// authoritative (a full state takeover). The trust gate closes this: an event
+	// whose author is not in Trusted is dropped before it can influence the winning
+	// card, the status authority, OR the history.
+	//
+	// Semantics: when Trusted is NON-NIL the allowlist is ENFORCED (untrusted-author
+	// events are ignored). When Trusted is NIL the gate is DISABLED (every verified
+	// event is considered) — this preserves the pre-ready-d53 behaviour for tests
+	// and any legacy unconfigured path. Production callers always pass a non-nil set
+	// containing at least the self pubkey (see rdconfig.Config.TrustSet).
+	Trusted map[string]bool
+}
+
+// trusts reports whether pubkey is authorized under opts.Trusted. A nil Trusted
+// set disables the gate (everything is trusted); a non-nil set enforces the
+// allowlist.
+func (opts ProjectOptions) trusts(pubkey string) bool {
+	if opts.Trusted == nil {
+		return true
+	}
+	return opts.Trusted[pubkey]
 }
 
 // ProjectItems reconstructs current item state from a signed-event log slice
@@ -56,6 +86,14 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		}
 		if err := e.Verify(); err != nil {
 			continue // forged/tampered line — ignore
+		}
+		// Web-of-trust authorization (ready-d53): Verify proved consistency, not
+		// authority. Drop any event whose author is not in the trust allowlist so
+		// an untrusted key can never influence the winning card, status authority,
+		// or history — even if the event reached the local log (defence in depth
+		// with the ingestion gate in reconcile()).
+		if !opts.trusts(e.PubKey) {
+			continue
 		}
 		itemID := itemIDForEvent(e)
 		if itemID == "" {

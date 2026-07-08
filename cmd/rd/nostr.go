@@ -45,6 +45,21 @@ func nostrKey() (*nostr.Key, error) {
 	return nostr.LoadOrCreatePortfolioKey(nostr.DefaultKeyPath(CFHome()))
 }
 
+// nostrTrustSet builds the read-side web-of-trust allowlist (ready-d53): the self
+// pubkey (always trusted) unioned with the admitted TrustedPubkeys from the global
+// rd config. This set is passed to the ingestion (reconcile) and projection
+// (ProjectItems) gates so only events authored by admitted identities can mutate
+// projected work-item state — schnorr Verify alone proves consistency, not
+// authorization. A missing/unreadable config degrades to self-only trust (the safe
+// default: a permissive relay cannot inject state signed by a foreign key).
+func nostrTrustSet(selfPubkey string) map[string]bool {
+	cfg, err := rdconfig.Load(CFHome())
+	if err != nil {
+		cfg = &rdconfig.Config{}
+	}
+	return cfg.TrustSet(selfPubkey)
+}
+
 // nostrPublisher builds a Publisher rooted at the current project. Returns
 // (nil,false,nil) when there is no project dir (nothing to publish into).
 func nostrPublisher() (*rdSync.Publisher, bool, error) {
@@ -236,7 +251,7 @@ var nostrShowCmd = &cobra.Command{
 				return err
 			}
 			ctx := context.Background()
-			r, err := rdSync.ReconcileItem(ctx, nostrReadRelays(), log, itemID, k.PubKeyHex(), nostr.DefaultTimeout)
+			r, err := rdSync.ReconcileItem(ctx, nostrReadRelays(), log, itemID, nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
 			if err != nil {
 				return err
 			}
@@ -256,8 +271,10 @@ var nostrShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		trusted := nostrTrustSet(k.PubKeyHex())
 		items := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Maintainers: map[string]bool{k.PubKeyHex(): true},
+			Maintainers: trusted,
+			Trusted:     trusted,
 		})
 		item, found := items[itemID]
 		if !found {
@@ -400,7 +417,7 @@ regardless of substrate.`,
 
 		if reconcileFlag {
 			ctx := context.Background()
-			r, err := rdSync.ReconcileAll(ctx, nostrReadRelays(), log, k.PubKeyHex(), nostr.DefaultTimeout)
+			r, err := rdSync.ReconcileAll(ctx, nostrReadRelays(), log, nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
 			if err != nil {
 				return err
 			}
@@ -413,8 +430,10 @@ regardless of substrate.`,
 		if err != nil {
 			return err
 		}
+		trusted := nostrTrustSet(k.PubKeyHex())
 		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Maintainers: map[string]bool{k.PubKeyHex(): true},
+			Maintainers: trusted,
+			Trusted:     trusted,
 		})
 		items := make([]*state.Item, 0, len(itemsByID))
 		for _, item := range itemsByID {

@@ -1,0 +1,50 @@
+[36m==>[0m building rd
+
+[36m==>[0m STEP 1: VICTIM (identity A) creates the item legit/active/p1 on the LIVE relay
+[36m==>[0m victim item id: victimproj-795
+[36m==>[0m victim pubkey:  7d85f822905d2ab818351388071109189e407160bce3ecf4a7af3b504960915d
+[32mPASS[0m victim published its trusted card to the live relay
+
+[36m==>[0m STEP 2: ATTACKER (identity B, a DIFFERENT key) forges a LATER card for the SAME id: victimproj-795
+    put kind 30301 id 63d75d4b4a493126c2c4b4f94f8c382dac887ea1ee1538722f4e049336261e9c relay-accepted=true
+    put kind 30302 id e788f7d45400e2f8048a4ccbee733a14f5b9c33c03b010d38bb4f0fac294089a relay-accepted=true
+    put kind 1631 id 3f6a6cb487255e08fe657a5fb85409d2f654c38da25f73ae786893ecce7c4da5 relay-accepted=true
+[36m==>[0m attacker pubkey: 1c0c6049dbfa89f3223bbedf92a3791cfb139ad0d4be1410e6e7460107b2c4ac
+[32mPASS[0m attacker's forged card was accepted by the PERMISSIVE relay (as expected pre-ready-266) and signed by a foreign key
+
+[36m==>[0m STEP 3: CONTRAST — the attacker's OWN node (trusts B) reconciles + shows the forged state, proving it is genuinely LIVE on the relay
+    id:       victimproj-795
+    title:    HIJACKED
+    status:   done
+    priority: p0
+    type:     task
+    
+    history:
+      [2026-07-08T16:08:20Z]  → done by 1c0c6049dbfa89f3223bbedf92a3791cfb139ad0d4be1410e6e7460107b2c4ac
+    (reconciled: fetched=4 added=2 relay_errors=0)
+[32mPASS[0m forged event is LIVE on the relay and passes Verify (the attacker's node applies it because B trusts B)
+
+[36m==>[0m STEP 4: TRUST GATE — VICTIM wipes its local log and reconciles BOTH cards from the relay; trust set = {A}
+    id:       victimproj-795
+    title:    legit item
+    status:   inbox
+    priority: p1
+    type:     task
+    
+    history:
+      [2026-07-08T16:08:20Z]  → inbox by 7d85f822905d2ab818351388071109189e407160bce3ecf4a7af3b504960915d
+    (reconciled: fetched=4 added=2 relay_errors=0)
+[32mPASS[0m PROJECTION GATE: trusted card applied (legit/active); untrusted forged card IGNORED
+[36m==>[0m author pubkeys in the victim's authoritative log after reconcile: 7d85f822905d2ab818351388071109189e407160bce3ecf4a7af3b504960915d 
+[32mPASS[0m INGESTION GATE: the victim's local authoritative log holds ZERO attacker-authored events
+
+[32mPASS[0m ALL ready-d53 TRUST-GATE STEPS PASSED
+
+SUMMARY
+  item id:            victimproj-795
+  victim (trusted):   7d85f822905d2ab818351388071109189e407160bce3ecf4a7af3b504960915d
+  attacker (foreign): 1c0c6049dbfa89f3223bbedf92a3791cfb139ad0d4be1410e6e7460107b2c4ac
+  relay posture:      PERMISSIVE (write-allowlist is the separate item ready-266)
+  ingestion gate:     PASS (foreign-key event dropped before merge; log unpoisoned)
+  projection gate:    PASS (trusted card applied = legit/active; forged card ignored)
+  invariant:          Verify proves consistency; the trust allowlist proves AUTHORITY

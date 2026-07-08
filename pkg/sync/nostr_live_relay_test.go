@@ -99,7 +99,7 @@ func TestLiveRelay_ItemRoundTrip(t *testing.T) {
 	if evs, _ := freshLog.ReadAll(); len(evs) != 0 {
 		t.Fatalf("log not actually wiped")
 	}
-	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, k.PubKeyHex(), nostr.DefaultTimeout)
+	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, map[string]bool{k.PubKeyHex(): true}, nostr.DefaultTimeout)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 		t.Fatalf("wipe local log: %v", err)
 	}
 	freshLog := NewNostrLog(logPath)
-	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, k.PubKeyHex(), nostr.DefaultTimeout)
+	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, map[string]bool{k.PubKeyHex(): true}, nostr.DefaultTimeout)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -251,6 +251,122 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 	}
 	cleanItems := ProjectItems(rebuilt, ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}})
 	assertFullHistory(t, "clean-cache relay-reconciled read", cleanItems)
+}
+
+// TestLiveRelay_TrustGate is the ground-source, no-mock proof for ready-d53: a
+// forged-authorship event published to a LIVE relay by an UNTRUSTED key is DROPPED
+// at ingestion (never poisons the local authoritative log) AND ignored by the
+// projection, while the trusted-author event is applied. Both keys publish a card
+// for the SAME item id (a takeover attempt: the attacker's card is LATER, so it
+// would win the latest-wins projection if the gate were absent).
+//
+// Gated behind RD_NOSTR_LIVE_RELAY=1. Endpoints come from pkg/rdconfig; override
+// with RD_NOSTR_RELAY_URL. The mainframe relays are currently permissive on write
+// (the relay-side write-allowlist is ready-266), so the attacker publish succeeds —
+// which is exactly why the CLIENT-side trust gate must catch it.
+func TestLiveRelay_TrustGate(t *testing.T) {
+	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
+		t.Skip("set RD_NOSTR_LIVE_RELAY=1 (with a reachable strfry relay) to run the live trust-gate proof")
+	}
+	relay := os.Getenv("RD_NOSTR_RELAY_URL")
+	if relay == "" {
+		var cfg rdconfig.Config
+		urls := cfg.WriteRelayURLs()
+		if len(urls) == 0 {
+			t.Fatal("no write relays configured")
+		}
+		relay = urls[0]
+	}
+	t.Logf("live relay: %s", relay)
+
+	trusted, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("gen trusted key: %v", err)
+	}
+	attacker, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("gen attacker key: %v", err)
+	}
+	itemID := fmt.Sprintf("ready-d53-live-%d", time.Now().UnixNano())
+	dir := t.TempDir()
+
+	newPub := func(k *nostr.Key) *Publisher {
+		return &Publisher{
+			Key:         k,
+			Log:         NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile)), // throwaway per-publisher log
+			WriteRelays: []string{relay},
+			PendingPath: filepath.Join(t.TempDir(), ".ready", NostrPendingFile),
+		}
+	}
+	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{trusted.PubKeyHex()}}
+	now := time.Now().Unix()
+
+	// Trusted author creates the item (active, p1).
+	trustedCard := CardSpec{ItemID: itemID, Title: "legit", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "ready"}
+	res, err := newPub(trusted).PublishItem(context.Background(), &board, trustedCard, now)
+	if err != nil {
+		t.Fatalf("trusted publish: %v", err)
+	}
+	for _, ev := range res.Events {
+		if !ev.AnyRelay {
+			t.Fatalf("trusted event kind %d NOT accepted by relay (acks=%+v)", ev.Kind, ev.Acks)
+		}
+	}
+
+	// Attacker publishes a LATER forged card + done status for the SAME item id.
+	attackCard := CardSpec{ItemID: itemID, Title: "HIJACKED", Status: state.StatusDone, Priority: "p0", Type: "task", BoardD: "ready"}
+	ares, err := newPub(attacker).PublishStatusChange(context.Background(), attackCard, "seized", now+10)
+	if err != nil {
+		t.Fatalf("attacker publish: %v", err)
+	}
+	var attackerAccepted bool
+	for _, ev := range ares.Events {
+		if ev.AnyRelay {
+			attackerAccepted = true
+		}
+	}
+	if !attackerAccepted {
+		t.Fatal("attacker event was not accepted by the permissive relay — cannot prove the client-side gate; is a write-allowlist already active (ready-266)?")
+	}
+	t.Logf("attacker forged events accepted by the permissive relay (as expected pre-ready-266)")
+
+	time.Sleep(1 * time.Second)
+
+	// --- INGESTION GATE: reconcile into a fresh log with a trust set = {trusted}. ---
+	logPath := filepath.Join(dir, ".ready", NostrLogFile)
+	freshLog := NewNostrLog(logPath)
+	trustSet := map[string]bool{trusted.PubKeyHex(): true}
+	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, trustSet, nostr.DefaultTimeout)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	t.Logf("reconcile: fetched=%d added=%d relay_errors=%v", rr.Fetched, rr.Added, rr.RelayErrors)
+
+	// The local authoritative log must contain ZERO attacker-authored events.
+	merged, err := freshLog.ReadAll()
+	if err != nil {
+		t.Fatalf("read merged log: %v", err)
+	}
+	if len(merged) == 0 {
+		t.Fatal("nothing merged from the relay — cannot distinguish gate from an empty fetch")
+	}
+	for _, e := range merged {
+		if e.PubKey == attacker.PubKeyHex() {
+			t.Fatalf("INGESTION GATE FAILED: attacker-authored event %s poisoned the local log", e.ID)
+		}
+	}
+	t.Logf("INGESTION GATE PROVEN: %d event(s) merged, none authored by the attacker", len(merged))
+
+	// --- PROJECTION GATE: replay the merged log; item reflects only trusted state. ---
+	items := ProjectItems(merged, ProjectOptions{Maintainers: trustSet, Trusted: trustSet})
+	it, ok := items[itemID]
+	if !ok {
+		t.Fatal("trusted item not projected")
+	}
+	if it.Title != "legit" || it.Status != state.StatusActive {
+		t.Fatalf("PROJECTION GATE FAILED: item taken over — title=%q status=%q (want legit/active)", it.Title, it.Status)
+	}
+	t.Logf("PROVEN: untrusted forged event ignored at ingestion AND projection; trusted state intact (item %s)", itemID)
 }
 
 func assertMatches(t *testing.T, ctx string, got *state.Item, want CardSpec) {

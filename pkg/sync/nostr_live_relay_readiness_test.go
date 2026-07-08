@@ -94,7 +94,7 @@ func TestLiveRelay_ReadinessParity(t *testing.T) {
 		t.Fatalf("wipe local log: %v", err)
 	}
 	freshLog := NewNostrLog(logPath)
-	rr, err := ReconcileAll(ctx, []string{relay}, freshLog, k.PubKeyHex(), nostr.DefaultTimeout)
+	rr, err := ReconcileAll(ctx, []string{relay}, freshLog, map[string]bool{k.PubKeyHex(): true}, nostr.DefaultTimeout)
 	if err != nil {
 		t.Fatalf("reconcile-all: %v", err)
 	}

@@ -32,6 +32,47 @@ type Config struct {
 	// is used. See relay.go and docs/relay-runbook.md. The relays are a cache /
 	// always-available copy, NEVER the source of truth.
 	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
+
+	// TrustedPubkeys is the nostr web-of-trust allowlist (ready-d53): the hex
+	// secp256k1 pubkeys of ADMITTED portfolio identities (maintainers / other
+	// machines) whose signed events are authorized to mutate rd work-item state.
+	//
+	// This is the trust source for the read-side authorization gate. nostr's
+	// Event.Verify() only proves an event is internally consistent (id + schnorr
+	// sig) — it proves NOTHING about WHO may write. Any generated key produces
+	// events that Verify. So at ingestion (relay reconcile) and projection
+	// (replay), rd drops every event whose author pubkey is not in the trust set.
+	//
+	// The self (portfolio) pubkey is ALWAYS trusted implicitly (see TrustSet); it
+	// need not be listed here. Admit another identity by adding its hex pubkey.
+	// An empty list means "self only" — a single-machine portfolio trusts just
+	// its own key, which is the safe default (a permissive relay cannot inject
+	// state authored by a foreign key). Relay-side write-allowlisting (ready-266)
+	// is a SEPARATE, defence-in-depth layer; this client-side gate stands alone.
+	TrustedPubkeys []string `json:"trusted_pubkeys,omitempty"`
+}
+
+// TrustSet returns the read-side authorization allowlist as a set: the self
+// (portfolio) pubkey — always trusted — unioned with every admitted pubkey in
+// TrustedPubkeys. selfPubkey is the hex pubkey of the loaded portfolio key; pass
+// "" only when there is no local identity (the set is then exactly the configured
+// admitted pubkeys). Empty/blank entries are ignored.
+//
+// The returned map is always non-nil, so callers can pass it straight to the
+// ingestion / projection trust gate: a non-nil trust set ENFORCES the allowlist
+// (events from unlisted authors are dropped), whereas a nil set disables the gate
+// (used only by tests / legacy unconfigured paths).
+func (c *Config) TrustSet(selfPubkey string) map[string]bool {
+	set := make(map[string]bool, len(c.TrustedPubkeys)+1)
+	if selfPubkey != "" {
+		set[selfPubkey] = true
+	}
+	for _, pk := range c.TrustedPubkeys {
+		if pk != "" {
+			set[pk] = true
+		}
+	}
+	return set
 }
 
 // Path returns the config file path within the given campfire home directory.
