@@ -489,13 +489,181 @@ var nostrSeedDemoCmd = &cobra.Command{
 	},
 }
 
+// nostrPutCmd creates-or-updates an rd item directly on the nostr backend: it
+// materializes the item as board+card+status events, appends them to the local
+// authoritative log (always durable), and publishes to the write relays
+// (best-effort; buffered offline). This is the "mutate" primitive the two-machine
+// sync demo drives (ready-797).
+var nostrPutCmd = &cobra.Command{
+	Use:   "put <item-id>",
+	Short: "Create/update an rd item directly on the nostr backend (log + relays)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		itemID := args[0]
+		title, _ := cmd.Flags().GetString("title")
+		status, _ := cmd.Flags().GetString("status")
+		priority, _ := cmd.Flags().GetString("priority")
+		itemType, _ := cmd.Flags().GetString("type")
+		note, _ := cmd.Flags().GetString("note")
+		context0, _ := cmd.Flags().GetString("context")
+
+		pub, ok, err := nostrPublisher()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no .ready project directory found")
+		}
+		dir, _ := readyProjectDir()
+		board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+		if status == "" {
+			status = state.StatusActive
+		}
+		card := rdSync.CardSpec{
+			ItemID:   itemID,
+			Title:    title,
+			Status:   status,
+			Priority: priority,
+			Type:     itemType,
+			Context:  context0,
+			BoardD:   board.BoardD,
+		}
+		var res rdSync.PublishResult
+		if note != "" {
+			// A status change with a close/change reason (rd close-with-reason).
+			res, err = pub.PublishStatusChange(context.Background(), card, note, time.Now().Unix())
+		} else {
+			res, err = pub.PublishItem(context.Background(), &board, card, time.Now().Unix())
+		}
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		for _, ev := range res.Events {
+			fmt.Printf("put kind %d id %s relay-accepted=%v\n", ev.Kind, ev.EventID, ev.AnyRelay)
+		}
+		if res.Buffered {
+			fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
+		}
+		return nil
+	},
+}
+
+// nostrSyncCmd reconciles the local authoritative log against the relays via
+// NIP-77 negentropy and performs the resulting download+upload so two machines
+// converge on identical item state, transferring only the DIFFERENCE (measured).
+var nostrSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Negentropy-sync the local nostr log with the relays (two-machine convergence)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("no .ready project directory found")
+		}
+		k, err := nostrKey()
+		if err != nil {
+			return err
+		}
+		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+		// Sync every rd event this portfolio identity authored (all boards/kinds).
+		filter := rdSync.BoardSyncFilter("", []string{k.PubKeyHex()})
+		relays := nostrWriteRelays()
+
+		ctx := context.Background()
+		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, nostr.DefaultTimeout)
+
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(map[string]any{"results": results, "relay_errors": errs})
+		}
+		for _, r := range results {
+			fmt.Printf("sync %s: local_before=%d need=%d have=%d downloaded=%d uploaded=%d "+
+				"neg_bytes(sent=%d recv=%d rounds=%d) event_bytes(down=%d up=%d)\n",
+				r.Relay, r.LocalBefore, r.Need, r.Have, r.Downloaded, r.Uploaded,
+				r.BytesSent, r.BytesReceived, r.RoundTrips, r.EventBytesDownloaded, r.EventBytesUploaded)
+		}
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "relay error (non-fatal; local log authoritative): %s\n", e)
+		}
+		return nil
+	},
+}
+
+// nostrFlushCmd drains the offline pending buffer (nostr-pending.jsonl) to the
+// relays on reconnect. Re-publish is idempotent by event id (relays dedupe).
+var nostrFlushCmd = &cobra.Command{
+	Use:   "flush",
+	Short: "Publish buffered offline nostr events to the relays (idempotent by event id)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("no .ready project directory found")
+		}
+		res, err := rdSync.FlushNostrPending(context.Background(), nostrPendingPath(dir), nostrWriteRelays(), nostr.DefaultTimeout)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		fmt.Printf("flush: total=%d flushed=%d remaining=%d relay_errors=%d\n",
+			res.Total, res.Flushed, res.Remaining, len(res.RelayErrors))
+		return nil
+	},
+}
+
+// nostrMergeCmd merges another machine's git-committed nostr log (JSONL) into the
+// local log. This is the DEGRADE FLOOR: with every relay unreachable, two machines
+// still converge by exchanging their committed nostr-log.jsonl and merging
+// (idempotent by event id, verify-gated). No relay required.
+var nostrMergeCmd = &cobra.Command{
+	Use:   "merge-log <other-log.jsonl>",
+	Short: "Merge another machine's committed nostr log into the local log (relay-free degrade floor)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("no .ready project directory found")
+		}
+		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+		added, err := log.MergeFrom(args[0])
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(map[string]any{"merged": added})
+		}
+		fmt.Printf("merge-log: merged %d new event(s) from %s\n", added, args[0])
+		return nil
+	},
+}
+
 func init() {
 	nostrShowCmd.Flags().Bool("reconcile", false, "cache-fill from read relays before reconstructing (local log stays authoritative)")
 	nostrReadyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, gates")
 	nostrReadyCmd.Flags().Bool("reconcile", false, "cache-fill ALL items from read relays before computing readiness")
+	nostrPutCmd.Flags().String("title", "", "item title")
+	nostrPutCmd.Flags().String("status", "", "rd status (default active)")
+	nostrPutCmd.Flags().String("priority", "", "priority (p0..p3)")
+	nostrPutCmd.Flags().String("type", "task", "item type")
+	nostrPutCmd.Flags().String("context", "", "item description/context (card content)")
+	nostrPutCmd.Flags().String("note", "", "status-change reason (rd close-with-reason); publishes a status change instead of a fresh card")
 	nostrCmd.AddCommand(nostrShowCmd)
 	nostrCmd.AddCommand(nostrPublishCmd)
 	nostrCmd.AddCommand(nostrReadyCmd)
 	nostrCmd.AddCommand(nostrSeedDemoCmd)
+	nostrCmd.AddCommand(nostrPutCmd)
+	nostrCmd.AddCommand(nostrSyncCmd)
+	nostrCmd.AddCommand(nostrFlushCmd)
+	nostrCmd.AddCommand(nostrMergeCmd)
 	rootCmd.AddCommand(nostrCmd)
 }
