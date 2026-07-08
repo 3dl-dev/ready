@@ -42,10 +42,8 @@ func TestLiveRelay_ReadinessParity(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	// Unique item ids per run so we never collide with a prior run's addressable cards.
 	run := time.Now().UnixNano()
 	id := func(n string) string { return fmt.Sprintf("ready-82c-live-%d-%s", run, n) }

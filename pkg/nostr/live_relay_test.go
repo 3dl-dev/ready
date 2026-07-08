@@ -35,10 +35,9 @@ func TestLiveRelay_PublishFetchVerifyTamper(t *testing.T) {
 		relay = urls[0]
 	}
 
-	k, err := GenerateKey()
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	// Sign with the allowlisted portfolio key: the locked relays reject any
+	// non-admitted author (ready-266), so a throwaway key would be refused.
+	k := liveRelayKey(t)
 
 	e := &Event{
 		CreatedAt: time.Now().Unix(),

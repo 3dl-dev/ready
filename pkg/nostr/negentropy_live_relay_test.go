@@ -36,10 +36,9 @@ func TestLiveRelay_Negentropy(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	k, err := GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Sign with the allowlisted portfolio key (ready-266): the locked relays
+	// reject non-admitted authors, so uploads must use an admitted key.
+	k := liveRelayKey(t)
 
 	// A unique "d" tag namespace so this run's events are isolated from prior runs.
 	runTag := fmt.Sprintf("rd797-neg-%d", time.Now().UnixNano())
