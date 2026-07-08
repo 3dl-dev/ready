@@ -1,0 +1,254 @@
+// Nostr wire mapping (ready-a13) — the KEYSTONE mapping from an rd work item to
+// nostr events. The rest of the rd->nostr migration builds on this file.
+//
+// WIRE MAPPING (established here, per epic ready-a14):
+//
+//	project / campfire   -> NIP-100 board  kind:30301 (addressable)
+//	work item            -> NIP-100 card   kind:30302 (addressable, latest-wins)
+//	status               -> "s" tag on the card + a NIP-34 status event
+//	priority             -> "rank" tag (rd extension; also mirrored in "priority")
+//	assignee             -> "p" tag
+//
+// AUTHORITY MODEL (epic design invariant, 2026-07-06):
+//   - The local append-only SIGNED-EVENT LOG (pkg/sync NostrLog) is the source of
+//     truth. Every event here is schnorr-signed via pkg/nostr.
+//   - The 30302 addressable card is a materialized PROJECTION of the log
+//     (fast reads + interop with nostr kanban clients). It is NEVER read back as
+//     the source of truth — state is reconstructed by replaying the log.
+//   - Status authority follows the NIP-34 rule: the most recent status event from
+//     the item AUTHOR or a board MAINTAINER wins.
+//
+// HYBRID (not pure-addressable): we write BOTH the addressable card (current
+// state materialization) AND the append-only status event (history), so the
+// audit trail / close-with-reason / `rd show` replay survives. This is exactly
+// campfire's snapshot+log pattern ported to nostr.
+package sync
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/campfire-net/ready/pkg/state"
+)
+
+// Nostr event kinds used by the rd wire mapping. These follow the existing NIPs
+// (do NOT invent kinds, per epic ready-a14):
+//   - NIP-100 addressable board/card kinds.
+//   - NIP-34 issue status kinds (1630 open .. 1633 draft).
+const (
+	// KindBoard is the NIP-100 addressable board event = an rd project/campfire.
+	KindBoard = 30301
+	// KindCard is the NIP-100 addressable card event = an rd work item.
+	KindCard = 30302
+
+	// KindStatusOpen is the NIP-34 "open" status kind. rd maps its non-terminal
+	// statuses (inbox, active, scheduled, waiting, blocked) onto this kind and
+	// preserves the EXACT rd status in the "status" tag.
+	KindStatusOpen = 1630
+	// KindStatusResolved is NIP-34 "resolved" — rd maps "done" here.
+	KindStatusResolved = 1631
+	// KindStatusClosed is NIP-34 "closed" — rd maps "cancelled" and "failed" here.
+	KindStatusClosed = 1632
+	// KindStatusDraft is NIP-34 "draft" (unused by rd today; reserved).
+	KindStatusDraft = 1633
+)
+
+// statusKindFor maps an rd status string to the NIP-34 status kind. The exact rd
+// status is preserved separately in a "status" tag, so richer rd statuses
+// (waiting/blocked/scheduled) survive even though they all share KindStatusOpen.
+func statusKindFor(rdStatus string) int {
+	switch rdStatus {
+	case state.StatusDone:
+		return KindStatusResolved
+	case state.StatusCancelled, state.StatusFailed:
+		return KindStatusClosed
+	default:
+		// inbox, active, scheduled, waiting, blocked — all "open" in NIP-34 terms.
+		return KindStatusOpen
+	}
+}
+
+// CardSpec is the rd-item view fed into the wire mapping. It is a lean projection
+// of the fields the 30302 card + status event carry. Callers (cmd/rd create, or
+// the projection replay) build this from item state.
+type CardSpec struct {
+	// ItemID is the rd item ID (e.g. "ready-a13"); becomes the card "d" tag.
+	ItemID string
+	// Title becomes the card "title" tag.
+	Title string
+	// Status is the EXACT rd status (inbox, active, done, ...). Becomes the "s"
+	// tag on the card and the "status" tag on the NIP-34 status event, and picks
+	// the status event kind.
+	Status string
+	// Priority (p0..p3) becomes the "rank" tag (ordering) and a "priority" tag.
+	Priority string
+	// Assignee, when set, becomes a "p" tag (pubkey hex of the assignee).
+	Assignee string
+	// Type is the rd item type (task/decision/...); carried as an "itype" tag so
+	// the projection can reconstruct it (rd extension over NIP-100).
+	Type string
+	// Context is the item's long description; carried in the card content.
+	Context string
+	// BoardD is the board (project) "d" identifier this card belongs to.
+	BoardD string
+}
+
+// BoardSpec describes an rd project/campfire as a NIP-100 board (30301).
+type BoardSpec struct {
+	// BoardD is the board addressable identifier (rd project prefix / campfire).
+	BoardD string
+	// Title is the human project name.
+	Title string
+	// Maintainers are pubkey hex strings that may author authoritative status
+	// events for cards on this board (NIP-100 board "p" maintainers).
+	Maintainers []string
+}
+
+// coord returns a NIP-01 addressable coordinate "<kind>:<pubkey>:<d>" used by
+// "a" tags to reference an addressable event independent of any concrete event id.
+func coord(kind int, pubkey, d string) string {
+	return fmt.Sprintf("%d:%s:%s", kind, pubkey, d)
+}
+
+// BoardCoord returns the addressable coordinate of the board authored by pubkey.
+func BoardCoord(pubkey, boardD string) string { return coord(KindBoard, pubkey, boardD) }
+
+// CardCoord returns the addressable coordinate of the card authored by pubkey.
+func CardCoord(pubkey, itemID string) string { return coord(KindCard, pubkey, itemID) }
+
+// BuildBoardEvent constructs and signs the NIP-100 board (30301) event for a
+// project/campfire. createdAt MUST be seconds (NIP-01) — the caller supplies it
+// so id derivation is deterministic and testable.
+func BuildBoardEvent(k *nostr.Key, spec BoardSpec, createdAt int64) (*nostr.Event, error) {
+	tags := [][]string{
+		{"d", spec.BoardD},
+		{"title", spec.Title},
+	}
+	for _, m := range spec.Maintainers {
+		if m != "" {
+			tags = append(tags, []string{"p", m})
+		}
+	}
+	e := &nostr.Event{
+		Kind:      KindBoard,
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   "",
+	}
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign board event: %w", err)
+	}
+	return e, nil
+}
+
+// BuildCardEvent constructs and signs the NIP-100 card (30302) event that
+// materializes the item's CURRENT state (latest-wins addressable projection).
+// createdAt MUST be seconds.
+func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event, error) {
+	if spec.ItemID == "" {
+		return nil, fmt.Errorf("sync: card event: empty item id")
+	}
+	tags := [][]string{
+		{"d", spec.ItemID},
+		{"title", spec.Title},
+	}
+	if spec.BoardD != "" {
+		tags = append(tags, []string{"a", BoardCoord(k.PubKeyHex(), spec.BoardD)})
+	}
+	if spec.Status != "" {
+		tags = append(tags, []string{"s", spec.Status})
+	}
+	if spec.Priority != "" {
+		// priority maps to rank (ordering) AND an explicit priority tag (rd ext).
+		tags = append(tags, []string{"rank", spec.Priority})
+		tags = append(tags, []string{"priority", spec.Priority})
+	}
+	if spec.Type != "" {
+		tags = append(tags, []string{"itype", spec.Type})
+	}
+	if spec.Assignee != "" {
+		tags = append(tags, []string{"p", spec.Assignee})
+	}
+	e := &nostr.Event{
+		Kind:      KindCard,
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   spec.Context,
+	}
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign card event: %w", err)
+	}
+	return e, nil
+}
+
+// BuildStatusEvent constructs and signs a NIP-34 status event for the card. The
+// event kind encodes the NIP-34 open/resolved/closed family; the EXACT rd status
+// is preserved in the "status" tag so the projection reconstructs it faithfully.
+// It references the card by addressable coordinate ("a") so it survives card
+// churn, and by the concrete card event id ("e") when one is supplied. reason is
+// an optional close/change reason carried in the content (rd's close-with-reason).
+// createdAt MUST be seconds.
+func BuildStatusEvent(k *nostr.Key, itemID, rdStatus, cardEventID, reason string, createdAt int64) (*nostr.Event, error) {
+	if itemID == "" {
+		return nil, fmt.Errorf("sync: status event: empty item id")
+	}
+	if rdStatus == "" {
+		return nil, fmt.Errorf("sync: status event: empty status")
+	}
+	tags := [][]string{
+		{"a", CardCoord(k.PubKeyHex(), itemID)},
+		{"d", itemID},
+		{"status", rdStatus},
+	}
+	if cardEventID != "" {
+		tags = append(tags, []string{"e", cardEventID})
+	}
+	e := &nostr.Event{
+		Kind:      statusKindFor(rdStatus),
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   reason,
+	}
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign status event: %w", err)
+	}
+	return e, nil
+}
+
+// tagValue returns the first value of the first tag whose name matches, or "".
+func tagValue(e *nostr.Event, name string) string {
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == name {
+			return t[1]
+		}
+	}
+	return ""
+}
+
+// isStatusKind reports whether a kind is one of the NIP-34 status kinds.
+func isStatusKind(kind int) bool {
+	return kind >= KindStatusOpen && kind <= KindStatusDraft
+}
+
+// itemIDForEvent extracts the rd item ID an event pertains to. Cards carry it in
+// "d"; status events carry it in "d" and/or the "a" coordinate. Returns "" when
+// the event is not an rd item event (e.g. a board).
+func itemIDForEvent(e *nostr.Event) string {
+	if e.Kind == KindCard {
+		return tagValue(e, "d")
+	}
+	if isStatusKind(e.Kind) {
+		if d := tagValue(e, "d"); d != "" {
+			return d
+		}
+		// Fall back to the "a" coordinate: "30302:<pubkey>:<itemID>".
+		if a := tagValue(e, "a"); a != "" {
+			parts := strings.SplitN(a, ":", 3)
+			if len(parts) == 3 {
+				return parts[2]
+			}
+		}
+	}
+	return ""
+}

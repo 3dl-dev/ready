@@ -123,6 +123,63 @@ func Fetch(ctx context.Context, relayURL, id string) (*Event, error) {
 	}
 }
 
+// FetchMany opens a websocket connection to a single relay and runs a NIP-01
+// ["REQ", <sub>, <filter>] subscription, collecting every EVENT the relay serves
+// until EOSE (or the context deadline). filter is a raw NIP-01 filter object,
+// e.g. {"kinds":[30302],"authors":[pk],"#d":[itemID]}. It returns the events in
+// relay-delivery order. This is the cache-fill/reconcile primitive: rd queries a
+// relay for an item's card + status events, then merges them into the local
+// authoritative log — the relay is never the authority.
+func FetchMany(ctx context.Context, relayURL string, filter map[string]any) ([]*Event, error) {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nostr: dial %s: %w", relayURL, err)
+	}
+	defer conn.Close()
+
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetWriteDeadline(dl)
+		_ = conn.SetReadDeadline(dl)
+	}
+
+	const sub = "rd-fetchmany"
+	req := []any{"REQ", sub, filter}
+	if err := conn.WriteJSON(req); err != nil {
+		return nil, fmt.Errorf("nostr: write REQ: %w", err)
+	}
+
+	var out []*Event
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return nil, fmt.Errorf("nostr: read EVENT: %w", err)
+		}
+		var frame []json.RawMessage
+		if err := json.Unmarshal(data, &frame); err != nil || len(frame) == 0 {
+			continue
+		}
+		var typ string
+		if err := json.Unmarshal(frame[0], &typ); err != nil {
+			continue
+		}
+		switch typ {
+		case "EVENT":
+			if len(frame) < 3 {
+				continue
+			}
+			var got Event
+			if err := json.Unmarshal(frame[2], &got); err != nil {
+				continue
+			}
+			ev := got
+			out = append(out, &ev)
+		case "EOSE":
+			_ = writeClose(conn, sub)
+			return out, nil
+		}
+	}
+}
+
 func writeClose(conn *websocket.Conn, sub string) error {
 	return conn.WriteJSON([]any{"CLOSE", sub})
 }

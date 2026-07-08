@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
 	"github.com/mattn/go-isatty"
@@ -276,6 +276,13 @@ Note: use --context for descriptions, not --description.`,
 			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
 			if err != nil {
 				return err
+			}
+
+			// rd->nostr hybrid publish (ready-a13). Gated by RD_NOSTR=1 so the
+			// campfire baseline is unaffected. Best-effort: a relay failure never
+			// fails create — the events are durable in the local authoritative log.
+			if nostrErr := publishItemCreateNostr(id, title, itemType, priority, "", context, forParty); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item created; local log/campfire durable): %v\n", nostrErr)
 			}
 
 			if jsonOutput {
