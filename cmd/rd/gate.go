@@ -73,6 +73,20 @@ Example:
 				return err
 			}
 
+			// rd->nostr hybrid publish (ready-2cf): rd gate transitions the item to
+			// waiting (waiting_type=gate), mirroring pkg/state.handleWorkGate exactly.
+			// Publish a status change carrying the gate description as the reason so
+			// (a) the card materializes s=waiting + waiting_type/waiting_on tags
+			// (the projection then derives GateMsgID → views.GatesFilter sees a
+			// pending gate) and (b) the gate action lands in the audit-history
+			// replay. AFTER enforcement; best-effort.
+			item.Status = state.StatusWaiting
+			item.WaitingType = "gate"
+			item.WaitingOn = description
+			if nostrErr := publishItemStatusChangeNostr(item, description); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (gate sent; campfire durable): %v\n", nostrErr)
+			}
+
 			if jsonOutput {
 				out := map[string]interface{}{
 					"id":          item.ID,

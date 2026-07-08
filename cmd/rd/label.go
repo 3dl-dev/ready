@@ -416,6 +416,20 @@ Example:
 				return err
 			}
 
+			// rd->nostr hybrid publish (ready-2cf): a label add changes the item's
+			// label set — re-publish its card with the updated "l" tags so a nostr
+			// reader reconstructs Item.Labels. Card-only edit (no status change).
+			// AFTER the label-add enforcement (pattern + registry) succeeded;
+			// best-effort. Only re-derive when nostr is active.
+			if nostrEnabled() {
+				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
+					item.Labels = strSliceAppendUnique(item.Labels, label)
+					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: nostr publish failed (label added; campfire durable): %v\n", nostrErr)
+					}
+				}
+			}
+
 			if jsonOutput {
 				out := map[string]interface{}{
 					"item_id":     itemID,
@@ -467,6 +481,19 @@ Example:
 			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
 			if err != nil {
 				return err
+			}
+
+			// rd->nostr hybrid publish (ready-2cf): a label remove drops the atom
+			// from the item's label set — re-publish its card with the updated "l"
+			// tags. Card-only edit. AFTER enforcement; best-effort. Removing an
+			// absent label is idempotent (mirrors the campfire remove semantics).
+			if nostrEnabled() {
+				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
+					item.Labels = strSliceRemove(item.Labels, label)
+					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: nostr publish failed (label removed; campfire durable): %v\n", nostrErr)
+					}
+				}
 			}
 
 			if jsonOutput {

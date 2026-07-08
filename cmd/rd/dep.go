@@ -108,6 +108,18 @@ var depAddCmd = &cobra.Command{
 				return err
 			}
 
+			// rd->nostr hybrid publish (ready-2cf): a dep add mutates the blocked
+			// item's dependency set. Re-publish the blocked item's card with the
+			// updated deps ("i" tags) so a nostr reader recomputes the same
+			// blocked/ready state. Card-only edit (no status event): blocked-status
+			// is a projection of the dep tags, not an authoritative transition.
+			// Best-effort, AFTER enforcement succeeded — a relay failure never
+			// fails the mutation (campfire write already durable).
+			blocked.BlockedBy = strSliceAppendUnique(blocked.BlockedBy, blockerID)
+			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (dep added; campfire durable): %v\n", nostrErr)
+			}
+
 			if jsonOutput {
 				out := map[string]interface{}{
 					"msg_id":      msg.ID,
@@ -180,6 +192,16 @@ var depRemoveCmd = &cobra.Command{
 			msg, newCampfireID, err := executeConventionOpToCampfire(agentID, s, exec, decl, campfireID, argsMap)
 			if err != nil {
 				return err
+			}
+
+			// rd->nostr hybrid publish (ready-2cf): dep remove drops the edge from
+			// the blocked item's dep set — re-publish its card so the nostr reader
+			// recomputes readiness (the item may now be unblocked). Local deps are
+			// stored as the plain blocker ID; a cross-campfire edge is stored as
+			// "<campfireID>.<itemID>" — strip both forms. Card-only edit.
+			blocked.BlockedBy = strSliceRemove(blocked.BlockedBy, blocker.ID, blocker.CampfireID+"."+blocker.ID)
+			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (dep removed; campfire durable): %v\n", nostrErr)
 			}
 
 			if jsonOutput {
