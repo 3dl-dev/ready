@@ -20,3 +20,6 @@ docs/resonant/
 .cf/
 .ready/
 cover.out
+
+# Local vendor tree (generated on demand for offline builds; never committed)
+/vendor/

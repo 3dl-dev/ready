@@ -100,6 +100,35 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 	return added, nil
 }
 
+// MergeFrom integrates another signed-event log file into this one, appending
+// only events not already present (dedup by event id) that pass an independent
+// schnorr Verify. It returns the number of events actually added.
+//
+// This is the DEGRADE FLOOR (epic ready-a14 invariant): with every relay
+// unreachable, two machines still converge by exchanging their git-committed
+// nostr-log.jsonl files (the "beads-without-dolt" fallback) and merging. Because
+// the log is append-only signed events, a git merge of the JSONL plus this
+// idempotent, id-deduped, verify-gated merge yields the union with zero data loss
+// — no relay required. Forged or tampered lines in the other file are rejected.
+func (l *NostrLog) MergeFrom(otherPath string) (int, error) {
+	other := NewNostrLog(otherPath)
+	evs, err := other.ReadAll()
+	if err != nil {
+		return 0, err
+	}
+	verified := make([]*nostr.Event, 0, len(evs))
+	for _, e := range evs {
+		if e == nil {
+			continue
+		}
+		if err := e.Verify(); err != nil {
+			continue // trust gate: never merge an event that does not verify
+		}
+		verified = append(verified, e)
+	}
+	return l.AppendUnique(verified)
+}
+
 // ReadAll reads every signed event from the log in append order. A missing file
 // yields an empty slice (fresh / wiped cache), not an error.
 func (l *NostrLog) ReadAll() ([]*nostr.Event, error) {
