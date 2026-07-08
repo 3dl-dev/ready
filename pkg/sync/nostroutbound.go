@@ -111,6 +111,24 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 	return p.publishEvents(ctx, res, []*nostr.Event{ce, se})
 }
 
+// PublishCardEdit publishes ONLY a refreshed 30302 card (no accompanying NIP-34
+// status event) for a pure field edit — title/context/priority changes that do
+// NOT change status (e.g. `rd progress`, `rd update --context`). This is the
+// hybrid model's proof point (ready-b5f): the addressable card is a disposable,
+// re-publishable CURRENT-state materialization; history lives exclusively in the
+// append-only status-event chain built by PublishItem/PublishStatusChange. A
+// card-only edit can therefore never add to, or erase, that history — `rd show`
+// keeps replaying the exact same status transitions after any number of edits.
+func (p *Publisher) PublishCardEdit(ctx context.Context, card CardSpec, createdAt int64) (PublishResult, error) {
+	var res PublishResult
+	res.ItemID = card.ItemID
+	ce, err := BuildCardEvent(p.Key, card, createdAt)
+	if err != nil {
+		return res, err
+	}
+	return p.publishEvents(ctx, res, []*nostr.Event{ce})
+}
+
 func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events []*nostr.Event) (PublishResult, error) {
 	// Phase 1 — append to the authoritative log. This MUST succeed; it is the
 	// durability guarantee independent of any relay.

@@ -115,6 +115,95 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 	return nil
 }
 
+// closeResolutionToStatus maps an rd close resolution (done/cancelled/failed) to
+// the rd status string, mirroring pkg/state's handleWorkClose switch so the
+// nostr status-change publish carries the exact same terminal status.
+func closeResolutionToStatus(resolution string) string {
+	switch resolution {
+	case "cancelled":
+		return state.StatusCancelled
+	case "failed":
+		return state.StatusFailed
+	default:
+		return state.StatusDone
+	}
+}
+
+// nostrCardSpecFromItem builds the wire-mapping CardSpec from CURRENT (already
+// mutated in-memory) rd item state. Shared by every status-change and card-edit
+// publish hook so every mutation path (claim/progress/update/close) materializes
+// the card the same way create does.
+func nostrCardSpecFromItem(item *state.Item, boardD string) rdSync.CardSpec {
+	return rdSync.CardSpec{
+		ItemID:   item.ID,
+		Title:    item.Title,
+		Status:   item.Status,
+		Priority: item.Priority,
+		Assignee: item.By,
+		Type:     item.Type,
+		Context:  item.Context,
+		BoardD:   boardD,
+	}
+}
+
+// publishItemStatusChangeNostr is the status-change hook (claim / status update /
+// close-done / fail / cancel): when nostr is enabled, publish a refreshed card
+// (current field state) PLUS a NIP-34 status event carrying the optional
+// close/change reason. This is what makes `rd show`'s history replay see every
+// transition, with close-with-reason preserved exactly (ready-b5f). Best-effort:
+// mirrors publishItemCreateNostr — a relay failure never fails the caller's
+// mutation, since the campfire/JSONL write already succeeded and the nostr event
+// is durable in the local authoritative log regardless of relay reachability.
+func publishItemStatusChangeNostr(item *state.Item, reason string) error {
+	if !nostrEnabled() {
+		return nil
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		return err
+	}
+	dir, _ := readyProjectDir()
+	board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+	card := nostrCardSpecFromItem(item, board.BoardD)
+	res, err := pub.PublishStatusChange(context.Background(), card, reason, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if debugOutput {
+		for _, ev := range res.Events {
+			fmt.Fprintf(os.Stderr, "nostr: published kind %d id %s (relay-accepted=%v)\n", ev.Kind, ev.EventID, ev.AnyRelay)
+		}
+	}
+	return nil
+}
+
+// publishItemCardEditNostr is the card-only-edit hook (progress notes, title/
+// context/priority updates with NO status change): publishes a refreshed card
+// with no accompanying status event, proving the hybrid invariant that editing
+// the addressable 30302 card does not add — or erase — history (ready-b5f).
+func publishItemCardEditNostr(item *state.Item) error {
+	if !nostrEnabled() {
+		return nil
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		return err
+	}
+	dir, _ := readyProjectDir()
+	board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+	card := nostrCardSpecFromItem(item, board.BoardD)
+	res, err := pub.PublishCardEdit(context.Background(), card, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if debugOutput {
+		for _, ev := range res.Events {
+			fmt.Fprintf(os.Stderr, "nostr: published kind %d id %s (relay-accepted=%v)\n", ev.Kind, ev.EventID, ev.AnyRelay)
+		}
+	}
+	return nil
+}
+
 var nostrCmd = &cobra.Command{
 	Use:   "nostr",
 	Short: "rd<->nostr wire-mapping operations (ready-a13)",
@@ -193,6 +282,20 @@ var nostrShowCmd = &cobra.Command{
 		fmt.Printf("type:     %s\n", item.Type)
 		if item.By != "" {
 			fmt.Printf("assignee: %s\n", item.By)
+		}
+		if len(item.History) > 0 {
+			// Full audit-trail replay (ready-b5f): every authoritative status
+			// event in the append-only log, NOT just the latest-wins card. Editing
+			// the card never erases these entries — they are derived exclusively
+			// from the NIP-34 status-event chain.
+			fmt.Printf("\nhistory:\n")
+			for _, h := range item.History {
+				note := ""
+				if h.Note != "" {
+					note = " — " + h.Note
+				}
+				fmt.Printf("  [%s] %s → %s by %s%s\n", h.Timestamp, h.FromStatus, h.ToStatus, h.ChangedBy, note)
+			}
 		}
 		if reconcileNote != "" {
 			fmt.Printf("(%s)\n", reconcileNote)
