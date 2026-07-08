@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	btcec "github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -86,9 +87,10 @@ const cfHomeDirName = ".cf"
 // requireUnderCFHome guards against SaveKeyFile being pointed at an arbitrary,
 // potentially git-tracked location. It rejects path unless one of its resolved
 // ancestor directories is literally named ".cf" — the same directory name the
-// repo's .gitignore blanket-ignores. This does not resolve symlinks (that
-// TOCTOU concern is tracked separately as ready-53f); it only checks the
-// lexical path structure.
+// repo's .gitignore blanket-ignores. This does not resolve symlinks (a
+// symlink-swap TOCTOU against this lexical check is a separate, still-open
+// hardening concern, distinct from the create-or-load race ready-53f fixes
+// below); it only checks the lexical path structure.
 func requireUnderCFHome(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -154,20 +156,94 @@ func LoadKeyFile(path string) (*Key, error) {
 // (default "nostr-identity.json") in the same .cf home, so existing identity
 // resolution is unaffected. Real cross-machine provisioning of this key is a
 // follow-up; for now first use generates a local key.
+//
+// Concurrency: the naive "os.Stat then SaveKeyFile" sequence has a TOCTOU
+// race — two concurrent first-time callers can both observe the file missing,
+// both generate a *different* key, and the second SaveKeyFile silently
+// overwrites the first, leaving the two callers holding mismatched identities.
+// To close that race, the create path uses os.O_CREATE|os.O_EXCL: exactly one
+// caller (per process, and across processes on POSIX filesystems since
+// O_EXCL is atomic at the OS level) wins the exclusive create and writes its
+// generated key; every other concurrent caller gets EEXIST and instead reads
+// back whatever the winner wrote, so all callers converge on one identical
+// key and an existing key is never overwritten.
 func LoadOrCreatePortfolioKey(path string) (*Key, error) {
-	if _, err := os.Stat(path); err == nil {
-		return LoadKeyFile(path)
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("nostr: stat key file: %w", err)
+	if err := requireUnderCFHome(path); err != nil {
+		return nil, err
 	}
+
+	// Fast path: the key already exists (the common case after first use).
+	if k, err := loadKeyFileIfExists(path); err != nil {
+		return nil, err
+	} else if k != nil {
+		return k, nil
+	}
+
 	k, err := GenerateKey()
 	if err != nil {
 		return nil, err
 	}
-	if err := SaveKeyFile(path, k); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("nostr: mkdir for key file: %w", err)
+	}
+	kf := keyFile{Version: 1, SecretHex: k.SecretHex(), PubKeyHex: k.PubKeyHex()}
+	data, err := json.MarshalIndent(kf, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("nostr: marshal key file: %w", err)
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Another concurrent caller won the race and created the file
+			// first (or is in the middle of writing it). Converge on
+			// whatever it wrote instead of overwriting it.
+			return waitForKeyFile(path)
+		}
+		return nil, fmt.Errorf("nostr: create key file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return nil, fmt.Errorf("nostr: write key file: %w", err)
+	}
+	return k, nil
+}
+
+// loadKeyFileIfExists returns (nil, nil) when path does not exist, so callers
+// can distinguish "not created yet" from a real read/parse error.
+func loadKeyFileIfExists(path string) (*Key, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("nostr: stat key file: %w", err)
+	}
+	k, err := LoadKeyFile(path)
+	if err != nil {
 		return nil, err
 	}
 	return k, nil
+}
+
+// waitForKeyFile is used by the loser of the O_CREATE|O_EXCL race: the
+// winner's file is guaranteed to exist but may not be fully written yet
+// (create and write are two separate syscalls), so retry the load briefly
+// instead of racing on a partial file.
+func waitForKeyFile(path string) (*Key, error) {
+	const (
+		attempts = 100
+		delay    = 2 * time.Millisecond
+	)
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		k, err := LoadKeyFile(path)
+		if err == nil {
+			return k, nil
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+	return nil, fmt.Errorf("nostr: timed out waiting for concurrently-created key file %q: %w", path, lastErr)
 }
 
 // DefaultKeyPath returns the conventional location of the portfolio nostr key
