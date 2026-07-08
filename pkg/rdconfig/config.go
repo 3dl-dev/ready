@@ -26,6 +26,12 @@ type Config struct {
 	// a non-default beacon root via "rd join". Once pinned, deviations require
 	// explicit user confirmation.
 	BeaconRoot string `json:"beacon_root,omitempty"`
+
+	// RelayEndpoints lists the self-hosted nostr relays (strfry) the portfolio
+	// identity reads/writes for the nostr migration. When empty, DefaultRelays()
+	// is used. See relay.go and docs/relay-runbook.md. The relays are a cache /
+	// always-available copy, NEVER the source of truth.
+	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
 }
 
 // Path returns the config file path within the given campfire home directory.
