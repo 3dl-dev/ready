@@ -33,17 +33,40 @@ type ReconcileResult struct {
 // returns what it could (possibly nothing) and the caller reads from the local
 // log regardless. Only events that pass Verify are merged.
 func ReconcileItem(ctx context.Context, relays []string, log *NostrLog, itemID, authorPubkey string, timeout time.Duration) (ReconcileResult, error) {
-	var res ReconcileResult
-	if timeout <= 0 {
-		timeout = nostr.DefaultTimeout
-	}
-
 	filter := map[string]any{
 		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
 		"#d":    []string{itemID},
 	}
 	if authorPubkey != "" {
 		filter["authors"] = []string{authorPubkey}
+	}
+	return reconcile(ctx, relays, log, filter, itemID, timeout)
+}
+
+// ReconcileAll queries the read relays for EVERY card + status event authored
+// by authorPubkey (no item-id filter) and merges any new signed events into the
+// local log. This is the multi-item counterpart to ReconcileItem, needed by the
+// attention engine (`rd ready`/`rd nostr ready`): readiness depends on the
+// WHOLE dep/gate graph, not a single item. Same cache-fill semantics: the local
+// log stays authoritative, relays are best-effort, every relay may be offline.
+func ReconcileAll(ctx context.Context, relays []string, log *NostrLog, authorPubkey string, timeout time.Duration) (ReconcileResult, error) {
+	filter := map[string]any{
+		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
+	}
+	if authorPubkey != "" {
+		filter["authors"] = []string{authorPubkey}
+	}
+	return reconcile(ctx, relays, log, filter, "", timeout)
+}
+
+// reconcile is the shared fetch+verify+merge core for ReconcileItem/ReconcileAll.
+// wantItemID, when non-empty, is a defensive post-filter (relays may honor tag
+// filters loosely) restricting merged events to a single item; empty means
+// accept any rd item event.
+func reconcile(ctx context.Context, relays []string, log *NostrLog, filter map[string]any, wantItemID string, timeout time.Duration) (ReconcileResult, error) {
+	var res ReconcileResult
+	if timeout <= 0 {
+		timeout = nostr.DefaultTimeout
 	}
 
 	var fetched []*nostr.Event
@@ -63,8 +86,11 @@ func ReconcileItem(ctx context.Context, relays []string, log *NostrLog, itemID, 
 			if err := e.Verify(); err != nil {
 				continue
 			}
-			// Defensive: relays may honor #d loosely; keep only this item's events.
-			if itemIDForEvent(e) != itemID {
+			id := itemIDForEvent(e)
+			if id == "" {
+				continue
+			}
+			if wantItemID != "" && id != wantItemID {
 				continue
 			}
 			fetched = append(fetched, e)

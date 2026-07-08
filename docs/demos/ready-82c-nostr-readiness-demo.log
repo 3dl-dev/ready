@@ -1,0 +1,33 @@
+[36m==>[0m building rd
+[36m==>[0m rd init --offline (JSONL-only project; no campfire needed)
+
+[36m==>[0m STEP 1: rd nostr seed-demo -> publish the 5-item dep+gate graph to the LIVE relay + local log
+    published ready-t01 kind 30301 id 4f934d421145294c90d5be0ac235060795af527df64b622a96ab4e88ae9ec968 relay-accepted=true
+    published ready-t01 kind 30302 id e3cd38ab085ebbb86a00886d4b491c2c533c1ab996fab6e0930031e7a0f898b0 relay-accepted=true
+    published ready-t01 kind 1630 id fb99802a58209dc9b7a697ce8b70f765c9889df187ee50922f79a6896b764e78 relay-accepted=true
+    published ready-t02 kind 30302 id 310904cee051086b4194963942e3c15638bebe1cfaf4256347f6d7a087df3091 relay-accepted=true
+    published ready-t02 kind 1630 id 55aa76edee9b6eeb4d518d0a3008b8d9c997084f90b09b7aa31fb68885f4f758 relay-accepted=true
+    published ready-t03 kind 30302 id 5aab81dfd230b0f33d5951780d46772887592e38bdc4e91b695c1ef6cde993c8 relay-accepted=true
+    published ready-t03 kind 1630 id b6e1e30d586f90e825e940c5d0abea934b18322a7c837d566e6a038927f182f1 relay-accepted=true
+    published ready-t04 kind 30302 id 677218bfa04fc5b4abe9f2e58ac0dfb290be685fbded42202e811776bdea4768 relay-accepted=true
+    published ready-t04 kind 1631 id b47835e589ecde04338e0e1323207b37ec36b2253d1753e4a0c19ba1b2e6305e relay-accepted=true
+    published ready-t05 kind 30302 id 5444ca71d840f00483c2dfa25e3e5d8b3161196277238d5a41b49842df10fa21 relay-accepted=true
+    published ready-t05 kind 1630 id 079d0e727740b9d811e96d12c12b041d2c3e0b310912a05b145333edccf81540 relay-accepted=true
+[32mPASS[0m published 11 signed card events to the relay + local log
+
+[36m==>[0m STEP 2: rd nostr ready (LOCAL LOG only) — attention engine over the nostr projection
+[32mPASS[0m [local-log] view=ready -> [t01 t03 t05] (matches pre-migration expectation)
+[32mPASS[0m [local-log] view=gates -> [t03] (matches pre-migration expectation)
+
+[36m==>[0m STEP 3: WIPE the local log, then rd nostr ready --reconcile cache-fills from the LIVE relay
+[32mPASS[0m [relay-reconciled] view=ready -> [t01 t03 t05] (matches pre-migration expectation)
+[32mPASS[0m [relay-reconciled] view=gates -> [t03] (matches pre-migration expectation)
+
+[32mPASS[0m ALL ready-82c READINESS-PARITY STEPS PASSED
+
+SUMMARY
+  graph:              t01 (free) -> blocks t02; t03 (gate:human, waiting); t04 (done) -> blocks t05
+  ready view (want):  t01, t03, t05
+  gates view (want):  t03
+  local-log read:     PASS (readiness computed from nostr projection matches expectation)
+  relay-reconciled:   PASS (wiped cache rebuilt from the LIVE relay; readiness still matches)
