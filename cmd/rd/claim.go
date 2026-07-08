@@ -62,6 +62,15 @@ Example:
 			return err
 		}
 
+		// rd->nostr hybrid publish (ready-b5f): claim is a status transition
+		// (-> active) with assignee=sender; publish it as a NIP-34 status event so
+		// the audit trail replay sees this step. Best-effort/no-op when disabled.
+		item.Status = state.StatusActive
+		item.By = agentID.PublicKeyHex()
+		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item claimed; campfire durable): %v\n", nostrErr)
+		}
+
 		if jsonOutput {
 			out := map[string]interface{}{
 				"id":          item.ID,

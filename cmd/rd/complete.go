@@ -83,6 +83,13 @@ Example:
 			return err
 		}
 
+		// rd->nostr hybrid publish (ready-b5f): same status-change hook as close,
+		// preserving the enforced close-with-reason in the audit trail replay.
+		item.Status = state.StatusDone
+		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item completed; campfire durable): %v\n", nostrErr)
+		}
+
 		if jsonOutput {
 			out := map[string]interface{}{
 				"id":          item.ID,

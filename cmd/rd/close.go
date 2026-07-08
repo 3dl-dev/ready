@@ -72,6 +72,14 @@ Example:
 			return err
 		}
 
+		// rd->nostr hybrid publish (ready-b5f): close is a status transition to a
+		// terminal state, carrying the enforced close-with-reason. Publish it as a
+		// NIP-34 status event so the audit trail replay preserves the reason exactly.
+		item.Status = closeResolutionToStatus(resolution)
+		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
+		}
+
 		if jsonOutput {
 			out := map[string]interface{}{
 				"id":          item.ID,

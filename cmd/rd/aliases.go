@@ -159,6 +159,14 @@ Example:
 			return err
 		}
 
+		// rd->nostr hybrid publish (ready-b5f): cancel is a close-with-reason
+		// status change; wire only the parent (cascaded children are a separate
+		// mutation each and are out of scope for this hook).
+		item.Status = state.StatusCancelled
+		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item cancelled; campfire durable): %v\n", nostrErr)
+		}
+
 		if jsonOutput {
 			out := map[string]interface{}{
 				"id":          item.ID,
@@ -327,6 +335,14 @@ Example:
 			return err
 		}
 
+		// rd->nostr hybrid publish (ready-b5f): progress is a card-only edit (no
+		// status change) — publish a refreshed card with NO status event, proving
+		// the invariant that editing the addressable card does not touch history.
+		item.Context = newContext
+		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (progress noted; campfire durable): %v\n", nostrErr)
+		}
+
 		if jsonOutput {
 			out := map[string]interface{}{
 				"id":          item.ID,
@@ -386,6 +402,14 @@ func runCloseAlias(resolution string) func(cmd *cobra.Command, args []string) er
 		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
 		if err != nil {
 			return err
+		}
+
+		// rd->nostr hybrid publish (ready-b5f): done/fail are close-with-reason
+		// aliases; publish the same status-change event as close so the audit
+		// trail replay preserves the reason exactly.
+		item.Status = closeResolutionToStatus(resolution)
+		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
 		}
 
 		if jsonOutput {

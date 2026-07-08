@@ -148,6 +148,23 @@ Examples:
 			}
 			lastMsgID = msg.ID
 			lastCampfireID = campfireID
+
+			// rd->nostr hybrid publish (ready-b5f): a field-only edit (title/
+			// context/priority/eta/due/level) is a card-only edit — no status
+			// change, so publish the refreshed card with NO status event. Proves
+			// editing the card never touches history.
+			if title != "" {
+				item.Title = title
+			}
+			if context != "" {
+				item.Context = context
+			}
+			if priority != "" {
+				item.Priority = priority
+			}
+			if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item updated; campfire durable): %v\n", nostrErr)
+			}
 		}
 
 		// Send work:status if a status transition is requested.
@@ -177,6 +194,13 @@ Examples:
 			}
 			lastMsgID = msg.ID
 			lastCampfireID = campfireID
+
+			// rd->nostr hybrid publish (ready-b5f): this IS a status change —
+			// publish a NIP-34 status event so the audit trail replay sees it.
+			item.Status = statusTo
+			if nostrErr := publishItemStatusChangeNostr(item, note); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (status updated; campfire durable): %v\n", nostrErr)
+			}
 		}
 
 		// Send work:claim if --claim is set.
@@ -196,6 +220,13 @@ Examples:
 			}
 			lastMsgID = msg.ID
 			lastCampfireID = campfireID
+
+			// rd->nostr hybrid publish (ready-b5f): --claim is a status change too.
+			item.Status = state.StatusActive
+			item.By = agentID.PublicKeyHex()
+			if nostrErr := publishItemStatusChangeNostr(item, ""); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item claimed; campfire durable): %v\n", nostrErr)
+			}
 		}
 
 		if jsonOutput {

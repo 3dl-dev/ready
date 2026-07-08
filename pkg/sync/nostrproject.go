@@ -20,6 +20,7 @@
 package sync
 
 import (
+	"sort"
 	"time"
 
 	"github.com/campfire-net/ready/pkg/nostr"
@@ -76,33 +77,51 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		author := card.ev.PubKey
 		item := itemFromCard(card.ev)
 
-		// Status authority: newest status event from author-or-maintainer.
-		var best ranked
-		haveStatus := false
+		// Status authority + FULL HISTORY REPLAY (ready-b5f): collect every status
+		// event authored by the item AUTHOR or a board MAINTAINER — not just the
+		// newest one. The 30302 card is a latest-wins projection with NO history of
+		// its own (per the epic's hybrid design); the append-only status-event chain
+		// IS the audit trail, so every authoritative transition becomes a
+		// HistoryEntry, in chronological order, each carrying its own reason
+		// (close-with-reason survives exactly as published). A non-authoritative
+		// (non-author/non-maintainer) status event is excluded entirely — it never
+		// contributes state OR history, matching the NIP-34 authority rule.
+		var authoritative []ranked
 		for _, s := range statusEvents[itemID] {
 			if s.ev.PubKey != author && !opts.Maintainers[s.ev.PubKey] {
 				continue // not authoritative
 			}
-			if !haveStatus || newerThan(s.ev, s.idx, best.ev, best.idx) {
-				best = s
-				haveStatus = true
-			}
+			authoritative = append(authoritative, s)
 		}
-		if haveStatus {
-			fromStatus := item.Status
-			if st := tagValue(best.ev, "status"); st != "" {
-				item.Status = st
+		sort.Slice(authoritative, func(i, j int) bool {
+			a, b := authoritative[i], authoritative[j]
+			if a.ev.CreatedAt != b.ev.CreatedAt {
+				return a.ev.CreatedAt < b.ev.CreatedAt
 			}
-			item.UpdatedAt = maxInt64(item.UpdatedAt, best.ev.CreatedAt*int64(time.Second))
-			// Preserve the audit trail: a status event carries the transition and,
-			// for closes, the rd close-with-reason (in the event content).
+			return a.idx < b.idx
+		})
+
+		prevStatus := ""
+		for _, s := range authoritative {
+			toStatus := tagValue(s.ev, "status")
+			if toStatus == "" {
+				toStatus = prevStatus
+			}
 			item.History = append(item.History, state.HistoryEntry{
-				Timestamp:  time.Unix(best.ev.CreatedAt, 0).UTC().Format(time.RFC3339),
-				FromStatus: fromStatus,
-				ToStatus:   item.Status,
-				ChangedBy:  best.ev.PubKey,
-				Note:       best.ev.Content,
+				Timestamp:  time.Unix(s.ev.CreatedAt, 0).UTC().Format(time.RFC3339),
+				FromStatus: prevStatus,
+				ToStatus:   toStatus,
+				ChangedBy:  s.ev.PubKey,
+				Note:       s.ev.Content,
 			})
+			item.UpdatedAt = maxInt64(item.UpdatedAt, s.ev.CreatedAt*int64(time.Second))
+			prevStatus = toStatus
+		}
+		if len(authoritative) > 0 {
+			// The last authoritative status event still wins for CURRENT state —
+			// identical to the prior latest-wins behavior, now with full history
+			// alongside it instead of only the winning entry.
+			item.Status = prevStatus
 		}
 		out[itemID] = item
 	}
