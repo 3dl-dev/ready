@@ -21,5 +21,10 @@ docs/resonant/
 .ready/
 cover.out
 
+# Nostr portfolio signing key (secret material). Named explicitly for
+# defense-in-depth on top of the .cf/ blanket ignore above — this file must
+# never be tracked no matter where it ends up on disk.
+nostr-identity.json
+
 # Local vendor tree (generated on demand for offline builds; never committed)
 /vendor/

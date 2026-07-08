@@ -49,7 +49,9 @@ func TestKeyRoundTrip_Hex(t *testing.T) {
 }
 
 func TestSaveLoadKeyFile_PermsAndRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	// The key path must resolve under a ".cf" ancestor directory (see
+	// requireUnderCFHome) so this mirrors real usage (CFHome()/.cf/...).
+	dir := filepath.Join(t.TempDir(), ".cf")
 	path := filepath.Join(dir, "nostr-identity.json")
 
 	k, err := GenerateKey()
@@ -78,8 +80,12 @@ func TestSaveLoadKeyFile_PermsAndRoundTrip(t *testing.T) {
 }
 
 func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
-	dir := t.TempDir()
-	path := DefaultKeyPath(dir)
+	// DefaultKeyPath is always called with a real CFHome() in production,
+	// i.e. a directory literally named ".cf" — mirror that here so the
+	// default-path round-trip exercises the same shape requireUnderCFHome
+	// expects.
+	cfHome := filepath.Join(t.TempDir(), ".cf")
+	path := DefaultKeyPath(cfHome)
 
 	k1, err := LoadOrCreatePortfolioKey(path)
 	if err != nil {
@@ -95,5 +101,40 @@ func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
 	}
 	if k1.SecretHex() != k2.SecretHex() {
 		t.Fatalf("LoadOrCreatePortfolioKey regenerated instead of loading existing key")
+	}
+}
+
+func TestSaveKeyFile_RejectsPathOutsideCFHome(t *testing.T) {
+	// No ".cf" ancestor directory anywhere in this path — must be rejected
+	// so a caller can never accidentally persist the secret into a
+	// git-tracked location.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nostr-identity.json")
+
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := SaveKeyFile(path, k); err == nil {
+		t.Fatalf("SaveKeyFile(%q) should have been rejected: no .cf ancestor directory", path)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Fatalf("SaveKeyFile must not write the file when the guard rejects the path")
+	}
+}
+
+func TestSaveKeyFile_AcceptsPathUnderCFHome(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".cf", "nested")
+	path := filepath.Join(dir, "nostr-identity.json")
+
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := SaveKeyFile(path, k); err != nil {
+		t.Fatalf("SaveKeyFile(%q) should have succeeded: has .cf ancestor: %v", path, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("key file not persisted: %v", err)
 	}
 }

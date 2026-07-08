@@ -78,10 +78,47 @@ type keyFile struct {
 	PubKeyHex string `json:"pubkey_hex"`
 }
 
+// cfHomeDirName is the conventional campfire home directory name. It is
+// git-ignored (see .gitignore's blanket "`.cf/`" entry), so any path with an
+// ancestor directory literally named this is safe from accidental commit.
+const cfHomeDirName = ".cf"
+
+// requireUnderCFHome guards against SaveKeyFile being pointed at an arbitrary,
+// potentially git-tracked location. It rejects path unless one of its resolved
+// ancestor directories is literally named ".cf" — the same directory name the
+// repo's .gitignore blanket-ignores. This does not resolve symlinks (that
+// TOCTOU concern is tracked separately as ready-53f); it only checks the
+// lexical path structure.
+func requireUnderCFHome(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("nostr: resolve key path: %w", err)
+	}
+	for dir := filepath.Dir(abs); ; {
+		if filepath.Base(dir) == cfHomeDirName {
+			return nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return fmt.Errorf("nostr: refusing to write key file to %q: path has no %q ancestor directory, so it could end up in a git-tracked location; pass a path under the campfire home instead", path, cfHomeDirName)
+}
+
 // SaveKeyFile writes the key to path as JSON with 0600 permissions, creating
 // parent directories as needed. The pubkey is written for human/tooling
 // convenience but is always re-derived from the secret on load.
+//
+// path must resolve to a location under a directory named ".cf" (the
+// campfire home, which is git-ignored) — see requireUnderCFHome. This
+// guards against a caller accidentally persisting the secret to a
+// git-tracked location.
 func SaveKeyFile(path string, k *Key) error {
+	if err := requireUnderCFHome(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("nostr: mkdir for key file: %w", err)
 	}
