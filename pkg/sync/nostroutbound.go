@@ -129,6 +129,58 @@ func (p *Publisher) PublishCardEdit(ctx context.Context, card CardSpec, createdA
 	return p.publishEvents(ctx, res, []*nostr.Event{ce})
 }
 
+// PublishEvents appends a pre-built signed-event slice to the authoritative log
+// and best-effort publishes it to the write relays — the low-level primitive the
+// ready-d65 migration drives (board + per-item card + history status events built
+// by BuildItemMigrationEvents). Same durability contract as PublishItem: the log
+// append MUST succeed; a relay failure only buffers, never fails.
+func (p *Publisher) PublishEvents(ctx context.Context, events []*nostr.Event) (PublishResult, error) {
+	return p.publishEvents(ctx, PublishResult{}, events)
+}
+
+// PublishEventsUnique is the RE-RUN-SAFE variant PublishEvents that the ready-d65
+// migration uses. It appends only events whose id is not already in the local log
+// (dedup by content-hash event id, via AppendUnique) and publishes ONLY those
+// newly-added events to the relays. Re-migrating the same item set therefore adds
+// nothing to the log and issues no redundant relay writes — the "idempotent by
+// nostr event id, re-run safe" guarantee (a plain Append would balloon the log with
+// byte-identical duplicates on every re-run, even though projection stays
+// idempotent). Returns the number of events actually added.
+func (p *Publisher) PublishEventsUnique(ctx context.Context, events []*nostr.Event) (PublishResult, int, error) {
+	added, err := p.Log.AppendUnique(events)
+	if err != nil {
+		return PublishResult{}, 0, fmt.Errorf("sync: appending unique to authoritative log: %w", err)
+	}
+	// When AppendUnique added nothing (a full re-run), skip the relays entirely — a
+	// re-run issues zero redundant writes. Otherwise relay-publish the distinct input
+	// events; relays dedup by id, so re-sending an already-present id is harmless, and
+	// the costly disk log is the part AppendUnique already deduped. (We don't have the
+	// exact "before" id set here, so this over-approximates the fresh set upward only,
+	// never dropping a genuinely new event.)
+	res := PublishResult{}
+	p.relayPublish(ctx, &res, distinctIfAdded(events, added))
+	return res, added, nil
+}
+
+// distinctIfAdded returns the id-deduped input events when added>0, or nil when
+// added==0 (nothing new — skip the relays). Deduping within the input means a slice
+// with internal repeats publishes each id at most once.
+func distinctIfAdded(events []*nostr.Event, added int) []*nostr.Event {
+	if added == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(events))
+	out := make([]*nostr.Event, 0, len(events))
+	for _, e := range events {
+		if e == nil || seen[e.ID] {
+			continue
+		}
+		seen[e.ID] = true
+		out = append(out, e)
+	}
+	return out
+}
+
 func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events []*nostr.Event) (PublishResult, error) {
 	// Phase 1 — append to the authoritative log. This MUST succeed; it is the
 	// durability guarantee independent of any relay.
@@ -137,13 +189,19 @@ func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events
 			return res, fmt.Errorf("sync: appending to authoritative log: %w", err)
 		}
 	}
+	// Phase 2 — publish to write relays, best-effort.
+	p.relayPublish(ctx, &res, events)
+	return res, nil
+}
 
+// relayPublish publishes each event to every write relay, best-effort, recording
+// per-relay acks and buffering any event that reaches no relay. It NEVER fails —
+// the events are already durable in the local log by the time this runs.
+func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events []*nostr.Event) {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
 	}
-
-	// Phase 2 — publish to write relays, best-effort.
 	for _, e := range events {
 		ack := EventAck{EventID: e.ID, Kind: e.Kind}
 		for _, relay := range p.WriteRelays {
@@ -170,7 +228,6 @@ func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events
 		}
 		res.Events = append(res.Events, ack)
 	}
-	return res, nil
 }
 
 // appendPendingEvent appends a signed event to the nostr pending buffer (JSONL).

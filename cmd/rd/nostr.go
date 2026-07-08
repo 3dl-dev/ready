@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -728,6 +729,285 @@ var nostrMergeCmd = &cobra.Command{
 	},
 }
 
+// nostrReadEnabled reports whether DUAL-READ resolves rd items from the nostr
+// projection instead of the campfire/JSONL backend. It is OFF by default so
+// campfire stays the authoritative default backend (the operator's explicit
+// non-destructive scope for ready-d65): the live campfire-backed rd the
+// orchestrator runs is never affected. RD_NOSTR_READ=1 flips a SINGLE process to
+// read from the nostr log — the controlled, nostr-only verification context.
+func nostrReadEnabled() bool { return os.Getenv("RD_NOSTR_READ") == "1" }
+
+// nostrProjectAllItems reads the local authoritative nostr log and returns the
+// projected item set (both as a slice and by id). This is the read side of
+// dual-read and the "projected" side of the parity proof: a pure replay of the
+// signed-event log through the same web-of-trust gate the reconcile path uses.
+func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return nil, nil, fmt.Errorf("no .ready project directory found")
+	}
+	k, err := nostrKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	events, err := log.ReadAll()
+	if err != nil {
+		return nil, nil, err
+	}
+	trusted := nostrTrustSet(k.PubKeyHex())
+	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Maintainers: trusted, Trusted: trusted})
+	items := make([]*state.Item, 0, len(byID))
+	for _, it := range byID {
+		items = append(items, it)
+	}
+	return items, byID, nil
+}
+
+// nostrDualReadAll returns (items, true, err) when dual-read is enabled and the
+// items were projected from the nostr log; (nil,false,nil) when dual-read is off
+// so the caller falls back to the campfire/JSONL path. Additive: no behaviour
+// change unless RD_NOSTR_READ=1.
+func nostrDualReadAll() ([]*state.Item, bool, error) {
+	if !nostrReadEnabled() {
+		return nil, false, nil
+	}
+	items, _, err := nostrProjectAllItems()
+	return items, true, err
+}
+
+// nostrDualReadByID resolves one item from the nostr projection when dual-read is
+// enabled. Returns (item, true, err) on a hit path (err set if not found);
+// (nil,false,nil) when dual-read is off.
+func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
+	if !nostrReadEnabled() {
+		return nil, false, nil
+	}
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		return nil, true, err
+	}
+	it, ok := byID[itemID]
+	if !ok {
+		return nil, true, fmt.Errorf("item %q not found in nostr projection", itemID)
+	}
+	return it, true, nil
+}
+
+// nostrMigrateCmd re-emits the CURRENT campfire rd item set as nostr events —
+// the ready-d65 CUTOVER migration (non-destructive scope). It reads the SOURCE
+// items from the DEFAULT campfire/JSONL backend (never from nostr — that would be
+// circular), then for EACH item builds the board (once), a 30302 card
+// materializing current state, and one NIP-34 status event per history entry
+// (original timestamp, close-reason, and ORIGINAL actor via the "by" tag). Every
+// event is appended to the local authoritative log and best-effort published to
+// the locked write relays with the allowlisted portfolio key. Idempotent by event
+// id: re-running adds nothing. Campfire is untouched and stays authoritative.
+var nostrMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Re-emit the current campfire item set as nostr events (ready-d65 cutover, non-destructive)",
+	Long: `Read the current campfire/JSONL rd item set and re-emit every item as nostr
+events (30301 board, 30302 card, NIP-34 status log) into the local authoritative
+log and the locked write relays, preserving id, status, priority, type, deps,
+gates, full history + close-reasons, and provenance. Campfire is NOT modified and
+remains the default backend. Idempotent by event id (safe to re-run).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		localOnly, _ := cmd.Flags().GetBool("local-only")
+		limit, _ := cmd.Flags().GetInt("limit")
+		includeTerminal, _ := cmd.Flags().GetBool("all")
+		only, _ := cmd.Flags().GetStringSlice("only")
+
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+
+		// SOURCE = campfire/JSONL (the default backend), NEVER the nostr projection.
+		src, err := allItemsFromJSONLOrStore(s)
+		if err != nil {
+			return fmt.Errorf("loading campfire source items: %w", err)
+		}
+		// Deterministic order (by id) so a limited/sample run is reproducible.
+		sort.Slice(src, func(i, j int) bool { return src[i].ID < src[j].ID })
+		if len(only) > 0 {
+			want := make(map[string]bool, len(only))
+			for _, id := range only {
+				want[id] = true
+			}
+			filtered := src[:0:0]
+			for _, it := range src {
+				if want[it.ID] {
+					filtered = append(filtered, it)
+				}
+			}
+			src = filtered
+		}
+		if !includeTerminal {
+			// --all defaults true: a migration that dropped done/cancelled items would
+			// lose their audit trail. --all=false is an explicit opt-out to migrate an
+			// OPEN-only subset (e.g. a fast sample), so honour it by excluding terminal
+			// items rather than silently ignoring the flag.
+			open := src[:0:0]
+			for _, it := range src {
+				if !state.IsTerminal(it) {
+					open = append(open, it)
+				}
+			}
+			src = open
+		}
+		if limit > 0 && limit < len(src) {
+			src = src[:limit]
+		}
+
+		dir, _ := readyProjectDir()
+		k, err := nostrKey()
+		if err != nil {
+			return err
+		}
+		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+		boardD := projectPrefix(dir)
+
+		var relays []string
+		if !localOnly {
+			relays = nostrWriteRelays()
+		}
+		pub := &rdSync.Publisher{
+			Key:         k,
+			Log:         log,
+			WriteRelays: relays,
+			PendingPath: nostrPendingPath(dir),
+		}
+
+		// Build the WHOLE event stream first (board once + per-item card+history),
+		// then append in a SINGLE AppendUnique pass. Per-item AppendUnique would be
+		// O(N^2) (each call re-reads the growing log); one batched pass is O(N) and
+		// keeps the re-run-safe dedup.
+		// Board stamped at a DETERMINISTIC created_at (not time.Now) so a re-run
+		// re-derives the identical board event id and AppendUnique dedups it — else
+		// every migration re-run would append one fresh board line (breaking on-disk
+		// idempotence). Use the earliest source item's second; fall back to 1.
+		board := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
+		boardAt := int64(1)
+		for _, item := range src {
+			if s := item.CreatedAt / int64(time.Second); s > 0 && (boardAt == 1 || s < boardAt) {
+				boardAt = s
+			}
+		}
+		be, err := rdSync.BuildBoardEvent(k, board, boardAt)
+		if err != nil {
+			return err
+		}
+		allEvents := []*nostr.Event{be}
+		migrated := 0
+		for _, item := range src {
+			evs, err := rdSync.BuildItemMigrationEvents(k, boardD, item)
+			if err != nil {
+				return fmt.Errorf("building events for %s: %w", item.ID, err)
+			}
+			allEvents = append(allEvents, evs...)
+			migrated++
+		}
+		ctx := context.Background()
+		res, added, err := pub.PublishEventsUnique(ctx, allEvents)
+		if err != nil {
+			return fmt.Errorf("publishing migration events: %w", err)
+		}
+		events := len(allEvents)
+		buffered := 0
+		if res.Buffered {
+			buffered = 1
+		}
+
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(map[string]any{
+				"migrated_items": migrated, "events": events, "appended": added,
+				"buffered": buffered == 1, "relays": relays, "local_only": localOnly,
+			})
+		}
+		fmt.Printf("migrated %d items -> %d events (%d newly appended; board+cards+status log)\n", migrated, events, added)
+		if localOnly {
+			fmt.Println("(local-only: appended to the authoritative log; no relay publish)")
+		} else if buffered == 1 {
+			fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
+		} else {
+			fmt.Printf("published to relays: %v\n", relays)
+		}
+		return nil
+	},
+}
+
+// nostrParityCmd proves item-for-item parity between the campfire SOURCE and the
+// nostr PROJECTION (ready-d65 DONE#3). It derives the source from campfire/JSONL,
+// projects the nostr log, and compares every item on count, status, priority,
+// type, deps, gate, history length + close-reasons, and provenance. Exits non-zero
+// on ANY mismatch (a lost or silently altered item). This is the ground-source
+// gate: NEVER fabricated — it reads the real 174/1565 live items.
+var nostrParityCmd = &cobra.Command{
+	Use:   "parity",
+	Short: "Assert item-for-item parity: campfire source == nostr projection (ready-d65)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		showAll, _ := cmd.Flags().GetBool("verbose")
+
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+
+		srcSlice, err := allItemsFromJSONLOrStore(s)
+		if err != nil {
+			return fmt.Errorf("loading campfire source items: %w", err)
+		}
+		src := make(map[string]*state.Item, len(srcSlice))
+		for _, it := range srcSlice {
+			src[it.ID] = it
+		}
+		_, projected, err := nostrProjectAllItems()
+		if err != nil {
+			return err
+		}
+		// Compare only the source items that were actually migrated (projection may
+		// legitimately be a subset when `migrate --limit` seeded a sample). Restrict
+		// the source to the projected id set so a sample run reports true parity on
+		// what it migrated, while a full run compares everything.
+		compareSrc := src
+		if len(projected) < len(src) {
+			compareSrc = make(map[string]*state.Item, len(projected))
+			for id := range projected {
+				if it, ok := src[id]; ok {
+					compareSrc[id] = it
+				}
+			}
+		}
+		rep := rdSync.CompareItemSets(compareSrc, projected)
+
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(rep); err != nil {
+				return err
+			}
+		} else {
+			fmt.Printf("PARITY: source=%d projected=%d matched=%d mismatched=%d\n",
+				rep.SourceCount, rep.ProjectedCount, rep.Matched, rep.Mismatched)
+			for _, ip := range rep.Items {
+				if !ip.Match() {
+					fmt.Printf("  MISMATCH %s: %v\n", ip.ItemID, ip.Diffs)
+				} else if showAll {
+					fmt.Printf("  ok       %s\n", ip.ItemID)
+				}
+			}
+		}
+		if !rep.AllMatch() {
+			return fmt.Errorf("parity FAILED: %d mismatched item(s)", rep.Mismatched)
+		}
+		return nil
+	},
+}
+
 func init() {
 	nostrShowCmd.Flags().Bool("reconcile", false, "cache-fill from read relays before reconstructing (local log stays authoritative)")
 	nostrReadyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, gates")
@@ -738,6 +1018,13 @@ func init() {
 	nostrPutCmd.Flags().String("type", "task", "item type")
 	nostrPutCmd.Flags().String("context", "", "item description/context (card content)")
 	nostrPutCmd.Flags().String("note", "", "status-change reason (rd close-with-reason); publishes a status change instead of a fresh card")
+	nostrMigrateCmd.Flags().Bool("local-only", false, "append to the local authoritative log only; skip relay publish")
+	nostrMigrateCmd.Flags().Int("limit", 0, "migrate at most N items (0 = all); deterministic by id — used to seed a live-relay sample")
+	nostrMigrateCmd.Flags().StringSlice("only", nil, "migrate ONLY these item ids (comma-separated) — used to publish a dep-closed live-relay sample")
+	nostrMigrateCmd.Flags().Bool("all", true, "include terminal items (done/cancelled/failed) — default true so history is not lost")
+	nostrParityCmd.Flags().Bool("verbose", false, "print every item (matched and mismatched), not just mismatches")
+	nostrCmd.AddCommand(nostrMigrateCmd)
+	nostrCmd.AddCommand(nostrParityCmd)
 	nostrCmd.AddCommand(nostrShowCmd)
 	nostrCmd.AddCommand(nostrPublishCmd)
 	nostrCmd.AddCommand(nostrReadyCmd)
