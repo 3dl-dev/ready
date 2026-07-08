@@ -1,0 +1,62 @@
+[36m==>[0m live relay: ws://192.168.2.40:7777
+[36m==>[0m building rd
+
+[36m==>[0m LAYER A — CLI cross-source convergence + dedup against the LIVE relay
+[36m==>[0m STEP 1: create + claim + done an item through RD_NOSTR=1 (publishes to ws://192.168.2.40:7777)
+[36m==>[0m item id: proj-c09
+[32mPASS[0m published create/claim/done (distinct seconds) to the live relay
+[36m==>[0m STEP 2: reconcile the SAME relay state into TWO independent fresh logs (different fetch passes)
+    [log1] id:       proj-c09
+    [log1] title:    f92 causal-ordering proof
+    [log1] status:   done
+    [log1] priority: p1
+    [log1] type:     task
+    [log1] assignee: 124c05e2823c2cbe425a8bdcaea6817ad9961e8be45c575103bd7647d55c1450
+    [log1] 
+    [log1] history:
+    [log1]   [2026-07-08T18:42:12Z]  → inbox by 9ce7d2cdc42b6df33c3c5cfe97bc263af56039f2d27e26e07164a2c560593033
+    [log1]   [2026-07-08T18:42:13Z] inbox → active by 9ce7d2cdc42b6df33c3c5cfe97bc263af56039f2d27e26e07164a2c560593033
+    [log1]   [2026-07-08T18:42:14Z] active → done by 9ce7d2cdc42b6df33c3c5cfe97bc263af56039f2d27e26e07164a2c560593033 — shipped: f92 proof
+    [log1] (reconciled: fetched=4 added=4 relay_errors=0)
+[32mPASS[0m two independent relay reconciles converge to byte-identical projected state (status=done)
+[36m==>[0m STEP 3: DEDUP — a SECOND reconcile into log1 must add ZERO events
+[36m==>[0m log1 line count: before=4 after=4
+[32mPASS[0m re-ingestion is idempotent — dedup by event id holds (4 events, unchanged)
+
+[36m==>[0m LAYER B — Go proofs (deterministic replay/dedup/skew + LIVE same-second convergence)
+[36m==>[0m STEP 4: deterministic unit proofs (permutation-convergence, stale-replay, far-future skew, dedup)
+    === RUN   TestProjection_ConvergesUnderPermutation
+    --- PASS: TestProjection_ConvergesUnderPermutation (0.24s)
+    === RUN   TestProjection_StaleReplayDoesNotResurrect
+    --- PASS: TestProjection_StaleReplayDoesNotResurrect (0.03s)
+    === RUN   TestAppendUnique_RejectsFarFuture
+    --- PASS: TestAppendUnique_RejectsFarFuture (0.00s)
+    === RUN   TestAppendUnique_DedupIdempotent
+    --- PASS: TestAppendUnique_DedupIdempotent (0.00s)
+    === RUN   TestProjection_DedupNoPhantomHistory
+    --- PASS: TestProjection_DedupNoPhantomHistory (0.00s)
+    PASS
+    ok  	github.com/campfire-net/ready/pkg/sync	0.285s
+[32mPASS[0m deterministic replay/dedup/skew/permutation-convergence proofs green
+[36m==>[0m STEP 5: LIVE same-second competing-edit convergence against ws://192.168.2.40:7777
+    === RUN   TestLiveRelay_SameSecondConvergence
+        nostr_live_relay_convergence_test.go:47: live relay: ws://192.168.2.40:7777
+        nostr_live_relay_convergence_test.go:131: competing same-second cards: X=b49b0412e5759ae2250a60a498ffb8a636fd1d4363eb0d3a5cedbc230006ccd2 Y=807d312354ce6731a0f6a9ee6c3bc0580e363b101957c066687a39148bd383b5 -> canonical winner title="edit-Y" id=807d312354ce6731a0f6a9ee6c3bc0580e363b101957c066687a39148bd383b5
+        nostr_live_relay_convergence_test.go:162: reconcile: fetched=2 added=2 relay_errors=[]
+        nostr_live_relay_convergence_test.go:194: PROVEN: same-second competing edits converge across local-log, relay-reconciled, and permuted sources; winner="edit-Y" status="active"
+    --- PASS: TestLiveRelay_SameSecondConvergence (1.03s)
+    PASS
+    ok  	github.com/campfire-net/ready/pkg/sync	1.034s
+[32mPASS[0m LIVE: same-second competing edits converge across local-log, relay-reconciled, and permuted sources
+
+[32mPASS[0m ALL ready-f92 CAUSAL-ORDERING PROOFS PASSED
+
+SUMMARY
+  item id:            proj-c09
+  relay:              ws://192.168.2.40:7777 (permissive; write-allowlist is the separate ready-266)
+  dedup:              PASS (re-ingesting a known event is a no-op; log unchanged)
+  supersession/replay:PASS (latest-wins by created_at; stale OLD status cannot resurrect state)
+  future-skew bound:  PASS (created_at > now+15m rejected at ingestion)
+  cross-source order: PASS (NIP-01 lowest-id tie-break; local == relay-reconciled == permuted)
+  invariant:          ordering is a PURE function of the event SET; local log authoritative;
+                      d53 trust gate + 5d2 key guard unchanged (verify+trust still run)
