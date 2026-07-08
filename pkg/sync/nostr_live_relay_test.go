@@ -42,10 +42,8 @@ func TestLiveRelay_ItemRoundTrip(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	// Unique item id per run so we never collide with a prior run's addressable card.
 	itemID := fmt.Sprintf("ready-a13-live-%d", time.Now().UnixNano())
 	dir := t.TempDir()
@@ -137,10 +135,8 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	itemID := fmt.Sprintf("ready-b5f-live-%d", time.Now().UnixNano())
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, ".ready", NostrLogFile)
@@ -253,120 +249,175 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 	assertFullHistory(t, "clean-cache relay-reconciled read", cleanItems)
 }
 
-// TestLiveRelay_TrustGate is the ground-source, no-mock proof for ready-d53: a
-// forged-authorship event published to a LIVE relay by an UNTRUSTED key is DROPPED
-// at ingestion (never poisons the local authoritative log) AND ignored by the
-// projection, while the trusted-author event is applied. Both keys publish a card
-// for the SAME item id (a takeover attempt: the attacker's card is LATER, so it
-// would win the latest-wins projection if the gate were absent).
+// TestLiveRelay_WriteAllowlistTrustGate is the ground-source, no-mock proof that
+// TWO independent defence layers both hold against the LIVE relays:
 //
-// Gated behind RD_NOSTR_LIVE_RELAY=1. Endpoints come from pkg/rdconfig; override
-// with RD_NOSTR_RELAY_URL. The mainframe relays are currently permissive on write
-// (the relay-side write-allowlist is ready-266), so the attacker publish succeeds —
-// which is exactly why the CLIENT-side trust gate must catch it.
-func TestLiveRelay_TrustGate(t *testing.T) {
+//	LAYER 1 — relay-side write-allowlist (ready-266, THIS item): against every
+//	  configured relay, the ALLOWLISTED portfolio key's write is ACCEPTED, and an
+//	  UNTRUSTED random key's write is REJECTED by the relay itself (OK,false with
+//	  the write-allowlist block reason). A relay round-trip then confirms the
+//	  untrusted event never landed — the relay's stored set for the item carries
+//	  ONLY the trusted author.
+//
+//	LAYER 2 — client-side web-of-trust drop (ready-d53): even if a poison event
+//	  DID reach the local authoritative log (e.g. via a hostile/permissive relay,
+//	  or a merged foreign log — a path the locked production relay now refuses),
+//	  the client projection gate STILL drops it. This is proven by INJECTING the
+//	  attacker's locally-built forged events directly into the log next to the
+//	  trusted events and asserting the projection ignores the takeover. This keeps
+//	  the d53 client-drop proof alive without a permissive production relay; its
+//	  deterministic twin is TestProjection_TrustGate_* in nostrtrust_test.go.
+//
+// This REPLACES the old TestLiveRelay_TrustGate, which assumed a PERMISSIVE relay
+// (it required the attacker's write to be accepted so the client gate could catch
+// it). After the ready-266 lockdown the relay refuses that write, so the attacker
+// acceptance is now itself the thing under test (layer 1), and the client-drop
+// path (layer 2) is exercised by direct injection.
+//
+// Gated behind RD_NOSTR_LIVE_RELAY=1. Signs with the allowlisted portfolio key
+// (liveRelayKey); relays come from pkg/rdconfig (both, unless RD_NOSTR_RELAY_URL
+// overrides to one).
+func TestLiveRelay_WriteAllowlistTrustGate(t *testing.T) {
 	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
-		t.Skip("set RD_NOSTR_LIVE_RELAY=1 (with a reachable strfry relay) to run the live trust-gate proof")
+		t.Skip("set RD_NOSTR_LIVE_RELAY=1 (with reachable locked strfry relays) to run the live write-allowlist + trust-gate proof")
 	}
-	relay := os.Getenv("RD_NOSTR_RELAY_URL")
-	if relay == "" {
+	var relays []string
+	if r := os.Getenv("RD_NOSTR_RELAY_URL"); r != "" {
+		relays = []string{r}
+	} else {
 		var cfg rdconfig.Config
-		urls := cfg.WriteRelayURLs()
-		if len(urls) == 0 {
-			t.Fatal("no write relays configured")
-		}
-		relay = urls[0]
+		relays = cfg.WriteRelayURLs()
 	}
-	t.Logf("live relay: %s", relay)
+	if len(relays) == 0 {
+		t.Fatal("no write relays configured")
+	}
 
-	trusted, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen trusted key: %v", err)
-	}
+	trusted := liveRelayKey(t) // the admitted (allowlisted) portfolio key
 	attacker, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatalf("gen attacker key: %v", err)
 	}
-	itemID := fmt.Sprintf("ready-d53-live-%d", time.Now().UnixNano())
-	dir := t.TempDir()
-
-	newPub := func(k *nostr.Key) *Publisher {
-		return &Publisher{
-			Key:         k,
-			Log:         NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile)), // throwaway per-publisher log
-			WriteRelays: []string{relay},
-			PendingPath: filepath.Join(t.TempDir(), ".ready", NostrPendingFile),
-		}
+	if trusted.PubKeyHex() == attacker.PubKeyHex() {
+		t.Fatal("trusted/attacker key collision")
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{trusted.PubKeyHex()}}
-	now := time.Now().Unix()
-
-	// Trusted author creates the item (active, p1).
-	trustedCard := CardSpec{ItemID: itemID, Title: "legit", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "ready"}
-	res, err := newPub(trusted).PublishItem(context.Background(), &board, trustedCard, now)
-	if err != nil {
-		t.Fatalf("trusted publish: %v", err)
-	}
-	for _, ev := range res.Events {
-		if !ev.AnyRelay {
-			t.Fatalf("trusted event kind %d NOT accepted by relay (acks=%+v)", ev.Kind, ev.Acks)
-		}
-	}
-
-	// Attacker publishes a LATER forged card + done status for the SAME item id.
-	attackCard := CardSpec{ItemID: itemID, Title: "HIJACKED", Status: state.StatusDone, Priority: "p0", Type: "task", BoardD: "ready"}
-	ares, err := newPub(attacker).PublishStatusChange(context.Background(), attackCard, "seized", now+10)
-	if err != nil {
-		t.Fatalf("attacker publish: %v", err)
-	}
-	var attackerAccepted bool
-	for _, ev := range ares.Events {
-		if ev.AnyRelay {
-			attackerAccepted = true
-		}
-	}
-	if !attackerAccepted {
-		t.Fatal("attacker event was not accepted by the permissive relay — cannot prove the client-side gate; is a write-allowlist already active (ready-266)?")
-	}
-	t.Logf("attacker forged events accepted by the permissive relay (as expected pre-ready-266)")
-
-	time.Sleep(1 * time.Second)
-
-	// --- INGESTION GATE: reconcile into a fresh log with a trust set = {trusted}. ---
-	logPath := filepath.Join(dir, ".ready", NostrLogFile)
-	freshLog := NewNostrLog(logPath)
 	trustSet := map[string]bool{trusted.PubKeyHex(): true}
-	rr, err := ReconcileItem(context.Background(), []string{relay}, freshLog, itemID, trustSet, nostr.DefaultTimeout)
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	t.Logf("reconcile: fetched=%d added=%d relay_errors=%v", rr.Fetched, rr.Added, rr.RelayErrors)
 
-	// The local authoritative log must contain ZERO attacker-authored events.
-	merged, err := freshLog.ReadAll()
-	if err != nil {
-		t.Fatalf("read merged log: %v", err)
-	}
-	if len(merged) == 0 {
-		t.Fatal("nothing merged from the relay — cannot distinguish gate from an empty fetch")
-	}
-	for _, e := range merged {
-		if e.PubKey == attacker.PubKeyHex() {
-			t.Fatalf("INGESTION GATE FAILED: attacker-authored event %s poisoned the local log", e.ID)
-		}
-	}
-	t.Logf("INGESTION GATE PROVEN: %d event(s) merged, none authored by the attacker", len(merged))
+	for _, relay := range relays {
+		relay := relay
+		t.Run(relay, func(t *testing.T) {
+			itemID := fmt.Sprintf("ready-266-live-%d", time.Now().UnixNano())
+			board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{trusted.PubKeyHex()}}
+			now := time.Now().Unix()
 
-	// --- PROJECTION GATE: replay the merged log; item reflects only trusted state. ---
-	items := ProjectItems(merged, ProjectOptions{Maintainers: trustSet, Trusted: trustSet})
-	it, ok := items[itemID]
-	if !ok {
-		t.Fatal("trusted item not projected")
+			newPub := func(k *nostr.Key) *Publisher {
+				return &Publisher{
+					Key:         k,
+					Log:         NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile)),
+					WriteRelays: []string{relay},
+					PendingPath: filepath.Join(t.TempDir(), ".ready", NostrPendingFile),
+				}
+			}
+
+			// LAYER 1a — the allowlisted key's write is ACCEPTED by the relay.
+			trustedCard := CardSpec{ItemID: itemID, Title: "legit", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "ready"}
+			res, err := newPub(trusted).PublishItem(context.Background(), &board, trustedCard, now)
+			if err != nil {
+				t.Fatalf("trusted publish: %v", err)
+			}
+			for _, ev := range res.Events {
+				if !ev.AnyRelay {
+					t.Fatalf("RELAY-ALLOWLIST FAILED: allowlisted event kind %d REJECTED by relay (acks=%+v)", ev.Kind, ev.Acks)
+				}
+			}
+			t.Logf("LAYER 1a PROVEN: allowlisted key %s accepted by %s", trusted.PubKeyHex(), relay)
+
+			// LAYER 1b — the untrusted key's write is REJECTED by the relay.
+			attackCard := CardSpec{ItemID: itemID, Title: "HIJACKED", Status: state.StatusDone, Priority: "p0", Type: "task", BoardD: "ready"}
+			ares, err := newPub(attacker).PublishStatusChange(context.Background(), attackCard, "seized", now+10)
+			if err != nil {
+				t.Fatalf("attacker publish attempt: %v", err)
+			}
+			for _, ev := range ares.Events {
+				if ev.AnyRelay {
+					t.Fatalf("RELAY-ALLOWLIST FAILED: untrusted key %s write was ACCEPTED by %s (acks=%+v)", attacker.PubKeyHex(), relay, ev.Acks)
+				}
+				// The rejection must carry a message and never be a silent OK,false.
+				var sawReject bool
+				for _, ack := range ev.Acks {
+					if !ack.Accepted && ack.Message != "" {
+						sawReject = true
+					}
+				}
+				if !sawReject {
+					t.Fatalf("untrusted write rejected but with no reason from %s (acks=%+v)", relay, ev.Acks)
+				}
+			}
+			t.Logf("LAYER 1b PROVEN: untrusted key %s REJECTED by %s (acks=%+v)", attacker.PubKeyHex(), relay, ares.Events[0].Acks)
+
+			time.Sleep(1 * time.Second)
+
+			// LAYER 1c — relay integrity: fetch the item back with the gate DISABLED
+			// (nil trust set merges anything the relay serves). The untrusted write
+			// never landed, so the relay's stored set has ZERO attacker events.
+			relayLog := NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile))
+			rr, err := ReconcileItem(context.Background(), []string{relay}, relayLog, itemID, nil, nostr.DefaultTimeout)
+			if err != nil {
+				t.Fatalf("reconcile (ungated): %v", err)
+			}
+			relayEvents, err := relayLog.ReadAll()
+			if err != nil {
+				t.Fatalf("read relay-fetched log: %v", err)
+			}
+			if len(relayEvents) == 0 {
+				t.Fatalf("relay served nothing for %s — cannot distinguish rejection from an empty fetch (fetched=%d)", itemID, rr.Fetched)
+			}
+			for _, e := range relayEvents {
+				if e.PubKey == attacker.PubKeyHex() {
+					t.Fatalf("RELAY INTEGRITY FAILED: untrusted event %s is present on %s despite the write-allowlist", e.ID, relay)
+				}
+			}
+			t.Logf("LAYER 1c PROVEN: %s served %d event(s) for %s, NONE from the untrusted key", relay, len(relayEvents), itemID)
+
+			// LAYER 2 — client-side drop of an INJECTED poison event. Build the
+			// attacker's forged card+status locally (a LATER takeover) and merge
+			// them into the log next to the trusted events, simulating a poison
+			// event that somehow reached the local log. The projection trust gate
+			// must still drop it.
+			ac, err := BuildCardEvent(attacker, attackCard, now+10)
+			if err != nil {
+				t.Fatalf("build attacker card: %v", err)
+			}
+			as, err := BuildStatusEvent(attacker, itemID, state.StatusDone, ac.ID, "seized", now+10)
+			if err != nil {
+				t.Fatalf("build attacker status: %v", err)
+			}
+			if _, err := relayLog.AppendUnique([]*nostr.Event{ac, as}); err != nil {
+				t.Fatalf("inject attacker events into local log: %v", err)
+			}
+			poisoned, err := relayLog.ReadAll()
+			if err != nil {
+				t.Fatalf("reread poisoned log: %v", err)
+			}
+			var sawInjected bool
+			for _, e := range poisoned {
+				if e.PubKey == attacker.PubKeyHex() {
+					sawInjected = true
+				}
+			}
+			if !sawInjected {
+				t.Fatal("attacker events were not injected — cannot prove the client gate")
+			}
+			items := ProjectItems(poisoned, ProjectOptions{Maintainers: trustSet, Trusted: trustSet})
+			it, ok := items[itemID]
+			if !ok {
+				t.Fatal("trusted item not projected")
+			}
+			if it.Title != "legit" || it.Status != state.StatusActive {
+				t.Fatalf("CLIENT TRUST GATE FAILED: item taken over by an injected poison event — title=%q status=%q (want legit/active)", it.Title, it.Status)
+			}
+			t.Logf("LAYER 2 PROVEN: injected untrusted takeover dropped at projection; trusted state intact (item %s)", itemID)
+		})
 	}
-	if it.Title != "legit" || it.Status != state.StatusActive {
-		t.Fatalf("PROJECTION GATE FAILED: item taken over — title=%q status=%q (want legit/active)", it.Title, it.Status)
-	}
-	t.Logf("PROVEN: untrusted forged event ignored at ingestion AND projection; trusted state intact (item %s)", itemID)
 }
 
 func assertMatches(t *testing.T, ctx string, got *state.Item, want CardSpec) {

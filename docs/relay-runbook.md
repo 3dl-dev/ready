@@ -86,12 +86,16 @@ relay {
     port = 7777
 
     auth {
-        # NIP-42 SCAFFOLDING: AUTH is offered. This does NOT restrict which
-        # pubkeys may write — there is no writePolicy plugin. The write-allowlist
-        # policy is a SEPARATE security-review item and is deliberately NOT set
-        # here.
+        # NIP-42 AUTH is offered but is NOT the write gate. The write-allowlist
+        # is enforced by the writePolicy plugin below, keyed on the event's
+        # signed author pubkey (see "Write-allowlist" section).
         enabled = true
         serviceUrl = "ws://<this-relay-ip>:7777"
+    }
+
+    writePolicy {
+        # ready-266: only ADMITTED portfolio pubkeys may WRITE. Reads stay open.
+        plugin = "/etc/strfry/write-allowlist.py"
     }
 
     info { name = "relay-a" }   # or relay-b
@@ -105,9 +109,93 @@ relay {
 
 - **Negentropy (NIP-77):** enabled by default in strfry; required for the
   relay-to-relay sync below and for later rd sync work.
-- **NIP-42 auth:** scaffolding only. `auth.enabled = true` makes the relay OFFER
-  AUTH, but with no `writePolicy` plugin any pubkey may still read/write. The
-  actual write allowlist belongs to the security review, not this item.
+- **NIP-42 auth:** offered, but not the write gate — see the write-allowlist
+  below.
+
+## Write-allowlist (ready-266)
+
+Both relays are LOCKED so that only ADMITTED portfolio identities may **write**
+(publish events). **Reads stay open** — strfry's `writePolicy` governs only the
+write path, so the relays remain a public read cache.
+
+**Enforcement is by the event's author pubkey — no NIP-42 AUTH challenge.** strfry
+validates every event's id + BIP-340 schnorr signature *before* invoking the
+writePolicy plugin, so when the plugin sees `event.pubkey == P` strfry has already
+proven the event was signed by P's secret-key holder. An attacker cannot forge an
+allowlisted author, so checking `event.pubkey` against the allowlist *is* the
+enforcement. A NIP-42 AUTH challenge would add nothing for signed-event write
+control, so the rd client publish path is unchanged. This is **defence-in-depth on
+top of** rd's client-side web-of-trust ingestion gate (ready-d53) — neither layer
+replaces the other.
+
+### Components (version-controlled in the `ready` repo)
+
+| Artifact | Installed to (on each relay) | Purpose |
+|----------|------------------------------|---------|
+| `scripts/relay-policy/write-allowlist.py`   | `/etc/strfry/write-allowlist.py`   | the writePolicy plugin |
+| `scripts/relay-policy/write-allowlist.json` | `/etc/strfry/write-allowlist.json` | the admitted-pubkey allowlist (SOURCE OF TRUTH) |
+| `scripts/lock-relays.sh` | — (run from workshop VM) | installs both + sets `writePolicy.plugin` + restarts strfry, idempotently |
+
+The plugin reads one JSON request per line from strfry and answers `accept` for
+allowlisted authors, `reject` otherwise. It **re-reads the allowlist whenever the
+file mtime changes**, so admitting a pubkey takes effect without restarting
+strfry. It **fails closed**: a missing/malformed/empty allowlist rejects every
+write (an absent list means "trust nobody", never "trust everybody").
+
+### The allowlist — single source of truth
+
+`scripts/relay-policy/write-allowlist.json` is a JSON object mapping each admitted
+lowercase-hex x-only pubkey to a human label:
+
+```json
+{
+  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1)",
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key"
+}
+```
+
+This is the SAME trust set as rd's **client-side** gate: `rdconfig.Config`
+`TrustedPubkeys` + the self portfolio pubkey (`TrustSet`, ready-d53). Keep them
+consistent — *an identity that may write to the relay is exactly an identity whose
+events rd will ingest*. On each machine, `~/.cf/rd.json` `trusted_pubkeys` lists
+the OTHER admitted machines (self is implicit); the relay allowlist lists them ALL
+(there is no implicit self on a relay). The pubkeys are the `pubkey_hex` in each
+machine's `~/.cf/nostr-identity.json` (materialized by rd,
+`LoadOrCreatePortfolioKey`).
+
+### Admitting a new pubkey
+
+1. Add `"pubkey": "label"` to `scripts/relay-policy/write-allowlist.json`.
+2. Add the pubkey to every *other* machine's `~/.cf/rd.json` `trusted_pubkeys`
+   (client-side ingestion gate).
+3. Re-run `scripts/lock-relays.sh` (idempotent) to push the updated allowlist to
+   both relays. No strfry restart is needed for an allowlist-only change — the
+   plugin reloads on mtime change — but `lock-relays.sh` restarts anyway to also
+   reconcile config/plugin drift.
+
+### Locking the relays from scratch
+
+```bash
+# From the workshop VM (needs ssh baron@<relay> + passwordless sudo on the relays):
+scripts/lock-relays.sh                 # both relays (default)
+scripts/lock-relays.sh 192.168.2.40    # a single relay
+```
+
+`mk-relay.sh` (mainframe repo) also installs the plugin + a seed allowlist at
+provision time, so a freshly built relay is locked from first boot.
+
+### Proof (ground-source, no mocks)
+
+`scripts/relay-writepolicy-demo.sh` proves, on relay-a AND relay-b, that (a) the
+allowlisted portfolio key publishes and is ACCEPTED, (b) a random untrusted key is
+REJECTED with the relay's own block reason, and (c) reads stay open. Captured
+output: `docs/relay-writepolicy-demo-output.txt`.
+
+The Go live tests (`RD_NOSTR_LIVE_RELAY=1 go test ./pkg/sync/ ./pkg/nostr/`) sign
+with the allowlisted key (`liveRelayKey`, resolved from
+`~/.cf/nostr-identity.json` or `RD_NOSTR_TEST_SECRET_HEX`) and include
+`TestLiveRelay_WriteAllowlistTrustGate`, which proves both the relay-side rejection
+(ready-266) and the client-side drop (ready-d53) on both relays.
 
 ## systemd service
 

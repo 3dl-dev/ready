@@ -46,10 +46,8 @@ func TestLiveRelay_SameSecondConvergence(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	itemID := fmt.Sprintf("ready-f92-live-%d", time.Now().UnixNano())
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, ".ready", NostrLogFile)

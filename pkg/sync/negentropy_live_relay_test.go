@@ -45,10 +45,8 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	t.Logf("live relay: %s", relay)
 
 	// Shared portfolio identity across both machines (the multi-machine model).
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	run := time.Now().UnixNano()
 	idX := fmt.Sprintf("ready-797-X-%d", run)
 	idY := fmt.Sprintf("ready-797-Y-%d", run)
@@ -113,10 +111,8 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	}
 	relay := liveRelayURL(t)
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	k := liveRelayKey(t)
 	dir := t.TempDir()
 	log := NewNostrLog(filepath.Join(dir, NostrLogFile))
 	pendingPath := filepath.Join(dir, NostrPendingFile)
