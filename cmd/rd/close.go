@@ -75,10 +75,14 @@ Example:
 		// rd->nostr hybrid publish (ready-b5f): close is a status transition to a
 		// terminal state, carrying the enforced close-with-reason. Publish it as a
 		// NIP-34 status event so the audit trail replay preserves the reason exactly.
+		blockedByThis := item.Blocks
 		item.Status = closeResolutionToStatus(resolution)
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
 		}
+		// Implicit unblock parity (ready-2cf): closing this item removes its dep
+		// edge from every item it was blocking — re-publish those cards.
+		publishImplicitUnblockNostr(s, blockedByThis)
 
 		if jsonOutput {
 			out := map[string]interface{}{

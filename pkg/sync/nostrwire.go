@@ -108,6 +108,17 @@ type CardSpec struct {
 	// rd extension tags ("waiting_type" / "waiting_on"); not part of NIP-34/NIP-100.
 	WaitingType string
 	WaitingOn   string
+
+	// Labels are the registry-validated label atoms attached to the item (rd
+	// label add/remove). Each becomes a NIP-32 "l" label tag on the card so the
+	// projection reconstructs Item.Labels. Additive rd-extension carrier (ready-2cf):
+	// the write gate already validated each atom (pattern + registry membership),
+	// so the card carries them verbatim — an unknown "l" tag is simply ignored by
+	// non-rd readers.
+	Labels []string
+	// ETA carries the item's scheduled ETA (RFC3339) so `rd defer` round-trips on
+	// nostr. rd-extension tag ("eta"); not part of NIP-34/NIP-100 (ready-2cf).
+	ETA string
 }
 
 // BoardSpec describes an rd project/campfire as a NIP-100 board (30301).
@@ -199,6 +210,14 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	}
 	if spec.WaitingOn != "" {
 		tags = append(tags, []string{"waiting_on", spec.WaitingOn})
+	}
+	for _, label := range spec.Labels {
+		if label != "" {
+			tags = append(tags, []string{"l", label})
+		}
+	}
+	if spec.ETA != "" {
+		tags = append(tags, []string{"eta", spec.ETA})
 	}
 	e := &nostr.Event{
 		Kind:      KindCard,

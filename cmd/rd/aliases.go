@@ -132,8 +132,23 @@ Example:
 					"resolution": "cancelled",
 					"reason":     reason,
 				}
-				_, _, err := executeConventionOp(agentID, s, exec, closeDecl, childArgs)
-				return err
+				if _, _, err := executeConventionOp(agentID, s, exec, closeDecl, childArgs); err != nil {
+					return err
+				}
+				// rd->nostr hybrid publish (ready-2cf): publish a status change for
+				// EACH cascaded descendant, not just the parent — so cascade-closed
+				// children get the same audit-history + terminal-status parity on
+				// nostr as a directly-closed item. AFTER the child's close
+				// enforcement succeeded; best-effort.
+				childBlocks := child.Blocks
+				child.Status = state.StatusCancelled
+				if nostrErr := publishItemStatusChangeNostr(child, reason); nostrErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: nostr publish failed (child %s cascaded; campfire durable): %v\n", child.ID, nostrErr)
+				}
+				// Implicit unblock parity (ready-2cf): a cascaded child may itself
+				// have been blocking other items — re-publish those cards too.
+				publishImplicitUnblockNostr(s, childBlocks)
+				return nil
 			})
 			if err != nil {
 				return err
@@ -160,12 +175,14 @@ Example:
 		}
 
 		// rd->nostr hybrid publish (ready-b5f): cancel is a close-with-reason
-		// status change; wire only the parent (cascaded children are a separate
-		// mutation each and are out of scope for this hook).
+		// status change (cascaded children each publish their own, above).
+		blockedByParent := item.Blocks
 		item.Status = state.StatusCancelled
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item cancelled; campfire durable): %v\n", nostrErr)
 		}
+		// Implicit unblock parity (ready-2cf): re-publish cards the parent unblocks.
+		publishImplicitUnblockNostr(s, blockedByParent)
 
 		if jsonOutput {
 			out := map[string]interface{}{
@@ -254,6 +271,15 @@ Example:
 		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
 		if err != nil {
 			return err
+		}
+
+		// rd->nostr hybrid publish (ready-2cf): defer updates the item's ETA with no
+		// status change — publish a refreshed card carrying the new "eta" tag so a
+		// nostr reader reconstructs the same schedule. Card-only edit (history
+		// untouched). AFTER enforcement; best-effort.
+		item.ETA = etaRFC3339
+		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (deferred; campfire durable): %v\n", nostrErr)
 		}
 
 		if jsonOutput {
@@ -407,10 +433,13 @@ func runCloseAlias(resolution string) func(cmd *cobra.Command, args []string) er
 		// rd->nostr hybrid publish (ready-b5f): done/fail are close-with-reason
 		// aliases; publish the same status-change event as close so the audit
 		// trail replay preserves the reason exactly.
+		blockedByThis := item.Blocks
 		item.Status = closeResolutionToStatus(resolution)
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
 		}
+		// Implicit unblock parity (ready-2cf): re-publish cards this item unblocks.
+		publishImplicitUnblockNostr(s, blockedByThis)
 
 		if jsonOutput {
 			out := map[string]interface{}{

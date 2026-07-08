@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
@@ -158,6 +159,17 @@ func nostrCardSpecFromItem(item *state.Item, boardD string) rdSync.CardSpec {
 		Type:     item.Type,
 		Context:  item.Context,
 		BoardD:   boardD,
+		// Carry the dep/gate/label/eta state so EVERY card re-publish materializes
+		// the item's FULL current state (ready-2cf). Without this, any status-change
+		// or card-edit republish (claim/close/progress/...) would silently drop the
+		// item's deps, gate and labels — a latest-wins card that clobbers them on
+		// the relay. The projection reconstructs each from the card's tags.
+		Deps:        item.BlockedBy,
+		Gate:        item.Gate,
+		WaitingType: item.WaitingType,
+		WaitingOn:   item.WaitingOn,
+		Labels:      item.Labels,
+		ETA:         item.ETA,
 	}
 }
 
@@ -217,6 +229,56 @@ func publishItemCardEditNostr(item *state.Item) error {
 		}
 	}
 	return nil
+}
+
+// strSliceAppendUnique appends v to s only if absent (order-preserving).
+func strSliceAppendUnique(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
+}
+
+// strSliceRemove returns s with every element equal to any of vals removed.
+func strSliceRemove(s []string, vals ...string) []string {
+	drop := make(map[string]bool, len(vals))
+	for _, v := range vals {
+		drop[v] = true
+	}
+	out := make([]string, 0, len(s))
+	for _, x := range s {
+		if !drop[x] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// publishImplicitUnblockNostr mirrors pkg/state's implicit-unblock-on-close
+// (handleWorkClose): when an item reaches a terminal status, campfire removes the
+// dependency edge from EVERY item that item was blocking, so those items no longer
+// list it in blocked_by. The nostr card of a blocked item still carries the "i"
+// dep tag, so without this the projection would keep the stale edge and diverge.
+// For each item the just-closed item was blocking (blockedIDs, captured from its
+// pre-close Blocks list), re-derive the now-current item from campfire (the edge
+// is already gone there) and re-publish its card so the nostr projection drops the
+// edge too — deps parity across every close path (close/done/fail/cancel/complete
+// and cascade). Best-effort; nostr-gated; a relay failure never fails the close.
+func publishImplicitUnblockNostr(s store.Store, blockedIDs []string) {
+	if !nostrEnabled() || len(blockedIDs) == 0 {
+		return
+	}
+	for _, id := range blockedIDs {
+		it, err := byIDFromJSONLOrStore(s, id)
+		if err != nil {
+			continue
+		}
+		if nostrErr := publishItemCardEditNostr(it); nostrErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: nostr implicit-unblock publish failed for %s (campfire durable): %v\n", id, nostrErr)
+		}
+	}
 }
 
 var nostrCmd = &cobra.Command{

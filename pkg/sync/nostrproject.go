@@ -299,6 +299,8 @@ func itemFromCard(e *nostr.Event) *state.Item {
 		Gate:        tagValue(e, "gate"),
 		WaitingType: tagValue(e, "waiting_type"),
 		WaitingOn:   tagValue(e, "waiting_on"),
+		Labels:      tagValues(e, "l"),
+		ETA:         tagValue(e, "eta"),
 	}
 	if p := tagValue(e, "p"); p != "" {
 		item.By = p

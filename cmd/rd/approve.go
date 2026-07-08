@@ -65,6 +65,23 @@ Example:
 				return err
 			}
 
+			// rd->nostr hybrid publish (ready-2cf): approving a gate transitions the
+			// item back to active and clears the waiting/gate state, mirroring
+			// pkg/state.handleWorkGateResolve. Publish a status change (active) with
+			// the approval reason so the item leaves the gates view and the approval
+			// lands in the audit-history replay. Clearing Gate/Waiting* in-memory
+			// makes the refreshed card drop those tags. AFTER enforcement;
+			// best-effort.
+			item.Status = state.StatusActive
+			item.Gate = ""
+			item.WaitingType = ""
+			item.WaitingOn = ""
+			item.WaitingSince = ""
+			item.GateMsgID = ""
+			if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (gate approved; campfire durable): %v\n", nostrErr)
+			}
+
 			if jsonOutput {
 				out := map[string]interface{}{
 					"id":          item.ID,

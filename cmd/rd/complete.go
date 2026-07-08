@@ -85,10 +85,13 @@ Example:
 
 		// rd->nostr hybrid publish (ready-b5f): same status-change hook as close,
 		// preserving the enforced close-with-reason in the audit trail replay.
+		blockedByThis := item.Blocks
 		item.Status = state.StatusDone
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item completed; campfire durable): %v\n", nostrErr)
 		}
+		// Implicit unblock parity (ready-2cf): re-publish cards this item unblocks.
+		publishImplicitUnblockNostr(s, blockedByThis)
 
 		if jsonOutput {
 			out := map[string]interface{}{
