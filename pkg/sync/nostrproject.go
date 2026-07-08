@@ -164,11 +164,24 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			if toStatus == "" {
 				toStatus = prevStatus
 			}
+			// PROVENANCE PRESERVATION (ready-d65 migration): the audit-trail actor.
+			// For live self-writes there is no "by" tag, so the changer is the event
+			// AUTHOR (the portfolio pubkey that signed it) — identical to the pre-d65
+			// behaviour. For MIGRATED history the original campfire actor (email /
+			// pubkey) is carried verbatim in an rd-extension "by" tag, because the
+			// portfolio key is the only thing that can SIGN the re-emitted event yet
+			// the audit trail must still record WHO originally acted. When present the
+			// "by" tag wins; when absent we fall back to the signer. This keeps
+			// `rd show` history provenance item-for-item with campfire after migration.
+			changedBy := s.PubKey
+			if by := tagValue(s, "by"); by != "" {
+				changedBy = by
+			}
 			item.History = append(item.History, state.HistoryEntry{
 				Timestamp:  time.Unix(s.CreatedAt, 0).UTC().Format(time.RFC3339),
 				FromStatus: prevStatus,
 				ToStatus:   toStatus,
-				ChangedBy:  s.PubKey,
+				ChangedBy:  changedBy,
 				Note:       s.Content,
 			})
 			item.UpdatedAt = maxInt64(item.UpdatedAt, s.CreatedAt*int64(time.Second))
@@ -225,6 +238,22 @@ func applyDepAndGateStatus(items map[string]*state.Item) {
 	}
 
 	for _, item := range items {
+		// CARD-DECLARED GATE/WAIT PROMOTION (ready-d65): the item's CURRENT waiting
+		// state can be a DERIVED gate state that was never written as its own NIP-34
+		// status transition — e.g. a campfire item gated via a work:gate message has
+		// status "waiting" but a history array that ends at "inbox"/"active" (the gate
+		// is current state, not an audit row). The status-authority chain therefore
+		// leaves such an item non-waiting, dropping its gate. The 30302 card, being the
+		// materialized CURRENT state, still carries the waiting_type/waiting_on/gate
+		// tags, so promote a non-terminal, non-blocked item to waiting whenever the
+		// card declares a gate/wait. This is faithful to the live write path too: an
+		// active `rd gate` publishes a waiting status event AND a card with these tags
+		// (so promotion is a no-op there), while `rd approve` clears them (so an
+		// approved item is never promoted). Blocking still supersedes (checked first).
+		if item.Status != state.StatusBlocked && !state.IsTerminal(item) &&
+			(item.WaitingType != "" || item.WaitingOn != "" || item.Gate != "") {
+			item.Status = state.StatusWaiting
+		}
 		if item.Status == state.StatusWaiting {
 			if item.WaitingSince == "" {
 				item.WaitingSince = time.Unix(0, item.UpdatedAt).UTC().Format(time.RFC3339)

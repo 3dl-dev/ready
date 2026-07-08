@@ -413,6 +413,15 @@ func pendingPath() string {
 // allItemsFromJSONLOrStore returns all items, preferring JSONL when a project
 // root exists, falling back to the campfire store when it does not.
 func allItemsFromJSONLOrStore(s store.Store) ([]*state.Item, error) {
+	// DUAL-READ (ready-d65): when RD_NOSTR_READ=1 this SINGLE process resolves the
+	// item set from the nostr projection instead of campfire/JSONL. Additive and
+	// off by default — campfire stays the authoritative default backend, so the
+	// live campfire-backed rd is never disturbed. This is the controlled nostr-only
+	// verification context: rd's whole read surface (list/ready/show) runs against
+	// nostr without flipping the live default.
+	if items, ok, err := nostrDualReadAll(); ok {
+		return items, err
+	}
 	if path := jsonlPath(); path != "" {
 		// campfireID may be empty for JSONL-only projects; DeriveFromJSONL handles that.
 		campfireID, _, _ := projectRoot()
@@ -442,6 +451,10 @@ func allItemsFromJSONLOrStore(s store.Store) ([]*state.Item, error) {
 
 // byIDFromJSONLOrStore resolves an item by ID, preferring JSONL when available.
 func byIDFromJSONLOrStore(s store.Store, itemID string) (*state.Item, error) {
+	// DUAL-READ (ready-d65): resolve from the nostr projection when RD_NOSTR_READ=1.
+	if it, ok, err := nostrDualReadByID(itemID); ok {
+		return it, err
+	}
 	if path := jsonlPath(); path != "" {
 		// campfireID may be empty for JSONL-only projects.
 		campfireID, _, _ := projectRoot()
