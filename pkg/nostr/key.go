@@ -182,6 +182,12 @@ func nearestExistingDir(dir string) string {
 // This guards against a caller accidentally persisting the secret to a
 // git-tracked location. Pass "" for allowedRoot to skip only the under-root
 // check (the git-ignore defense-in-depth still runs).
+//
+// Exported but intentionally test-only in production code: LoadOrCreatePortfolioKey
+// (the sole production key-persistence path) writes its own key file inline rather
+// than calling this, so today every non-test caller is a test exercising the
+// path/git-ignore guard (requireIgnorableKeyPath) in isolation. Kept exported (not
+// removed) because it is the guard's dedicated unit-test surface.
 func SaveKeyFile(path string, k *Key, allowedRoot string) error {
 	if err := requireIgnorableKeyPath(path, allowedRoot); err != nil {
 		return err

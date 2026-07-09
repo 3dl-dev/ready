@@ -9,6 +9,44 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// dialRelay opens a websocket connection to relayURL and — when ctx carries a
+// deadline — arms BOTH the write and read deadlines to it. Every relay op
+// (Publish/Fetch/FetchMany) hand-rolled this identical dial+arm sequence; this
+// is the single shared entry point so a change to dial behavior (e.g. TLS
+// config) only needs to happen once.
+func dialRelay(ctx context.Context, relayURL string) (*websocket.Conn, error) {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nostr: dial %s: %w", relayURL, err)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetWriteDeadline(dl)
+		_ = conn.SetReadDeadline(dl)
+	}
+	return conn, nil
+}
+
+// readNIP01Frame reads one raw relay frame and decodes its NIP-01 envelope type
+// (frame[0], e.g. "EVENT"/"OK"/"EOSE"/"CLOSED"). frame is the full decoded array
+// for the caller's field-specific unmarshaling; typ is "" whenever the frame
+// fails to parse (malformed JSON, empty array, or a non-string first element) —
+// matching the original per-call behavior of every relay op, which silently
+// skips such frames and keeps reading (callers loop again on typ == "").
+// err is non-nil only on a transport-level ReadMessage failure.
+func readNIP01Frame(conn *websocket.Conn) (typ string, frame []json.RawMessage, err error) {
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		return "", nil, err
+	}
+	if err := json.Unmarshal(data, &frame); err != nil || len(frame) == 0 {
+		return "", nil, nil
+	}
+	if err := json.Unmarshal(frame[0], &typ); err != nil {
+		return "", nil, nil
+	}
+	return typ, frame, nil
+}
+
 // Publish opens a websocket connection to a single relay, sends the event as a
 // NIP-01 ["EVENT", <event>] message, and waits for the relay's
 // ["OK", <id>, <accepted>, <message>] reply. It returns accepted=true only when
@@ -16,16 +54,11 @@ import (
 // gate: a real strfry either accepts a well-formed signed event or rejects it
 // with a reason.
 func Publish(ctx context.Context, relayURL string, e *Event) (accepted bool, message string, err error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	conn, err := dialRelay(ctx, relayURL)
 	if err != nil {
-		return false, "", fmt.Errorf("nostr: dial %s: %w", relayURL, err)
+		return false, "", err
 	}
 	defer conn.Close()
-
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetWriteDeadline(dl)
-		_ = conn.SetReadDeadline(dl)
-	}
 
 	envelope := []any{"EVENT", e}
 	if err := conn.WriteJSON(envelope); err != nil {
@@ -35,17 +68,9 @@ func Publish(ctx context.Context, relayURL string, e *Event) (accepted bool, mes
 	// Read frames until we see the OK for our id (relays may interleave NOTICE
 	// or other frames).
 	for {
-		_, data, err := conn.ReadMessage()
+		typ, frame, err := readNIP01Frame(conn)
 		if err != nil {
 			return false, "", fmt.Errorf("nostr: read OK: %w", err)
-		}
-		var frame []json.RawMessage
-		if err := json.Unmarshal(data, &frame); err != nil || len(frame) == 0 {
-			continue
-		}
-		var typ string
-		if err := json.Unmarshal(frame[0], &typ); err != nil {
-			continue
 		}
 		if typ != "OK" || len(frame) < 3 {
 			continue
@@ -72,16 +97,11 @@ func Publish(ctx context.Context, relayURL string, e *Event) (accepted bool, mes
 // used to prove the relay actually stored the event and to run Verify against a
 // round-tripped copy.
 func Fetch(ctx context.Context, relayURL, id string) (*Event, error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	conn, err := dialRelay(ctx, relayURL)
 	if err != nil {
-		return nil, fmt.Errorf("nostr: dial %s: %w", relayURL, err)
+		return nil, err
 	}
 	defer conn.Close()
-
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetWriteDeadline(dl)
-		_ = conn.SetReadDeadline(dl)
-	}
 
 	const sub = "rd-fetch"
 	req := []any{"REQ", sub, map[string]any{"ids": []string{id}}}
@@ -90,17 +110,9 @@ func Fetch(ctx context.Context, relayURL, id string) (*Event, error) {
 	}
 
 	for {
-		_, data, err := conn.ReadMessage()
+		typ, frame, err := readNIP01Frame(conn)
 		if err != nil {
 			return nil, fmt.Errorf("nostr: read EVENT: %w", err)
-		}
-		var frame []json.RawMessage
-		if err := json.Unmarshal(data, &frame); err != nil || len(frame) == 0 {
-			continue
-		}
-		var typ string
-		if err := json.Unmarshal(frame[0], &typ); err != nil {
-			continue
 		}
 		switch typ {
 		case "EVENT":
@@ -131,16 +143,11 @@ func Fetch(ctx context.Context, relayURL, id string) (*Event, error) {
 // relay for an item's card + status events, then merges them into the local
 // authoritative log — the relay is never the authority.
 func FetchMany(ctx context.Context, relayURL string, filter map[string]any) ([]*Event, error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	conn, err := dialRelay(ctx, relayURL)
 	if err != nil {
-		return nil, fmt.Errorf("nostr: dial %s: %w", relayURL, err)
+		return nil, err
 	}
 	defer conn.Close()
-
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetWriteDeadline(dl)
-		_ = conn.SetReadDeadline(dl)
-	}
 
 	const sub = "rd-fetchmany"
 	req := []any{"REQ", sub, filter}
@@ -150,17 +157,9 @@ func FetchMany(ctx context.Context, relayURL string, filter map[string]any) ([]*
 
 	var out []*Event
 	for {
-		_, data, err := conn.ReadMessage()
+		typ, frame, err := readNIP01Frame(conn)
 		if err != nil {
 			return nil, fmt.Errorf("nostr: read EVENT: %w", err)
-		}
-		var frame []json.RawMessage
-		if err := json.Unmarshal(data, &frame); err != nil || len(frame) == 0 {
-			continue
-		}
-		var typ string
-		if err := json.Unmarshal(frame[0], &typ); err != nil {
-			continue
 		}
 		switch typ {
 		case "EVENT":

@@ -78,7 +78,7 @@ Example:
 		blockedByThis := item.Blocks
 		item.Status = closeResolutionToStatus(resolution)
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("item closed; campfire durable", nostrErr)
 		}
 		// Implicit unblock parity (ready-2cf): closing this item removes its dep
 		// edge from every item it was blocking — re-publish those cards.

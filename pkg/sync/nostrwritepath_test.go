@@ -36,27 +36,6 @@ func projectTrusted(t *testing.T, log *NostrLog, k *nostr.Key) map[string]*state
 	return ProjectItems(events, ProjectOptions{Maintainers: trust, Trusted: trust})
 }
 
-// cardFromItem mirrors cmd/rd's nostrCardSpecFromItem: build the FULL card from
-// current item state so a re-publish never drops deps/gate/labels/eta.
-func cardFromItem(it *state.Item, boardD string) CardSpec {
-	return CardSpec{
-		ItemID:      it.ID,
-		Title:       it.Title,
-		Status:      it.Status,
-		Priority:    it.Priority,
-		Assignee:    it.By,
-		Type:        it.Type,
-		Context:     it.Context,
-		BoardD:      boardD,
-		Deps:        it.BlockedBy,
-		Gate:        it.Gate,
-		WaitingType: it.WaitingType,
-		WaitingOn:   it.WaitingOn,
-		Labels:      it.Labels,
-		ETA:         it.ETA,
-	}
-}
-
 // TestWirePath_LabelsAndETARoundTrip is the narrow wire proof: a card carrying
 // "l" and "eta" tags reconstructs Item.Labels/Item.ETA through the projection.
 func TestWirePath_LabelsAndETARoundTrip(t *testing.T) {
@@ -104,16 +83,16 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	// t=1 create parent + a blocker item (rd create hook: PublishItem).
 	parent := &state.Item{ID: "ready-p01", Title: "parent", Status: state.StatusActive, Priority: "p1", Type: "task"}
 	blocker := &state.Item{ID: "ready-b01", Title: "blocker", Status: state.StatusActive, Priority: "p1", Type: "task"}
-	if _, err := pub.PublishItem(ctx, boardSpec, cardFromItem(parent, board), 1000); err != nil {
+	if _, err := pub.PublishItem(ctx, boardSpec, CardSpecFromItem(parent, board), 1000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pub.PublishItem(ctx, boardSpec, cardFromItem(blocker, board), 1000); err != nil {
+	if _, err := pub.PublishItem(ctx, boardSpec, CardSpecFromItem(blocker, board), 1000); err != nil {
 		t.Fatal(err)
 	}
 
 	// t=2 rd dep add ready-p01 ready-b01 (dep-add hook: card edit w/ new deps).
 	parent.BlockedBy = []string{"ready-b01"}
-	if _, err := pub.PublishCardEdit(ctx, cardFromItem(parent, board), 2000); err != nil {
+	if _, err := pub.PublishCardEdit(ctx, CardSpecFromItem(parent, board), 2000); err != nil {
 		t.Fatal(err)
 	}
 	items := projectTrusted(t, log, k)
@@ -126,13 +105,13 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 
 	// t=3 rd label add ready-p01 bug (label-add hook: card edit w/ labels).
 	parent.Labels = []string{"bug"}
-	if _, err := pub.PublishCardEdit(ctx, cardFromItem(parent, board), 3000); err != nil {
+	if _, err := pub.PublishCardEdit(ctx, CardSpecFromItem(parent, board), 3000); err != nil {
 		t.Fatal(err)
 	}
 
 	// t=4 rd defer ready-p01 (defer hook: card edit w/ eta).
 	parent.ETA = "2026-09-01T09:00:00Z"
-	if _, err := pub.PublishCardEdit(ctx, cardFromItem(parent, board), 4000); err != nil {
+	if _, err := pub.PublishCardEdit(ctx, CardSpecFromItem(parent, board), 4000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,7 +119,7 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	// blocked — blocked-status supersedes a gate in the projection (matches
 	// pkg/state), so the gate is only observable on an unblocked item.
 	blocker.Status = state.StatusDone
-	if _, err := pub.PublishStatusChange(ctx, cardFromItem(blocker, board), "done", 4500); err != nil {
+	if _, err := pub.PublishStatusChange(ctx, CardSpecFromItem(blocker, board), "done", 4500); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +127,7 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	parent.Status = state.StatusWaiting
 	parent.WaitingType = "gate"
 	parent.WaitingOn = "need sign-off"
-	if _, err := pub.PublishStatusChange(ctx, cardFromItem(parent, board), "need sign-off", 5000); err != nil {
+	if _, err := pub.PublishStatusChange(ctx, CardSpecFromItem(parent, board), "need sign-off", 5000); err != nil {
 		t.Fatal(err)
 	}
 	items = projectTrusted(t, log, k)
@@ -168,7 +147,7 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	// t=6 rd approve ready-p01 (approve hook: status change -> active, gate cleared).
 	parent.Status = state.StatusActive
 	parent.Gate, parent.WaitingType, parent.WaitingOn = "", "", ""
-	if _, err := pub.PublishStatusChange(ctx, cardFromItem(parent, board), "approved: proceed", 6000); err != nil {
+	if _, err := pub.PublishStatusChange(ctx, CardSpecFromItem(parent, board), "approved: proceed", 6000); err != nil {
 		t.Fatal(err)
 	}
 	items = projectTrusted(t, log, k)
@@ -184,7 +163,7 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	// is already inert (blocker terminal), but the card must drop the "i" tag so a
 	// reader no longer records the dependency at all.
 	parent.BlockedBy = nil
-	if _, err := pub.PublishCardEdit(ctx, cardFromItem(parent, board), 7000); err != nil {
+	if _, err := pub.PublishCardEdit(ctx, CardSpecFromItem(parent, board), 7000); err != nil {
 		t.Fatal(err)
 	}
 	items = projectTrusted(t, log, k)
@@ -195,7 +174,7 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 
 	// t=8 rd label remove ready-p01 bug (label-remove hook: card edit).
 	parent.Labels = nil
-	if _, err := pub.PublishCardEdit(ctx, cardFromItem(parent, board), 8000); err != nil {
+	if _, err := pub.PublishCardEdit(ctx, CardSpecFromItem(parent, board), 8000); err != nil {
 		t.Fatal(err)
 	}
 	items = projectTrusted(t, log, k)
@@ -237,7 +216,7 @@ func TestWritePath_CascadeChildrenPublish(t *testing.T) {
 	child := &state.Item{ID: "ready-c01", Title: "child", Status: state.StatusActive, Priority: "p1", Type: "task", ParentID: "ready-c00"}
 	grand := &state.Item{ID: "ready-c02", Title: "grandchild", Status: state.StatusActive, Priority: "p1", Type: "task", ParentID: "ready-c01"}
 	for _, it := range []*state.Item{parent, child, grand} {
-		if _, err := pub.PublishItem(ctx, boardSpec, cardFromItem(it, board), 1000); err != nil {
+		if _, err := pub.PublishItem(ctx, boardSpec, CardSpecFromItem(it, board), 1000); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -246,7 +225,7 @@ func TestWritePath_CascadeChildrenPublish(t *testing.T) {
 	// every one publishes a cancelled status change (ready-2cf cascade hook).
 	for _, it := range []*state.Item{grand, child, parent} {
 		it.Status = state.StatusCancelled
-		if _, err := pub.PublishStatusChange(ctx, cardFromItem(it, board), "scope cut", 2000); err != nil {
+		if _, err := pub.PublishStatusChange(ctx, CardSpecFromItem(it, board), "scope cut", 2000); err != nil {
 			t.Fatal(err)
 		}
 	}

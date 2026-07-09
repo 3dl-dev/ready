@@ -117,7 +117,7 @@ var depAddCmd = &cobra.Command{
 			// fails the mutation (campfire write already durable).
 			blocked.BlockedBy = strSliceAppendUnique(blocked.BlockedBy, blockerID)
 			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (dep added; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("dep added; campfire durable", nostrErr)
 			}
 
 			if jsonOutput {
@@ -201,7 +201,7 @@ var depRemoveCmd = &cobra.Command{
 			// "<campfireID>.<itemID>" — strip both forms. Card-only edit.
 			blocked.BlockedBy = strSliceRemove(blocked.BlockedBy, blocker.ID, blocker.CampfireID+"."+blocker.ID)
 			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (dep removed; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("dep removed; campfire durable", nostrErr)
 			}
 
 			if jsonOutput {

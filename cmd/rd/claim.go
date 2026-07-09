@@ -68,7 +68,7 @@ Example:
 		item.Status = state.StatusActive
 		item.By = agentID.PublicKeyHex()
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item claimed; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("item claimed; campfire durable", nostrErr)
 		}
 
 		if jsonOutput {

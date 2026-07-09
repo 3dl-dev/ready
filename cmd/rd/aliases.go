@@ -143,7 +143,7 @@ Example:
 				childBlocks := child.Blocks
 				child.Status = state.StatusCancelled
 				if nostrErr := publishItemStatusChangeNostr(child, reason); nostrErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: nostr publish failed (child %s cascaded; campfire durable): %v\n", child.ID, nostrErr)
+					warnNostrPublishFailure(fmt.Sprintf("child %s cascaded; campfire durable", child.ID), nostrErr)
 				}
 				// Implicit unblock parity (ready-2cf): a cascaded child may itself
 				// have been blocking other items — re-publish those cards too.
@@ -179,7 +179,7 @@ Example:
 		blockedByParent := item.Blocks
 		item.Status = state.StatusCancelled
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item cancelled; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("item cancelled; campfire durable", nostrErr)
 		}
 		// Implicit unblock parity (ready-2cf): re-publish cards the parent unblocks.
 		publishImplicitUnblockNostr(s, blockedByParent)
@@ -279,7 +279,7 @@ Example:
 		// untouched). AFTER enforcement; best-effort.
 		item.ETA = etaRFC3339
 		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (deferred; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("deferred; campfire durable", nostrErr)
 		}
 
 		if jsonOutput {
@@ -366,7 +366,7 @@ Example:
 		// the invariant that editing the addressable card does not touch history.
 		item.Context = newContext
 		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (progress noted; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("progress noted; campfire durable", nostrErr)
 		}
 
 		if jsonOutput {
@@ -436,7 +436,7 @@ func runCloseAlias(resolution string) func(cmd *cobra.Command, args []string) er
 		blockedByThis := item.Blocks
 		item.Status = closeResolutionToStatus(resolution)
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item closed; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("item closed; campfire durable", nostrErr)
 		}
 		// Implicit unblock parity (ready-2cf): re-publish cards this item unblocks.
 		publishImplicitUnblockNostr(s, blockedByThis)

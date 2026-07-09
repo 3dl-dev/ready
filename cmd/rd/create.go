@@ -282,7 +282,7 @@ Note: use --context for descriptions, not --description.`,
 			// campfire baseline is unaffected. Best-effort: a relay failure never
 			// fails create — the events are durable in the local authoritative log.
 			if nostrErr := publishItemCreateNostr(id, title, itemType, priority, "", context, forParty); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item created; local log/campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("item created; local log/campfire durable", nostrErr)
 			}
 
 			if jsonOutput {
