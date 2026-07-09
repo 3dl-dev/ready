@@ -587,17 +587,21 @@ func TestGenerateID_WithPrefix(t *testing.T) {
 	}
 }
 
-// TestGenerateID_CollisionDetection verifies that generateID avoids collisions by
-// trying longer hex strings when shorter ones collide.
+// TestGenerateID_CollisionDetection verifies that generateID never returns an id
+// already present in the passed existingIDs set. Rather than gambling on the
+// birthday problem (drawing 10 independent random ids against a fixed, tiny
+// existing set and hoping none of them collide with each other — which fails
+// intermittently, see ready-e7c), this test exercises generateID's actual
+// contract: a caller creating ids one at a time is expected to feed each newly
+// generated id back into existingIDs before requesting the next one. Doing
+// that here makes the "no duplicates" assertion deterministic (guaranteed by
+// construction) instead of probabilistic.
 func TestGenerateID_CollisionDetection(t *testing.T) {
-	// Simulate a collision scenario: force the generator to try progressively longer strings.
-	// We'll manually create collisions and verify generateID handles them.
 	existingIDs := map[string]struct{}{
 		"ready-abc": {},
 		"ready-ab":  {},
 	}
 
-	// Generate multiple IDs and ensure no collisions.
 	generatedIDs := make(map[string]struct{})
 	for i := 0; i < 10; i++ {
 		id, err := generateID("ready", existingIDs)
@@ -605,12 +609,49 @@ func TestGenerateID_CollisionDetection(t *testing.T) {
 			t.Fatalf("iteration %d: generateID returned error: %v", i, err)
 		}
 		if _, collision := existingIDs[id]; collision {
-			t.Errorf("iteration %d: collision detected with existing id=%q", i, id)
+			t.Errorf("iteration %d: generateID returned id=%q already present in existingIDs", i, id)
 		}
 		if _, collision := generatedIDs[id]; collision {
-			t.Errorf("iteration %d: collision detected with previously generated id=%q", i, id)
+			t.Errorf("iteration %d: generateID returned a duplicate of a previously generated id=%q", i, id)
 		}
 		generatedIDs[id] = struct{}{}
+		// Feed the id back, as a real caller (e.g. sequential rd create calls) must
+		// do to keep existingIDs authoritative for the next generateID call.
+		existingIDs[id] = struct{}{}
+	}
+}
+
+// TestGenerateID_RetriesOnForcedCollision verifies generateID's actual retry
+// contract: when the shortest candidate (3 hex chars) collides against
+// existingIDs, it extends to a longer hex string until it finds one that
+// doesn't collide. This is forced deterministically by pre-populating every
+// possible 3-char hex suffix (4096 combinations) for the prefix, so the
+// shortest candidate is guaranteed to collide regardless of which random
+// bytes generateID draws — no gambling on which random value comes up.
+func TestGenerateID_RetriesOnForcedCollision(t *testing.T) {
+	const hexDigits = "0123456789abcdef"
+	existingIDs := make(map[string]struct{}, len(hexDigits)*len(hexDigits)*len(hexDigits))
+	for _, a := range hexDigits {
+		for _, b := range hexDigits {
+			for _, c := range hexDigits {
+				existingIDs[fmt.Sprintf("ready-%c%c%c", a, b, c)] = struct{}{}
+			}
+		}
+	}
+
+	id, err := generateID("ready", existingIDs)
+	if err != nil {
+		t.Fatalf("generateID returned error: %v", err)
+	}
+	if _, collision := existingIDs[id]; collision {
+		t.Fatalf("generateID returned id=%q which collides with the forced existingIDs set", id)
+	}
+	parts := strings.Split(id, "-")
+	if len(parts) != 2 {
+		t.Fatalf("expected format 'ready-<hex>', got %q", id)
+	}
+	if len(parts[1]) <= 3 {
+		t.Errorf("generateID: expected hex length > 3 after forcing a collision at length 3, got %d (%q)", len(parts[1]), parts[1])
 	}
 }
 
