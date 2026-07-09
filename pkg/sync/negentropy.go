@@ -59,7 +59,20 @@ type SyncResult struct {
 // is computed over the same universe on both sides. A relay being unreachable is
 // returned as an error; callers may ignore it and rely on the local log (and the
 // git-JSONL degrade floor).
-func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, timeout time.Duration) (SyncResult, error) {
+//
+// TRUST GATE (ready-b57): the relay is an UNTRUSTED cache. A downloaded event is
+// admitted into the local AUTHORITATIVE log ONLY when it (a) passes schnorr Verify
+// AND (b) is authored by a pubkey in the `trusted` web-of-trust allowlist — the
+// SAME two-step gate reconcile() applies (ready-d53). Verify proves the event is
+// internally consistent, NOT that its author may write; the negentropy authors
+// filter is advisory only (a permissive/hostile relay can ignore it and serve
+// events from any key), so the author check MUST run client-side here too, or a
+// validly-signed foreign event would enter the log via this path and bypass the
+// 'single admission choke point' invariant. A nil `trusted` set disables the gate
+// (tests / legacy paths); production callers pass at least the self pubkey
+// (rdconfig.Config.TrustSet). Uploads are unaffected — publishing local events is
+// always permitted; the gate only guards INBOUND admission.
+func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration) (SyncResult, error) {
 	res := SyncResult{Relay: relayURL}
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
@@ -108,17 +121,8 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 		if err != nil {
 			return res, fmt.Errorf("sync: download need from %s: %w", relayURL, err)
 		}
-		var merge []*nostr.Event
-		for _, e := range fetched {
-			if e == nil {
-				continue
-			}
-			if err := e.Verify(); err != nil {
-				continue // never merge an event that does not verify
-			}
-			res.EventBytesDownloaded += eventWireSize(e)
-			merge = append(merge, e)
-		}
+		merge, wireBytes := admitDownloaded(fetched, trusted)
+		res.EventBytesDownloaded += wireBytes
 		added, err := log.AppendUnique(merge)
 		if err != nil {
 			return res, fmt.Errorf("sync: merge downloaded events: %w", err)
@@ -152,11 +156,11 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 // replaceable cache: an event downloaded from relay-a is uploaded to relay-b on
 // the next pass, so the machine converges even if it can only reach one relay at
 // a time. Unreachable relays are recorded as errors and skipped, never fatal.
-func NegentropySyncMany(ctx context.Context, relays []string, log *NostrLog, filter map[string]any, timeout time.Duration) ([]SyncResult, []string) {
+func NegentropySyncMany(ctx context.Context, relays []string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration) ([]SyncResult, []string) {
 	var results []SyncResult
 	var errs []string
 	for _, relay := range relays {
-		r, err := NegentropySync(ctx, relay, log, filter, timeout)
+		r, err := NegentropySync(ctx, relay, log, filter, trusted, timeout)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", relay, err))
 			continue
@@ -180,6 +184,36 @@ func BoardSyncFilter(boardCoord string, authors []string) map[string]any {
 		f["authors"] = authors
 	}
 	return f
+}
+
+// admitDownloaded is the download-side admission gate (ready-b57): the exact
+// two-step check reconcile() applies, factored out so it is unit-testable without a
+// live relay. Given the events a relay served for a negentropy `need` set, it returns
+// the subset admissible into the local AUTHORITATIVE log plus their summed wire size.
+//
+// An event is admitted ONLY when it (a) passes schnorr Verify AND (b) is authored by
+// a pubkey in the `trusted` allowlist. Verify proves internal consistency, NOT
+// authorization — the negentropy authors filter is advisory (a hostile relay can
+// serve any key), so the author check MUST run client-side or a validly-signed
+// foreign event would enter the log via the download and bypass the single admission
+// choke point. A nil `trusted` set disables the gate (tests / legacy paths).
+func admitDownloaded(fetched []*nostr.Event, trusted map[string]bool) ([]*nostr.Event, int) {
+	var merge []*nostr.Event
+	wireBytes := 0
+	for _, e := range fetched {
+		if e == nil {
+			continue
+		}
+		if err := e.Verify(); err != nil {
+			continue // never merge an event that does not verify
+		}
+		if trusted != nil && !trusted[e.PubKey] {
+			continue // untrusted author — drop before AppendUnique
+		}
+		wireBytes += eventWireSize(e)
+		merge = append(merge, e)
+	}
+	return merge, wireBytes
 }
 
 // eventWireSize approximates the on-wire byte size of an event (its JSON form).

@@ -189,7 +189,8 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 
 // MergeFrom integrates another signed-event log file into this one, appending
 // only events not already present (dedup by event id) that pass an independent
-// schnorr Verify. It returns the number of events actually added.
+// schnorr Verify AND the web-of-trust author gate. It returns the number of events
+// actually added.
 //
 // This is the DEGRADE FLOOR (epic ready-a14 invariant): with every relay
 // unreachable, two machines still converge by exchanging their git-committed
@@ -197,7 +198,19 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 // the log is append-only signed events, a git merge of the JSONL plus this
 // idempotent, id-deduped, verify-gated merge yields the union with zero data loss
 // — no relay required. Forged or tampered lines in the other file are rejected.
-func (l *NostrLog) MergeFrom(otherPath string) (int, error) {
+//
+// TRUST GATE (ready-b57): the OTHER machine's committed log is an untrusted input —
+// a foreign or hostile file could carry validly-signed events from a key that was
+// never admitted. Verify alone proves consistency, not authorization, so an event
+// is admitted ONLY when its author is in the `trusted` allowlist (the SAME TrustSet
+// reconcile() and the negentropy download apply). This keeps AppendUnique the
+// single admission choke point for every inbound-from-untrusted merge: a
+// validly-signed-but-untrusted line in the other file is dropped before it can
+// enter the local authoritative log. A nil `trusted` set disables the gate (tests /
+// legacy paths); production callers pass at least the self pubkey plus every
+// admitted machine (rdconfig.Config.TrustSet), so a legitimately-admitted machine's
+// committed log still merges in full.
+func (l *NostrLog) MergeFrom(otherPath string, trusted map[string]bool) (int, error) {
 	other := NewNostrLog(otherPath)
 	evs, err := other.ReadAll()
 	if err != nil {
@@ -209,7 +222,12 @@ func (l *NostrLog) MergeFrom(otherPath string) (int, error) {
 			continue
 		}
 		if err := e.Verify(); err != nil {
-			continue // trust gate: never merge an event that does not verify
+			continue // trust gate step 1: never merge an event that does not verify
+		}
+		// Trust gate step 2 (ready-b57): drop validly-signed events from untrusted
+		// authors before local-log admission. A nil set disables the gate.
+		if trusted != nil && !trusted[e.PubKey] {
+			continue
 		}
 		verified = append(verified, e)
 	}

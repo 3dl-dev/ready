@@ -324,9 +324,12 @@ var nostrShowCmd = &cobra.Command{
 			return err
 		}
 		trusted := nostrTrustSet(k.PubKeyHex())
+		// Status-authority is derived from the board's declared maintainers inside
+		// ProjectItems (ready-b57) — NOT the whole trust set. Read-trust stays the
+		// full set (Trusted); Maintainers is left nil so only item authors and board
+		// maintainers can author authoritative status.
 		items := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Maintainers: trusted,
-			Trusted:     trusted,
+			Trusted: trusted,
 		})
 		item, found := items[itemID]
 		if !found {
@@ -474,9 +477,10 @@ regardless of substrate.`,
 			return err
 		}
 		trusted := nostrTrustSet(k.PubKeyHex())
+		// Status-authority = author OR board maintainer (board-derived in ProjectItems,
+		// ready-b57); read-trust = full set. Maintainers left nil.
 		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Maintainers: trusted,
-			Trusted:     trusted,
+			Trusted: trusted,
 		})
 		items := make([]*state.Item, 0, len(itemsByID))
 		for _, item := range itemsByID {
@@ -636,7 +640,10 @@ var nostrSyncCmd = &cobra.Command{
 		relays := nostrWriteRelays()
 
 		ctx := context.Background()
-		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, nostr.DefaultTimeout)
+		// ready-b57: gate the negentropy download with the web-of-trust allowlist so a
+		// hostile relay cannot inject a validly-signed foreign event into the log.
+		trusted := nostrTrustSet(k.PubKeyHex())
+		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, trusted, nostr.DefaultTimeout)
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -695,7 +702,15 @@ var nostrMergeCmd = &cobra.Command{
 			return fmt.Errorf("no .ready project directory found")
 		}
 		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-		added, err := log.MergeFrom(args[0])
+		// ready-b57: gate the git-JSONL degrade-floor merge with the web-of-trust
+		// allowlist. Another machine's committed log is untrusted input; only events
+		// from admitted authors (self + TrustedPubkeys) enter the local authoritative
+		// log. An admitted machine's log still merges in full.
+		k, err := nostrKey()
+		if err != nil {
+			return err
+		}
+		added, err := log.MergeFrom(args[0], nostrTrustSet(k.PubKeyHex()))
 		if err != nil {
 			return err
 		}
@@ -736,7 +751,9 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 		return nil, nil, err
 	}
 	trusted := nostrTrustSet(k.PubKeyHex())
-	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Maintainers: trusted, Trusted: trusted})
+	// ready-b57: status-authority is board-derived (author OR board maintainer),
+	// NOT the whole trust set. Read-trust stays the full set; Maintainers left nil.
+	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trusted})
 	items := make([]*state.Item, 0, len(byID))
 	for _, it := range byID {
 		items = append(items, it)

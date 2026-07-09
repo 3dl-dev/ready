@@ -70,11 +70,11 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
 
 	// Each machine syncs against the relay.
-	rA, err := NegentropySync(ctx, relay, logA, filter, 30*time.Second)
+	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("A sync: %v", err)
 	}
-	rB, err := NegentropySync(ctx, relay, logB, filter, 30*time.Second)
+	rB, err := NegentropySync(ctx, relay, logB, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 
 	// Anti-pathology: a SECOND sync on a converged machine transfers ZERO event
 	// bodies (no full re-sync). This is the measured proof vs campfire's 44x.
-	rA2, err := NegentropySync(ctx, relay, logA, filter, 30*time.Second)
+	rA2, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("A resync: %v", err)
 	}
@@ -159,6 +159,93 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 		}
 	}
 	t.Logf("PROVEN: offline events buffered + flushed on reconnect; republish idempotent by event id (relay OK,true)")
+}
+
+// TestLiveRelay_NegentropyDownloadTrustGate is the ready-b57 LIVE proof for fix (1),
+// download path: an event the relay legitimately serves is REJECTED from the local
+// authoritative log when its author is NOT in the syncing machine's web-of-trust set
+// — the client-side gate stands even against an honest relay, so it also stands
+// against a permissive/hostile one that ignores the write-allowlist (ready-266).
+//
+// The locked relays reject non-allowlisted WRITES, so we cannot place a
+// genuinely-foreign event on the relay. We invert the roles instead: publish item X
+// with the ALLOWLISTED key (accepted + stored), then have a fresh machine negentropy-
+// sync with a trust set that DOES NOT include that author. The relay serves X over
+// the download, and the gate must drop it before AppendUnique — proving the download
+// admission is gated on the SYNCING machine's trust set, not on what the relay serves.
+// Re-syncing with the author admitted then downloads X, proving the gate was the only
+// thing blocking it.
+func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
+	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
+		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live negentropy-download trust-gate proof")
+	}
+	relay := liveRelayURL(t)
+	k := liveRelayKey(t) // allowlisted author — its writes are accepted by the relay
+
+	// A pubkey the syncing machine does NOT trust (never authored anything here).
+	stranger, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("gen stranger: %v", err)
+	}
+
+	dir := t.TempDir()
+	logPub := NewNostrLog(filepath.Join(dir, "pub", NostrLogFile))
+	pub := &Publisher{Key: k, Log: logPub, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "pub", NostrPendingFile)}
+	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	idX := fmt.Sprintf("ready-b57-dl-%d", time.Now().UnixNano())
+	if _, err := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+		t.Fatalf("publish X: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+
+	// A fresh machine with an EMPTY log syncs, requesting k's events, but trusts only
+	// `stranger` — NOT k. The relay serves X; the download gate must drop every event.
+	syncLog := NewNostrLog(filepath.Join(dir, "sync", NostrLogFile))
+	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
+	untrusting := map[string]bool{stranger.PubKeyHex(): true}
+	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second)
+	if err != nil {
+		t.Fatalf("gated sync: %v", err)
+	}
+	if r.Need == 0 {
+		t.Fatalf("relay served nothing for %s — cannot distinguish the gate from an empty fetch", idX)
+	}
+	if r.Downloaded != 0 {
+		t.Fatalf("TRUST GATE FAILED: downloaded %d untrusted-author event(s) into the log", r.Downloaded)
+	}
+	got, err := syncLog.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("untrusted events poisoned the local log via negentropy download: %d present", len(got))
+	}
+	t.Logf("PROVEN: relay offered need=%d event(s); ZERO admitted under a trust set excluding the author", r.Need)
+
+	// Admit k -> the very same events now download. Proves the gate (not the relay,
+	// not the filter) was the sole blocker.
+	trusting := map[string]bool{k.PubKeyHex(): true}
+	r2, err := NegentropySync(context.Background(), relay, syncLog, filter, trusting, 30*time.Second)
+	if err != nil {
+		t.Fatalf("trusting sync: %v", err)
+	}
+	if r2.Downloaded == 0 {
+		t.Fatalf("once the author is admitted, its events must download, got downloaded=0 (need=%d)", r2.Need)
+	}
+	items := ProjectItems(mustReadAll(t, syncLog), ProjectOptions{Trusted: trusting})
+	if items[idX] == nil {
+		t.Fatalf("admitted author's item %s missing after trusted sync", idX)
+	}
+	t.Logf("PROVEN: same events admitted once the author is trusted (downloaded=%d)", r2.Downloaded)
+}
+
+func mustReadAll(t *testing.T, log *NostrLog) []*nostr.Event {
+	t.Helper()
+	evs, err := log.ReadAll()
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	return evs
 }
 
 func assertConverged(t *testing.T, who string, log *NostrLog, ids ...string) {
