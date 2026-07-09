@@ -360,14 +360,14 @@ func TestValidate_InvalidType(t *testing.T) {
 // TestParse_InvalidIDPattern checks various invalid ID patterns.
 func TestParse_InvalidIDPattern(t *testing.T) {
 	invalidIDs := []string{
-		"",           // empty
-		"A",          // uppercase
-		"a",          // too short
-		"ab",         // exactly 2 chars
-		"_abc",       // starts with underscore
-		"-abc",       // starts with dash
-		"abc_def",    // has underscore
-		"abc def",    // has space
+		"",        // empty
+		"A",       // uppercase
+		"a",       // too short
+		"ab",      // exactly 2 chars
+		"_abc",    // starts with underscore
+		"-abc",    // starts with dash
+		"abc_def", // has underscore
+		"abc def", // has space
 	}
 	for _, id := range invalidIDs {
 		_, err := playbook.Parse(id, "Title", "", sampleItemsJSON)
@@ -380,11 +380,11 @@ func TestParse_InvalidIDPattern(t *testing.T) {
 // TestParse_ValidIDPattern checks valid ID patterns.
 func TestParse_ValidIDPattern(t *testing.T) {
 	validIDs := []string{
-		"a-b",           // 3 chars with dash
-		"a1b",           // 3 chars with digit
-		"abc-def",       // longer with dash
-		"sre-incident",  // typical playbook ID
-		"test-pb-123",   // longer with numbers
+		"a-b",          // 3 chars with dash
+		"a1b",          // 3 chars with digit
+		"abc-def",      // longer with dash
+		"sre-incident", // typical playbook ID
+		"test-pb-123",  // longer with numbers
 	}
 	for _, id := range validIDs {
 		_, err := playbook.Parse(id, "Title", "", sampleItemsJSON)
@@ -549,33 +549,67 @@ func TestExpand_MultipleVariables(t *testing.T) {
 	}
 }
 
-// TestExpand_DuplicateIDGeneration runs expansion multiple times and checks all IDs are unique.
+// TestExpand_DuplicateIDGeneration verifies that a single Expand call never
+// produces duplicate item IDs.
+//
+// The previous version of this test drew IDs from 5 independent Expand calls
+// (3 items each) and asserted no collisions across all of them. That is not a
+// guarantee Expand actually makes or needs to make — each call is
+// independent, and the underlying generator originally drew a single 3-hex-
+// character suffix (a 4096-value space) with no collision checking at all.
+// Across 15 draws the birthday-bound chance of a coincidental collision is
+// ~2.6%, which is exactly what surfaced as an intermittent full-suite
+// failure (ready-d67): passing >97% of the time made it look flaky rather
+// than broken, but the test was gambling on entropy either way.
+//
+// generateItemID now tracks and avoids collisions deterministically within a
+// single Expand call (extending the hex suffix on collision, mirroring
+// cmd/rd's generateID from ready-e7c). This test proves that contract
+// deterministically — not probabilistically — by requesting more items than
+// the initial 3-char suffix space (4096) can hold. By pigeonhole, at least
+// one collision against the initial candidate is mathematically guaranteed,
+// forcing the retry/extend path on every run rather than gambling on it.
 func TestExpand_DuplicateIDGeneration(t *testing.T) {
-	itemJSON := []byte(`[
-		{"title":"A","type":"task","priority":"p1","deps":[]},
-		{"title":"B","type":"task","priority":"p1","deps":[]},
-		{"title":"C","type":"task","priority":"p1","deps":[]}
-	]`)
+	const n = 5000 // > 4096 possible 3-char hex suffixes: forces collisions by pigeonhole
+	items := make([]map[string]any, n)
+	for i := range items {
+		items[i] = map[string]any{
+			"title":    fmt.Sprintf("Item %d", i),
+			"type":     "task",
+			"priority": "p1",
+			"deps":     []int{},
+		}
+	}
+	itemJSON, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal items failed: %v", err)
+	}
+
 	tmpl, err := playbook.Parse("dup-id", "Dup ID", "", itemJSON)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	// Generate multiple times and collect IDs
-	allIDs := map[string]bool{}
-	for run := 0; run < 5; run++ {
-		expanded, err := playbook.Expand(tmpl, "proj", nil)
-		if err != nil {
-			t.Fatalf("expand run %d failed: %v", run, err)
-		}
-		for _, item := range expanded {
-			if allIDs[item.ID] {
-				t.Fatalf("duplicate ID %q generated", item.ID)
-			}
-			allIDs[item.ID] = true
-		}
+
+	expanded, err := playbook.Expand(tmpl, "proj", nil)
+	if err != nil {
+		t.Fatalf("expand failed: %v", err)
 	}
-	if len(allIDs) != 15 {
-		t.Errorf("expected 15 unique IDs (5 runs × 3 items), got %d", len(allIDs))
+	if len(expanded) != n {
+		t.Fatalf("expected %d items, got %d", n, len(expanded))
+	}
+
+	seen := make(map[string]bool, n)
+	for _, item := range expanded {
+		if !itemIDPattern.MatchString(item.ID) {
+			t.Errorf("item ID %q does not match required pattern", item.ID)
+		}
+		if seen[item.ID] {
+			t.Fatalf("duplicate ID %q generated", item.ID)
+		}
+		seen[item.ID] = true
+	}
+	if len(seen) != n {
+		t.Errorf("expected %d unique IDs, got %d", n, len(seen))
 	}
 }
 
