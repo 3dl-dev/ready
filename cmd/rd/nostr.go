@@ -95,6 +95,20 @@ func nostrPendingPath(dir string) string {
 	return dir + "/.ready/" + rdSync.NostrPendingFile
 }
 
+// nostrPinnedBoard returns the pinned authoritative board coordinate for the
+// project rooted at dir (BP-3), read from .ready/config.json's SyncConfig. Empty
+// when unpinned (the default for existing installs) or unreadable — an empty pin
+// disables the projection's board-rejection / level-derivation gates, preserving
+// pre-BP-3 behaviour. It is passed to ProjectOptions.PinnedBoard so the nostr
+// projection rejects foreign-board cards and derives graded operator levels.
+func nostrPinnedBoard(dir string) string {
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		return ""
+	}
+	return cfg.Board
+}
+
 // boardSpecForProject returns the NIP-100 board (project) spec for the current
 // project directory, with the portfolio key as sole maintainer.
 func boardSpecForProject(dir, pubkey string) rdSync.BoardSpec {
@@ -339,7 +353,8 @@ var nostrShowCmd = &cobra.Command{
 		// full set (Trusted); Maintainers is left nil so only item authors and board
 		// maintainers can author authoritative status.
 		items := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Trusted: trusted,
+			Trusted:     trusted,
+			PinnedBoard: nostrPinnedBoard(dir),
 		})
 		item, found := items[itemID]
 		if !found {
@@ -490,7 +505,8 @@ regardless of substrate.`,
 		// Status-authority = author OR board maintainer (board-derived in ProjectItems,
 		// ready-b57); read-trust = full set. Maintainers left nil.
 		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Trusted: trusted,
+			Trusted:     trusted,
+			PinnedBoard: nostrPinnedBoard(dir),
 		})
 		items := make([]*state.Item, 0, len(itemsByID))
 		for _, item := range itemsByID {
@@ -763,7 +779,7 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 	trusted := nostrTrustSet(k.PubKeyHex())
 	// ready-b57: status-authority is board-derived (author OR board maintainer),
 	// NOT the whole trust set. Read-trust stays the full set; Maintainers left nil.
-	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trusted})
+	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trusted, PinnedBoard: nostrPinnedBoard(dir)})
 	items := make([]*state.Item, 0, len(byID))
 	for _, it := range byID {
 		items = append(items, it)

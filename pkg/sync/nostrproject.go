@@ -71,6 +71,31 @@ type ProjectOptions struct {
 	// and any legacy unconfigured path. Production callers always pass a non-nil set
 	// containing at least the self pubkey (see rdconfig.Config.TrustSet).
 	Trusted map[string]bool
+
+	// PinnedBoard, when non-empty, is the authoritative board coordinate
+	// "30301:<ownerPubkey>:<boardD>" this project is bound to (BP-3, design
+	// docs/design/nostr-identity-model.md §4). When set it activates three
+	// point-in-time / anti-escalation behaviours; when empty every one of them is
+	// inert, so the pre-BP-3 projection is reproduced exactly (except the
+	// board-maintainer union fix, which is unconditional):
+	//
+	//   - BOARD PINNING: a 30302 card whose "a" coordinate is not PinnedBoard is
+	//     REJECTED at projection. This kills parallel-board self-escalation — a
+	//     relay-admitted key otherwise forks its own 30301, self-grants maintainer
+	//     on it, and publishes cards under its own "a".
+	//
+	//   - GRADED LEVELS: DeriveLevels is run for the board author parsed from this
+	//     coordinate, yielding {pubkey→level} and each key's authoritative-until.
+	//     The level≥2 set augments the status-authority maintainers for this
+	//     coordinate (a revocable source alongside the board's "p" tags); an
+	//     explicitly-revoked key (level 0) is stripped from it.
+	//
+	//   - POINT-IN-TIME READ-TRUST (prospective revocation, design §3): an event
+	//     from a key with a bounded authoritative-until is honoured only if
+	//     created_at < until. A revoked key's FUTURE events drop; its PAST
+	//     authoritative events survive, so a completed item does NOT reopen when
+	//     its past author is later revoked.
+	PinnedBoard string
 }
 
 // trusts reports whether pubkey is authorized under opts.Trusted. A nil Trusted
@@ -90,6 +115,20 @@ func (opts ProjectOptions) trusts(pubkey string) bool {
 // or forged line in the log cannot influence the projection. This is the
 // read-side trust gate mirroring pkg/state's derive-time enforcement.
 func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.Item {
+	// GRADED OPERATOR LEVELS (BP-3, design §3/§4): when a board is pinned, derive the
+	// {pubkey→level} + authoritative-until maps from the signed 39301 role-grant
+	// events for the pinned board's authority chain. `until` powers the point-in-time
+	// read-trust gate below (prospective revocation); `levels≥2` augments the
+	// status-authority maintainer set. Both are empty when no board is pinned, so the
+	// gates are inert and the pre-BP-3 projection is reproduced.
+	var levels map[string]int
+	var until map[string]int64
+	if opts.PinnedBoard != "" {
+		if owner, _, ok := parseBoardCoord(opts.PinnedBoard); ok {
+			levels, until = DeriveLevels(events, owner)
+		}
+	}
+
 	// Winning card per item, and the ordered list of authoritative status events.
 	winningCard := map[string]*nostr.Event{}
 	statusEvents := map[string][]*nostr.Event{}
@@ -115,6 +154,14 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		}
 		set[pubkey] = true
 	}
+	// LATEST-WINS board per coordinate (BP-3, design §1/§4 fix for the A4 live bug):
+	// the pre-BP-3 code UNIONED the "p" tags of ALL historical 30301 board events for
+	// a coordinate (`boardMaintainers` filled in the main loop), so a maintainer named
+	// once was a maintainer FOREVER — the board could never be republished to REVOKE a
+	// maintainer. We instead retain only the NEWEST board event per coordinate and
+	// derive its maintainers from THAT event's "p" tags alone (built after the loop),
+	// so a board republished without a "p" tag drops that maintainer.
+	winningBoard := map[string]*nostr.Event{}
 	// DEDUP BY EVENT ID (ready-f92): re-ingesting the same signed event MUST be a
 	// no-op. The local log AppendUnique already dedups on the write side, but the
 	// projection is also fed by MergeFrom/reconcile unions and callers may pass an
@@ -144,21 +191,40 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		if !opts.trusts(e.PubKey) {
 			continue
 		}
-		// Board (30301) events carry status-authority policy, not item state. Record
-		// the board's maintainer set (author + "p" tags) keyed by its coordinate, then
-		// move on — a board has no rd item id. This runs BEFORE the itemID guard below
-		// (a board's "d" tag is the boardD, not an item).
+		// POINT-IN-TIME READ-TRUST (BP-3, design §3 A1 — prospective revocation): a key
+		// with a bounded authoritative-until (i.e. it was REVOKED) is honoured only for
+		// events created BEFORE the revoke took effect. `until` holds the revoke's
+		// effective time (`from`, else its created_at); non-revoked keys map to
+		// +infinity and keys absent from the map (no grant / no pinned board) are
+		// unbounded. Dropping only future events — not past ones — is what preserves the
+		// audit trail: a completed item does NOT reopen when its past author is later
+		// revoked, while the revoked key can author nothing NEW that projects.
+		if u, ok := until[e.PubKey]; ok && e.CreatedAt >= u {
+			continue
+		}
+		// Board (30301) events carry status-authority policy, not item state. Retain
+		// only the NEWEST board per coordinate (latest-wins); its maintainers are
+		// derived after the loop. This runs BEFORE the itemID guard below (a board's
+		// "d" tag is the boardD, not an item).
 		if e.Kind == KindBoard {
 			seen[e.ID] = true
 			coord := BoardCoord(e.PubKey, tagValue(e, "d"))
-			addBoardMaintainer(coord, e.PubKey) // author maintains their own board
-			for _, m := range tagValues(e, "p") {
-				addBoardMaintainer(coord, m)
+			if cur, ok := winningBoard[coord]; !ok || newerThan(e, cur) {
+				winningBoard[coord] = e
 			}
 			continue
 		}
 		itemID := itemIDForEvent(e)
 		if itemID == "" {
+			continue
+		}
+		// BOARD PINNING (BP-3, design §4 A5): reject any card bound to a board other
+		// than the pinned authoritative coordinate. Without this, any relay-admitted
+		// key forks its own 30301, self-grants maintainer on it, and publishes cards
+		// under its own "a" — a parallel-board self-escalation. Only cards are gated
+		// here (they carry item state / authorship); status authority is already
+		// per-coordinate bound. Inert when no board is pinned.
+		if opts.PinnedBoard != "" && e.Kind == KindCard && tagValue(e, "a") != opts.PinnedBoard {
 			continue
 		}
 		seen[e.ID] = true
@@ -170,6 +236,32 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			}
 		case isStatusKind(e.Kind):
 			statusEvents[itemID] = append(statusEvents[itemID], e)
+		}
+	}
+
+	// Derive board maintainers from the WINNING (newest) board per coordinate only —
+	// NOT the monotonic union of all historical boards (the A4 bug). A board author is
+	// always a maintainer of their own board; the newest board's "p" tags name the
+	// rest, so republishing without a "p" tag revokes that maintainer.
+	for coord, b := range winningBoard {
+		addBoardMaintainer(coord, b.PubKey)
+		for _, m := range tagValues(b, "p") {
+			addBoardMaintainer(coord, m)
+		}
+	}
+	// Fold the grant-derived level≥2 set into the PINNED coordinate's maintainers — a
+	// revocable status-authority source alongside the board "p" tags (design §4
+	// Gate B). We deliberately do NOT strip revoked keys from the maintainer set here:
+	// revocation is PROSPECTIVE and is enforced upstream by the point-in-time
+	// read-trust gate (a revoked key's future events are dropped before this loop ever
+	// sees them; its PAST authoritative events must remain authoritative so a completed
+	// item does not reopen — design §3 A1). A current-snapshot strip would erase that
+	// past authority and reopen the item, which is exactly the bug being ruled out.
+	if opts.PinnedBoard != "" {
+		for k, lvl := range levels {
+			if lvl >= LevelMaintainer {
+				addBoardMaintainer(opts.PinnedBoard, k)
+			}
 		}
 	}
 
