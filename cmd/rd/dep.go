@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/ready/pkg/jsonl"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
@@ -164,10 +166,27 @@ var depRemoveCmd = &cobra.Command{
 				return fmt.Errorf("resolving blocker item %q: %w", blockerArg, err)
 			}
 
-			// Find the work:block message linking these two items.
-			blockMsgID, campfireID, err := findBlockMessage(s, blocker.ID, blocked.ID)
-			if err != nil {
-				return err
+			// Find the work:block message linking these two items. In pure
+			// --offline (JSONL-only) mode there is no campfire to scan — the
+			// project campfire is empty/absent — so the block message must be
+			// found by scanning the local mutations.jsonl instead (ready-b41).
+			_, _, hasCampfire := projectRoot()
+
+			var blockMsgID, campfireID string
+			if !hasCampfire {
+				path := jsonlPath()
+				if path == "" {
+					return fmt.Errorf("no ready project found (JSONL-only mode requires a .ready/ directory)")
+				}
+				blockMsgID, err = findBlockMessageJSONL(path, blocker.ID, blocked.ID)
+				if err != nil {
+					return err
+				}
+			} else {
+				blockMsgID, campfireID, err = findBlockMessage(s, blocker.ID, blocked.ID)
+				if err != nil {
+					return err
+				}
 			}
 
 			exec, _, err := requireExecutor()
@@ -186,10 +205,19 @@ var depRemoveCmd = &cobra.Command{
 				argsMap["reason"] = reason
 			}
 
-			// Send directly to the campfire that contains the block message.
-			// We use executeConventionOp with the known campfireID via a direct executor call,
-			// bypassing the project campfire lookup.
-			msg, newCampfireID, err := executeConventionOpToCampfire(agentID, s, exec, decl, campfireID, argsMap)
+			// Send the unblock op. In JSONL-only mode there is no campfire to
+			// send to at all — executeConventionOp() writes the tombstone
+			// directly to mutations.jsonl (the same path dep add already uses
+			// offline). Otherwise, send directly to the campfire that contains
+			// the block message via executeConventionOpToCampfire, bypassing
+			// the project campfire lookup.
+			var msg *message.Message
+			var newCampfireID string
+			if !hasCampfire {
+				msg, newCampfireID, err = executeConventionOp(agentID, s, exec, decl, argsMap)
+			} else {
+				msg, newCampfireID, err = executeConventionOpToCampfire(agentID, s, exec, decl, campfireID, argsMap)
+			}
 			if err != nil {
 				return err
 			}
@@ -450,6 +478,36 @@ func findBlockMessage(s store.Store, blockerID, blockedID string) (string, strin
 	}
 
 	return "", "", fmt.Errorf("no work:block message found for %s → %s", blockerID, blockedID)
+}
+
+// findBlockMessageJSONL scans the local mutations.jsonl file for a work:block
+// record with the given blocker and blocked item IDs. This mirrors
+// findBlockMessage but reads the local JSONL log instead of the campfire
+// store — required in pure --offline (JSONL-only) mode, where no campfire is
+// configured and ListMemberships()/ListMessages() have nothing to scan
+// (ready-b41). Returns the message ID of the matching work:block record.
+func findBlockMessageJSONL(path, blockerID, blockedID string) (string, error) {
+	reader := jsonl.NewReader(path)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return "", fmt.Errorf("reading local mutations log: %w", err)
+	}
+
+	blockTag := jsonl.WorkTagPrefix + "block"
+	for _, rec := range records {
+		if !hasTagStr(rec.Tags, blockTag) {
+			continue
+		}
+		var p blockPayload
+		if err := json.Unmarshal(rec.Payload, &p); err != nil {
+			continue
+		}
+		if p.BlockerID == blockerID && p.BlockedID == blockedID {
+			return rec.MsgID, nil
+		}
+	}
+
+	return "", fmt.Errorf("no work:block message found for %s → %s", blockerID, blockedID)
 }
 
 // hasTagStr reports whether tags contains the given tag string.

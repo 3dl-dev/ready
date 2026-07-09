@@ -337,7 +337,70 @@ func TestE2E_Offline_ReadyViewWorks(t *testing.T) {
 	}
 }
 
+// TestE2E_Offline_DepRemoveWorks verifies that 'rd dep remove' actually removes
+// the blocking edge in pure --offline (JSONL-only) mode, where there is no
+// campfire store to scan. Prior to the ready-b41 fix, findBlockMessage only
+// scanned the (empty) campfire store, so dep remove was a silent no-op offline
+// and the blocked item never became ready.
+func TestE2E_Offline_DepRemoveWorks(t *testing.T) {
+	e := NewEnvOffline(t)
+
+	_, _, code := e.Rd("init", "--offline", "--name", "dep-remove-test")
+	if code != 0 {
+		t.Fatalf("rd init --offline failed")
+	}
+
+	var blocker, blocked Item
+	if err := e.RdJSON(&blocker, "create", "--title", "Blocker", "--priority", "p1", "--type", "task"); err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	if err := e.RdJSON(&blocked, "create", "--title", "Blocked", "--priority", "p1", "--type", "task"); err != nil {
+		t.Fatalf("create blocked: %v", err)
+	}
+
+	// Wire the dependency.
+	_, stderr, code := e.Rd("dep", "add", blocked.ID, blocker.ID)
+	if code != 0 {
+		t.Fatalf("dep add failed (exit %d): %s", code, stderr)
+	}
+
+	// Confirm the block took effect: blocked item is absent from ready view.
+	if containsItem(e.ReadyItems(), blocked.ID) {
+		t.Fatal("blocked item should not be ready before dep remove")
+	}
+	got := e.ShowItem(blocked.ID)
+	if !containsString(got.BlockedBy, blocker.ID) {
+		t.Fatalf("blocked item should list %s in blocked_by, got %v", blocker.ID, got.BlockedBy)
+	}
+
+	// Remove the dependency — this is the offline path under test.
+	_, stderr, code = e.Rd("dep", "remove", blocked.ID, blocker.ID)
+	if code != 0 {
+		t.Fatalf("dep remove failed (exit %d): %s", code, stderr)
+	}
+
+	// The blocking edge must actually be gone: blocked_by no longer lists the
+	// blocker, and the item is ready again (blocker is still open/active).
+	got = e.ShowItem(blocked.ID)
+	if containsString(got.BlockedBy, blocker.ID) {
+		t.Fatalf("blocked_by still lists %s after dep remove: %v", blocker.ID, got.BlockedBy)
+	}
+	if !containsItem(e.ReadyItems(), blocked.ID) {
+		t.Fatal("item should be ready after dep remove (offline mode)")
+	}
+}
+
 // --- helpers ---
+
+// containsString reports whether ss contains target.
+func containsString(ss []string, target string) bool {
+	for _, s := range ss {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
 
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
