@@ -163,7 +163,40 @@ the OTHER admitted machines (self is implicit); the relay allowlist lists them A
 machine's `~/.cf/nostr-identity.json` (materialized by rd,
 `LoadOrCreatePortfolioKey`).
 
-### Admitting a new pubkey
+### Admitting / revoking a pubkey — signed source (ready-84e / BP-5)
+
+The hand-edit workflow below is **superseded** by `rd nostr grant` / `rd nostr
+revoke` + `rd nostr sync-allowlist`, which regenerate the allowlist from **one signed
+source** (the kind-39301 role-grants) instead of two hand-kept lists. This ends the
+drift this runbook warns about: the client trust set and the relay file now derive
+from the same signed log (design `docs/design/nostr-identity-model.md` §4/§6, A3).
+
+```bash
+# One signed act admits an actor across BOTH the client trust set and the relay:
+rd nostr grant <pubkeyHex> contributor --label "machine-3 rd-node"   # owner-signed 39301
+rd nostr sync-allowlist                                              # DRY RUN: prints the diff
+rd nostr sync-allowlist --apply                                     # writes the file + scp/ssh to both relays
+
+# Revoke (prospective by default — past authoritative events stay honored):
+rd nostr revoke <pubkeyHex>
+rd nostr sync-allowlist --apply
+```
+
+`sync-allowlist` derives the admitted set = `{ board author } ∪ { non-revoked
+grantees }`, and — the safety property against the LIVE locked relays — **removes a
+currently-admitted key IFF it has an explicit `role=revoked` grant**. A
+currently-admitted key with **no** rd grant (e.g. a third-party tenant sharing the
+relay, such as the `dontguess` exchange operator key) is **PRESERVED** and reported,
+never silently dropped; if a key would be removed *without* a revoke grant the apply
+path **fails closed**. `--dry-run` (the default, i.e. omit `--apply`) prints the
+added/removed/preserved diff for review before anyone is removed.
+
+Only the **board author (owner)** may grant `maintainer`/`owner` (the escalation
+cap); a maintainer may grant only `contributor`/`revoked`. The board must be pinned
+first with `rd nostr pin-board` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
+to `.ready/config.json`).
+
+**Manual fallback** (still valid; `sync-allowlist` produces the same file format):
 
 1. Add `"pubkey": "label"` to `scripts/relay-policy/write-allowlist.json`.
 2. Add the pubkey to every *other* machine's `~/.cf/rd.json` `trusted_pubkeys`
@@ -190,6 +223,14 @@ provision time, so a freshly built relay is locked from first boot.
 allowlisted portfolio key publishes and is ACCEPTED, (b) a random untrusted key is
 REJECTED with the relay's own block reason, and (c) reads stay open. Captured
 output: `docs/relay-writepolicy-demo-output.txt`.
+
+`scripts/nostr-grant-revoke-demo.sh` proves the full BP-5 loop against the live
+locked relays: a fresh agent key is (b) REJECTED, then `rd nostr grant` +
+`sync-allowlist --apply` makes its write (d) LAND, then `rd nostr revoke` +
+`sync-allowlist --apply` makes it (f) REJECTED again — while the owner (P1),
+machine-2 (P2), and the unmanaged `dontguess` tenant key stay admitted throughout.
+The script captures the original allowlists and restores them on exit. Captured
+output: `docs/nostr-grant-revoke-demo-output.txt`.
 
 The Go live tests (`RD_NOSTR_LIVE_RELAY=1 go test ./pkg/sync/ ./pkg/nostr/`) sign
 with the allowlisted key (`liveRelayKey`, resolved from

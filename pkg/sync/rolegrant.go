@@ -295,6 +295,18 @@ func roleToLevel(role string) int {
 // checker.go's Level() fallback — callers must apply that default, not read a
 // missing key as level 0. The until map is populated in lockstep with levels.
 func DeriveLevels(events []*nostr.Event, boardAuthor string) (levels map[string]int, until map[string]int64) {
+	levels, until, _ = deriveGrants(events, boardAuthor)
+	return levels, until
+}
+
+// deriveGrants is the shared core of DeriveLevels and DeriveAllowlist: it replays
+// the cap-valid winning grant per grantee and returns the level map, the
+// authoritative-until map, AND the winning roleGrant per grantee (which carries the
+// human label needed to regenerate the relay write-allowlist, BP-5). Keeping ONE
+// replay means the graded read-trust set and the coarse relay allowlist derive from
+// exactly the same signed source — the drift the runbook warns about is closed
+// structurally (design §4, §6, A3), not by keeping two derivations in step by hand.
+func deriveGrants(events []*nostr.Event, boardAuthor string) (levels map[string]int, until map[string]int64, winning map[string]roleGrant) {
 	levels = make(map[string]int)
 	until = make(map[string]int64)
 
@@ -335,7 +347,7 @@ func DeriveLevels(events []*nostr.Event, boardAuthor string) (levels map[string]
 
 	// winning[grantee] = the newest CAP-VALID grant applied for that grantee. We
 	// process ascending and overwrite, so the last valid grant applied wins.
-	winning := make(map[string]roleGrant)
+	winning = make(map[string]roleGrant)
 	for _, g := range grants {
 		if !signerMayGrant(levels, boardAuthor, g.Signer, g.Role) {
 			continue // escalation-cap violation — ignored.
@@ -357,7 +369,7 @@ func DeriveLevels(events []*nostr.Event, boardAuthor string) (levels map[string]
 		}
 	}
 
-	return levels, until
+	return levels, until, winning
 }
 
 // signerMayGrant applies the escalation cap. levels reflects state replayed so
