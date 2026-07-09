@@ -176,8 +176,56 @@ func FetchMany(ctx context.Context, relayURL string, filter map[string]any) ([]*
 		case "EOSE":
 			_ = writeClose(conn, sub)
 			return out, nil
+		case "CLOSED":
+			// The relay refused the subscription (e.g. an oversized/invalid filter).
+			// NIP-01: ["CLOSED", <sub>, <message>]. Surface it as an error instead of
+			// blocking on ReadMessage until the deadline fires as a silent i/o timeout.
+			var msg string
+			if len(frame) >= 3 {
+				_ = json.Unmarshal(frame[2], &msg)
+			}
+			return nil, fmt.Errorf("nostr: relay %s closed subscription: %q", relayURL, msg)
 		}
 	}
+}
+
+// MaxREQIDs bounds how many event ids rd puts in a single NIP-01 REQ filter.
+// strfry (and relays generally) reject or silently drop a REQ whose ids filter is
+// too large: a single REQ for ~9k ids against a locked strfry returns NO frames at
+// all — not even EOSE — so FetchMany blocks until its read deadline and fails with
+// a bare "i/o timeout" (ready-8de). Chunking the id set into REQs of this size
+// downloads the same events reliably in a fraction of a second. 500 matches
+// strfry's default maxFilterLimit and was proven to return the full set fast
+// against the live locked relays.
+const MaxREQIDs = 500
+
+// FetchByIDs downloads the events with the given ids from one relay, chunking the
+// id set into REQs of at most MaxREQIDs so a large `need` set (e.g. a fresh
+// machine's negentropy download of a whole board) does not overflow the relay's
+// per-REQ filter limit. It opens a fresh subscription per chunk (FetchMany), and
+// returns every event served across all chunks in delivery order. Duplicate ids
+// across chunks cannot occur because the input ids are partitioned; the caller is
+// responsible for admission (Verify + trust) and dedupe on merge.
+//
+// The whole operation shares ctx's deadline: each chunk reuses the same context,
+// so the total download is bounded by ctx, not by (chunks * per-chunk timeout).
+func FetchByIDs(ctx context.Context, relayURL string, ids []string) ([]*Event, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var out []*Event
+	for start := 0; start < len(ids); start += MaxREQIDs {
+		end := start + MaxREQIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch, err := FetchMany(ctx, relayURL, map[string]any{"ids": ids[start:end]})
+		if err != nil {
+			return nil, fmt.Errorf("nostr: fetch ids [%d:%d] of %d from %s: %w", start, end, len(ids), relayURL, err)
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
 }
 
 func writeClose(conn *websocket.Conn, sub string) error {

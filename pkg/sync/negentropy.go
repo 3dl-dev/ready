@@ -116,7 +116,12 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 	// 3. Download the ids the relay has and we lack; Verify; merge into the log.
 	if len(neg.Need) > 0 {
 		fctx, fcancel := context.WithTimeout(ctx, timeout)
-		fetched, err := nostr.FetchMany(fctx, relayURL, map[string]any{"ids": neg.Need})
+		// Chunk the id set: a single REQ for the whole `need` (which on a fresh
+		// machine is the relay's entire board — ~9k ids) overflows strfry's per-REQ
+		// filter limit and returns NO frames at all, so the read blocks until the
+		// deadline and fails as a bare "i/o timeout" (ready-8de). FetchByIDs pages the
+		// download into MaxREQIDs-sized REQs sharing this one deadline.
+		fetched, err := nostr.FetchByIDs(fctx, relayURL, neg.Need)
 		fcancel()
 		if err != nil {
 			return res, fmt.Errorf("sync: download need from %s: %w", relayURL, err)
