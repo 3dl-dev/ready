@@ -44,14 +44,18 @@ func Expand(t *PlaybookTemplate, project string, variables map[string]string) ([
 		return nil, fmt.Errorf("project is required for ID generation")
 	}
 
-	// Generate IDs for each template item.
+	// Generate IDs for each template item. used tracks IDs already generated
+	// within this call so generateItemID can guarantee no duplicates by
+	// construction rather than by chance (see ready-d67).
 	ids := make([]string, len(t.Items))
+	used := make(map[string]bool, len(t.Items))
 	for i := range t.Items {
-		id, err := generateItemID(project)
+		id, err := generateItemID(project, used)
 		if err != nil {
 			return nil, fmt.Errorf("generating ID for item[%d]: %w", i, err)
 		}
 		ids[i] = id
+		used[id] = true
 	}
 
 	// Build expanded items.
@@ -95,20 +99,32 @@ func substitute(s string, vars map[string]string) string {
 	})
 }
 
-// generateItemID generates an item ID of the form "<project>-<random-3-chars>".
-// The random part is 3 hex characters (from 1.5 random bytes).
-// Retries up to 10 times if the result doesn't match the ID pattern.
-func generateItemID(project string) (string, error) {
-	for range 10 {
-		b := make([]byte, 2)
-		if _, err := rand.Read(b); err != nil {
-			return "", fmt.Errorf("reading random bytes: %w", err)
-		}
-		suffix := hex.EncodeToString(b)[:3]
-		id := project + "-" + suffix
-		if itemIDPattern.MatchString(id) {
-			return id, nil
-		}
+// generateItemID generates an item ID of the form "<project>-<random-hex>".
+// used tracks IDs already generated within the current Expand call (fed back
+// by the caller after each successful generation). The candidate starts at a
+// 3-character hex suffix (matching the historical, common-case id shape) and,
+// on collision with used, progressively lengthens the suffix from the same
+// random draw until a unique id is found. This mirrors cmd/rd's generateID
+// contract (see ready-e7c) and gives generateItemID an actual, deterministic
+// collision-avoidance guarantee instead of drawing a fixed 3-char suffix and
+// hoping it never collides across calls within the same Expand — which is
+// what caused TestExpand_DuplicateIDGeneration to flake under full-suite load
+// (ready-d67).
+func generateItemID(project string, used map[string]bool) (string, error) {
+	b := make([]byte, 8) // 16 hex chars — enough headroom for extension
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
 	}
-	return "", fmt.Errorf("could not generate valid item ID with project %q after 10 attempts", project)
+	full := hex.EncodeToString(b)
+	for length := 3; length <= len(full); length++ {
+		candidate := project + "-" + full[:length]
+		if used[candidate] {
+			continue
+		}
+		if !itemIDPattern.MatchString(candidate) {
+			continue
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("could not generate unique item ID with project %q after exhausting %d-char suffix", project, len(full))
 }
