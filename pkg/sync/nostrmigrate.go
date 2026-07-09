@@ -74,11 +74,15 @@ func BuildHistoricalStatusEvent(k *nostr.Key, itemID, rdStatus, changedBy, reaso
 	return e, nil
 }
 
-// cardSpecFromItem materializes a wire CardSpec from a derived *state.Item's
-// CURRENT state — the same field mapping the live write path uses, kept here so
-// the migration and the CLI agree byte-for-byte. It carries deps, gate, waiting,
-// labels, eta and assignee so a single latest-wins card reproduces the whole item.
-func cardSpecFromItem(item *state.Item, boardD string) CardSpec {
+// CardSpecFromItem materializes a wire CardSpec from a derived *state.Item's
+// CURRENT state. It is the SINGLE source of truth for the item->card field mapping
+// (ready-187): the migration, every live write-path republish (create/claim/
+// progress/close), and `rd nostr publish` all route through it, so no publish path
+// can silently omit a field and clobber it on the latest-wins card. It carries the
+// full item — deps, gate, waiting, labels, eta, assignee AND the ready-187 additions
+// (humanness level, assignment scope For, parent/child tree edge, due) — so a single
+// latest-wins 30302 card reproduces the WHOLE item item-for-item.
+func CardSpecFromItem(item *state.Item, boardD string) CardSpec {
 	return CardSpec{
 		ItemID:      item.ID,
 		Title:       item.Title,
@@ -94,6 +98,10 @@ func cardSpecFromItem(item *state.Item, boardD string) CardSpec {
 		WaitingOn:   item.WaitingOn,
 		Labels:      item.Labels,
 		ETA:         item.ETA,
+		Level:       item.Level,
+		For:         item.For,
+		ParentID:    item.ParentID,
+		Due:         item.Due,
 	}
 }
 
@@ -207,7 +215,7 @@ func BuildItemMigrationEvents(k *nostr.Key, boardD string, item *state.Item) ([]
 	if updatedSec > cardAt {
 		cardAt = updatedSec
 	}
-	card := cardSpecFromItem(item, boardD)
+	card := CardSpecFromItem(item, boardD)
 	ce, err := BuildCardEvent(k, card, cardAt)
 	if err != nil {
 		return nil, fmt.Errorf("sync: migrate %s card: %w", item.ID, err)
@@ -231,13 +239,16 @@ type ItemParity struct {
 func (p ItemParity) Match() bool { return len(p.Diffs) == 0 }
 
 // CompareItem asserts item-for-item parity between a campfire-derived source item
-// and its nostr projection, on exactly the fields ready-d65 DONE#3 enumerates:
-// status, priority, type, deps, gate, history length + close-reasons, and
-// provenance (the audit actors). History is compared ORDER-INDEPENDENTLY (a
-// multiset of (to_status, note, actor)) so an accepted same-second reordering
-// (ready-194) is not a false diff, while a lost/added/altered entry always is.
-// A nil projection (item missing from the nostr side) is the strongest possible
-// diff — a LOST item — and is reported as such.
+// and its nostr projection, on EVERY field that must survive migration (ready-187):
+// title, context, status, priority, type, deps, gate, labels, eta, assignee, and
+// the tree/scope fields Level, For, ParentID, Due — plus history length +
+// close-reasons + provenance (the audit actors). History is compared
+// ORDER-INDEPENDENTLY (a multiset of (to_status, note, actor)) so an accepted
+// same-second reordering (ready-194) is not a false diff, while a lost/added/altered
+// entry always is. A silent alteration in ANY covered field makes parity FAIL — the
+// checker is no longer allowed to pass while a field is quietly dropped or rewritten.
+// A nil projection (item missing from the nostr side) is the strongest possible diff
+// — a LOST item — and is reported as such.
 func CompareItem(source, projected *state.Item) ItemParity {
 	res := ItemParity{ItemID: source.ID}
 	if projected == nil {
@@ -249,11 +260,20 @@ func CompareItem(source, projected *state.Item) ItemParity {
 			res.Diffs = append(res.Diffs, fmt.Sprintf("%s: campfire=[%s] nostr=[%s]", field, a, b))
 		}
 	}
+	add("title", source.Title, projected.Title)
+	add("context", source.Context, projected.Context)
 	add("status", source.Status, projected.Status)
 	add("priority", source.Priority, projected.Priority)
 	add("type", source.Type, projected.Type)
 	add("deps", joinSorted(source.BlockedBy), joinSorted(projected.BlockedBy))
 	add("gate", boolStr(hasGate(source)), boolStr(hasGate(projected)))
+	add("labels", joinSorted(source.Labels), joinSorted(projected.Labels))
+	add("eta", source.ETA, projected.ETA)
+	add("assignee", source.By, projected.By)
+	add("level", source.Level, projected.Level)
+	add("for", source.For, projected.For)
+	add("parent", source.ParentID, projected.ParentID)
+	add("due", source.Due, projected.Due)
 	add("history_len", fmt.Sprint(len(source.History)), fmt.Sprint(len(projected.History)))
 	add("close_reasons", multisetNotes(source.History), multisetNotes(projected.History))
 	add("provenance", multisetActors(source.History), multisetActors(projected.History))

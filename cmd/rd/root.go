@@ -420,7 +420,19 @@ func allItemsFromJSONLOrStore(s store.Store) ([]*state.Item, error) {
 	// verification context: rd's whole read surface (list/ready/show) runs against
 	// nostr without flipping the live default.
 	if items, ok, err := nostrDualReadAll(); ok {
-		return items, err
+		if err != nil {
+			return items, err
+		}
+		// Apply cross-campfire blocking on the nostr dual-read set too (ready-187):
+		// the JSONL and campfire paths both run crossdep.ApplyBlocking, so without
+		// this the nostr-backed read surface computed a DIFFERENT blocked set for any
+		// cross-project dep — an item blocked by an out-of-project blocker would show
+		// actionable on nostr but blocked on campfire. ApplyBlocking short-circuits
+		// when no item carries a cross-campfire warning, so this is a no-op for
+		// single-project reads.
+		aliases := naming.NewAliasStore(CFHome())
+		crossdep.ApplyBlocking(items, s, aliases)
+		return items, nil
 	}
 	if path := jsonlPath(); path != "" {
 		// campfireID may be empty for JSONL-only projects; DeriveFromJSONL handles that.

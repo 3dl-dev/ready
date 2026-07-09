@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -115,8 +116,41 @@ func (l *NostrLog) Append(e *nostr.Event) error {
 //   - FUTURE-SKEW REJECTION: an event stamped implausibly far in the future
 //     (now+MaxCreatedAtSkew) is dropped so it cannot pin latest-wins state. Skew is
 //     read once at the start of the pass so a single call is internally consistent.
+//
+// CONCURRENCY (ready-187): the read-existing → decide-new → write sequence is a
+// single ATOMIC critical section guarded by one exclusive advisory lock held for the
+// WHOLE call. The prior implementation read the log (ReadAll, its own open/close) and
+// THEN wrote via per-event Append (each its own open+lock) — so two concurrent
+// AppendUnique calls both read the SAME "known" set, both decided the same event was
+// novel, and both appended it: a duplicate line (and a phantom-history replay). Now
+// the dedup snapshot and the appends happen under ONE flock, so a second writer
+// blocks until the first fully commits, then reads the first writer's appends and
+// dedups correctly. flock is per-open-file-description, so it serializes concurrent
+// goroutines (each with its own open) AND concurrent processes.
 func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
-	existing, err := l.ReadAll()
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
+		return 0, fmt.Errorf("sync: nostr-log mkdir: %w", err)
+	}
+	// O_RDWR so we can read the current contents under the SAME lock we write with;
+	// O_APPEND so every write lands at EOF regardless of the read seek offset.
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("sync: nostr-log open: %w", err)
+	}
+	defer f.Close()
+	if err := jsonl.LockFile(f); err != nil {
+		return 0, fmt.Errorf("sync: nostr-log lock: %w", err)
+	}
+	defer jsonl.UnlockFile(f) //nolint:errcheck // advisory unlock in defer
+
+	// Snapshot the current log UNDER THE LOCK so no concurrent writer can slip an
+	// append between our read and our writes. Seek to 0 for the read; O_APPEND keeps
+	// subsequent writes at EOF. A corrupt line is skipped (durability invariant) — it
+	// simply is not in the known set, matching projection which drops it too.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("sync: nostr-log seek: %w", err)
+	}
+	existing, _, err := scanEvents(f, l.path)
 	if err != nil {
 		return 0, err
 	}
@@ -124,6 +158,7 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 	for _, e := range existing {
 		known[e.ID] = true
 	}
+
 	now := time.Now()
 	added := 0
 	for _, e := range events {
@@ -133,11 +168,21 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 		if !admissibleCreatedAt(e, now) {
 			continue // far-future created_at — reject (skew/replay defense)
 		}
-		if err := l.Append(e); err != nil {
-			return added, err
+		data, err := json.Marshal(e)
+		if err != nil {
+			return added, fmt.Errorf("sync: nostr-log marshal: %w", err)
+		}
+		data = append(data, '\n')
+		if _, err := f.Write(data); err != nil {
+			return added, fmt.Errorf("sync: nostr-log write: %w", err)
 		}
 		known[e.ID] = true
 		added++
+	}
+	if added > 0 {
+		if err := f.Sync(); err != nil {
+			return added, fmt.Errorf("sync: nostr-log sync: %w", err)
+		}
 	}
 	return added, nil
 }
@@ -173,33 +218,65 @@ func (l *NostrLog) MergeFrom(otherPath string) (int, error) {
 
 // ReadAll reads every signed event from the log in append order. A missing file
 // yields an empty slice (fresh / wiped cache), not an error.
+//
+// DURABILITY INVARIANT (ready-187): the log MUST stay "fully rebuildable by replay"
+// even if ONE line is malformed or truncated (a partial write on a crash, a corrupt
+// byte on disk, a torn tail). A single bad line therefore SKIPS+reports rather than
+// hard-erroring the WHOLE log — otherwise one truncated tail line would make every
+// item on the machine unreadable, exactly the opposite of the append-only log's
+// durability guarantee. Bad lines are counted and surfaced via CorruptLines, and the
+// projection is a pure function of the parseable events (a skipped forged/tampered
+// line would have been dropped by Verify at projection anyway). Returns the parsed
+// events plus a nil error; callers that need the corrupt count use ReadAllReport.
 func (l *NostrLog) ReadAll() ([]*nostr.Event, error) {
+	out, _, err := l.ReadAllReport()
+	return out, err
+}
+
+// ReadAllReport is ReadAll plus the count of skipped corrupt lines. A structural
+// read error (open/scan) is still returned as an error; a per-line parse failure is
+// NOT — it is skipped and counted, so the log stays replayable past a bad line.
+func (l *NostrLog) ReadAllReport() ([]*nostr.Event, int, error) {
 	f, err := os.Open(l.path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("sync: nostr-log open: %w", err)
+		return nil, 0, fmt.Errorf("sync: nostr-log open: %w", err)
 	}
 	defer f.Close()
+	return scanEvents(f, l.path)
+}
 
+// scanEvents parses JSONL nostr events from r. A per-line parse failure is SKIPPED
+// and counted (returned as the corrupt count) rather than aborting — this is the
+// durability invariant (ready-187): one malformed/truncated line must not make the
+// whole log unreadable. A scanner-level error (structural, e.g. an over-long line)
+// is returned alongside the good prefix so the caller decides. path is used only for
+// the skip warning.
+func scanEvents(r io.Reader, path string) ([]*nostr.Event, int, error) {
 	var out []*nostr.Event
-	sc := bufio.NewScanner(f)
+	corrupt := 0
+	lineNo := 0
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
+		lineNo++
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var e nostr.Event
 		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("sync: nostr-log parse: %w", err)
+			corrupt++
+			fmt.Fprintf(os.Stderr, "warning: sync: nostr-log %s line %d unparseable, skipping: %v\n", path, lineNo, err)
+			continue
 		}
 		ev := e
 		out = append(out, &ev)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("sync: nostr-log scan: %w", err)
+		return out, corrupt, fmt.Errorf("sync: nostr-log scan: %w", err)
 	}
-	return out, nil
+	return out, corrupt, nil
 }

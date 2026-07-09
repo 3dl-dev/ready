@@ -119,6 +119,25 @@ type CardSpec struct {
 	// ETA carries the item's scheduled ETA (RFC3339) so `rd defer` round-trips on
 	// nostr. rd-extension tag ("eta"); not part of NIP-34/NIP-100 (ready-2cf).
 	ETA string
+
+	// Level is the item's humanness/provenance level (Item.Level). Additive
+	// rd-extension tag ("level"); not part of NIP-34/NIP-100 (ready-187). Old cards
+	// without it project to an empty Level (sane default).
+	Level string
+	// For is the item's assignment SCOPE (Item.For) — who the work is FOR — which
+	// the my-work / delegated views read. DISTINCT from Assignee/By (the `p` tag,
+	// the actor). Additive rd-extension tag ("for") (ready-187). Without it the whole
+	// assignment scope was silently dropped on nostr, breaking view parity.
+	For string
+	// ParentID is the parent item id (Item.ParentID) — the epic/child TREE edge.
+	// Additive rd-extension tag ("parent") (ready-187). Without it the parent/child
+	// tree was LOST on nostr. Kept as a plain rd-extension tag (not a NIP-100 a/e
+	// coordinate) per the epic's additive-tag mandate — backward-compatible, and the
+	// projection resolves it by item id exactly as campfire does.
+	ParentID string
+	// Due carries the item's hard due date (Item.Due, RFC3339). Additive rd-extension
+	// tag ("due") (ready-187). DISTINCT from ETA. Old cards default to empty Due.
+	Due string
 }
 
 // BoardSpec describes an rd project/campfire as a NIP-100 board (30301).
@@ -218,6 +237,22 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	}
 	if spec.ETA != "" {
 		tags = append(tags, []string{"eta", spec.ETA})
+	}
+	// Additive rd-extension tags (ready-187): humanness level, assignment scope,
+	// parent/child tree edge, and due date. Each is emitted only when non-empty so
+	// existing readers (and cards) are unaffected; the projection defaults a missing
+	// tag to "" (backward-compatible).
+	if spec.Level != "" {
+		tags = append(tags, []string{"level", spec.Level})
+	}
+	if spec.For != "" {
+		tags = append(tags, []string{"for", spec.For})
+	}
+	if spec.ParentID != "" {
+		tags = append(tags, []string{"parent", spec.ParentID})
+	}
+	if spec.Due != "" {
+		tags = append(tags, []string{"due", spec.Due})
 	}
 	e := &nostr.Event{
 		Kind:      KindCard,

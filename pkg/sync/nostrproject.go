@@ -250,11 +250,28 @@ func applyDepAndGateStatus(items map[string]*state.Item) {
 		// active `rd gate` publishes a waiting status event AND a card with these tags
 		// (so promotion is a no-op there), while `rd approve` clears them (so an
 		// approved item is never promoted). Blocking still supersedes (checked first).
-		if item.Status != state.StatusBlocked && !state.IsTerminal(item) &&
-			(item.WaitingType != "" || item.WaitingOn != "" || item.Gate != "") {
+		declaresGate := item.WaitingType != "" || item.WaitingOn != "" || item.Gate != ""
+		if item.Status != state.StatusBlocked && !state.IsTerminal(item) && declaresGate {
 			item.Status = state.StatusWaiting
 		}
-		if item.Status == state.StatusWaiting {
+		switch {
+		case state.IsTerminal(item):
+			// A terminal item carries no live gate/wait — clear any stale card tags.
+			item.WaitingOn = ""
+			item.WaitingType = ""
+			item.WaitingSince = ""
+			item.GateMsgID = ""
+		case declaresGate:
+			// GATE FIELDS PERSIST UNDER BLOCKING (ready-187): the card-declared
+			// waiting_type/waiting_on/gate are the item's materialized CURRENT gate
+			// state. pkg/state.applyBlockStatus sets status=blocked but NEVER clears
+			// these fields, so a gated item that ALSO gains a blocking dep keeps its
+			// gate (hasGate stays true) — status is blocked, but the pending gate is
+			// still real. The prior code wiped the fields whenever status != waiting,
+			// which silently DROPPED the gate on every blocked+gated item on nostr (a
+			// data-integrity divergence from campfire; parity fails on it). Retain the
+			// fields; only the STATUS is superseded by blocking. Derive the display
+			// GateMsgID/WaitingSince the same as the waiting path.
 			if item.WaitingSince == "" {
 				item.WaitingSince = time.Unix(0, item.UpdatedAt).UTC().Format(time.RFC3339)
 			}
@@ -263,10 +280,8 @@ func applyDepAndGateStatus(items map[string]*state.Item) {
 			} else {
 				item.GateMsgID = ""
 			}
-		} else {
-			// Blocking (or any other non-waiting status) supersedes a declared
-			// wait/gate, same as pkg/state's applyBlockStatus running after
-			// handleWorkGate: the final status wins.
+		default:
+			// No declared gate/wait — ensure the fields are empty.
 			item.WaitingOn = ""
 			item.WaitingType = ""
 			item.WaitingSince = ""
@@ -330,6 +345,13 @@ func itemFromCard(e *nostr.Event) *state.Item {
 		WaitingOn:   tagValue(e, "waiting_on"),
 		Labels:      tagValues(e, "l"),
 		ETA:         tagValue(e, "eta"),
+		// Additive rd-extension tags (ready-187) — humanness level, assignment scope,
+		// parent/child tree edge, and due date. A missing tag defaults to "" (old
+		// cards written before ready-187), preserving backward compatibility.
+		Level:    tagValue(e, "level"),
+		For:      tagValue(e, "for"),
+		ParentID: tagValue(e, "parent"),
+		Due:      tagValue(e, "due"),
 	}
 	if p := tagValue(e, "p"); p != "" {
 		item.By = p
