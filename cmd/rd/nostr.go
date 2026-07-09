@@ -118,6 +118,12 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		Type:     itemType,
 		Context:  itemContext,
 		BoardD:   board.BoardD,
+		// Carry the assignment scope at create time (ready-187) — forParty is the
+		// only extra field available here. Other card-only fields (labels/eta/due/
+		// level/parent) are materialized by the first full-item republish through
+		// rdSync.CardSpecFromItem (any subsequent mutation), which supersedes this
+		// create card latest-wins.
+		For: forParty,
 	}
 	ctx := context.Background()
 	res, err := pub.PublishItem(ctx, &board, card, time.Now().Unix())
@@ -147,31 +153,14 @@ func closeResolutionToStatus(resolution string) string {
 }
 
 // nostrCardSpecFromItem builds the wire-mapping CardSpec from CURRENT (already
-// mutated in-memory) rd item state. Shared by every status-change and card-edit
-// publish hook so every mutation path (claim/progress/update/close) materializes
-// the card the same way create does.
+// mutated in-memory) rd item state. It delegates to the SINGLE shared helper
+// rdSync.CardSpecFromItem (ready-187) so every mutation path (claim/progress/
+// update/close) — and the migration, and `rd nostr publish` — materialize the card
+// identically and carry the item's FULL field set. Routing every publish through one
+// helper is what stops any path silently dropping a field (deps/labels/eta/level/
+// for/parent/due) and clobbering it on the latest-wins card.
 func nostrCardSpecFromItem(item *state.Item, boardD string) rdSync.CardSpec {
-	return rdSync.CardSpec{
-		ItemID:   item.ID,
-		Title:    item.Title,
-		Status:   item.Status,
-		Priority: item.Priority,
-		Assignee: item.By,
-		Type:     item.Type,
-		Context:  item.Context,
-		BoardD:   boardD,
-		// Carry the dep/gate/label/eta state so EVERY card re-publish materializes
-		// the item's FULL current state (ready-2cf). Without this, any status-change
-		// or card-edit republish (claim/close/progress/...) would silently drop the
-		// item's deps, gate and labels — a latest-wins card that clobbers them on
-		// the relay. The projection reconstructs each from the card's tags.
-		Deps:        item.BlockedBy,
-		Gate:        item.Gate,
-		WaitingType: item.WaitingType,
-		WaitingOn:   item.WaitingOn,
-		Labels:      item.Labels,
-		ETA:         item.ETA,
-	}
+	return rdSync.CardSpecFromItem(item, boardD)
 }
 
 // publishItemStatusChangeNostr is the status-change hook (claim / status update /
@@ -419,19 +408,10 @@ var nostrPublishCmd = &cobra.Command{
 			return fmt.Errorf("no project dir for publisher")
 		}
 		board := boardSpecForProject(dir, pub.Key.PubKeyHex())
-		card := rdSync.CardSpec{
-			ItemID:      item.ID,
-			Title:       item.Title,
-			Status:      item.Status,
-			Priority:    item.Priority,
-			Type:        item.Type,
-			Context:     item.Context,
-			BoardD:      board.BoardD,
-			Deps:        item.BlockedBy,
-			Gate:        item.Gate,
-			WaitingType: item.WaitingType,
-			WaitingOn:   item.WaitingOn,
-		}
+		// Route through the SINGLE shared helper (ready-187). The old inline literal
+		// omitted Labels/ETA/Assignee (and would never have carried Level/For/Parent/
+		// Due), so `rd nostr publish` clobbered them to empty on the latest-wins card.
+		card := rdSync.CardSpecFromItem(item, board.BoardD)
 		res, err := pub.PublishItem(context.Background(), &board, card, time.Now().Unix())
 		if err != nil {
 			return err
@@ -950,6 +930,7 @@ var nostrParityCmd = &cobra.Command{
 	Short: "Assert item-for-item parity: campfire source == nostr projection (ready-d65)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("verbose")
+		sample, _ := cmd.Flags().GetBool("sample")
 
 		s, err := openStore()
 		if err != nil {
@@ -969,19 +950,15 @@ var nostrParityCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// Compare only the source items that were actually migrated (projection may
-		// legitimately be a subset when `migrate --limit` seeded a sample). Restrict
-		// the source to the projected id set so a sample run reports true parity on
-		// what it migrated, while a full run compares everything.
-		compareSrc := src
-		if len(projected) < len(src) {
-			compareSrc = make(map[string]*state.Item, len(projected))
-			for id := range projected {
-				if it, ok := src[id]; ok {
-					compareSrc[id] = it
-				}
-			}
-		}
+		// UNDERCOUNT IS A HARD MISMATCH (ready-187). Previously, whenever the
+		// projection held FEWER items than the source the CLI silently narrowed the
+		// comparison to the projected id set — assuming an intentional `migrate --limit`
+		// sample. That masked GENUINELY LOST items: a migration that dropped 200 items
+		// would still report "parity: all matched" over the 1365 that survived. The
+		// narrowing is now OPT-IN via --sample. Without it, an incomplete projection is
+		// a parity FAILURE: CompareItemSets compares the FULL source, so every missing
+		// id is reported as a LOST item and the non-zero exit fires.
+		compareSrc := parityCompareSource(src, projected, sample)
 		rep := rdSync.CompareItemSets(compareSrc, projected)
 
 		if jsonOutput {
@@ -1008,6 +985,26 @@ var nostrParityCmd = &cobra.Command{
 	},
 }
 
+// parityCompareSource decides which source items the parity comparison runs over
+// (ready-187). Default: the FULL source, so a projection missing any source id fails
+// parity as a LOST item — an undercount can never be silently masked. Only when the
+// operator explicitly asserts an intentional subset (sample=true) AND the projection
+// is genuinely smaller does it narrow to the projected ids (the legitimate
+// `migrate --limit` case). This is a pure function so the undercount-fails behaviour
+// is unit-testable without a live store.
+func parityCompareSource(src, projected map[string]*state.Item, sample bool) map[string]*state.Item {
+	if !sample || len(projected) >= len(src) {
+		return src
+	}
+	narrowed := make(map[string]*state.Item, len(projected))
+	for id := range projected {
+		if it, ok := src[id]; ok {
+			narrowed[id] = it
+		}
+	}
+	return narrowed
+}
+
 func init() {
 	nostrShowCmd.Flags().Bool("reconcile", false, "cache-fill from read relays before reconstructing (local log stays authoritative)")
 	nostrReadyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, gates")
@@ -1023,6 +1020,7 @@ func init() {
 	nostrMigrateCmd.Flags().StringSlice("only", nil, "migrate ONLY these item ids (comma-separated) — used to publish a dep-closed live-relay sample")
 	nostrMigrateCmd.Flags().Bool("all", true, "include terminal items (done/cancelled/failed) — default true so history is not lost")
 	nostrParityCmd.Flags().Bool("verbose", false, "print every item (matched and mismatched), not just mismatches")
+	nostrParityCmd.Flags().Bool("sample", false, "the projection is an intentional subset (e.g. from 'migrate --limit'): compare only the projected ids instead of failing on the missing source items. WITHOUT this flag, projected<source is a HARD parity FAILURE (a lost item), never silently narrowed.")
 	nostrCmd.AddCommand(nostrMigrateCmd)
 	nostrCmd.AddCommand(nostrParityCmd)
 	nostrCmd.AddCommand(nostrShowCmd)
