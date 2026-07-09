@@ -107,8 +107,10 @@ func TestMergeFromDegradeFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// B merges A's committed log (the git-JSONL fallback).
-	added, err := logB.MergeFrom(logA.Path())
+	// B merges A's committed log (the git-JSONL fallback). A is an ADMITTED machine
+	// (ready-b57): both keys are in B's trust set, so A's log merges in full.
+	trust := map[string]bool{kA.PubKeyHex(): true, kB.PubKeyHex(): true}
+	added, err := logB.MergeFrom(logA.Path(), trust)
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -116,7 +118,7 @@ func TestMergeFromDegradeFloor(t *testing.T) {
 		t.Fatalf("expected 2 events merged, got %d", added)
 	}
 	// Idempotent: a second merge adds nothing.
-	added2, err := logB.MergeFrom(logA.Path())
+	added2, err := logB.MergeFrom(logA.Path(), trust)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,12 +141,109 @@ func TestMergeFromDegradeFloor(t *testing.T) {
 	if err := forgedLog.Append(tampered); err != nil {
 		t.Fatal(err)
 	}
-	addedF, err := logB.MergeFrom(forgedLog.Path())
+	addedF, err := logB.MergeFrom(forgedLog.Path(), trust)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if addedF != 0 {
 		t.Errorf("tampered event must be rejected by the verify gate, merged %d", addedF)
+	}
+}
+
+// TestMergeFrom_TrustGate_RejectsUntrustedAuthor proves ready-b57 fix (1) for the
+// git-JSONL degrade floor: a VALIDLY-SIGNED event authored by a key that is NOT in
+// the trust set is REJECTED from the local authoritative log — not merely re-gated
+// later at projection. The event verifies (real signature), so the pre-b57 Verify-
+// only gate would have admitted it and poisoned the log. With the web-of-trust
+// author gate on MergeFrom it never lands.
+func TestMergeFrom_TrustGate_RejectsUntrustedAuthor(t *testing.T) {
+	kSelf := mustKey(t)
+	kIntruder := mustKey(t)
+	dir := t.TempDir()
+
+	logLocal := NewNostrLog(filepath.Join(dir, "local", "nostr-log.jsonl"))
+	logForeign := NewNostrLog(filepath.Join(dir, "foreign", "nostr-log.jsonl"))
+
+	// The foreign log carries a perfectly-valid, correctly-SIGNED card from an
+	// UNADMITTED key.
+	intruderCard := mustCard(t, kIntruder, "ready-b57-intruder", state.StatusActive, 1000)
+	if err := intruderCard.Verify(); err != nil {
+		t.Fatalf("precondition: intruder event must verify (real signature): %v", err)
+	}
+	if err := logForeign.Append(intruderCard); err != nil {
+		t.Fatal(err)
+	}
+
+	// Trust set = self only (kIntruder is NOT admitted).
+	trust := map[string]bool{kSelf.PubKeyHex(): true}
+	added, err := logLocal.MergeFrom(logForeign.Path(), trust)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if added != 0 {
+		t.Fatalf("untrusted-author event must be REJECTED at merge, got added=%d", added)
+	}
+	// The local authoritative log must be empty — the event never landed (rejected at
+	// ingestion, not just filtered at projection).
+	evs, err := logLocal.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("untrusted event poisoned the local log: %d events present", len(evs))
+	}
+
+	// Admitting the intruder key lets its log merge (proves the gate is the ONLY
+	// thing that was blocking it — not some unrelated rejection).
+	trust[kIntruder.PubKeyHex()] = true
+	added2, err := logLocal.MergeFrom(logForeign.Path(), trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added2 != 1 {
+		t.Fatalf("once admitted, the same event must merge, got added=%d", added2)
+	}
+}
+
+// TestAdmitDownloaded_TrustGate is the deterministic proof of ready-b57 fix (1),
+// NEGENTROPY DOWNLOAD path: the client-side admission gate NegentropySync applies to
+// everything a relay serves for a `need` set. A validly-signed event from an
+// UNTRUSTED author is dropped BEFORE AppendUnique (not merely re-gated at
+// projection), while a tampered event and a trusted event behave as expected. This
+// exercises the exact filter NegentropySync uses; the live end-to-end variant is
+// TestLiveRelay_NegentropyDownloadTrustGate (env-gated; blocked in CI-less envs only
+// by a pre-existing relay REQ-by-ids timeout unrelated to this gate).
+func TestAdmitDownloaded_TrustGate(t *testing.T) {
+	kTrusted := mustKey(t)
+	kUntrusted := mustKey(t)
+
+	trustedCard := mustCard(t, kTrusted, "ready-b57-dl-ok", state.StatusActive, 1000)
+	untrustedCard := mustCard(t, kUntrusted, "ready-b57-dl-bad", state.StatusActive, 1000)
+	tampered := mustCard(t, kTrusted, "ready-b57-dl-tampered", state.StatusActive, 1001)
+	tampered.Content = "forged after signing" // breaks Verify
+
+	fetched := []*nostr.Event{trustedCard, untrustedCard, tampered, nil}
+	trust := map[string]bool{kTrusted.PubKeyHex(): true}
+
+	merge, bytes := admitDownloaded(fetched, trust)
+	if len(merge) != 1 || merge[0].ID != trustedCard.ID {
+		t.Fatalf("gate must admit exactly the trusted, verifiable event; got %d events %+v", len(merge), merge)
+	}
+	if bytes <= 0 {
+		t.Fatalf("admitted event must contribute wire bytes, got %d", bytes)
+	}
+	// Untrusted-author admission is what the pre-b57 Verify-only download allowed.
+	for _, e := range merge {
+		if e.PubKey == kUntrusted.PubKeyHex() {
+			t.Fatal("untrusted-author event admitted via negentropy download")
+		}
+	}
+
+	// Nil trust set disables the gate (legacy/test path): both verifiable events pass,
+	// the tampered one still fails Verify.
+	merge2, _ := admitDownloaded(fetched, nil)
+	if len(merge2) != 2 {
+		t.Fatalf("nil trust set must admit both verifiable events (gate disabled), got %d", len(merge2))
 	}
 }
 

@@ -27,10 +27,28 @@ import (
 	"github.com/campfire-net/ready/pkg/state"
 )
 
-// ProjectOptions tunes replay. Author is the item author pubkey (the portfolio
-// key that created the item); Maintainers are additional pubkeys whose status
-// events are authoritative (board maintainers). When Author is empty, the author
-// of each item's winning card is treated as the item author.
+// ProjectOptions tunes replay.
+//
+// Maintainers is an EXPLICIT supplementary set of pubkeys whose status events are
+// authoritative (unioned with the board-derived maintainers below). It exists for
+// tests and callers that construct an event set WITHOUT the 30301 board event.
+//
+// STATUS-AUTHORITY vs READ-TRUST (ready-b57): these are SEPARATE gates and must not
+// be conflated.
+//
+//   - READ-TRUST (Trusted) decides who may enter the projection AT ALL — the full
+//     web-of-trust allowlist (every admitted machine/identity). A read-untrusted
+//     event is dropped before it influences anything.
+//
+//   - STATUS-AUTHORITY decides who may author an AUTHORITATIVE status transition on
+//     a given item. Per NIP-34 that is the item AUTHOR (card author) OR a declared
+//     BOARD MAINTAINER — NOT the whole trust set. The board's maintainers are read
+//     from the 30301 board event's "p" tags (plus the board author, who maintains
+//     their own board), bound per board coordinate (30301:<author>:<boardD>) via the
+//     card's "a" tag. Passing the entire trust set as Maintainers (the pre-b57 prod
+//     wiring) COLLAPSED this: any admitted key could author status on ANY item and
+//     forge 'by' history. Production now passes Maintainers=nil and relies on the
+//     board-derived set; the trust set stays in Trusted only.
 type ProjectOptions struct {
 	Maintainers map[string]bool
 
@@ -75,6 +93,28 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	// Winning card per item, and the ordered list of authoritative status events.
 	winningCard := map[string]*nostr.Event{}
 	statusEvents := map[string][]*nostr.Event{}
+	// STATUS-AUTHORITY source (ready-b57): board maintainers keyed by board
+	// coordinate "30301:<boardAuthor>:<boardD>". Populated from the 30301 board
+	// events in this SAME event set (trusted + verified). The board AUTHOR is an
+	// implicit maintainer of their own board; the board's "p" tags name additional
+	// maintainers (e.g. an admitted second machine the author co-signs authority to).
+	// A card's "a" tag names the board it belongs to, so an item's authoritative
+	// signers = its card author OR a maintainer of THAT board coordinate — never the
+	// whole trust set. Deriving per-coordinate (the coordinate embeds the author) is
+	// what stops a trusted key from minting status authority for another author's
+	// item by publishing its OWN board.
+	boardMaintainers := map[string]map[string]bool{}
+	addBoardMaintainer := func(coord, pubkey string) {
+		if coord == "" || pubkey == "" {
+			return
+		}
+		set := boardMaintainers[coord]
+		if set == nil {
+			set = map[string]bool{}
+			boardMaintainers[coord] = set
+		}
+		set[pubkey] = true
+	}
 	// DEDUP BY EVENT ID (ready-f92): re-ingesting the same signed event MUST be a
 	// no-op. The local log AppendUnique already dedups on the write side, but the
 	// projection is also fed by MergeFrom/reconcile unions and callers may pass an
@@ -104,6 +144,19 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		if !opts.trusts(e.PubKey) {
 			continue
 		}
+		// Board (30301) events carry status-authority policy, not item state. Record
+		// the board's maintainer set (author + "p" tags) keyed by its coordinate, then
+		// move on — a board has no rd item id. This runs BEFORE the itemID guard below
+		// (a board's "d" tag is the boardD, not an item).
+		if e.Kind == KindBoard {
+			seen[e.ID] = true
+			coord := BoardCoord(e.PubKey, tagValue(e, "d"))
+			addBoardMaintainer(coord, e.PubKey) // author maintains their own board
+			for _, m := range tagValues(e, "p") {
+				addBoardMaintainer(coord, m)
+			}
+			continue
+		}
 		itemID := itemIDForEvent(e)
 		if itemID == "" {
 			continue
@@ -125,6 +178,23 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		author := card.PubKey
 		item := itemFromCard(card)
 
+		// STATUS-AUTHORITY SET (ready-b57): who — besides the item author — may author
+		// an authoritative status transition on THIS item. It is the maintainers of the
+		// board this card belongs to (its "a" coordinate), unioned with any explicit
+		// opts.Maintainers. NOT the whole trust set: read-trust (opts.Trusted) governs
+		// who may enter projection at all; status-authority is the strictly narrower
+		// author-or-board-maintainer rule. maintainerSigners excludes the author so we
+		// can tell a board maintainer apart from a bare author (needed by the 'by' gate).
+		maintainerSigners := map[string]bool{}
+		if coord := tagValue(card, "a"); coord != "" {
+			for m := range boardMaintainers[coord] {
+				maintainerSigners[m] = true
+			}
+		}
+		for m := range opts.Maintainers {
+			maintainerSigners[m] = true
+		}
+
 		// Status authority + FULL HISTORY REPLAY (ready-b5f): collect every status
 		// event authored by the item AUTHOR or a board MAINTAINER — not just the
 		// newest one. The 30302 card is a latest-wins projection with NO history of
@@ -136,8 +206,8 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		// contributes state OR history, matching the NIP-34 authority rule.
 		var authoritative []*nostr.Event
 		for _, s := range statusEvents[itemID] {
-			if s.PubKey != author && !opts.Maintainers[s.PubKey] {
-				continue // not authoritative
+			if s.PubKey != author && !maintainerSigners[s.PubKey] {
+				continue // not authoritative: not the item author, not a board maintainer
 			}
 			authoritative = append(authoritative, s)
 		}
@@ -164,17 +234,24 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			if toStatus == "" {
 				toStatus = prevStatus
 			}
-			// PROVENANCE PRESERVATION (ready-d65 migration): the audit-trail actor.
-			// For live self-writes there is no "by" tag, so the changer is the event
-			// AUTHOR (the portfolio pubkey that signed it) — identical to the pre-d65
-			// behaviour. For MIGRATED history the original campfire actor (email /
-			// pubkey) is carried verbatim in an rd-extension "by" tag, because the
-			// portfolio key is the only thing that can SIGN the re-emitted event yet
-			// the audit trail must still record WHO originally acted. When present the
-			// "by" tag wins; when absent we fall back to the signer. This keeps
-			// `rd show` history provenance item-for-item with campfire after migration.
+			// PROVENANCE PRESERVATION (ready-d65 migration) + 'BY' SPOOF GUARD (ready-b57):
+			// the audit-trail actor. For live self-writes there is no "by" tag, so the
+			// changer is the event AUTHOR (the portfolio pubkey that signed it). For
+			// MIGRATED history the original campfire actor (email / pubkey) is carried in
+			// an rd-extension "by" tag, because the portfolio key is the only thing that
+			// can SIGN the re-emitted event yet the audit trail must still record WHO
+			// originally acted.
+			//
+			// The "by" tag REWRITES provenance, so it is only honored from a signer
+			// authorized to rewrite it: a BOARD MAINTAINER (the entity that runs the
+			// migration and owns the board). A bare item author — or any other trusted
+			// signer that is not a board maintainer — cannot attribute a transition to an
+			// arbitrary third party: their "by" tag is ignored and ChangedBy falls back to
+			// the signer pubkey. Production migrations are signed by the board's own
+			// maintainer key, so legitimate provenance still survives item-for-item; a
+			// spoofed "by" from a non-authoritative-for-provenance signer does not.
 			changedBy := s.PubKey
-			if by := tagValue(s, "by"); by != "" {
+			if by := tagValue(s, "by"); by != "" && maintainerSigners[s.PubKey] {
 				changedBy = by
 			}
 			item.History = append(item.History, state.HistoryEntry{
