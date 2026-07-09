@@ -213,6 +213,16 @@ type SyncConfig struct {
 
 	// Durability is the durability assessment at configuration time.
 	Durability *DurabilityAssessment `json:"durability,omitempty"`
+
+	// Board is the PINNED authoritative nostr board coordinate
+	// "30301:<ownerPubkey>:<boardD>" for this project (BP-3, design
+	// docs/design/nostr-identity-model.md §4). When set, the nostr projection
+	// rejects any card whose "a" coordinate is not this board — closing the
+	// parallel-board self-escalation path (any relay-admitted key otherwise forks
+	// its own 30301 and self-grants maintainer). Empty = unpinned (no card is
+	// rejected on board grounds); existing installs load with an empty Board and are
+	// therefore unaffected until the pin is written.
+	Board string `json:"board,omitempty"`
 }
 
 // SyncConfigPath returns the path to the project-local sync config file.
