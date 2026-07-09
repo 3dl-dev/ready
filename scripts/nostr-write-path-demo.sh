@@ -48,11 +48,18 @@ sp() { sleep 1.1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
 # CF_HOME MUST contain a ".cf" ancestor so the nostr key guard (ready-5d2) allows
 # writing the signing key (it refuses git-trackable locations).
 export CF_HOME="$WORK/.cf"
 PROJ="$WORK/proj"
 mkdir -p "$CF_HOME" "$PROJ"
+# RD_HOME is the ACTUAL nostr signing-identity home (independent of CF_HOME);
+# materialize it with the machine's ALLOWLISTED portfolio key (ready-266) so
+# every write below signs with a key the locked relays accept instead of `rd`
+# generating a fresh, non-admitted one on first use.
+export RD_HOME="$WORK/rdhome"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
 
 info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd

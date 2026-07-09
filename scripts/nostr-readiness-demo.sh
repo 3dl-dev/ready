@@ -50,9 +50,16 @@ info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
 export CF_HOME="$WORK/cfhome"
 PROJ="$WORK/proj"
 mkdir -p "$CF_HOME" "$PROJ"
+# RD_HOME is the nostr signing-identity home (independent of CF_HOME);
+# materialize it with the machine's ALLOWLISTED portfolio key (ready-266) so
+# `rd` signs with a key the locked relays accept instead of generating a fresh,
+# non-admitted one on first use.
+export RD_HOME="$WORK/rdhome"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
 
 info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd
@@ -62,10 +69,26 @@ cd "$PROJ"
 info "rd init --offline (JSONL-only project; no campfire needed)"
 "$RD" init --offline >/dev/null
 
-# expected ready/gates sets, order-independent
+# expected ready/gates sets for OUR 5-item graph, order-independent
 EXPECT_READY='t01 t03 t05'
 EXPECT_GATES='t03'
+# t02 (blocked) and t04 (terminal) must NEVER appear in the ready view.
+EXCLUDE_READY='t02 t04'
 
+# check_view <ctx> <view> [--reconcile]
+#
+# --reconcile (ready-266) now cache-fills from the SAME allowlisted portfolio
+# key EVERY live-relay demo in this repo signs with (a shared identity is the
+# only way to pass the relay write-allowlist) — so the relay-reconciled
+# readiness/gates view is no longer a closed 5-item world: it also contains
+# every other item that key has EVER authored across every other demo run on
+# this relay. Local-log-only reads (no --reconcile) stay a closed world (only
+# what THIS run just seeded) and are still asserted with EXACT set equality.
+# For --reconcile, assert CONTAINMENT of our graph's expected ids and ABSENCE
+# of our graph's excluded ids instead — the readiness computation over the
+# nostr projection is still exactly verified for every id we control; we just
+# stop asserting we know every OTHER id that a long-lived shared identity has
+# ever touched.
 check_view() {
 	local ctx="$1" view="$2" extra_flag="${3:-}"
 	local out ids
@@ -73,12 +96,23 @@ check_view() {
 	out="$(RD_NOSTR=1 "$RD" nostr ready --view "$view" $extra_flag --json)"
 	ids="$(echo "$out" | jq -r '.[].id' | sed -E 's/^ready-t/t/' | sort | tr '\n' ' ' | sed 's/ $//')"
 	case "$view" in
-	ready) want="$(echo "$EXPECT_READY" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')" ;;
-	gates) want="$(echo "$EXPECT_GATES" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')" ;;
+	ready) want="$EXPECT_READY"; exclude="$EXCLUDE_READY" ;;
+	gates) want="$EXPECT_GATES"; exclude="" ;;
 	*) fail "unknown view $view in check_view" ;;
 	esac
-	[ "$ids" = "$want" ] || fail "[$ctx] view=$view got [$ids], want [$want]"
-	pass "[$ctx] view=$view -> [$ids] (matches pre-migration expectation)"
+	if [ -z "$extra_flag" ]; then
+		local want_sorted; want_sorted="$(echo "$want" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+		[ "$ids" = "$want_sorted" ] || fail "[$ctx] view=$view got [$ids], want EXACTLY [$want_sorted]"
+		pass "[$ctx] view=$view -> [$ids] (matches pre-migration expectation, closed world)"
+		return
+	fi
+	for id in $want; do
+		echo " $ids " | grep -q " $id " || fail "[$ctx] view=$view missing expected id '$id' (got [$ids])"
+	done
+	for id in $exclude; do
+		echo " $ids " | grep -q " $id " && fail "[$ctx] view=$view unexpectedly contains excluded id '$id' (got [$ids])"
+	done
+	pass "[$ctx] view=$view contains {$want}$( [ -n "$exclude" ] && echo " and excludes {$exclude}" ) (shared-identity relay history not asserted closed)"
 }
 
 echo

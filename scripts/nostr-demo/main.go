@@ -7,9 +7,13 @@
 //	relays                      print write-relay URLs from pkg/rdconfig (one/line)
 //	sign  --sec --ts --content  build+sign an event, print event JSON to stdout
 //	                            (deterministic — for byte-exact nak cross-check)
-//	prove --relay --content     build+sign a fresh-key event, publish to the relay
-//	                            (expect OK,true), fetch it back, Verify (ACCEPT),
-//	                            then tamper a byte and Verify (REJECT)
+//	prove --relay --content --sec
+//	                            build+sign an event (with --sec if given, else a
+//	                            fresh throwaway key), publish to the relay
+//	                            (expect OK,true — requires an ALLOWLISTED --sec
+//	                            against a locked relay per ready-266), fetch it
+//	                            back, Verify (ACCEPT), then tamper a byte and
+//	                            Verify (REJECT)
 //
 // This is a demo/proof tool, not shipped rd functionality.
 package main
@@ -100,14 +104,28 @@ func cmdProve(args []string) {
 	fs := flag.NewFlagSet("prove", flag.ExitOnError)
 	relay := fs.String("relay", "", "relay ws:// URL (required)")
 	content := fs.String("content", "", "event content")
+	sec := fs.String("sec", "", "32-byte hex secret key (default: generate a fresh throwaway key)")
 	_ = fs.Parse(args)
 	if *relay == "" {
 		fatalf("prove requires --relay")
 	}
 
-	k, err := nostr.GenerateKey()
-	if err != nil {
-		fatalf("genkey: %v", err)
+	// ready-266: locked strfry relays reject any author pubkey not on the write
+	// allowlist. --sec lets a caller sign with an ADMITTED portfolio key instead
+	// of a fresh, non-admitted one; omitting it preserves the original
+	// generate-a-throwaway-key behavior (only valid against a PERMISSIVE relay).
+	var k *nostr.Key
+	var err error
+	if *sec != "" {
+		k, err = nostr.KeyFromHex(*sec)
+		if err != nil {
+			fatalf("key: %v", err)
+		}
+	} else {
+		k, err = nostr.GenerateKey()
+		if err != nil {
+			fatalf("genkey: %v", err)
+		}
 	}
 	c := *content
 	if c == "" {

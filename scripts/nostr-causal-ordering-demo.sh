@@ -68,6 +68,7 @@ info "live relay: $RELAY_URL"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
 
 info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd
@@ -76,8 +77,14 @@ RD="$WORK/rd"
 # One portfolio identity shared by all reconcilers (the multi-machine model). The
 # CF_HOME basename is ".cf" so the ready-5d2 key guard admits the nostr-identity
 # key file (it refuses to write outside a .cf ancestor to avoid git-tracked keys).
+# RD_HOME is the ACTUAL nostr signing-identity home (independent of CF_HOME); it
+# is materialized with the machine's ALLOWLISTED portfolio key (ready-266) so
+# every reconciler below signs with a key the locked relays accept instead of
+# `rd` silently generating a fresh, non-admitted one on first use.
 CFHOME="$WORK/.cf"; PROJ="$WORK/proj"
+export RD_HOME="$WORK/rdhome"
 mkdir -p "$CFHOME" "$PROJ"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
 ( cd "$PROJ" && CF_HOME="$CFHOME" "$RD" init --offline >/dev/null )
 
 echo
@@ -139,7 +146,7 @@ cat <<EOF
 
 SUMMARY
   item id:            $ID
-  relay:              $RELAY_URL (permissive; write-allowlist is the separate ready-266)
+  relay:              $RELAY_URL (LOCKED write-allowlist, ready-266; this run signed with the ALLOWLISTED portfolio key)
   dedup:              PASS (re-ingesting a known event is a no-op; log unchanged)
   supersession/replay:PASS (latest-wins by created_at; stale OLD status cannot resurrect state)
   future-skew bound:  PASS (created_at > now+${RD_NOSTR_SKEW:-15m} rejected at ingestion)
