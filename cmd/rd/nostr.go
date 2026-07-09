@@ -42,17 +42,39 @@ func nostrReadRelays() []string {
 	return cfg.ReadRelayURLs()
 }
 
-// nostrKey loads (or first-run creates) the portfolio secp256k1 signing key from
-// the rd home ($RD_HOME / RDHome()), with NO dependency on campfire's ".cf". On
-// first run it identity-preservingly COPIES a legacy .cf key forward (never
-// regenerates — see migrateRDHomeIfNeeded), then loads/creates under $RD_HOME and
-// emits a loud warning if the loaded identity is self-inconsistent.
+// rdActor resolves the DURABLE actor id this process signs as (BP-4). $RD_ACTOR
+// selects it; unset (or empty) defaults to nostr.OwnerActor ("owner"), which maps
+// to the LEGACY single-key path — so an existing single-key install signs exactly
+// as before, zero migration. A named agent (e.g. "agent:pm") selects a DISTINCT
+// on-disk key at $RD_HOME/keys/<sanitized>.json with a DISTINCT pubkey, so an owner
+// and an agent on the SAME host sign with different keys and are attributed
+// distinctly. Keys are per durable actor, NEVER per-process (design §2).
+func rdActor() string {
+	if a := os.Getenv("RD_ACTOR"); a != "" {
+		return a
+	}
+	return nostr.OwnerActor
+}
+
+// nostrKey loads (or first-run creates) the portfolio secp256k1 signing key for
+// the CURRENT actor ($RD_ACTOR, default "owner") from the rd home ($RD_HOME /
+// RDHome()), with NO dependency on campfire's ".cf". On first run it
+// identity-preservingly COPIES a legacy .cf key forward into the OWNER slot (never
+// regenerates — see migrateRDHomeIfNeeded); a NAMED agent's key is generated fresh
+// and is INERT until granted+allowlisted (BP-5). Emits a loud warning if the loaded
+// identity is self-inconsistent.
 func nostrKey() (*nostr.Key, error) {
 	rdHome := RDHome()
+	// The migration only ever touches the OWNER slot (legacy .cf -> nostr-identity.json);
+	// running it regardless of actor just ensures the owner key exists and is harmless
+	// for a named-agent invocation (which loads a different file).
 	if err := migrateRDHomeIfNeeded(rdHome); err != nil {
 		return nil, fmt.Errorf("nostr identity migration: %w", err)
 	}
-	keyPath := nostr.DefaultKeyPath(rdHome)
+	keyPath, err := nostr.ActorKeyPath(rdHome, rdActor())
+	if err != nil {
+		return nil, fmt.Errorf("nostr: resolve actor key path: %w", err)
+	}
 	k, err := nostr.LoadOrCreatePortfolioKey(keyPath, rdHome)
 	if err != nil {
 		return nil, err
@@ -116,6 +138,22 @@ func boardSpecForProject(dir, pubkey string) rdSync.BoardSpec {
 	return rdSync.BoardSpec{BoardD: name, Title: name, Maintainers: []string{pubkey}}
 }
 
+// nostrBoardAuthor resolves the OWNER pubkey that authored this project's 30301
+// board — the pubkey a card's board-membership "a" coordinate must reference so an
+// AGENT-signed card still belongs to the OWNER's board and is accepted by BP-3's
+// pin (BP-4 reconciliation). Resolution: the pinned board coordinate in
+// .ready/config.json (30301:<owner>:<boardD>) is authoritative when set; otherwise
+// fall back to the signer's own pubkey — the owner signing their own board, which
+// reproduces the pre-pin behaviour exactly (zero migration for existing installs).
+func nostrBoardAuthor(dir, signerPubkey string) string {
+	if pin := nostrPinnedBoard(dir); pin != "" {
+		if owner, _, ok := rdSync.ParseBoardCoord(pin); ok {
+			return owner
+		}
+	}
+	return signerPubkey
+}
+
 // publishItemCreateNostr is the create-time hook: when nostr is enabled it
 // publishes the board + card + status events for a freshly created item and
 // appends them to the local authoritative log. It is best-effort — a relay
@@ -130,7 +168,9 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		return err
 	}
 	dir, _ := readyProjectDir()
-	board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+	signer := pub.Key.PubKeyHex()
+	boardAuthor := nostrBoardAuthor(dir, signer)
+	board := boardSpecForProject(dir, boardAuthor)
 	if status == "" {
 		status = state.StatusInbox
 	}
@@ -142,6 +182,10 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		Type:     itemType,
 		Context:  itemContext,
 		BoardD:   board.BoardD,
+		// Board MEMBERSHIP points at the OWNER's board coordinate (BP-4), so an
+		// agent-signed card is accepted by the owner's pinned board. Owner-signed
+		// cards resolve boardAuthor==signer, unchanged.
+		BoardAuthor: boardAuthor,
 		// Carry the assignment scope at create time (ready-187) — forParty is the
 		// only extra field available here. Other card-only fields (labels/eta/due/
 		// level/parent) are materialized by the first full-item republish through
@@ -149,8 +193,16 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		// create card latest-wins.
 		For: forParty,
 	}
+	// Only the board AUTHOR (owner) can sign the owner's 30301 board. An agent must
+	// not fork its OWN board (a parallel-board self-escalation BP-3 pins against), so
+	// skip the board event when signing as a non-owner actor — its card still joins
+	// the owner's board via BoardAuthor above.
+	var boardArg *rdSync.BoardSpec
+	if signer == boardAuthor {
+		boardArg = &board
+	}
 	ctx := context.Background()
-	res, err := pub.PublishItem(ctx, &board, card, time.Now().Unix())
+	res, err := pub.PublishItem(ctx, boardArg, card, time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -204,8 +256,10 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	board := boardSpecForProject(dir, boardAuthor)
 	card := nostrCardSpecFromItem(item, board.BoardD)
+	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	res, err := pub.PublishStatusChange(context.Background(), card, reason, time.Now().Unix())
 	if err != nil {
 		return err
@@ -231,8 +285,10 @@ func publishItemCardEditNostr(item *state.Item) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	board := boardSpecForProject(dir, boardAuthor)
 	card := nostrCardSpecFromItem(item, board.BoardD)
+	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	res, err := pub.PublishCardEdit(context.Background(), card, time.Now().Unix())
 	if err != nil {
 		return err
@@ -435,12 +491,19 @@ var nostrPublishCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("no project dir for publisher")
 		}
-		board := boardSpecForProject(dir, pub.Key.PubKeyHex())
+		signer := pub.Key.PubKeyHex()
+		boardAuthor := nostrBoardAuthor(dir, signer)
+		board := boardSpecForProject(dir, boardAuthor)
 		// Route through the SINGLE shared helper (ready-187). The old inline literal
 		// omitted Labels/ETA/Assignee (and would never have carried Level/For/Parent/
 		// Due), so `rd nostr publish` clobbered them to empty on the latest-wins card.
 		card := rdSync.CardSpecFromItem(item, board.BoardD)
-		res, err := pub.PublishItem(context.Background(), &board, card, time.Now().Unix())
+		card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
+		var boardArg *rdSync.BoardSpec
+		if signer == boardAuthor {
+			boardArg = &board // only the owner can author the owner's board
+		}
+		res, err := pub.PublishItem(context.Background(), boardArg, card, time.Now().Unix())
 		if err != nil {
 			return err
 		}

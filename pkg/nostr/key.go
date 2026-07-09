@@ -315,9 +315,72 @@ func waitForKeyFile(path string) (*Key, error) {
 // DefaultKeyPath returns the conventional location of the portfolio nostr key
 // given a home directory (the rd home, $RD_HOME / RDHome()). Kept separate from
 // campfire's identity.json so it composes with existing resolution instead of
-// overloading it.
+// overloading it. This is the OWNER actor's key path — see ActorKeyPath.
 func DefaultKeyPath(home string) string {
 	return filepath.Join(home, "nostr-identity.json")
+}
+
+// OwnerActor is the default durable actor id (selected when $RD_ACTOR is unset).
+// It resolves to the LEGACY single-key path (DefaultKeyPath, "nostr-identity.json"),
+// so an existing single-key install's key IS the owner key with ZERO migration —
+// the owner is the human trust root / 30301 board author (design §2).
+const OwnerActor = "owner"
+
+// SanitizeActorID maps an actor id (e.g. "agent:pm") to a safe single filename
+// component. ONLY [A-Za-z0-9_-] survive; every other rune — ':', '/', '\\', '.',
+// whitespace, control chars — becomes '-'. Because '.' becomes '-' and separators
+// become '-', the result can contain neither ".." nor a path separator, so it can
+// never traverse out of the keys/ directory (the design's "no path traversal"
+// requirement). It returns an error when actor is empty or sanitizes to nothing
+// usable (all-invalid runes): silently falling back to some default actor would
+// mis-attribute writes to the wrong key, which is exactly what per-actor keys
+// exist to prevent. "agent:pm" -> "agent-pm" (matches design §8 BP-4).
+func SanitizeActorID(actor string) (string, error) {
+	if actor == "" {
+		return "", errors.New("nostr: empty actor id")
+	}
+	out := make([]rune, 0, len(actor))
+	for _, r := range actor {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-':
+			out = append(out, r)
+		default:
+			out = append(out, '-')
+		}
+	}
+	s := string(out)
+	usable := false
+	for _, r := range s {
+		if r != '-' {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		return "", fmt.Errorf("nostr: actor id %q sanitizes to no usable filename", actor)
+	}
+	return s, nil
+}
+
+// ActorKeyPath returns the on-disk signing-key path for a durable actor under the
+// rd home. Keys are per DURABLE actor (owner + named agents), NEVER per-process
+// (design §2). The OWNER actor (or an empty id) maps to the LEGACY single-key path
+// (DefaultKeyPath) so an existing install needs zero migration; every other named
+// agent gets its own file at keys/<sanitized-actor>.json, a DISTINCT key with a
+// DISTINCT pubkey. The actor id is sanitized against path traversal (see
+// SanitizeActorID), so a hostile $RD_ACTOR cannot escape the keys/ directory.
+func ActorKeyPath(home, actor string) (string, error) {
+	if actor == "" || actor == OwnerActor {
+		return DefaultKeyPath(home), nil
+	}
+	safe, err := SanitizeActorID(actor)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "keys", safe+".json"), nil
 }
 
 // WriteKeyFileExclusive writes k to path using O_CREATE|O_EXCL (0600) and is the

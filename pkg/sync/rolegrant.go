@@ -197,6 +197,14 @@ func parseRoleGrant(e *nostr.Event) (roleGrant, bool) {
 	}, true
 }
 
+// ParseBoardCoord splits a pinned "30301:<owner>:<d>" board authority coordinate
+// into its owner pubkey and board "d" identifier, ok=false when malformed. Exported
+// so cmd/rd can resolve the OWNER pubkey from the pinned board (BP-4): an agent
+// signing a card sets the card's board-membership "a" to the owner's coordinate.
+func ParseBoardCoord(a string) (owner, boardD string, ok bool) {
+	return parseBoardCoord(a)
+}
+
 // parseBoardCoord splits a "30301:<owner>:<d>" board authority coordinate. It
 // returns ok=false for any coordinate that is not a well-formed 30301 board coord.
 func parseBoardCoord(a string) (owner, boardD string, ok bool) {
