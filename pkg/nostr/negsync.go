@@ -72,11 +72,46 @@ func NegentropyReconcile(ctx context.Context, relayURL string, filter map[string
 		return res, fmt.Errorf("nostr: write NEG-OPEN: %w", err)
 	}
 
+	// conn.ReadMessage() is not ctx-aware: if the caller's ctx carries no
+	// Deadline (so SetReadDeadline above was a no-op) and cancels ctx, a
+	// direct blocking read here would ignore that cancellation until the
+	// websocket otherwise errors (relay hangs, network drops, etc). Run the
+	// read in a goroutine and select on ctx.Done() so cancellation always
+	// unblocks the loop promptly. Closing conn on cancellation also unsticks
+	// the goroutine's in-flight ReadMessage so it can exit instead of leaking.
+	type negFrame struct {
+		data []byte
+		err  error
+	}
+	readCh := make(chan negFrame, 1)
+	go func() {
+		for {
+			_, data, err := conn.ReadMessage()
+			select {
+			case readCh <- negFrame{data: data, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	readFrame := func() ([]byte, error) {
+		select {
+		case f := <-readCh:
+			return f.data, f.err
+		case <-ctx.Done():
+			_ = conn.Close()
+			return nil, ctx.Err()
+		}
+	}
+
 	haveSet := map[string]bool{}
 	needSet := map[string]bool{}
 
 	for {
-		_, data, err := conn.ReadMessage()
+		data, err := readFrame()
 		if err != nil {
 			return res, fmt.Errorf("nostr: neg read: %w", err)
 		}
