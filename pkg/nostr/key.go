@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	btcec "github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -227,12 +226,33 @@ func LoadKeyFile(path string) (*Key, error) {
 // race — two concurrent first-time callers can both observe the file missing,
 // both generate a *different* key, and the second SaveKeyFile silently
 // overwrites the first, leaving the two callers holding mismatched identities.
-// To close that race, the create path uses os.O_CREATE|os.O_EXCL: exactly one
-// caller (per process, and across processes on POSIX filesystems since
-// O_EXCL is atomic at the OS level) wins the exclusive create and writes its
-// generated key; every other concurrent caller gets EEXIST and instead reads
-// back whatever the winner wrote, so all callers converge on one identical
-// key and an existing key is never overwritten.
+//
+// To close that race AND avoid a second, narrower one, the create path
+// publishes the new key via write-to-temp-then-link instead of a direct
+// O_CREATE|O_EXCL open on the final path:
+//
+//  1. The full key file content is written to a private, uniquely-named
+//     temp file in the same directory (so the link below is same-filesystem)
+//     and the temp file is closed — its content is entirely committed before
+//     anyone else can see it.
+//  2. The temp file is published under the real path with os.Link, which is
+//     atomic and fails with EEXIST if the destination already exists — the
+//     same "exactly one winner" guarantee os.O_CREATE|os.O_EXCL gives.
+//
+// Publishing this way means the destination file is NEVER observable in a
+// partially-written state: by the time `path` exists at all, its content is
+// already complete (it was fully written to the temp file first). An earlier
+// version of this function opened `path` directly with O_CREATE|O_EXCL and
+// wrote to it in a second syscall, which left a real (if narrow) window where
+// the winner had created an empty file but not yet written to it; every loser
+// then had to poll-with-timeout (waitForKeyFile) for the write to land, and
+// under heavy CPU contention (e.g. full `go test ./...` parallel load
+// starving the winner goroutine between create and write) that poll could
+// exceed its bounded timeout and fail spuriously — a genuine convergence
+// window in the code, not just a test timing assumption. Publishing
+// atomically via link removes the window entirely: losers can load `path`
+// the instant os.Link tells them it already exists, with no retry loop and
+// no timeout to tune.
 func LoadOrCreatePortfolioKey(path, allowedRoot string) (*Key, error) {
 	if err := requireIgnorableKeyPath(path, allowedRoot); err != nil {
 		return nil, err
@@ -249,7 +269,8 @@ func LoadOrCreatePortfolioKey(path, allowedRoot string) (*Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("nostr: mkdir for key file: %w", err)
 	}
 	kf := keyFile{Version: 1, SecretHex: k.SecretHex(), PubKeyHex: k.PubKeyHex()}
@@ -258,21 +279,48 @@ func LoadOrCreatePortfolioKey(path, allowedRoot string) (*Key, error) {
 		return nil, fmt.Errorf("nostr: marshal key file: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	tmpPath, err := writeTempKeyFile(dir, data)
 	if err != nil {
-		if os.IsExist(err) {
-			// Another concurrent caller won the race and created the file
-			// first (or is in the middle of writing it). Converge on
-			// whatever it wrote instead of overwriting it.
-			return waitForKeyFile(path)
-		}
-		return nil, fmt.Errorf("nostr: create key file: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return nil, fmt.Errorf("nostr: write key file: %w", err)
+	// Best-effort cleanup: once linked, the temp name is a spare hard link to
+	// the same inode and can be dropped; if the link below loses the race,
+	// the temp file was never anything but our own scratch copy.
+	defer os.Remove(tmpPath)
+
+	if err := os.Link(tmpPath, path); err != nil {
+		if os.IsExist(err) {
+			// Another concurrent caller already published its key under
+			// path. Its content is guaranteed complete the instant the link
+			// exists (see doc comment above), so a direct load converges
+			// immediately — no polling, no timeout.
+			return LoadKeyFile(path)
+		}
+		return nil, fmt.Errorf("nostr: publish key file: %w", err)
 	}
 	return k, nil
+}
+
+// writeTempKeyFile writes data to a new, uniquely-named, 0600 file in dir and
+// returns its path with the content fully written and the file closed (so
+// the caller can safely publish it elsewhere with os.Link before any other
+// goroutine/process can observe a partial write).
+func writeTempKeyFile(dir string, data []byte) (string, error) {
+	f, err := os.CreateTemp(dir, ".nostr-identity-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("nostr: create temp key file: %w", err)
+	}
+	tmpPath := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("nostr: write temp key file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("nostr: close temp key file: %w", err)
+	}
+	return tmpPath, nil
 }
 
 // loadKeyFileIfExists returns (nil, nil) when path does not exist, so callers
@@ -289,27 +337,6 @@ func loadKeyFileIfExists(path string) (*Key, error) {
 		return nil, err
 	}
 	return k, nil
-}
-
-// waitForKeyFile is used by the loser of the O_CREATE|O_EXCL race: the
-// winner's file is guaranteed to exist but may not be fully written yet
-// (create and write are two separate syscalls), so retry the load briefly
-// instead of racing on a partial file.
-func waitForKeyFile(path string) (*Key, error) {
-	const (
-		attempts = 100
-		delay    = 2 * time.Millisecond
-	)
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		k, err := LoadKeyFile(path)
-		if err == nil {
-			return k, nil
-		}
-		lastErr = err
-		time.Sleep(delay)
-	}
-	return nil, fmt.Errorf("nostr: timed out waiting for concurrently-created key file %q: %w", path, lastErr)
 }
 
 // DefaultKeyPath returns the conventional location of the portfolio nostr key
