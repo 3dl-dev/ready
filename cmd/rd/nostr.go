@@ -214,6 +214,15 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 	return nil
 }
 
+// warnNostrPublishFailure prints the standard best-effort nostr-publish-failure
+// warning to stderr: action names WHAT was already durably committed elsewhere
+// (campfire/JSONL, or the local log/campfire for create), so every call site
+// reports the identical shape without re-deriving the wording. A relay failure
+// here never fails the caller's mutation — this is purely diagnostic.
+func warnNostrPublishFailure(action string, err error) {
+	fmt.Fprintf(os.Stderr, "warning: nostr publish failed (%s): %v\n", action, err)
+}
+
 // closeResolutionToStatus maps an rd close resolution (done/cancelled/failed) to
 // the rd status string, mirroring pkg/state's handleWorkClose switch so the
 // nostr status-change publish carries the exact same terminal status.
@@ -226,17 +235,6 @@ func closeResolutionToStatus(resolution string) string {
 	default:
 		return state.StatusDone
 	}
-}
-
-// nostrCardSpecFromItem builds the wire-mapping CardSpec from CURRENT (already
-// mutated in-memory) rd item state. It delegates to the SINGLE shared helper
-// rdSync.CardSpecFromItem (ready-187) so every mutation path (claim/progress/
-// update/close) — and the migration, and `rd nostr publish` — materialize the card
-// identically and carry the item's FULL field set. Routing every publish through one
-// helper is what stops any path silently dropping a field (deps/labels/eta/level/
-// for/parent/due) and clobbering it on the latest-wins card.
-func nostrCardSpecFromItem(item *state.Item, boardD string) rdSync.CardSpec {
-	return rdSync.CardSpecFromItem(item, boardD)
 }
 
 // publishItemStatusChangeNostr is the status-change hook (claim / status update /
@@ -258,7 +256,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	dir, _ := readyProjectDir()
 	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
 	board := boardSpecForProject(dir, boardAuthor)
-	card := nostrCardSpecFromItem(item, board.BoardD)
+	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	res, err := pub.PublishStatusChange(context.Background(), card, reason, time.Now().Unix())
 	if err != nil {
@@ -287,7 +285,7 @@ func publishItemCardEditNostr(item *state.Item) error {
 	dir, _ := readyProjectDir()
 	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
 	board := boardSpecForProject(dir, boardAuthor)
-	card := nostrCardSpecFromItem(item, board.BoardD)
+	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	res, err := pub.PublishCardEdit(context.Background(), card, time.Now().Unix())
 	if err != nil {
@@ -346,7 +344,7 @@ func publishImplicitUnblockNostr(s store.Store, blockedIDs []string) {
 			continue
 		}
 		if nostrErr := publishItemCardEditNostr(it); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr implicit-unblock publish failed for %s (campfire durable): %v\n", id, nostrErr)
+			warnNostrPublishFailure(fmt.Sprintf("implicit-unblock %s; campfire durable", id), nostrErr)
 		}
 	}
 }

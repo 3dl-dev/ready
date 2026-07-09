@@ -79,7 +79,7 @@ Example:
 			item.WaitingSince = ""
 			item.GateMsgID = ""
 			if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (gate approved; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("gate approved; campfire durable", nostrErr)
 			}
 
 			if jsonOutput {

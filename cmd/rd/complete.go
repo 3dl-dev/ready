@@ -88,7 +88,7 @@ Example:
 		blockedByThis := item.Blocks
 		item.Status = state.StatusDone
 		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item completed; campfire durable): %v\n", nostrErr)
+			warnNostrPublishFailure("item completed; campfire durable", nostrErr)
 		}
 		// Implicit unblock parity (ready-2cf): re-publish cards this item unblocks.
 		publishImplicitUnblockNostr(s, blockedByThis)

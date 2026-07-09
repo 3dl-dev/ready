@@ -84,7 +84,7 @@ Example:
 			item.WaitingType = "gate"
 			item.WaitingOn = description
 			if nostrErr := publishItemStatusChangeNostr(item, description); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (gate sent; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("gate sent; campfire durable", nostrErr)
 			}
 
 			if jsonOutput {

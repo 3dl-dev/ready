@@ -425,7 +425,7 @@ Example:
 				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
 					item.Labels = strSliceAppendUnique(item.Labels, label)
 					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-						fmt.Fprintf(os.Stderr, "warning: nostr publish failed (label added; campfire durable): %v\n", nostrErr)
+						warnNostrPublishFailure("label added; campfire durable", nostrErr)
 					}
 				}
 			}
@@ -491,7 +491,7 @@ Example:
 				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
 					item.Labels = strSliceRemove(item.Labels, label)
 					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-						fmt.Fprintf(os.Stderr, "warning: nostr publish failed (label removed; campfire durable): %v\n", nostrErr)
+						warnNostrPublishFailure("label removed; campfire durable", nostrErr)
 					}
 				}
 			}

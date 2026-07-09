@@ -163,7 +163,7 @@ Examples:
 				item.Priority = priority
 			}
 			if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item updated; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("item updated; campfire durable", nostrErr)
 			}
 		}
 
@@ -199,7 +199,7 @@ Examples:
 			// publish a NIP-34 status event so the audit trail replay sees it.
 			item.Status = statusTo
 			if nostrErr := publishItemStatusChangeNostr(item, note); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (status updated; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("status updated; campfire durable", nostrErr)
 			}
 		}
 
@@ -225,7 +225,7 @@ Examples:
 			item.Status = state.StatusActive
 			item.By = agentID.PublicKeyHex()
 			if nostrErr := publishItemStatusChangeNostr(item, ""); nostrErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: nostr publish failed (item claimed; campfire durable): %v\n", nostrErr)
+				warnNostrPublishFailure("item claimed; campfire durable", nostrErr)
 			}
 		}
 

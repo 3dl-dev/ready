@@ -139,6 +139,10 @@ func (n *Negentropy) Reconcile(query []byte) (response []byte, have [][negIDSize
 // job). This exists so the protocol can be validated deterministically without a
 // live relay; against a real strfry the relay performs this role itself. When the
 // reply is only the version byte the server has nothing left to send.
+//
+// Intentionally test-only: production rd never plays the server role (that is
+// strfry's job over the wire) — every caller is negentropy_test.go driving both
+// sides of the protocol in-process to assert convergence without a live relay.
 func (n *Negentropy) reconcileServer(query []byte) ([]byte, error) {
 	out, _, _, err := n.reconcileAux(query, false)
 	if err != nil {

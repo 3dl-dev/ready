@@ -74,6 +74,11 @@ func NostrLogPath(projectDir string) string {
 }
 
 // Path returns the underlying file path.
+//
+// Intentionally test-only in production code today: production callers already
+// hold the projectDir (or path) they built the NostrLog from and never need to
+// read it back off the struct — only tests that construct a NostrLog and then
+// assert against its on-disk location call this accessor.
 func (l *NostrLog) Path() string { return l.path }
 
 // Append writes one signed event as a JSON line. It creates the .ready directory
@@ -193,11 +198,20 @@ func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 // actually added.
 //
 // This is the DEGRADE FLOOR (epic ready-a14 invariant): with every relay
-// unreachable, two machines still converge by exchanging their git-committed
-// nostr-log.jsonl files (the "beads-without-dolt" fallback) and merging. Because
-// the log is append-only signed events, a git merge of the JSONL plus this
-// idempotent, id-deduped, verify-gated merge yields the union with zero data loss
-// — no relay required. Forged or tampered lines in the other file are rejected.
+// unreachable, two machines still converge by exchanging their nostr-log.jsonl
+// files (the "beads-without-dolt" fallback) and merging. Because the log is
+// append-only signed events, a union merge of the JSONL plus this idempotent,
+// id-deduped, verify-gated merge yields the whole set with zero data loss — no
+// relay required. Forged or tampered lines in the other file are rejected.
+//
+// TRACKED LOCATION: the exchange mechanism is deliberately NOT git — this repo's
+// own .gitignore excludes `.ready/` (where NostrLogPath puts the log by default),
+// and that is the correct default for a project that treats campfire/JSONL as
+// authoritative. "Committing the log" (as the two-machine-sync demo does, for
+// illustration) means the OPERATOR chooses to un-ignore `.ready/nostr-log.jsonl`
+// (or copies/scp's it to a tracked path) for their own project — MergeFrom itself
+// only cares about otherPath being readable; it has no opinion on how that file
+// got onto the local disk (git pull, scp, a shared volume, ...).
 //
 // TRUST GATE (ready-b57): the OTHER machine's committed log is an untrusted input —
 // a foreign or hostile file could carry validly-signed events from a key that was
