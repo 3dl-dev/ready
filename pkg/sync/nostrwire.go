@@ -92,6 +92,17 @@ type CardSpec struct {
 	Context string
 	// BoardD is the board (project) "d" identifier this card belongs to.
 	BoardD string
+	// BoardAuthor, when set, is the OWNER pubkey hex that authored the 30301 board
+	// this card belongs to. The card's "a" board-membership coordinate is built
+	// from it (30301:<BoardAuthor>:<BoardD>) instead of from the signing key — so a
+	// card SIGNED by an AGENT key (whose pubkey differs from the owner's) still
+	// references the OWNER's board coordinate and is therefore ACCEPTED by BP-3's
+	// board pin (which pins the owner's coordinate). This DECOUPLES card AUTHORSHIP
+	// (the signing key, still carried in the event's PubKey) from board MEMBERSHIP
+	// (the owner's board coordinate). Empty preserves the pre-BP-4 behaviour exactly:
+	// the "a" coordinate is the SIGNER's own board (BoardCoord(signer, BoardD)) — the
+	// owner signing their own board, zero migration for existing single-key installs.
+	BoardAuthor string
 
 	// Deps lists the item IDs that BLOCK this item (rd dep add <this> <blocker>).
 	// Each becomes a NIP-100 "i" (inter-card relationship) tag. NIP-100 leaves the
@@ -200,7 +211,15 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 		{"title", spec.Title},
 	}
 	if spec.BoardD != "" {
-		tags = append(tags, []string{"a", BoardCoord(k.PubKeyHex(), spec.BoardD)})
+		// Board MEMBERSHIP is the owner's board coordinate, DISTINCT from the signing
+		// key (card AUTHORSHIP). BoardAuthor names the owner pubkey so an agent-signed
+		// card still belongs to the owner's pinned board (BP-4 reconciliation with the
+		// BP-3 pin); empty falls back to the signer authoring its own board (unchanged).
+		boardAuthor := spec.BoardAuthor
+		if boardAuthor == "" {
+			boardAuthor = k.PubKeyHex()
+		}
+		tags = append(tags, []string{"a", BoardCoord(boardAuthor, spec.BoardD)})
 	}
 	if spec.Status != "" {
 		tags = append(tags, []string{"s", spec.Status})
