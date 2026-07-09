@@ -2,6 +2,7 @@ package nostr
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -50,16 +51,17 @@ func TestKeyRoundTrip_Hex(t *testing.T) {
 }
 
 func TestSaveLoadKeyFile_PermsAndRoundTrip(t *testing.T) {
-	// The key path must resolve under a ".cf" ancestor directory (see
-	// requireUnderCFHome) so this mirrors real usage (CFHome()/.cf/...).
-	dir := filepath.Join(t.TempDir(), ".cf")
-	path := filepath.Join(dir, "nostr-identity.json")
+	// t.TempDir() is under $TMPDIR, outside any git work tree, so the guard's
+	// git-ignore defense is a no-op; the under-root check accepts a path at the
+	// allowedRoot itself. This mirrors real usage ($RD_HOME/nostr-identity.json).
+	root := t.TempDir()
+	path := filepath.Join(root, "nostr-identity.json")
 
 	k, err := GenerateKey()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if err := SaveKeyFile(path, k); err != nil {
+	if err := SaveKeyFile(path, k, root); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
@@ -81,14 +83,12 @@ func TestSaveLoadKeyFile_PermsAndRoundTrip(t *testing.T) {
 }
 
 func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
-	// DefaultKeyPath is always called with a real CFHome() in production,
-	// i.e. a directory literally named ".cf" — mirror that here so the
-	// default-path round-trip exercises the same shape requireUnderCFHome
-	// expects.
-	cfHome := filepath.Join(t.TempDir(), ".cf")
-	path := DefaultKeyPath(cfHome)
+	// DefaultKeyPath is called with a real RDHome() in production. t.TempDir()
+	// stands in for $RD_HOME (outside any git work tree, so the guard accepts it).
+	rdHome := t.TempDir()
+	path := DefaultKeyPath(rdHome)
 
-	k1, err := LoadOrCreatePortfolioKey(path)
+	k1, err := LoadOrCreatePortfolioKey(path, rdHome)
 	if err != nil {
 		t.Fatalf("first call (generate): %v", err)
 	}
@@ -96,7 +96,7 @@ func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
 		t.Fatalf("key file not persisted: %v", err)
 	}
 
-	k2, err := LoadOrCreatePortfolioKey(path)
+	k2, err := LoadOrCreatePortfolioKey(path, rdHome)
 	if err != nil {
 		t.Fatalf("second call (load): %v", err)
 	}
@@ -116,8 +116,8 @@ func TestLoadOrCreatePortfolioKey_GeneratesThenLoads(t *testing.T) {
 // converge on exactly one secret, and exactly one key file must exist on
 // disk. Run with -race to also catch any data race in the create path.
 func TestLoadOrCreatePortfolioKey_ConcurrentFirstCallersConverge(t *testing.T) {
-	cfHome := filepath.Join(t.TempDir(), ".cf")
-	path := DefaultKeyPath(cfHome)
+	rdHome := t.TempDir()
+	path := DefaultKeyPath(rdHome)
 
 	const n = 32
 	var (
@@ -130,7 +130,7 @@ func TestLoadOrCreatePortfolioKey_ConcurrentFirstCallersConverge(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			k, err := LoadOrCreatePortfolioKey(path)
+			k, err := LoadOrCreatePortfolioKey(path, rdHome)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -163,46 +163,171 @@ func TestLoadOrCreatePortfolioKey_ConcurrentFirstCallersConverge(t *testing.T) {
 		t.Fatalf("persisted key %q does not match the secret every goroutine converged on %q", onDisk.SecretHex(), winner)
 	}
 
-	entries, err := os.ReadDir(cfHome)
+	entries, err := os.ReadDir(rdHome)
 	if err != nil {
-		t.Fatalf("read cf home: %v", err)
+		t.Fatalf("read rd home: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly one file in %s, found %d: %v", cfHome, len(entries), entries)
+		t.Fatalf("expected exactly one file in %s, found %d: %v", rdHome, len(entries), entries)
 	}
 }
 
-func TestSaveKeyFile_RejectsPathOutsideCFHome(t *testing.T) {
-	// No ".cf" ancestor directory anywhere in this path — must be rejected
-	// so a caller can never accidentally persist the secret into a
-	// git-tracked location.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nostr-identity.json")
+// TestSaveKeyFile_RejectsPathOutsideAllowedRoot proves the resolved-path-under-
+// root check (docs/design/nostr-identity-model.md §5, check 1): a key path that
+// is NOT under the declared rd home is refused, even though nothing is committed.
+// This is what the old lexical ".cf"-name sniff could not express — a foreign
+// directory that merely shares a base name no longer passes.
+func TestSaveKeyFile_RejectsPathOutsideAllowedRoot(t *testing.T) {
+	allowedRoot := filepath.Join(t.TempDir(), "rdhome")
+	// A sibling directory NOT under allowedRoot.
+	foreign := filepath.Join(t.TempDir(), "elsewhere", ".cf")
+	path := filepath.Join(foreign, "nostr-identity.json")
 
 	k, err := GenerateKey()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if err := SaveKeyFile(path, k); err == nil {
-		t.Fatalf("SaveKeyFile(%q) should have been rejected: no .cf ancestor directory", path)
+	if err := SaveKeyFile(path, k, allowedRoot); err == nil {
+		t.Fatalf("SaveKeyFile(%q, root=%q) should have been rejected: path is not under the rd home", path, allowedRoot)
 	}
 	if _, statErr := os.Stat(path); statErr == nil {
 		t.Fatalf("SaveKeyFile must not write the file when the guard rejects the path")
 	}
 }
 
-func TestSaveKeyFile_AcceptsPathUnderCFHome(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), ".cf", "nested")
-	path := filepath.Join(dir, "nostr-identity.json")
+func TestSaveKeyFile_AcceptsPathUnderAllowedRoot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "nested", "nostr-identity.json")
 
 	k, err := GenerateKey()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if err := SaveKeyFile(path, k); err != nil {
-		t.Fatalf("SaveKeyFile(%q) should have succeeded: has .cf ancestor: %v", path, err)
+	if err := SaveKeyFile(path, k, root); err != nil {
+		t.Fatalf("SaveKeyFile(%q, root=%q) should have succeeded: %v", path, root, err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("key file not persisted: %v", err)
+	}
+}
+
+// TestGuard_RejectsUnignoredPathInsideGitRepo proves the git-ignore defense-in-
+// depth (§5, check 2, and adversary A6): a ".cf" (or any) directory inside a git
+// work tree that does NOT ignore it is refused — the exact FALSE-SAFETY case the
+// old lexical guard let through and would have committed the secret. allowedRoot
+// is left "" so ONLY the git-ignore check can be responsible for the rejection.
+func TestGuard_RejectsUnignoredPathInsideGitRepo(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo) // no .gitignore: nothing is ignored
+	path := filepath.Join(repo, ".cf", "nostr-identity.json")
+
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := SaveKeyFile(path, k, ""); err == nil {
+		t.Fatalf("SaveKeyFile(%q) inside a git repo with no ignore rule should be rejected (it would be committed)", path)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Fatalf("SaveKeyFile must not write the file when the guard rejects the path")
+	}
+}
+
+// TestGuard_AcceptsGitIgnoredPathInsideGitRepo is the counterpart: the SAME repo,
+// but with the key's directory git-ignored, is accepted. This is the repo-local
+// $RD_HOME (walk-up ".rd/" marker) case — a secret under an ignored dir cannot be
+// committed, so it is allowed.
+func TestGuard_AcceptsGitIgnoredPathInsideGitRepo(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".rd/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	rdHome := filepath.Join(repo, ".rd")
+	path := filepath.Join(rdHome, "nostr-identity.json")
+
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := SaveKeyFile(path, k, rdHome); err != nil {
+		t.Fatalf("SaveKeyFile(%q) under a git-ignored dir should succeed: %v", path, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("key file not persisted: %v", err)
+	}
+}
+
+// gitInit initializes a minimal git repo at dir so git check-ignore has a work
+// tree to reason about. Fails the test (not skips) if git is unavailable — the
+// guard's defense-in-depth is a hard requirement, not an optional check.
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatalf("git is required for the key-path guard's defense-in-depth check but was not found: %v", err)
+	}
+	cmd := exec.Command("git", "init", "-q", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+}
+
+// TestWriteKeyFileExclusive_NeverOverwrites is the identity-preserving migration
+// primitive's core property: the first write persists the key; a SECOND write
+// with a DIFFERENT key is a no-op (returns nil) and leaves the ORIGINAL secret on
+// disk. This is what guarantees the migration copy can never clobber (or
+// regenerate over) an existing identity.
+func TestWriteKeyFileExclusive_NeverOverwrites(t *testing.T) {
+	root := t.TempDir()
+	path := DefaultKeyPath(root)
+
+	k1, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate k1: %v", err)
+	}
+	if err := WriteKeyFileExclusive(path, k1, root); err != nil {
+		t.Fatalf("first exclusive write: %v", err)
+	}
+
+	k2, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate k2: %v", err)
+	}
+	if k1.SecretHex() == k2.SecretHex() {
+		t.Fatalf("test precondition: two generated keys must differ")
+	}
+	// Second write with a different key must NOT overwrite and must NOT error.
+	if err := WriteKeyFileExclusive(path, k2, root); err != nil {
+		t.Fatalf("second exclusive write should converge (no error): %v", err)
+	}
+
+	onDisk, err := LoadKeyFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if onDisk.SecretHex() != k1.SecretHex() {
+		t.Fatalf("WriteKeyFileExclusive overwrote the original identity: on-disk=%s want=%s", onDisk.PubKeyHex(), k1.PubKeyHex())
+	}
+}
+
+// TestStoredPubKeyHex_MatchesDerived verifies the self-consistency tripwire the
+// startup assertion relies on: a freshly written key file records a pubkey_hex
+// that equals the pubkey derived from its secret.
+func TestStoredPubKeyHex_MatchesDerived(t *testing.T) {
+	root := t.TempDir()
+	path := DefaultKeyPath(root)
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := SaveKeyFile(path, k, root); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	stored, err := StoredPubKeyHex(path)
+	if err != nil {
+		t.Fatalf("stored pubkey: %v", err)
+	}
+	if stored != k.PubKeyHex() {
+		t.Fatalf("stored pubkey %q != derived %q", stored, k.PubKeyHex())
 	}
 }

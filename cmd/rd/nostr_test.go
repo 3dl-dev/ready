@@ -79,6 +79,16 @@ func setupNostrCmdTest(t *testing.T) string {
 	rdHome = cfHome
 	t.Cleanup(func() { rdHome = origRdHome })
 
+	// Isolate RDHome() (where nostrKey now reads/writes the nostr identity) to a
+	// per-test dir under $TMPDIR — outside any git work tree, so the key-path
+	// guard accepts it — distinct from cfHome. cfHome (the legacy .cf) starts
+	// empty, so no migration fires and a fresh key is generated under RD_HOME.
+	rdHomeDir := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHomeDir, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHomeDir)
+
 	origClient := protocolClient
 	protocolClient = nil
 	t.Cleanup(func() {
@@ -803,7 +813,7 @@ func TestLiveRelay_CreateHookPublishesToLockedRelay(t *testing.T) {
 	if err := os.MkdirAll(cfHome, 0700); err != nil {
 		t.Fatalf("mkdir .cf: %v", err)
 	}
-	if err := nostr.SaveKeyFile(filepath.Join(cfHome, "nostr-identity.json"), k); err != nil {
+	if err := nostr.SaveKeyFile(filepath.Join(cfHome, "nostr-identity.json"), k, cfHome); err != nil {
 		t.Fatalf("materialize allowlisted key under isolated .cf: %v", err)
 	}
 	projectDir := filepath.Join(base, "project")
@@ -814,6 +824,10 @@ func TestLiveRelay_CreateHookPublishesToLockedRelay(t *testing.T) {
 	origRdHome := rdHome
 	rdHome = cfHome
 	t.Cleanup(func() { rdHome = origRdHome })
+
+	// Point RDHome() at the isolated .cf so nostrKey loads the admitted key we
+	// just materialized (present ⇒ no migration, no regeneration).
+	t.Setenv("RD_HOME", cfHome)
 
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("chdir: %v", err)

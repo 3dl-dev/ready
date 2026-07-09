@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	btcec "github.com/btcsuite/btcd/btcec/v2"
@@ -70,8 +72,8 @@ func (k *Key) PubKeyHex() string {
 	return hex.EncodeToString(xonly)
 }
 
-// keyFile is the on-disk representation of a portfolio nostr key. It lives
-// alongside the campfire identity (in CFHome()/.cf) and, like identity.json,
+// keyFile is the on-disk representation of a portfolio nostr key. It lives under
+// the rd home ($RD_HOME, default ~/.config/rd) and, like campfire's identity.json,
 // carries the secret — so it must never be committed and must be written 0600.
 type keyFile struct {
 	Version   int    `json:"version"`
@@ -79,46 +81,110 @@ type keyFile struct {
 	PubKeyHex string `json:"pubkey_hex"`
 }
 
-// cfHomeDirName is the conventional campfire home directory name. It is
-// git-ignored (see .gitignore's blanket "`.cf/`" entry), so any path with an
-// ancestor directory literally named this is safe from accidental commit.
-const cfHomeDirName = ".cf"
-
-// requireUnderCFHome guards against SaveKeyFile being pointed at an arbitrary,
-// potentially git-tracked location. It rejects path unless one of its resolved
-// ancestor directories is literally named ".cf" — the same directory name the
-// repo's .gitignore blanket-ignores. This does not resolve symlinks (a
-// symlink-swap TOCTOU against this lexical check is a separate, still-open
-// hardening concern, distinct from the create-or-load race ready-53f fixes
-// below); it only checks the lexical path structure.
-func requireUnderCFHome(path string) error {
+// requireIgnorableKeyPath guards SaveKeyFile / LoadOrCreatePortfolioKey against
+// persisting the secret to a location where it could be committed to git. It
+// replaces the old lexical ".cf"-ancestor sniff (which was FALSE SAFETY — a ".cf"
+// directory inside a repo that does not ignore it passed the check yet would be
+// committed, and a symlink NAMED ".cf" defeated it entirely). Two orthogonal
+// checks, per docs/design/nostr-identity-model.md §5:
+//
+//  1. Resolved-path-under-root: when allowedRoot != "", filepath.Clean(abs(path))
+//     must equal or be under filepath.Clean(abs(allowedRoot)). One canonical
+//     root — a foreign directory that merely shares a base name can no longer
+//     pass, which closes both the foreign-repo leak and the symlink-name TOCTOU.
+//
+//  2. git-ignore defense-in-depth: if the path resolves inside a git work tree,
+//     `git check-ignore` must confirm it is ignored; otherwise it would be
+//     committed and the write is refused. A path OUTSIDE any git work tree (the
+//     default ~/.config/rd case) cannot be committed, so the git check is skipped.
+func requireIgnorableKeyPath(path, allowedRoot string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("nostr: resolve key path: %w", err)
 	}
-	for dir := filepath.Dir(abs); ; {
-		if filepath.Base(dir) == cfHomeDirName {
-			return nil
+	abs = filepath.Clean(abs)
+
+	if allowedRoot != "" {
+		root, err := filepath.Abs(allowedRoot)
+		if err != nil {
+			return fmt.Errorf("nostr: resolve rd home: %w", err)
+		}
+		root = filepath.Clean(root)
+		if abs != root && !strings.HasPrefix(abs, root+string(os.PathSeparator)) {
+			return fmt.Errorf("nostr: refusing to write key file to %q: it is not under the rd home %q", abs, root)
+		}
+	}
+
+	insideRepo, ignored, err := pathGitIgnoreStatus(abs)
+	if err != nil {
+		return fmt.Errorf("nostr: checking git-ignore status of %q: %w", abs, err)
+	}
+	if insideRepo && !ignored {
+		return fmt.Errorf("nostr: refusing to write key file to %q: it is inside a git work tree but not git-ignored, so it could be committed; add it to .gitignore or store the key under $RD_HOME outside the repository", abs)
+	}
+	return nil
+}
+
+// pathGitIgnoreStatus reports whether absPath resolves inside a git work tree
+// and, if so, whether git considers it ignored. It shells out to git so the
+// answer honors the FULL ignore stack (repo .gitignore, nested .gitignore,
+// global excludes, .git/info/exclude) exactly as a commit would — matching what
+// the design's "git check-ignore" defense-in-depth requires. absPath need not
+// exist yet; check-ignore matches against ignore rules, not the filesystem.
+func pathGitIgnoreStatus(absPath string) (insideRepo, ignored bool, err error) {
+	dir := nearestExistingDir(filepath.Dir(absPath))
+	if dir == "" {
+		return false, false, nil
+	}
+	if _, lookErr := exec.LookPath("git"); lookErr != nil {
+		// git absent: the under-root check (if any) already ran; we cannot run
+		// the defense-in-depth pass, so treat as "not in a repo" rather than
+		// hard-failing. The default $RD_HOME is outside any repo regardless.
+		return false, false, nil
+	}
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return false, false, nil
+	}
+	// -q: quiet; exit 0 = ignored, exit 1 = NOT ignored, exit >1 = real error.
+	runErr := exec.Command("git", "-C", dir, "check-ignore", "-q", "--", absPath).Run()
+	if runErr == nil {
+		return true, true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(runErr, &ee) && ee.ExitCode() == 1 {
+		return true, false, nil
+	}
+	return true, false, fmt.Errorf("git check-ignore failed: %w", runErr)
+}
+
+// nearestExistingDir walks up from dir until it finds an existing directory, so
+// git commands can be run from a real cwd even when the key's parent dirs have
+// not been created yet. Returns "" only if it walks off the filesystem root.
+func nearestExistingDir(dir string) string {
+	for {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break
+			return ""
 		}
 		dir = parent
 	}
-	return fmt.Errorf("nostr: refusing to write key file to %q: path has no %q ancestor directory, so it could end up in a git-tracked location; pass a path under the campfire home instead", path, cfHomeDirName)
 }
 
 // SaveKeyFile writes the key to path as JSON with 0600 permissions, creating
 // parent directories as needed. The pubkey is written for human/tooling
 // convenience but is always re-derived from the secret on load.
 //
-// path must resolve to a location under a directory named ".cf" (the
-// campfire home, which is git-ignored) — see requireUnderCFHome. This
-// guards against a caller accidentally persisting the secret to a
-// git-tracked location.
-func SaveKeyFile(path string, k *Key) error {
-	if err := requireUnderCFHome(path); err != nil {
+// allowedRoot is the canonical rd home ($RD_HOME); path must resolve under it
+// and, if inside a git work tree, be git-ignored — see requireIgnorableKeyPath.
+// This guards against a caller accidentally persisting the secret to a
+// git-tracked location. Pass "" for allowedRoot to skip only the under-root
+// check (the git-ignore defense-in-depth still runs).
+func SaveKeyFile(path string, k *Key, allowedRoot string) error {
+	if err := requireIgnorableKeyPath(path, allowedRoot); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -150,12 +216,12 @@ func LoadKeyFile(path string) (*Key, error) {
 }
 
 // LoadOrCreatePortfolioKey loads the portfolio nostr key from path, or generates
-// and persists a new one if the file does not exist. This mirrors the
-// identity.json resolution pattern (pkg resolve / cmd/rd CFHome) WITHOUT touching
-// the campfire ed25519 identity: the nostr secp256k1 key is a distinct file
-// (default "nostr-identity.json") in the same .cf home, so existing identity
-// resolution is unaffected. Real cross-machine provisioning of this key is a
-// follow-up; for now first use generates a local key.
+// and persists a new one if the file does not exist. The nostr secp256k1 key is a
+// distinct file (default "nostr-identity.json") under the rd home ($RD_HOME /
+// RDHome()), independent of campfire's ed25519 identity. Callers that must
+// preserve an existing identity across a home relocation should migrate the key
+// forward with WriteKeyFileExclusive BEFORE calling this, since a missing file
+// here triggers GenerateKey (a fresh, unrelated identity).
 //
 // Concurrency: the naive "os.Stat then SaveKeyFile" sequence has a TOCTOU
 // race — two concurrent first-time callers can both observe the file missing,
@@ -167,8 +233,8 @@ func LoadKeyFile(path string) (*Key, error) {
 // generated key; every other concurrent caller gets EEXIST and instead reads
 // back whatever the winner wrote, so all callers converge on one identical
 // key and an existing key is never overwritten.
-func LoadOrCreatePortfolioKey(path string) (*Key, error) {
-	if err := requireUnderCFHome(path); err != nil {
+func LoadOrCreatePortfolioKey(path, allowedRoot string) (*Key, error) {
+	if err := requireIgnorableKeyPath(path, allowedRoot); err != nil {
 		return nil, err
 	}
 
@@ -247,8 +313,61 @@ func waitForKeyFile(path string) (*Key, error) {
 }
 
 // DefaultKeyPath returns the conventional location of the portfolio nostr key
-// given a campfire home directory (CFHome()). Kept separate from identity.json
-// so it composes with existing resolution instead of overloading it.
-func DefaultKeyPath(cfHome string) string {
-	return filepath.Join(cfHome, "nostr-identity.json")
+// given a home directory (the rd home, $RD_HOME / RDHome()). Kept separate from
+// campfire's identity.json so it composes with existing resolution instead of
+// overloading it.
+func DefaultKeyPath(home string) string {
+	return filepath.Join(home, "nostr-identity.json")
+}
+
+// WriteKeyFileExclusive writes k to path using O_CREATE|O_EXCL (0600) and is the
+// identity-preserving migration primitive: it NEVER regenerates and NEVER
+// overwrites. If the file already exists it returns nil without touching it, so
+// concurrent first-run migrations converge on the winner's copy exactly like
+// LoadOrCreatePortfolioKey. Unlike SaveKeyFile (which truncates), this can never
+// clobber an existing identity — the property the never-regenerate migration
+// depends on. The same anti-commit guard (requireIgnorableKeyPath) applies.
+func WriteKeyFileExclusive(path string, k *Key, allowedRoot string) error {
+	if err := requireIgnorableKeyPath(path, allowedRoot); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("nostr: mkdir for key file: %w", err)
+	}
+	kf := keyFile{Version: 1, SecretHex: k.SecretHex(), PubKeyHex: k.PubKeyHex()}
+	data, err := json.MarshalIndent(kf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("nostr: marshal key file: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Another concurrent migration already wrote it; converge silently.
+			return nil
+		}
+		return fmt.Errorf("nostr: create key file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("nostr: write key file: %w", err)
+	}
+	return nil
+}
+
+// StoredPubKeyHex returns the pubkey_hex field recorded in the key file at path.
+// LoadKeyFile deliberately re-derives the key from the secret and ignores this
+// field, so comparing the stored value against the derived PubKeyHex() is a cheap
+// self-consistency tripwire: a mismatch means the file was tampered with or the
+// secret was swapped without rewriting the pubkey (a botched/regenerated
+// identity). Returns "" (no error) when the field is absent.
+func StoredPubKeyHex(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("nostr: read key file: %w", err)
+	}
+	var kf keyFile
+	if err := json.Unmarshal(data, &kf); err != nil {
+		return "", fmt.Errorf("nostr: parse key file: %w", err)
+	}
+	return kf.PubKeyHex, nil
 }
