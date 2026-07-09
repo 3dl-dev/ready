@@ -19,6 +19,11 @@ docs/resonant/
 # Local state (not committed)
 .cf/
 .ready/
+# rd home marker for per-worktree nostr identity isolation ($RD_HOME walk-up).
+# Also holds the nostr signing secret when a repo-local rd home is used, so it
+# must never be committed (defense-in-depth: the key-path guard also refuses to
+# write the secret to any path inside a git work tree that is not ignored).
+.rd/
 cover.out
 
 # Nostr portfolio signing key (secret material). Named explicitly for

@@ -42,9 +42,23 @@ func nostrReadRelays() []string {
 	return cfg.ReadRelayURLs()
 }
 
-// nostrKey loads (or first-run creates) the portfolio secp256k1 signing key.
+// nostrKey loads (or first-run creates) the portfolio secp256k1 signing key from
+// the rd home ($RD_HOME / RDHome()), with NO dependency on campfire's ".cf". On
+// first run it identity-preservingly COPIES a legacy .cf key forward (never
+// regenerates — see migrateRDHomeIfNeeded), then loads/creates under $RD_HOME and
+// emits a loud warning if the loaded identity is self-inconsistent.
 func nostrKey() (*nostr.Key, error) {
-	return nostr.LoadOrCreatePortfolioKey(nostr.DefaultKeyPath(CFHome()))
+	rdHome := RDHome()
+	if err := migrateRDHomeIfNeeded(rdHome); err != nil {
+		return nil, fmt.Errorf("nostr identity migration: %w", err)
+	}
+	keyPath := nostr.DefaultKeyPath(rdHome)
+	k, err := nostr.LoadOrCreatePortfolioKey(keyPath, rdHome)
+	if err != nil {
+		return nil, err
+	}
+	warnIfIdentityInconsistent(keyPath, k)
+	return k, nil
 }
 
 // nostrTrustSet builds the read-side web-of-trust allowlist (ready-d53): the self
@@ -55,11 +69,7 @@ func nostrKey() (*nostr.Key, error) {
 // authorization. A missing/unreadable config degrades to self-only trust (the safe
 // default: a permissive relay cannot inject state signed by a foreign key).
 func nostrTrustSet(selfPubkey string) map[string]bool {
-	cfg, err := rdconfig.Load(CFHome())
-	if err != nil {
-		cfg = &rdconfig.Config{}
-	}
-	return cfg.TrustSet(selfPubkey)
+	return loadRDConfig().TrustSet(selfPubkey)
 }
 
 // nostrPublisher builds a Publisher rooted at the current project. Returns

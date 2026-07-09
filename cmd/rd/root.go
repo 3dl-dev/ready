@@ -33,6 +33,7 @@ var (
 	jsonOutput     bool
 	debugOutput    bool
 	rdHome         string
+	rdHomeFlag     string
 	protocolClient *protocol.Client
 )
 
@@ -82,6 +83,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&debugOutput, "debug", false, "show hex IDs for diagnostics")
 	rootCmd.PersistentFlags().StringVar(&rdHome, "cf-home", "", "campfire home directory (default: ~/.cf)")
+	rootCmd.PersistentFlags().StringVar(&rdHomeFlag, "rd-home", "", "rd home directory for the nostr identity + config (default: ~/.config/rd)")
 
 	// Wire in the in-process convention server for solo mode.
 	// PersistentPreRunE runs before every subcommand; if the client initializes
@@ -207,6 +209,67 @@ func cfHomeWalkUp() string {
 			if _, err := os.Stat(filepath.Join(candidate, "identity.json")); err == nil {
 				return candidate
 			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// RDHome returns the resolved rd home directory — where the nostr signing
+// identity (nostr-identity.json) and rd config (rd.json) live, post-flip. It is
+// deliberately INDEPENDENT of CFHome(): the ".cf" dependency is being retired
+// (docs/design/nostr-identity-model.md §5), so rd's own identity no longer keys
+// off campfire's home. Resolution order (mirrors CFHome's cascade shape but
+// rd-native):
+//
+//	(1) --rd-home flag set        → use it
+//	(2) RD_HOME env set           → use it
+//	(3) walk up from cwd for a repo-local ".rd/" marker dir → use it
+//	    (preserves the per-worktree identity isolation cfHomeWalkUp gave, but
+//	    keyed on a marker rd owns instead of campfire's identity.json — see
+//	    adversary A7)
+//	(4) default: $XDG_CONFIG_HOME/rd, else ~/.config/rd (XDG)
+func RDHome() string {
+	if rdHomeFlag != "" {
+		return rdHomeFlag
+	}
+	if env := os.Getenv("RD_HOME"); env != "" {
+		return env
+	}
+	if found := rdHomeWalkUp(); found != "" {
+		return found
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "rd")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot determine home directory: %v\n", err)
+		os.Exit(1)
+	}
+	return filepath.Join(home, ".config", "rd")
+}
+
+// rdHomeWalkUp walks up from the current working directory looking for a ".rd/"
+// marker directory. Returns its path if found, or "" otherwise. Stops at the
+// filesystem root. Skips ~/.rd (there is no such default) — the marker is a
+// per-project opt-in for worktree-local identity isolation. Unlike cfHomeWalkUp
+// (which keys on campfire's identity.json, a file that stops being written
+// post-flip), this keys on a directory rd controls, so worktree isolation
+// survives the flip (adversary A7).
+func rdHomeWalkUp() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(dir, ".rd")
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			return candidate
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
