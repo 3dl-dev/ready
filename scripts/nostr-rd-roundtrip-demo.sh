@@ -33,9 +33,16 @@ info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
 export CF_HOME="$WORK/cfhome"
 PROJ="$WORK/proj"
 mkdir -p "$CF_HOME" "$PROJ"
+# RD_HOME is the nostr signing-identity home (independent of CF_HOME);
+# materialize it with the machine's ALLOWLISTED portfolio key (ready-266) so
+# `rd` signs with a key the locked relays accept instead of generating a fresh,
+# non-admitted one on first use.
+export RD_HOME="$WORK/rdhome"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
 
 info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd

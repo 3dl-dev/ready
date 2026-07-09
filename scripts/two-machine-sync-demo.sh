@@ -70,10 +70,10 @@ info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 m2() { ssh $SSH_OPTS "$M2" "$@"; }
 
 # rd on machine-1 in the demo workspace with the shared key.
-rd1() { ( cd "$WORK" && CF_HOME="$WORK/.cfhome" "$RD1" "$@" ); }
+rd1() { ( cd "$WORK" && RD_HOME="$WORK/.rdhome" "$RD1" "$@" ); }
 # rd on machine-2 in its demo workspace with the shared key. Args are shell-quoted
 # with printf %q so titles/notes containing spaces or parens survive the ssh hop.
-rd2() { local q; q="$(printf '%q ' "$@")"; m2 "cd $M2_WORK && CF_HOME=$M2_WORK/.cfhome $RD2 $q"; }
+rd2() { local q; q="$(printf '%q ' "$@")"; m2 "cd $M2_WORK && RD_HOME=$M2_WORK/.rdhome $RD2 $q"; }
 
 cleanup() {
   info "cleanup: un-partitioning machine-2 (flush iptables OUTPUT drops)"
@@ -92,7 +92,7 @@ echo "############################################################"
 
 # ---- Build on BOTH machines from THIS branch --------------------------------
 info "STEP 0: build rd from this branch on machine-1 and machine-2"
-mkdir -p "$WORK/.ready" "$WORK/.cfhome"
+mkdir -p "$WORK/.ready" "$WORK/.rdhome"
 ( cd "$REPO_ROOT" && /usr/local/go/bin/go build -o "$RD1" ./cmd/rd ) || fail "machine-1 build failed"
 "$RD1" --help >/dev/null 2>&1 || fail "machine-1 rd binary not runnable"
 pass "machine-1 rd built: $RD1"
@@ -107,16 +107,20 @@ rsync -a --delete \
   -e "ssh $SSH_OPTS" "$REPO_ROOT/" "$M2:$M2_SRC/" || fail "rsync to machine-2 failed"
 m2 "cd $M2_SRC && GOFLAGS=-mod=vendor GOPROXY=off /usr/local/go/bin/go build -mod=vendor -o $M2_SRC/rd ./cmd/rd" || fail "machine-2 build failed"
 m2 "$RD2 --help >/dev/null 2>&1" || fail "machine-2 rd binary not runnable"
-m2 "mkdir -p $M2_WORK/.ready $M2_WORK/.cfhome"
+m2 "mkdir -p $M2_WORK/.ready $M2_WORK/.rdhome"
 pass "machine-2 rd built from this branch: $RD2"
 
 # ---- Shared portfolio identity ----------------------------------------------
-info "STEP 1: generate ONE portfolio key on machine-1, copy to machine-2 (shared identity)"
-# First rd nostr call generates the key; do a no-op show to create it.
-rd1 nostr put "${ITEM_A}-keygen" --title keygen --status active >/dev/null 2>&1 || true
-[ -f "$WORK/.cfhome/nostr-identity.json" ] || fail "portfolio key not created on machine-1"
-scp $SSH_OPTS "$WORK/.cfhome/nostr-identity.json" "$M2:$M2_WORK/.cfhome/nostr-identity.json" || fail "key copy to machine-2 failed"
-pass "shared portfolio identity provisioned on both machines"
+# Materialize the ALLOWLISTED portfolio key (ready-266: locked relays REJECT any
+# other author) into machine-1's RD_HOME, then copy it to machine-2 so both
+# hosts share the SAME admitted identity (the intended multi-machine model). Do
+# NOT let `rd` auto-generate a key on first use — a fresh random key would be
+# rejected by both relays' write-allowlist.
+info "STEP 1: materialize the ALLOWLISTED portfolio key on machine-1, copy to machine-2 (shared identity)"
+source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
+materialize_allowlisted_key "$WORK/.rdhome/nostr-identity.json" || fail "no allowlisted portfolio key available on machine-1 (set RD_NOSTR_TEST_SECRET_HEX or materialize ~/.cf/nostr-identity.json)"
+scp $SSH_OPTS "$WORK/.rdhome/nostr-identity.json" "$M2:$M2_WORK/.rdhome/nostr-identity.json" || fail "key copy to machine-2 failed"
+pass "shared ALLOWLISTED portfolio identity provisioned on both machines"
 
 # ---- PHASE 1: both online, converge -----------------------------------------
 echo; info "PHASE 1: both machines ONLINE — create on each, sync, converge"
@@ -168,7 +172,7 @@ pass "PHASE 2 converged after partition+reconnect: itemA=done and itemB=done on 
 # ---- PHASE 3: degrade floor — ALL relays unreachable, git-JSONL sync --------
 echo; info "PHASE 3: DEGRADE FLOOR — ALL relays unreachable, sync via git-committed JSONL"
 info "machine-1 creates itemC pointed at a DEAD relay (durable in local log, no relay):"
-( cd "$WORK" && CF_HOME="$WORK/.cfhome" RD_NOSTR_RELAY_URL="$DEAD_RELAY" "$RD1" nostr put "$ITEM_C" --title "item C (relays down)" --status active --priority p0 ) \
+( cd "$WORK" && RD_HOME="$WORK/.rdhome" RD_NOSTR_RELAY_URL="$DEAD_RELAY" "$RD1" nostr put "$ITEM_C" --title "item C (relays down)" --status active --priority p0 ) \
   | grep -q "buffered" || info "  (note: itemC buffered / no relay)"
 rd1 nostr show "$ITEM_C" | grep -q "$ITEM_C" || fail "machine-1 local log did not record itemC with relays down"
 pass "rd fully operational with ALL relays unreachable (local log authoritative)"

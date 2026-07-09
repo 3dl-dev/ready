@@ -1,67 +1,67 @@
 ############################################################
 # ready-797 two-machine Negentropy sync — LIVE proof
-# run_id=1783524291  machine-1=workshop/192.168.2.34  machine-2=192.168.2.42
+# run_id=1783624312  machine-1=workshop/192.168.2.34  machine-2=192.168.2.42
 # relays: ws://192.168.2.40:7777  ws://192.168.2.41:7777
 ############################################################
-==> STEP 0: build rd from this branch on machine-1 and machine-2
-PASS machine-1 rd built: /home/baron/rd-sync-demo-1783524291/rd
-==> rsync worktree to machine-2 and build there (offline via vendored deps)
-PASS machine-2 rd built from this branch: /home/baron/ready-src/rd
-==> STEP 1: generate ONE portfolio key on machine-1, copy to machine-2 (shared identity)
-PASS shared portfolio identity provisioned on both machines
+[36m==>[0m STEP 0: build rd from this branch on machine-1 and machine-2
+[32mPASS[0m machine-1 rd built: /home/baron/rd-sync-demo-1783624312/rd
+[36m==>[0m rsync worktree to machine-2 and build there (offline via vendored deps)
+[32mPASS[0m machine-2 rd built from this branch: /home/baron/ready-src/rd
+[36m==>[0m STEP 1: materialize the ALLOWLISTED portfolio key on machine-1, copy to machine-2 (shared identity)
+[32mPASS[0m shared ALLOWLISTED portfolio identity provisioned on both machines
 
-==> PHASE 1: both machines ONLINE — create on each, sync, converge
-put kind 30301 id 1cf959cdc012685ff71b14ee80da66d666e078ba1db11a03dcb193e5c6159d54 relay-accepted=true
-put kind 30302 id 613555cac92a584e16f449eeb47c32e2efd0f4cb8ec29c911cb021221611c0d9 relay-accepted=true
-put kind 1630 id 0bd4d9e679b05baafde31bcd2f1f9769c1534ef8ed24dea1e8402c6de557b060 relay-accepted=true
-put kind 30301 id 497d217e3a4a3a3ae1b4d7cff7a5f88d32363518f4a1ea7b0f904d4d9029a780 relay-accepted=true
-put kind 30302 id 7238fb3c33b3168acae2eaf0e6a5603a9c59b7f21b7bd950f49f9e246412648a relay-accepted=true
-put kind 1630 id 4085f566090035d24f28e4d3831b585b755b58c5eb3e383e3c8bd8b1fd5e4cf8 relay-accepted=true
-==> machine-1 sync:
-sync ws://192.168.2.40:7777: local_before=5 need=3 have=1 downloaded=3 uploaded=0 neg_bytes(sent=165 recv=229 rounds=0) event_bytes(down=1595 up=0)
-sync ws://192.168.2.41:7777: local_before=8 need=0 have=1 downloaded=0 uploaded=0 neg_bytes(sent=261 recv=229 rounds=0) event_bytes(down=0 up=0)
-==> machine-2 sync:
-sync ws://192.168.2.40:7777: local_before=3 need=4 have=0 downloaded=4 uploaded=0 neg_bytes(sent=101 recv=229 rounds=0) event_bytes(down=2225 up=0)
-sync ws://192.168.2.41:7777: local_before=7 need=0 have=0 downloaded=0 uploaded=0 neg_bytes(sent=229 recv=229 rounds=0) event_bytes(down=0 up=0)
-PASS PHASE 1 converged: machine-1 sees itemB, machine-2 sees itemA
+[36m==>[0m PHASE 1: both machines ONLINE — create on each, sync, converge
+put kind 30301 id 246e58ed6032825f062128f93457fbfb7f5c2a1233957ae6143dc0681664bcd0 relay-accepted=true
+put kind 30302 id 82ca791b56f300214beca1fd5711bcf55ffbe87bae21475aeb30582cfbad1236 relay-accepted=true
+put kind 1630 id b7d89d69bba4d7a1bcde66a7f18f13b77a3da916b68c76e3e000394b7bbf1ce0 relay-accepted=true
+put kind 30301 id 246e58ed6032825f062128f93457fbfb7f5c2a1233957ae6143dc0681664bcd0 relay-accepted=true
+put kind 30302 id 855cc6c8a7a6f606027a7799c0885e619b488dc3f0215dd815f4634c53670871 relay-accepted=true
+put kind 1630 id c5c69fa58fcf5f454a4fe4380f4c31602f2d271ad62b90d9d9cfc8214d6f873c relay-accepted=true
+[36m==>[0m machine-1 sync:
+sync ws://192.168.2.40:7777: local_before=3 need=9569 have=0 downloaded=9569 uploaded=0 neg_bytes(sent=101 recv=306310 rounds=0) event_bytes(down=6474354 up=0)
+sync ws://192.168.2.41:7777: local_before=9572 need=23 have=277 downloaded=23 uploaded=277 neg_bytes(sent=1935 recv=2205 rounds=1) event_bytes(down=12574 up=157961)
+[36m==>[0m machine-2 sync:
+sync ws://192.168.2.40:7777: local_before=3 need=9569 have=0 downloaded=9569 uploaded=0 neg_bytes(sent=101 recv=306310 rounds=0) event_bytes(down=6474354 up=0)
+sync ws://192.168.2.41:7777: local_before=9572 need=21 have=0 downloaded=21 uploaded=0 neg_bytes(sent=2560 recv=2019 rounds=1) event_bytes(down=11694 up=0)
+[32mPASS[0m PHASE 1 converged: machine-1 sees itemB, machine-2 sees itemA
 
-==> PHASE 2: PARTITION machine-2 from the relays (iptables DROP)
-PASS machine-2 partitioned from both relays (relay writes buffer offline)
-==> mutate on BOTH sides while partitioned
-put kind 30302 id e3bb6a7d7cec54a369a284213495d748c0798271d81ac58225d4367bf36ce5fa relay-accepted=true
-put kind 1631 id dfd81810bc198604f28be04494d43e31e59a68d29e327935ea9eb44b3823d866 relay-accepted=true
-put kind 30302 id d7f1848bcf0349ac5aa114f873867952720b3eb082a0e3b2a36ead05e8b8320f relay-accepted=false
-put kind 1631 id 9cfa80084be1e42ac4fbd231fb1fd2a77ab522d1e6758bc6c46ab17ce0902ce6 relay-accepted=false
+[36m==>[0m PHASE 2: PARTITION machine-2 from the relays (iptables DROP)
+[32mPASS[0m machine-2 partitioned from both relays (relay writes buffer offline)
+[36m==>[0m mutate on BOTH sides while partitioned
+put kind 30302 id 586c33a2fb37bd5a18a88a552915a94540569e76ea5e31078779189d51e9ae12 relay-accepted=true
+put kind 1631 id 4b2d7f8f1edaaefef9be86031b9952700584e7c052028dcf94ffe0f624f838ef relay-accepted=true
+put kind 30302 id 1160b0f9d3a9fbb4a0d30e0cb3e7bb92f7f4c1d93107ea3451a40a64ba416a64 relay-accepted=false
+put kind 1631 id e25f3d667969e0a2aa42825f350e590b23986685d9b3212ff1671f49daacc2b7 relay-accepted=false
 (some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)
-==> machine-2 pending buffer while partitioned:
+[36m==>[0m machine-2 pending buffer while partitioned:
     pending events: 5
 
-==> RECONNECT machine-2 (remove iptables drops) and flush the offline buffer
-==> machine-2 flush (republish buffered events; idempotent by event id):
+[36m==>[0m RECONNECT machine-2 (remove iptables drops) and flush the offline buffer
+[36m==>[0m machine-2 flush (republish buffered events; idempotent by event id):
 flush: total=5 flushed=5 remaining=0 relay_errors=0
-==> machine-2 flush AGAIN (must be idempotent — relay dedupes):
+[36m==>[0m machine-2 flush AGAIN (must be idempotent — relay dedupes):
 flush: total=0 flushed=0 remaining=0 relay_errors=0
-==> both machines sync — MEASURED cost:
-==> machine-1 sync:
-sync ws://192.168.2.40:7777: local_before=10 need=5 have=4 downloaded=5 uploaded=0 neg_bytes(sent=325 recv=357 rounds=0) event_bytes(down=2671 up=0)
-sync ws://192.168.2.41:7777: local_before=15 need=0 have=4 downloaded=0 uploaded=0 neg_bytes(sent=485 recv=357 rounds=0) event_bytes(down=0 up=0)
-==> machine-2 sync:
-sync ws://192.168.2.40:7777: local_before=12 need=2 have=3 downloaded=2 uploaded=0 neg_bytes(sent=389 recv=357 rounds=0) event_bytes(down=1111 up=0)
-sync ws://192.168.2.41:7777: local_before=14 need=0 have=3 downloaded=0 uploaded=0 neg_bytes(sent=453 recv=357 rounds=0) event_bytes(down=0 up=0)
-==> machine-1 sync again (converged — measure steady-state cost):
-sync ws://192.168.2.40:7777: local_before=15 need=0 have=4 downloaded=0 uploaded=0 neg_bytes(sent=485 recv=357 rounds=0) event_bytes(down=0 up=0)
-sync ws://192.168.2.41:7777: local_before=15 need=0 have=4 downloaded=0 uploaded=0 neg_bytes(sent=485 recv=357 rounds=0) event_bytes(down=0 up=0)
-PASS PHASE 2 converged after partition+reconnect: itemA=done and itemB=done on BOTH machines
+[36m==>[0m both machines sync — MEASURED cost:
+[36m==>[0m machine-1 sync:
+sync ws://192.168.2.40:7777: local_before=9597 need=5 have=26 downloaded=5 uploaded=21 neg_bytes(sent=2881 recv=1492 rounds=1) event_bytes(down=2671 up=11694)
+sync ws://192.168.2.41:7777: local_before=9602 need=0 have=5 downloaded=0 uploaded=0 neg_bytes(sent=975 recv=534 rounds=1) event_bytes(down=0 up=0)
+[36m==>[0m machine-2 sync:
+sync ws://192.168.2.40:7777: local_before=9598 need=2 have=3 downloaded=2 uploaded=0 neg_bytes(sent=659 recv=526 rounds=1) event_bytes(down=1111 up=0)
+sync ws://192.168.2.41:7777: local_before=9600 need=0 have=3 downloaded=0 uploaded=0 neg_bytes(sent=660 recv=391 rounds=1) event_bytes(down=0 up=0)
+[36m==>[0m machine-1 sync again (converged — measure steady-state cost):
+sync ws://192.168.2.40:7777: local_before=9602 need=0 have=5 downloaded=0 uploaded=0 neg_bytes(sent=975 recv=534 rounds=1) event_bytes(down=0 up=0)
+sync ws://192.168.2.41:7777: local_before=9602 need=0 have=5 downloaded=0 uploaded=0 neg_bytes(sent=975 recv=534 rounds=1) event_bytes(down=0 up=0)
+[32mPASS[0m PHASE 2 converged after partition+reconnect: itemA=done and itemB=done on BOTH machines
 
-==> PHASE 3: DEGRADE FLOOR — ALL relays unreachable, sync via git-committed JSONL
-==> machine-1 creates itemC pointed at a DEAD relay (durable in local log, no relay):
-PASS rd fully operational with ALL relays unreachable (local log authoritative)
-==> ship machine-1's committed nostr-log.jsonl to machine-2 (stand-in for a git pull) and merge-log:
-merge-log: merged 4 new event(s) from /home/baron/rd-sync-demo-1783524291/imported-nostr-log.jsonl
-PASS PHASE 3: machine-2 converged on itemC with ZERO relay — git-JSONL degrade floor works
+[36m==>[0m PHASE 3: DEGRADE FLOOR — ALL relays unreachable, sync via git-committed JSONL
+[36m==>[0m machine-1 creates itemC pointed at a DEAD relay (durable in local log, no relay):
+[32mPASS[0m rd fully operational with ALL relays unreachable (local log authoritative)
+[36m==>[0m ship machine-1's committed nostr-log.jsonl to machine-2 (stand-in for a git pull) and merge-log:
+merge-log: merged 5 new event(s) from /home/baron/rd-sync-demo-1783624312/imported-nostr-log.jsonl
+[32mPASS[0m PHASE 3: machine-2 converged on itemC with ZERO relay — git-JSONL degrade floor works
 
 ############################################################
-PASS ALL PHASES PASSED — two-machine Negentropy sync proven on live relays
+[32mPASS[0m ALL PHASES PASSED — two-machine Negentropy sync proven on live relays
 ############################################################
 
 MEASURED SYNC COST (from the 'sync' lines above):
@@ -75,6 +75,6 @@ MEASURED SYNC COST (from the 'sync' lines above):
   - Degrade floor: with all relays down, rd stays fully operational on the local
     log and two machines converge via the git-committed nostr-log.jsonl.
 
-items: A=ready-797-A-1783524291  B=ready-797-B-1783524291  C=ready-797-C-1783524291
-output captured to: /home/baron/projects/ready/.claude/worktrees/wf_a14b4085-cdd-3/docs/two-machine-sync-demo-output.txt
-==> cleanup: un-partitioning machine-2 (flush iptables OUTPUT drops)
+items: A=ready-797-A-1783624312  B=ready-797-B-1783624312  C=ready-797-C-1783624312
+output captured to: /home/baron/projects/ready/.claude/worktrees/wf_a9b5a66b-e11-5/docs/two-machine-sync-demo-output.txt
+[36m==>[0m cleanup: un-partitioning machine-2 (flush iptables OUTPUT drops)
