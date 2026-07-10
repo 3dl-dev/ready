@@ -235,7 +235,10 @@ func TestNostrHooks_Disabled_NoOp(t *testing.T) {
 // TestNostrHooks_Create_PublishesBoardCardAndStatus mirrors create.go's call to
 // publishItemCreateNostr AFTER a (simulated) successful campfire write, and
 // asserts the local authoritative log carries the board (30301), card (30302),
-// and status (1630, open/inbox) events with the correct field content.
+// status (1630, open/inbox), and NIP-34 issue-root (1621, ready-da7) events with
+// the correct field content, and that the status event anchors to BOTH the
+// 30302 card (rd's own projection, unchanged) AND the 1621 issue root
+// (additive generic-client interop anchor).
 func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 	dir := setupNostrCmdTest(t)
 	t.Setenv("RD_NOSTR", "1")
@@ -248,10 +251,10 @@ func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events (board+card+status), got %d: %+v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events (board+card+issue+status), got %d: %+v", len(events), events)
 	}
-	var board, card, status *nostr.Event
+	var board, card, status, issue *nostr.Event
 	for _, e := range events {
 		switch e.Kind {
 		case rdSync.KindBoard:
@@ -260,6 +263,8 @@ func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 			card = e
 		case rdSync.KindStatusOpen:
 			status = e
+		case rdSync.KindIssue:
+			issue = e
 		}
 	}
 	if board == nil {
@@ -270,6 +275,9 @@ func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 	}
 	if status == nil {
 		t.Fatal("no status (kind 1630) event appended")
+	}
+	if issue == nil {
+		t.Fatal("no issue-root (kind 1621, ready-da7) event appended")
 	}
 	if d, _ := tagVal(card.Tags, "d"); d != "ready-c01" {
 		t.Errorf("card d tag = %q, want ready-c01", d)
@@ -295,6 +303,38 @@ func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 	if s, _ := tagVal(status.Tags, "status"); s != state.StatusInbox {
 		t.Errorf("status event status tag = %q, want inbox", s)
 	}
+	// Issue-root event carries the rd-extension "d" lookup tag + NIP-34 "subject".
+	if d, _ := tagVal(issue.Tags, "d"); d != "ready-c01" {
+		t.Errorf("issue d tag = %q, want ready-c01", d)
+	}
+	if subj, _ := tagVal(issue.Tags, "subject"); subj != "Fix the thing" {
+		t.Errorf("issue subject tag = %q, want %q", subj, "Fix the thing")
+	}
+	// The status event's "a"/first "e" tag (rd's own projection anchor) is
+	// UNCHANGED; it also carries a SECOND, "root"-marked "e" tag pointing at the
+	// issue event -- the additive generic-NIP-34-client anchor (ready-da7).
+	if a, _ := tagVal(status.Tags, "a"); a != rdSync.CardCoord(card.PubKey, "ready-c01") {
+		t.Errorf("status a tag = %q, want card coord (unchanged rd anchor)", a)
+	}
+	es := tagVals(status.Tags, "e")
+	if len(es) != 2 {
+		t.Fatalf("status event should carry 2 \"e\" tags (card id + issue-root id), got %d: %v", len(es), es)
+	}
+	if es[0] != card.ID {
+		t.Errorf("status first e tag = %q, want card id %q (unchanged rd anchor)", es[0], card.ID)
+	}
+	if es[1] != issue.ID {
+		t.Errorf("status second e tag = %q, want issue id %q (ready-da7 anchor)", es[1], issue.ID)
+	}
+	foundRoot := false
+	for _, tg := range status.Tags {
+		if len(tg) >= 4 && tg[0] == "e" && tg[1] == issue.ID && tg[3] == "root" {
+			foundRoot = true
+		}
+	}
+	if !foundRoot {
+		t.Errorf("status event's issue e tag missing NIP-10 \"root\" marker: %v", status.Tags)
+	}
 }
 
 // TestNostrHooks_StatusChange_ClaimAppendsStatusEventWithReason mirrors
@@ -302,7 +342,9 @@ func TestNostrHooks_Create_PublishesBoardCardAndStatus(t *testing.T) {
 // by->claimer), THEN call publishItemStatusChangeNostr with the claim reason.
 // Asserts a refreshed card (assignee + new status) plus a NIP-34 status event
 // carrying the close/change reason in its content -- and that claim does NOT
-// republish the board (only create does).
+// republish the board (only create does). The item's first-ever nostr publish
+// also mints its NIP-34 issue-root event (ready-da7, additive) here, since this
+// test claims an item with no prior nostr history.
 func TestNostrHooks_StatusChange_ClaimAppendsStatusEventWithReason(t *testing.T) {
 	dir := setupNostrCmdTest(t)
 	t.Setenv("RD_NOSTR", "1")
@@ -319,20 +361,25 @@ func TestNostrHooks_StatusChange_ClaimAppendsStatusEventWithReason(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("expected exactly 2 events (card + status, NO board republish), got %d: %+v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("expected exactly 3 events (card + issue-root + status, NO board republish), got %d: %+v", len(events), events)
 	}
-	var card, status *nostr.Event
+	var card, status, issue *nostr.Event
 	for _, e := range events {
 		switch e.Kind {
 		case rdSync.KindCard:
 			card = e
 		case rdSync.KindStatusOpen:
 			status = e
+		case rdSync.KindIssue:
+			issue = e
 		}
 	}
-	if card == nil || status == nil {
-		t.Fatalf("missing card/status event: card=%v status=%v", card, status)
+	if card == nil || status == nil || issue == nil {
+		t.Fatalf("missing card/status/issue event: card=%v status=%v issue=%v", card, status, issue)
+	}
+	if es := tagVals(status.Tags, "e"); len(es) != 2 || es[1] != issue.ID {
+		t.Errorf("status e tags = %v, want [cardID, issueID(%s)]", es, issue.ID)
 	}
 	if s, _ := tagVal(card.Tags, "s"); s != state.StatusActive {
 		t.Errorf("card s tag = %q, want active", s)

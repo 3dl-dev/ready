@@ -52,6 +52,18 @@ const (
 	KindStatusClosed = 1632
 	// KindStatusDraft is NIP-34 "draft" (unused by rd today; reserved).
 	KindStatusDraft = 1633
+
+	// KindIssue is the NIP-34 "issue" root event (ready-da7). rd's status events
+	// (1630-1632) anchor to the NIP-100 30302 card via "a"/"e" tags — that anchor
+	// is rd's OWN projection's source of truth and is UNCHANGED. It is not,
+	// however, a real NIP-34 issue: a generic NIP-34 issue-tracker client has no
+	// reason to know what a 30302 card is, so it cannot associate rd's status
+	// events with anything. Publishing one real kind:1621 issue event per item and
+	// having the status event ALSO carry a NIP-10 "root"-marked "e" tag to it
+	// (BuildStatusEventWithIssueRoot) is the standard, unambiguous NIP-34 pattern
+	// generic clients already implement for patches/issues — this is purely
+	// ADDITIVE alongside the existing card anchor, never a replacement for it.
+	KindIssue = 1621
 )
 
 // statusKindFor maps an rd status string to the NIP-34 status kind. The exact rd
@@ -317,6 +329,91 @@ func BuildStatusEvent(k *nostr.Key, itemID, rdStatus, cardEventID, reason string
 		return nil, fmt.Errorf("sync: sign status event: %w", err)
 	}
 	return e, nil
+}
+
+// BuildStatusEventWithIssueRoot is BuildStatusEvent PLUS an additional NIP-10
+// "root"-marked "e" tag anchoring the status event to a real NIP-34 kind:1621
+// issue event (ready-da7), when issueEventID is non-empty. issueEventID == ""
+// (the zero value) reproduces BuildStatusEvent's output EXACTLY — so every
+// existing caller of BuildStatusEvent is untouched, and this is the only
+// entry point that needs to change to add the interop anchor. The existing
+// 30302-card anchor ("a" to CardCoord, "e" to cardEventID) is unchanged and
+// still present — rd's own projection keeps reading exactly what it read
+// before; the issue-root "e" tag is a pure addition a generic NIP-34 client can
+// use to fetch the issue and thread status onto it, and that rd's own
+// ProjectItems ignores (it only ever reads the FIRST "e"/"a" tag values, which
+// remain the card ones — see tagValue).
+func BuildStatusEventWithIssueRoot(k *nostr.Key, itemID, rdStatus, cardEventID, issueEventID, reason string, createdAt int64) (*nostr.Event, error) {
+	e, err := BuildStatusEvent(k, itemID, rdStatus, cardEventID, reason, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	if issueEventID == "" {
+		return e, nil
+	}
+	// NIP-10 marked "e" tag: ["e", <event-id>, <relay-hint>, "root"]. The relay
+	// hint is left empty (rd doesn't track per-event relay provenance); readers
+	// fall back to their own relay set, which is standard and harmless.
+	e.Tags = append(e.Tags, []string{"e", issueEventID, "", "root"})
+	// Tags changed -> id/sig must be recomputed over the new canonical form.
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign status event (issue root): %w", err)
+	}
+	return e, nil
+}
+
+// BuildIssueEvent constructs and signs the NIP-34 kind:1621 "issue" event that
+// anchors an rd item for generic issue-tracker interop (ready-da7). It carries:
+//   - "d": the rd item id. This is an rd-EXTENSION lookup tag, not a NIP-01
+//     addressable-event "d" tag (kind 1621 is a regular, non-replaceable event) —
+//     an unknown extra tag is harmless/ignored by generic clients, and it is what
+//     lets rd re-find the ALREADY-published issue event for an item so it never
+//     publishes a second one on a later status change or republish (see
+//     FindIssueEventID / Publisher.ensureIssueEvent in nostroutbound.go).
+//   - "subject": the issue title, the standard NIP-34 issue/patch title tag.
+//
+// Content carries the item's context/description at issue-creation time.
+//
+// rd does not model NIP-34 repositories (kind 30617) — an rd item lives on rd's
+// OWN NIP-100 board (kind 30301), a distinct concept — so this issue event
+// deliberately carries no repository "a" tag. That is a documented scope
+// decision, not an ambiguity in the interop anchor this change adds: the
+// 1630-1632 -> 1621 "root" reference (BuildStatusEventWithIssueRoot) is the
+// standard NIP-34 pattern regardless of whether the issue also belongs to a
+// declared repository, and is sufficient for a generic client to fetch the
+// issue and associate status events with it (the ready-da7 proof requirement).
+func BuildIssueEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event, error) {
+	if spec.ItemID == "" {
+		return nil, fmt.Errorf("sync: issue event: empty item id")
+	}
+	tags := [][]string{
+		{"d", spec.ItemID},
+		{"subject", spec.Title},
+	}
+	e := &nostr.Event{
+		Kind:      KindIssue,
+		CreatedAt: createdAt,
+		Tags:      tags,
+		Content:   spec.Context,
+	}
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign issue event: %w", err)
+	}
+	return e, nil
+}
+
+// FindIssueEventID returns the event id of itemID's already-published NIP-34
+// kind:1621 issue-root event, or "" if none has been published yet. rd
+// publishes AT MOST ONE issue event per item (ready-da7): the first match by
+// its "d" lookup tag is authoritative, and callers only ever add a new one when
+// this returns "".
+func FindIssueEventID(events []*nostr.Event, itemID string) string {
+	for _, e := range events {
+		if e.Kind == KindIssue && tagValue(e, "d") == itemID {
+			return e.ID
+		}
+	}
+	return ""
 }
 
 // tagValue returns the first value of the first tag whose name matches, or "".
