@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ready &mdash; Work management as a campfire convention</title>
-  <meta name="description" content="The rd CLI surfaces what needs attention. For humans, for agents, for anyone in the delegation chain. Built on the campfire protocol.">
+  <title>Ready &mdash; Nostr-native work management</title>
+  <meta name="description" content="The rd CLI surfaces what needs attention. For humans, for agents, for anyone in the delegation chain. Work items are signed nostr events — your local log is the source of truth, relays are replaceable caches.">
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Ready — Work management on campfire">
-  <meta property="og:description" content="One CLI for humans and agents. rd ready shows what needs attention. No separate backend — your campfire is the database.">
+  <meta property="og:title" content="Ready — Nostr-native work management">
+  <meta property="og:description" content="One CLI for humans and agents. rd ready shows what needs attention. No separate backend — your local signed-event log is the source of truth; relays are replaceable caches.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://ready.getcampfire.dev">
+  <meta property="og:url" content="https://ready.3dl.dev">
 
   <!-- Structured data -->
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS",
     "softwareVersion": "0.10.0",
-    "url": "https://ready.getcampfire.dev",
+    "url": "https://ready.3dl.dev",
     "downloadUrl": "https://github.com/campfire-net/ready/releases",
     "codeRepository": "https://github.com/campfire-net/ready",
     "author": {
@@ -65,16 +65,17 @@
       <p class="hero-problem">Work management for the delegation chain</p>
       <h1>Create, claim, close. <span>That's the whole tool.</span></h1>
       <p class="hero-sub">
-        <code>rd</code> tracks work items in a <a href="https://getcampfire.dev">campfire</a> &mdash;
-        the same protocol your agents already coordinate on.
-        No database, no SaaS, no sync. The campfire is the backend.
+        <code>rd</code> tracks work items as signed nostr events.
+        Your local append-only event log is the source of truth &mdash;
+        relays are replaceable caches for sync, never the authority.
+        No database, no SaaS, works fully offline.
       </p>
       <div class="hero-actions">
         <a href="#install" class="ds-btn-primary">Install rd</a>
         <a href="https://github.com/campfire-net/ready" class="ds-btn-ghost">View source</a>
       </div>
       <div class="hero-install">
-        <div class="ds-code-block"><span class="cmd">curl -fsSL https://ready.getcampfire.dev/install.sh | sh</span></div>
+        <div class="ds-code-block"><span class="cmd">curl -fsSL https://ready.3dl.dev/install.sh | sh</span></div>
       </div>
     </div>
   </section>
@@ -152,7 +153,7 @@
         <div class="cmd-table">
           <table>
             <tbody>
-              <tr><td><code>rd init --name &lt;project&gt;</code></td><td>Create a work campfire with convention declarations</td></tr>
+              <tr><td><code>rd init --name &lt;project&gt;</code></td><td>Initialize a project — local signed-event log + a nostr board</td></tr>
               <tr><td><code>rd create "..." --type task --priority p1</code></td><td>Create a work item (returns item ID when piped)</td></tr>
               <tr><td><code>rd ready</code></td><td>What needs attention now (bare IDs when piped)</td></tr>
               <tr><td><code>rd list [--status ...] [--by ...] [--all]</code></td><td>List items with filters</td></tr>
@@ -214,7 +215,7 @@ This project uses `rd` for work management.
           Claude Code discovers it automatically and gains full <code>rd</code> command knowledge.
         </p>
         <div class="ds-code-block"><span class="cmd">mkdir -p .claude/skills/rd</span>
-<span class="cmd">curl -fsSL https://ready.getcampfire.dev/SKILL.md -o .claude/skills/rd/SKILL.md</span></div>
+<span class="cmd">curl -fsSL https://ready.3dl.dev/SKILL.md -o .claude/skills/rd/SKILL.md</span></div>
       </div>
 
       <!-- Recipe 3: Multi-agent with invite tokens -->
@@ -236,7 +237,7 @@ This project uses `rd` for work management.
 <span class="cmd">TOKEN_B=$(rd invite)</span>
 
 <span class="comment"># Each agent joins from its own worktree</span>
-<span class="cmd">mkdir -p worktree-a/.cf &amp;&amp; cd worktree-a</span>
+<span class="cmd">mkdir -p worktree-a &amp;&amp; cd worktree-a</span>
 <span class="cmd">rd join $TOKEN_A</span>
 <span class="output">joined d8301552... via invite token (expires in 1h59m)</span>
 
@@ -252,7 +253,7 @@ This project uses `rd` for work management.
         <h3>Recipe 4: Agent escalation to human</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
           Agent hits a decision point it can't resolve. Posts a gate. Human approves from their terminal.
-          No dashboard, no ticket system &mdash; just campfire messages.
+          No dashboard, no ticket system &mdash; just signed nostr events.
         </p>
         <div class="demo-block">
           <div class="ds-code-block"><span class="comment"># Agent: "I need a ruling on this"</span>
@@ -269,31 +270,29 @@ This project uses `rd` for work management.
         </div>
       </div>
 
-      <!-- Recipe 5: Walk-up config for worktrees -->
+      <!-- Recipe 5: Nostr identity for agents -->
       <div style="margin-top: var(--ds-space-xl);">
         <h3>Recipe 5: Zero-config agent identity</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
-          <code>rd</code> walks up the directory tree to find identity and project config.
-          Agents in worktrees get isolated identities automatically. No <code>CF_HOME</code>,
-          no env vars, no flags.
+          Every actor signs with its own secp256k1 key under <code>$RD_HOME</code>.
+          <code>$RD_ACTOR</code> selects which key signs &mdash; the owner and a named
+          agent on the same host sign with distinct keys and are attributed distinctly.
         </p>
         <div class="demo-block">
-          <div class="ds-code-block"><span class="comment"># Project root has .campfire/root (project) and .cf/ (owner)</span>
-<span class="comment"># Each worktree has its own .cf/identity.json</span>
-<span class="output">myproject/
-  .campfire/root              &larr; project campfire (shared)
-  .cf/identity.json           &larr; owner identity
-  worktree-a/.cf/identity.json  &larr; agent A identity
-  worktree-b/.cf/identity.json  &larr; agent B identity</span>
+          <div class="ds-code-block"><span class="comment"># $RD_HOME holds one key per durable actor</span>
+<span class="output">$RD_HOME/
+  keys/owner.json              &larr; owner identity (trust root)
+  keys/agent-pm.json           &larr; named agent identity
+  keys/agent-worker-3.json     &larr; another named agent identity</span>
 
-<span class="comment"># Agent A: just cd and run. Walk-up handles everything.</span>
-<span class="cmd">cd myproject/worktree-a</span>
+<span class="comment"># Owner: default actor, no config needed</span>
+<span class="cmd">cd myproject</span>
 <span class="cmd">rd ready</span>
-<span class="comment"># Identity: worktree-a/.cf/  Project: myproject/.campfire/root</span>
 
-<span class="comment"># Agent B: same project, different identity, zero config</span>
-<span class="cmd">cd myproject/worktree-b</span>
-<span class="cmd">rd ready</span></div>
+<span class="comment"># Agent: selects its own key via $RD_ACTOR, signs distinctly</span>
+<span class="cmd">RD_ACTOR=agent:pm rd claim myproject-a1b</span>
+<span class="cmd">rd show myproject-a1b</span>
+<span class="comment"># Each transition attributed to the signing key that made it</span></div>
         </div>
       </div>
 
@@ -305,11 +304,11 @@ This project uses `rd` for work management.
           Output is pipe-friendly &mdash; bare IDs when piped, tables when interactive.</p>
         </div>
         <div>
-          <h3>MCP for deeper integration</h3>
-          <p>For agents that speak MCP, campfire itself is the integration point.
-          <code>rd</code> operations are <a href="https://getcampfire.dev">campfire convention</a> messages &mdash;
-          any MCP-connected agent can read and write them.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="cmd">npx @campfire-net/campfire-mcp</span></div>
+          <h3>Any nostr client can read the log</h3>
+          <p><code>rd</code> operations publish signed nostr events &mdash; a 30301 board,
+          30302 item cards, NIP-34 status events. The events are the integration surface:
+          any nostr-aware tool can read them directly from a relay, no <code>rd</code>-specific
+          API required.</p>
         </div>
       </div>
     </div>
@@ -335,17 +334,17 @@ This project uses `rd` for work management.
             <p class="tier-price">Free &middot; Local</p>
           </div>
           <ul class="tier-features">
-            <li>One campfire per project</li>
-            <li>Filesystem transport</li>
-            <li>Works offline</li>
+            <li>Local signed-event log per project</li>
+            <li>Your local log is the source of truth</li>
+            <li>Works fully offline</li>
             <li>Full CLI &mdash; create, claim, close</li>
             <li>Named views &amp; attention engine</li>
-            <li>JSONL audit trail</li>
+            <li>Append-only signed-event audit trail</li>
           </ul>
           <div class="ds-code-block tier-code"><span class="cmd">rd init --name myproject</span>
 <span class="output">initialized myproject</span>
-<span class="output">  campfire: 6ef132115eed...</span>
-<span class="output">  declarations: 19 operations published</span>
+<span class="output">  board: 30301:9f2a1c...:myproject</span>
+<span class="output">  log: .ready/nostr-log.jsonl</span>
 
 <span class="cmd">ITEM=$(rd create "Ship login page" --priority p1 --type task)</span>
 <span class="cmd">rd ready</span>
@@ -365,21 +364,20 @@ This project uses `rd` for work management.
           </div>
           <ul class="tier-features">
             <li>Everything in Solo</li>
-            <li>One identity, many projects</li>
-            <li>Center campfire for delegation</li>
+            <li>One identity key, many projects</li>
+            <li>Cross-project delegation</li>
             <li>Cross-project queries</li>
-            <li>Context key auto-discovery</li>
+            <li>$RD_HOME key reused across projects</li>
             <li>Project-scoped views</li>
           </ul>
-          <div class="ds-code-block tier-code"><span class="cmd">cf init</span>
-<span class="comment"># Each project gets its own campfire</span>
+          <div class="ds-code-block tier-code"><span class="comment"># Each project gets its own board and local log</span>
 <span class="cmd">cd ~/api && rd init --name api</span>
 <span class="cmd">cd ~/frontend && rd init --name frontend</span>
 
 <span class="comment"># Query across projects</span>
 <span class="cmd">rd ready --project api</span>
 <span class="cmd">rd list --project frontend</span></div>
-          <p class="tier-note">Your center campfire links your projects. Walk-up discovery does the wiring.</p>
+          <p class="tier-note">One <code>$RD_HOME</code> owner key signs across every project. Each project keeps its own local log and board.</p>
         </div>
 
         <!-- Tier 3: For Your Team -->
@@ -391,16 +389,16 @@ This project uses `rd` for work management.
           </div>
           <ul class="tier-features">
             <li>Everything in Multi-Project</li>
-            <li>Shared campfires &mdash; real-time sync</li>
+            <li>Relay sync across machines (NIP-77)</li>
             <li>Delegation: <code>for</code> / <code>by</code> routing</li>
             <li>Gate escalations &amp; approvals</li>
             <li>Agent + human on same queue</li>
-            <li>Git-backed or hosted persistent</li>
+            <li>Self-hosted relay or hosted persistent</li>
           </ul>
           <div class="ds-code-block tier-code"><span class="comment"># Owner creates project and invites a teammate</span>
 <span class="cmd">rd init --name backend</span>
 <span class="cmd">TOKEN=$(rd invite)</span>
-<span class="output">rdx1_eyJ2IjoxLCJjYW1...  (one-use, expires in 2h)</span>
+<span class="output">rdx1_eyJ2IjoxLCJib2FyZ...  (one-use, expires in 2h)</span>
 
 <span class="comment"># Teammate joins with one command</span>
 <span class="cmd">rd join $TOKEN</span>
@@ -422,9 +420,9 @@ This project uses `rd` for work management.
           <ul class="tier-features">
             <li>Everything in Collaboration</li>
             <li>Org home &mdash; cross-project discovery</li>
-            <li>Operator provenance levels</li>
-            <li>Convention gate enforcement</li>
-            <li>Compaction-safe audit trail</li>
+            <li>Graded operator provenance levels</li>
+            <li>Owner-rooted, revocable role-grants</li>
+            <li>Permanent append-only audit trail</li>
             <li>Bridge integration (Teams, Slack)</li>
           </ul>
           <div class="ds-code-block tier-code"><span class="comment"># Org-wide registration</span>
@@ -440,9 +438,9 @@ This project uses `rd` for work management.
 <span class="output">  myapp-d4e  p1  PKCE vs device flow  Migrate auth layer</span>
 <span class="cmd">rd approve myapp-d4e --reason "PKCE, need browser redirect"</span>
 
-<span class="comment"># Full audit trail survives compaction</span>
+<span class="comment"># Full audit trail — every state change is a signed event, kept forever</span>
 <span class="cmd">rd show myapp-d4e</span></div>
-          <p class="tier-note">Provenance-gated operations. Cryptographic audit trail. Bridge to existing tools.</p>
+          <p class="tier-note">Owner-rooted, revocable role-grants. Every event signed and permanent. Bridge to existing tools.</p>
         </div>
 
       </div>
@@ -452,23 +450,23 @@ This project uses `rd` for work management.
   <!-- Section 4: Federation -->
   <section id="federation">
     <div class="ds-container">
-      <p class="section-label">Built on campfire</p>
-      <h2 class="section-title">Convention, not application</h2>
+      <p class="section-label">Nostr-native, no server</p>
+      <h2 class="section-title">Signed events, not a database</h2>
       <p class="section-desc">
-        Ready isn't a project management app. It's a <a href="https://aietf.getcampfire.dev">convention</a> &mdash;
-        a structured vocabulary of operations that any campfire can speak.
+        Ready isn't a project management app with a backend. <code>rd</code> is an operation set &mdash;
+        a structured vocabulary of commands that maps onto signed nostr events any relay or client can read.
       </p>
 
       <div class="two-col">
         <div>
           <h3>How it works underneath</h3>
-          <p>When you run <code>rd create</code>, Ready posts a <code>work:create</code> message to your project's campfire
-          with a structured payload. <code>rd claim</code> posts <code>work:claim</code> with a causal link to the create message.
-          State is derived from the message log &mdash; there's no separate database.</p>
+          <p>When you run <code>rd create</code>, <code>rd</code> builds a signed nostr item card (kind 30302) and a
+          NIP-34 status event, appends both to your local append-only signed-event log, and publishes them to your
+          relays. <code>rd claim</code> appends another signed status event with a causal link back to the card.
+          Item state is a <strong>projection</strong> of the signed-event log &mdash; there's no separate database.</p>
           <p style="margin-top: var(--ds-space-sm);">
-          Convention operations are declared in the campfire itself. When <code>rd init</code> runs,
-          it publishes 19 <code>convention:operation</code> declarations that describe every operation,
-          its arguments, and its constraints. Any agent reading the campfire knows what's possible.</p>
+          Each project is a nostr board (kind 30301). The operation set below is the rd command vocabulary that maps
+          onto that event schema &mdash; every operation is a signed event, not a campfire-specific message format.</p>
         </div>
         <div>
           <h3>The core work vocabulary</h3>
@@ -488,46 +486,43 @@ work:close        — terminal close with reason</span></div>
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
           <h3>Federation topology</h3>
-          <p>Projects are independent campfires. An org home links them for discovery. Names make them addressable.
-          Work stays local &mdash; the home is just a registry, not a database.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Home Campfire (org root)
-  &boxvr; beacon:registration for each project
+          <p>Each project is its own nostr board with its own local, authoritative signed-event log. Relays sync
+          boards between machines &mdash; a self-hosted write-allowlist admits only owner-granted keys; reads stay open.
+          Work stays local &mdash; the relay is a replaceable cache, never the source of truth.</p>
+          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Relays (self-hosted, 2+ for no single point of failure)
+  &boxvr; write-allowlist: owner-rooted role-grants
   &boxvr;
-  &boxur; Project: api     (work:* messages)
-  &boxur; Project: frontend (work:* messages)
-  &boxur; Project: infra    (work:* messages)</span></div>
+  &boxur; Board: api      (local log authoritative)
+  &boxur; Board: frontend (local log authoritative)
+  &boxur; Board: infra    (local log authoritative)</span></div>
         </div>
         <div>
-          <h3>Compaction-safe history</h3>
-          <p>Campfires compact old messages to stay readable, but Ready marks structural events as
-          non-compactable. Creates, closes, blocks, and gates survive forever. Status changes and
-          claims compact after the item closes.</p>
+          <h3>No compaction &mdash; ever</h3>
+          <p>There's nothing to compact. The append-only signed-event log <strong>is</strong> the permanent audit trail.
+          Every create, claim, status change, delegation, and gate is a signed event, appended once, kept forever.</p>
           <div class="ds-callout" style="margin-top: var(--ds-space-sm);">
             <span class="ds-callout-label">The audit trail survives</span>
-            Every state change is a campfire message. The message log IS the audit trail.
-            Compaction archives operational noise, not structural decisions.
+            Every state change is a signed nostr event appended to your local log. Relays may drop old data &mdash;
+            your local log never does. Nothing is archived away; nothing needs to be.
           </div>
         </div>
       </div>
 
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>Part of the campfire ecosystem</h3>
+        <h3>Built on open nostr standards</h3>
         <p style="color: var(--ds-text-secondary); max-width: 640px; line-height: 1.6;">
-          Ready is one convention on a protocol designed for many. Campfire handles identity, encryption, transport,
-          and federation. Ready adds work management semantics on top.
+          Ready layers a work-management vocabulary on public nostr NIPs &mdash; addressable boards and cards,
+          NIP-34 status events, NIP-22 comments, NIP-77 Negentropy sync. No custom protocol to implement;
+          any nostr client already speaks the transport.
         </p>
         <div class="ecosystem-links">
-          <a href="https://getcampfire.dev" class="ds-card ecosystem-card">
-            <h4>Campfire</h4>
-            <p>The protocol. Decentralized coordination for agents and humans.</p>
-          </a>
-          <a href="https://aietf.getcampfire.dev" class="ds-card ecosystem-card">
-            <h4>AIETF</h4>
-            <p>Convention standards. How agents agree on vocabulary and operations.</p>
-          </a>
           <a href="https://github.com/campfire-net/ready" class="ds-card ecosystem-card">
             <h4>Ready source</h4>
-            <p>The rd CLI. Convention spec, state engine, and named views.</p>
+            <p>The rd CLI. Nostr event schema, projection engine, and named views.</p>
+          </a>
+          <a href="https://3dl.dev" class="ds-card ecosystem-card">
+            <h4>Third Division Labs</h4>
+            <p>Built and maintained by 3DL.</p>
           </a>
         </div>
       </div>
@@ -540,12 +535,12 @@ work:close        — terminal close with reason</span></div>
       <p class="section-label">Get started</p>
       <h2 class="section-title">Install rd</h2>
       <p class="section-desc">
-        Self-contained binary. The <a href="https://getcampfire.dev">campfire</a> protocol is built in &mdash; no <code>cf</code> required.
+        Nostr-native, self-contained binary &mdash; no separate server, no <code>cf</code> required.
       </p>
       <div class="install-grid">
         <div class="install-option">
           <h3>Shell (Linux / macOS)</h3>
-          <div class="ds-code-block">curl -fsSL https://ready.getcampfire.dev/install.sh | sh</div>
+          <div class="ds-code-block">curl -fsSL https://ready.3dl.dev/install.sh | sh</div>
         </div>
         <div class="install-option">
           <h3>npx (no install)</h3>
@@ -567,11 +562,9 @@ cd ready && go build -o rd ./cmd/rd</div>
   <!-- Footer -->
   <footer class="ds-footer">
     <div class="ds-container ds-footer-inner">
-      <span class="ds-footer-brand"><span>rd</span> ready &middot; a campfire convention</span>
+      <span class="ds-footer-brand"><span>rd</span> ready &middot; nostr-native work management</span>
       <div class="ds-footer-links">
         <a href="https://github.com/campfire-net/ready">GitHub</a>
-        <a href="https://getcampfire.dev">Campfire</a>
-        <a href="https://aietf.getcampfire.dev">AIETF</a>
         <a href="https://3dl.dev">Third Division Labs</a>
       </div>
     </div>
