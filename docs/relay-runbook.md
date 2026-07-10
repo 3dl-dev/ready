@@ -149,10 +149,21 @@ lowercase-hex x-only pubkey to a human label:
 
 ```json
 {
-  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1)",
-  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key"
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, ~/.cf/nostr-identity.json)",
+  "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (192.168.2.42 ~/.dontguess/nostr-operator.key)",
+  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, ~/.cf/nostr-identity.json)"
 }
 ```
+
+The committed file above is **reconciled byte-for-byte against the live relays**
+(ready-5ae): P1 (owner `a9f766ae`) and P2 (maintainer `48ea98a9`) are now covered by
+explicit owner-signed kind-39301 role-grants, so the admitted set is **purely
+grant-derived** for our web-of-trust keys — no longer preserved-by-absence. The third
+entry, the `dontguess` exchange operator key `6c74c7bb`, is **another project's
+identity** sharing the relay: it is a documented **preserved/unmanaged** tenant, NOT
+granted into rd's role-grants (see the escalation on ready-5ae for whether to formally
+grant it a `contributor` role or leave it preserved). It is present in the committed
+file and on both live relays; `sync-allowlist` preserves it and never locks it out.
 
 This is the SAME trust set as rd's **client-side** gate: `rdconfig.Config`
 `TrustedPubkeys` + the self portfolio pubkey (`TrustSet`, ready-d53). Keep them

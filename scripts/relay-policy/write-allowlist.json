@@ -1,4 +1,5 @@
 {
-  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, ~/.cf/nostr-identity.json)",
-  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, ~/.cf/nostr-identity.json)"
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, ~/.cf/nostr-identity.json)",
+  "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (192.168.2.42 ~/.dontguess/nostr-operator.key)",
+  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, ~/.cf/nostr-identity.json)"
 }
