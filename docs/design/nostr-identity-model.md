@@ -1,6 +1,6 @@
 ---
 title: rd nostr identity & trust model
-status: DECIDED (adversarial synthesis, pending operator approval)
+status: DECIDED (adversarial synthesis; reconciled against dontguess trust model per docs/design/identity-reconciliation-ready-vs-dontguess.md, ready-434)
 blocks: ready-f94
 epic: ready-a14
 design-workflow: wf_ef458857-18b
@@ -11,6 +11,11 @@ date: 2026-07-09
 
 **Status:** DECIDED. Author: Architect (adversarial synthesis). Blocks: ready-f94 (nostr-only flip).
 **Governing invariant (epic ready-a14):** events are the source of truth; trust is a client-side projection of signed events, never a config flag or a flat allowlist.
+
+**Trust invariant (adopted verbatim from the dontguess reconciliation, ready-434 §5.1):**
+> Trust is an application-computed projection of signed events, enforced at the projection seam. The relay write-allowlist is only a coarse anti-spam admission — never the trust authority, and signature-validity is never admission.
+
+This is the one-liner both ready and dontguess independently arrived at. See `docs/design/identity-reconciliation-ready-vs-dontguess.md` §3b, §5.1 for the joint derivation.
 
 ---
 
@@ -44,6 +49,8 @@ date: 2026-07-09
 
 ## 3. DELEGATION & ROLES
 
+**Terminology: call this "owner-rooted bounded delegation," not "web-of-trust."** dontguess (`convergence-sybil-defense.md`) rejected CAG/web-of-trust for its *permissionless* mesh because the root set there is self-appointed — sybils can mint their own root and cross-vouch. ready's model differs on every property that rejection depended on: a single pinned unforgeable owner key (not self-appointed), depth-capped and self-escalation-blocked propagation (not transitive vouch decay), in a closed team-tier graph (not an open mesh). dontguess's rejection of web-of-trust therefore **supports** ready's design rather than contradicting it — the two are not the same shape. See `docs/design/identity-reconciliation-ready-vs-dontguess.md` §3a for the full ruling. Use "owner-rooted bounded delegation" (or just "delegation") in all ready docs and code comments going forward.
+
 **Event: `rd role-grant`, kind `39301` (addressable / parameterized-replaceable, deliberately away from NIP-100's 30301/30302 to avoid collision).**
 
 | Field | Value |
@@ -75,6 +82,7 @@ Revocation = publish a newer `role=revoked` grant. Enforcement is at projection,
 - **Compromise (retroactive):** the owner publishes `role=revoked` with `from=T` chosen before the suspected compromise. All events from that key with `created_at ≥ T` are dropped, and `sync-allowlist` removes the key from the relay so it can publish nothing new. In the limit `T` = the grant's original time ⇒ full erasure (containment).
 - **Back-dating residual (PERMANENT CONSTRAINT):** `created_at` is self-asserted, so a compromised key can back-date an event below `T`. The containment boundary is therefore **operator-chosen** (set `T` conservatively before any exposure; full repudiation = erase-all). This matches campfire's model — a compromised creator key was equally unrecoverable — and is documented, not silently assumed.
 - **Race:** an attacker cannot forge a *newer* owner-signed grant (needs the owner key) and cannot self-escalate on its own board (maintainer authority is bound per board coordinate `30301:<author>:<d>` at `:104-106`, and the board is pinned — §4). So the only residual is back-dated replay of already-published events, bounded by `T`.
+- **Same-second grant ordering (acceptable, documented):** the escalation cap is evaluated against levels replayed so far, in `(created_at, id)` order. A same-second maintainer-grant followed by a grant it authorizes can no-op via the `id` tie-break if the tie-break happens to order the dependent grant first. This is deterministic and fail-closed (the grant is simply not honored that replay, not honored-wrongly) — it is documented here as acceptable behavior, not a bug to fix. See reconciliation NOTE-B (`docs/design/identity-reconciliation-ready-vs-dontguess.md` §4).
 
 ---
 
@@ -96,6 +104,25 @@ Trust stops being a stored list and becomes a **pure function of signed events**
 **Relay write-allowlist (ready-266) stays binary/coarse, but its FEED is derived.** `write-allowlist.py`'s contract (JSON `{pubkey:label}`, mtime-reload, fail-closed) needs **zero code change** — it is levels-agnostic and is the coarse spam/DoS gate ("may this key write at all"). A new **`rd nostr sync-allowlist`** command regenerates `write-allowlist.json` from `{ pubkeys with level ≥ 1 (non-revoked) }` (label from the grant's `content`) and prunes revoked keys. `rd.json` (as the derived trust cache) and the relay file now share **one source** — the drift the runbook warns about (`write-allowlist.py:33-36`, `relay-runbook.md:157-162`) is closed structurally, not by discipline.
 
 **Board pinning.** The authoritative board coordinate is pinned in `.ready/config.json` (`SyncConfig`). Projection rejects any card whose `a` coordinate ≠ the pinned board — killing the parallel-board self-grant path.
+
+**Named seam contract (maintained list — do not let a refactor silently drop one).** The reconciliation audit (`docs/design/identity-reconciliation-ready-vs-dontguess.md` §4) enumerates every point where an event becomes authoritative. Each MUST enforce signature-verify (V) + read-trust membership (d53), and the seams marked `(+BP)` additionally enforce board-pin and/or point-in-time revocation. This list is the contract; a future refactor that touches trust must re-derive it against this table, not silently narrow it:
+
+1. Ingestion — relay reconcile (V + d53)
+2. Ingestion — negentropy download (V + d53)
+3. Ingestion — degrade-floor merge (V + d53)
+4. Projection — card latest-wins membership (V + d53)
+5. Projection — point-in-time / prospective revocation (+BP)
+6. Projection — board pinning (+BP)
+7. Projection — status-authority + grant fold (V + d53 + BP)
+8. Projection — `by` provenance rewrite (gated on derived maintainer set)
+9. Derivation — `DeriveLevels` board binding (V + escalation cap)
+10. Allowlist regeneration — `sync-allowlist` (V + cap, no-lockout invariant)
+11. Relay write-allowlist plugin (signature-verify first, fail-closed)
+12. Migration (source is campfire/JSONL, never nostr — non-circular; projected-back events pass the same gates)
+13. Dual-read (`RD_NOSTR_READ`) — same gate stack as primary read path
+14. Readiness (`rd nostr ready`) — both `ReconcileBoard` and `ProjectItems` gated
+
+**Read-trust is now grant-derived.** Gate A above (ready-434 / GAP-1) closes the fidelity gap the reconciliation found: `Trusted` was fed only by hand-maintained `Config.TrustedPubkeys`, not by `DeriveLevels`. It is now wired as `DeriveLevels(level ≥ 1) ∪ self`, so a freshly-granted contributor's events are admitted at ingestion without a manual `rd.json` edit. Any change to a seam in the list above must preserve this: read admission is always grant-derived, never hand-maintained-only.
 
 ---
 
@@ -179,3 +206,20 @@ Five outcome-scoped items, all landing **before ready-f94**. Minimum viable: por
 *Deps:* BP-2, BP-3, BP-4.
 
 **Order:** BP-1 ∥ BP-2 → BP-3, BP-4 → BP-5 → **ready-f94**. Re-run the 1565-item parity demo after BP-3 to prove no regression before the flip.
+
+---
+
+## 9. TIER SCOPING (permanent — read before proposing sybil/economic defenses)
+
+**ready is permanently and only a closed team-tier system.** There is no global/permissionless tier, no marketplace, and none is planned. This is not an oversight to fix later — it is a structural property of the model in §2-§4: a minted key is **inert until the owner grants it a role**. Nothing a key signs is honored, admitted to the relay, or counted for anything until an owner-signed (or capped-maintainer-signed) 39301 grant names it. Because ready never counts *keys* as a trust signal — it counts only owner-rooted grants — the entire "N independent identities converge" attack surface that a permissionless/marketplace tier must defend against **does not exist here**.
+
+Consequently, the following are **out of scope by construction** and MUST NOT be built for ready:
+
+- **Reputation floor** — there is nothing to float a reputation score against; trust is binary-gated by grant, not accumulated by behavior.
+- **Proof-of-cost / sat-burn** — burn-to-mint-identity defenses exist to make sybil identity minting expensive on a *permissionless* mesh. ready's mesh is not permissionless; minting a key is free and harmless because the key is inert until granted.
+- **Scrip / marketplace economics** — ready has no marketplace, no sellers, no auto-accept promotion gate to protect with an economic cost.
+- **Weighted-convergence sybil math** (K_eff, clique-recurrence detection, PAC bounds) — this machinery defends against sybils *counting* toward a convergence threshold. ready has no convergence threshold; a hundred sybil keys contribute exactly zero trust until the owner grants one of them a role, at which point it is one identity the owner chose to trust, not a convergence signal.
+
+**Authority for this scoping:** dontguess's own design (`convergence-sybil-defense.md`, per the reconciliation `docs/design/identity-reconciliation-ready-vs-dontguess.md` §1, §5 item 3) declares the flat-allowlist team tier **already solved by allowlisted identities** — the sybil/economic machinery in that document is explicitly scoped to dontguess's *global* and *marketplace* tiers, neither of which ready has. ready's sybil payoff is structurally zero because keys are inert until owner-granted (§2 above); the convergence/economic apparatus dontguess built for its open tiers has no problem to solve in ready's closed one.
+
+**What this tells future maintainers:** if a proposal surfaces to add reputation scoring, proof-of-work/burn admission, an internal economy, or convergence-counting to ready's trust model, the default answer is **no** — re-derive from this section and the reconciliation doc before building it. If ready ever grows a genuinely open/permissionless tier (not currently planned), that would be a new architecture decision requiring its own design doc, not an incremental addition here.
