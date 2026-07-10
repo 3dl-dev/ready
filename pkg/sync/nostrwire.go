@@ -211,6 +211,26 @@ func BuildBoardEvent(k *nostr.Key, spec BoardSpec, createdAt int64) (*nostr.Even
 	return e, nil
 }
 
+// cardBoardCoord returns the board-membership coordinate a CardSpec's card (and,
+// per ready-7ec, its accompanying NIP-34 status events) reference: BoardAuthor's
+// board when set, falling back to the signer's own board. This is exactly
+// BuildCardEvent's original "a"-tag derivation, factored out so
+// BuildStatusEventWithIssueRoot's callers can put the SAME coordinate on the
+// status event that the card already carries — the two must agree, or a
+// board-scoped filter would match one but not the other. Returns "" when
+// spec.BoardD is empty (unscoped card), matching BuildCardEvent's own
+// skip-the-tag behaviour.
+func cardBoardCoord(k *nostr.Key, spec CardSpec) string {
+	if spec.BoardD == "" {
+		return ""
+	}
+	boardAuthor := spec.BoardAuthor
+	if boardAuthor == "" {
+		boardAuthor = k.PubKeyHex()
+	}
+	return BoardCoord(boardAuthor, spec.BoardD)
+}
+
 // BuildCardEvent constructs and signs the NIP-100 card (30302) event that
 // materializes the item's CURRENT state (latest-wins addressable projection).
 // createdAt MUST be seconds.
@@ -222,16 +242,8 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 		{"d", spec.ItemID},
 		{"title", spec.Title},
 	}
-	if spec.BoardD != "" {
-		// Board MEMBERSHIP is the owner's board coordinate, DISTINCT from the signing
-		// key (card AUTHORSHIP). BoardAuthor names the owner pubkey so an agent-signed
-		// card still belongs to the owner's pinned board (BP-4 reconciliation with the
-		// BP-3 pin); empty falls back to the signer authoring its own board (unchanged).
-		boardAuthor := spec.BoardAuthor
-		if boardAuthor == "" {
-			boardAuthor = k.PubKeyHex()
-		}
-		tags = append(tags, []string{"a", BoardCoord(boardAuthor, spec.BoardD)})
+	if coord := cardBoardCoord(k, spec); coord != "" {
+		tags = append(tags, []string{"a", coord})
 	}
 	if spec.Status != "" {
 		tags = append(tags, []string{"s", spec.Status})
@@ -333,31 +345,54 @@ func BuildStatusEvent(k *nostr.Key, itemID, rdStatus, cardEventID, reason string
 
 // BuildStatusEventWithIssueRoot is BuildStatusEvent PLUS an additional NIP-10
 // "root"-marked "e" tag anchoring the status event to a real NIP-34 kind:1621
-// issue event (ready-da7), when issueEventID is non-empty. issueEventID == ""
-// (the zero value) reproduces BuildStatusEvent's output EXACTLY — so every
-// existing caller of BuildStatusEvent is untouched, and this is the only
-// entry point that needs to change to add the interop anchor. The existing
-// 30302-card anchor ("a" to CardCoord, "e" to cardEventID) is unchanged and
-// still present — rd's own projection keeps reading exactly what it read
-// before; the issue-root "e" tag is a pure addition a generic NIP-34 client can
-// use to fetch the issue and thread status onto it, and that rd's own
-// ProjectItems ignores (it only ever reads the FIRST "e"/"a" tag values, which
-// remain the card ones — see tagValue).
-func BuildStatusEventWithIssueRoot(k *nostr.Key, itemID, rdStatus, cardEventID, issueEventID, reason string, createdAt int64) (*nostr.Event, error) {
+// issue event (ready-da7), when issueEventID is non-empty, PLUS a second "a" tag
+// carrying the item's BOARD-membership coordinate (ready-7ec), when boardCoord is
+// non-empty. issueEventID == "" and boardCoord == "" (the zero values) reproduce
+// BuildStatusEvent's output EXACTLY — so every existing caller of BuildStatusEvent
+// is untouched, and this is the only entry point that needs to change to add
+// either interop anchor. The existing 30302-card anchor ("a" to CardCoord, "e" to
+// cardEventID) is unchanged and still present, and remains the FIRST "a"/"e" tag
+// on the event — rd's own projection (tagValue reads only the first match) keeps
+// reading exactly what it read before. The issue-root "e" tag is a pure addition
+// a generic NIP-34 client can use to fetch the issue and thread status onto it.
+//
+// WHY THE BOARD "a" TAG (ready-7ec): rd nostr sync's negentropy filter can be
+// scoped to one project's board (BoardSyncFilter(boardCoord, nil)) instead of
+// pulling an author's entire portfolio across every project. That filter matches
+// on ANY "a" tag equal to the board coordinate (matchesFilter/tagMatches checks
+// every tag with that name, not just the first) — so a CARD, which already
+// carries the board coordinate as its "a" tag, matches. A NIP-34 status event
+// previously carried ONLY the card's OWN coordinate (30302:<signer>:<itemID>),
+// never the board's (30301:<owner>:<boardD>), so a board-scoped filter silently
+// matched cards but missed every status event, breaking NIP-34 status
+// convergence for a pinned-board sync. Adding the board coordinate as a SECOND,
+// purely additive "a" tag — the same one the card already carries via
+// cardBoardCoord — fixes this without touching the card-coordinate anchor at
+// tag position 0 that everything else (rd's own projection, the ready-da7 issue
+// anchor, the ready-d65 migration parity) already depends on.
+func BuildStatusEventWithIssueRoot(k *nostr.Key, itemID, rdStatus, cardEventID, issueEventID, boardCoord, reason string, createdAt int64) (*nostr.Event, error) {
 	e, err := BuildStatusEvent(k, itemID, rdStatus, cardEventID, reason, createdAt)
 	if err != nil {
 		return nil, err
 	}
-	if issueEventID == "" {
+	changed := false
+	if issueEventID != "" {
+		// NIP-10 marked "e" tag: ["e", <event-id>, <relay-hint>, "root"]. The relay
+		// hint is left empty (rd doesn't track per-event relay provenance); readers
+		// fall back to their own relay set, which is standard and harmless.
+		e.Tags = append(e.Tags, []string{"e", issueEventID, "", "root"})
+		changed = true
+	}
+	if boardCoord != "" {
+		e.Tags = append(e.Tags, []string{"a", boardCoord})
+		changed = true
+	}
+	if !changed {
 		return e, nil
 	}
-	// NIP-10 marked "e" tag: ["e", <event-id>, <relay-hint>, "root"]. The relay
-	// hint is left empty (rd doesn't track per-event relay provenance); readers
-	// fall back to their own relay set, which is standard and harmless.
-	e.Tags = append(e.Tags, []string{"e", issueEventID, "", "root"})
 	// Tags changed -> id/sig must be recomputed over the new canonical form.
 	if err := e.Sign(k); err != nil {
-		return nil, fmt.Errorf("sync: sign status event (issue root): %w", err)
+		return nil, fmt.Errorf("sync: sign status event (issue root/board): %w", err)
 	}
 	return e, nil
 }

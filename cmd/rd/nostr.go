@@ -571,7 +571,12 @@ regardless of substrate.`,
 
 		if reconcileFlag {
 			ctx := context.Background()
-			r, err := rdSync.ReconcileAll(ctx, nostrReadRelays(), log, nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
+			// ready-7ec: scope the relay reconcile to the PINNED board when one is
+			// set, so `rd nostr ready` pulls only THIS project's board instead of the
+			// relay's entire portfolio (every project, every board) — the same fix
+			// applied to `rd nostr sync`. Unpinned installs get "" -> ReconcileAll's
+			// unscoped behaviour, unchanged.
+			r, err := rdSync.ReconcileBoard(ctx, nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
 			if err != nil {
 				return err
 			}
@@ -744,8 +749,22 @@ var nostrSyncCmd = &cobra.Command{
 			return err
 		}
 		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-		// Sync every rd event this portfolio identity authored (all boards/kinds).
-		filter := rdSync.BoardSyncFilter("", []string{k.PubKeyHex()})
+		// ready-7ec: when this project has a PINNED board (SyncConfig.Board), scope
+		// the negentropy filter to that board's "a" coordinate — cards already carry
+		// it, and status events now do too (BuildStatusEventWithIssueRoot /
+		// BuildHistoricalStatusEventWithBoard, additive) — instead of pulling this
+		// identity's ENTIRE portfolio (every project/board it has ever authored to,
+		// observed at ~9600+ events) on every sync. The board filter matches on the
+		// "a" tag regardless of signer, so it also picks up OTHER actors' (agents')
+		// events on the same board. Unpinned installs (the pre-ready-7ec default)
+		// fall back to the original author-scoped, unbounded-by-board filter —
+		// unchanged behaviour, zero migration required.
+		var filter map[string]any
+		if pin := nostrPinnedBoard(dir); pin != "" {
+			filter = rdSync.BoardSyncFilter(pin, nil)
+		} else {
+			filter = rdSync.BoardSyncFilter("", []string{k.PubKeyHex()})
+		}
 		relays := nostrWriteRelays()
 
 		ctx := context.Background()
