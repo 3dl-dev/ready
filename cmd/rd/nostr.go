@@ -85,13 +85,39 @@ func nostrKey() (*nostr.Key, error) {
 
 // nostrTrustSet builds the read-side web-of-trust allowlist (ready-d53): the self
 // pubkey (always trusted) unioned with the admitted TrustedPubkeys from the global
-// rd config. This set is passed to the ingestion (reconcile) and projection
-// (ProjectItems) gates so only events authored by admitted identities can mutate
-// projected work-item state — schnorr Verify alone proves consistency, not
-// authorization. A missing/unreadable config degrades to self-only trust (the safe
-// default: a permissive relay cannot inject state signed by a foreign key).
-func nostrTrustSet(selfPubkey string) map[string]bool {
-	return loadRDConfig().TrustSet(selfPubkey)
+// rd config AND — GAP-1 (ready-7c1) — the grant-derived membership for the pinned
+// board (every owner-rooted, cap-valid grantee in the local log). This is "one signed
+// source feeds everything": an owner-GRANTED contributor absent from rd.json is now
+// admitted at ALL FOUR read seams (reconcile ingestion, negentropy download, degrade-
+// floor merge, and projection) by its owner-signed grant alone, so ingestion and
+// projection agree.
+//
+// The bootstrap is non-circular: DeriveReadTrust always includes the board author
+// (the pin names the owner pubkey), so owner-signed grants are always admitted, and
+// each admitted grant expands the set (re-reconcile converges). Config.TrustedPubkeys
+// is RETAINED as the bootstrap/fallback union so existing installs never break, and
+// self is always trusted. Fail-closed: a key with neither a grant nor a config/self
+// entry is still dropped. A missing/unreadable config or log degrades to
+// config+self trust (a permissive relay still cannot inject state from an ungranted
+// foreign key).
+func nostrTrustSet(dir, selfPubkey string) map[string]bool {
+	set := loadRDConfig().TrustSet(selfPubkey)
+	pin := nostrPinnedBoard(dir)
+	if pin == "" {
+		return set // unpinned install — bootstrap trust only (pre-GAP-1 behaviour).
+	}
+	owner, boardD, ok := rdSync.ParseBoardCoord(pin)
+	if !ok {
+		return set
+	}
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		return set // fail-closed: keep the strict bootstrap set on a log read error.
+	}
+	for pk := range rdSync.DeriveReadTrust(events, owner, boardD) {
+		set[pk] = true
+	}
+	return set
 }
 
 // nostrPublisher builds a Publisher rooted at the current project. Returns
@@ -381,7 +407,7 @@ var nostrShowCmd = &cobra.Command{
 				return err
 			}
 			ctx := context.Background()
-			r, err := rdSync.ReconcileItem(ctx, nostrReadRelays(), log, itemID, nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
+			r, err := rdSync.ReconcileItem(ctx, nostrReadRelays(), log, itemID, nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
 			if err != nil {
 				return err
 			}
@@ -401,7 +427,7 @@ var nostrShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		trusted := nostrTrustSet(k.PubKeyHex())
+		trusted := nostrTrustSet(dir, k.PubKeyHex())
 		// Status-authority is derived from the board's declared maintainers inside
 		// ProjectItems (ready-b57) — NOT the whole trust set. Read-trust stays the
 		// full set (Trusted); Maintainers is left nil so only item authors and board
@@ -576,7 +602,7 @@ regardless of substrate.`,
 			// relay's entire portfolio (every project, every board) — the same fix
 			// applied to `rd nostr sync`. Unpinned installs get "" -> ReconcileAll's
 			// unscoped behaviour, unchanged.
-			r, err := rdSync.ReconcileBoard(ctx, nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(k.PubKeyHex()), nostr.DefaultTimeout)
+			r, err := rdSync.ReconcileBoard(ctx, nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
 			if err != nil {
 				return err
 			}
@@ -589,7 +615,7 @@ regardless of substrate.`,
 		if err != nil {
 			return err
 		}
-		trusted := nostrTrustSet(k.PubKeyHex())
+		trusted := nostrTrustSet(dir, k.PubKeyHex())
 		// Status-authority = author OR board maintainer (board-derived in ProjectItems,
 		// ready-b57); read-trust = full set. Maintainers left nil.
 		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
@@ -770,7 +796,7 @@ var nostrSyncCmd = &cobra.Command{
 		ctx := context.Background()
 		// ready-b57: gate the negentropy download with the web-of-trust allowlist so a
 		// hostile relay cannot inject a validly-signed foreign event into the log.
-		trusted := nostrTrustSet(k.PubKeyHex())
+		trusted := nostrTrustSet(dir, k.PubKeyHex())
 		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, trusted, nostr.DefaultTimeout)
 
 		if jsonOutput {
@@ -838,7 +864,7 @@ var nostrMergeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		added, err := log.MergeFrom(args[0], nostrTrustSet(k.PubKeyHex()))
+		added, err := log.MergeFrom(args[0], nostrTrustSet(dir, k.PubKeyHex()))
 		if err != nil {
 			return err
 		}
@@ -878,7 +904,7 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	trusted := nostrTrustSet(k.PubKeyHex())
+	trusted := nostrTrustSet(dir, k.PubKeyHex())
 	// ready-b57: status-authority is board-derived (author OR board maintainer),
 	// NOT the whole trust set. Read-trust stays the full set; Maintainers left nil.
 	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trusted, PinnedBoard: nostrPinnedBoard(dir)})

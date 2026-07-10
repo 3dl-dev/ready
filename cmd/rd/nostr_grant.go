@@ -337,7 +337,7 @@ dry-run diff before applying.`,
 		if err != nil {
 			return err
 		}
-		boardAuthor, _, err := resolveBoardAuthorD(dir, k.PubKeyHex())
+		boardAuthor, boardD, err := resolveBoardAuthorD(dir, k.PubKeyHex())
 		if err != nil {
 			return err
 		}
@@ -383,7 +383,7 @@ dry-run diff before applying.`,
 			fmt.Fprintln(os.Stderr, "note: using on-disk allowlist as baseline (live relay fetch skipped/failed)")
 		}
 
-		plan := rdSync.PlanAllowlist(events, boardAuthor, ownerLabel, baseline)
+		plan := rdSync.PlanAllowlist(events, boardAuthor, boardD, ownerLabel, baseline)
 
 		// Print the reviewable diff.
 		fmt.Printf("relay write-allowlist regeneration (board author %s)\n", boardAuthor)

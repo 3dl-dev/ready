@@ -50,7 +50,7 @@ func TestDeriveLevels_MatchesCheckerSemantics(t *testing.T) {
 		grant(t, owner, ba, revoked.PubKeyHex(), RoleRevoked, 0, 1002),
 	}
 
-	levels, until := DeriveLevels(events, ba)
+	levels, until := DeriveLevels(events, ba, testBoardD)
 
 	if got := levels[ba]; got != LevelMaintainer {
 		t.Errorf("board author level = %d, want %d (bootstrap)", got, LevelMaintainer)
@@ -91,13 +91,13 @@ func TestDeriveLevels_LatestGrantPerGranteeWins(t *testing.T) {
 	newer := grant(t, owner, ba, subject.PubKeyHex(), RoleContributor, 0, 2000)
 
 	// Supply newest-first to prove ordering is by (created_at,id), not slice order.
-	levels, _ := DeriveLevels([]*nostr.Event{newer, older}, ba)
+	levels, _ := DeriveLevels([]*nostr.Event{newer, older}, ba, testBoardD)
 	if got := levels[subject.PubKeyHex()]; got != LevelContributor {
 		t.Errorf("latest grant (contributor@2000) should win: level = %d, want %d", got, LevelContributor)
 	}
 
 	// And the reverse supply order gives the identical winner (determinism).
-	levels2, _ := DeriveLevels([]*nostr.Event{older, newer}, ba)
+	levels2, _ := DeriveLevels([]*nostr.Event{older, newer}, ba, testBoardD)
 	if got := levels2[subject.PubKeyHex()]; got != LevelContributor {
 		t.Errorf("supply-order independence broken: level = %d, want %d", got, LevelContributor)
 	}
@@ -120,7 +120,7 @@ func TestDeriveLevels_LatestWinsTieBreakLowestID(t *testing.T) {
 	if b.ID < a.ID {
 		wantLevel = LevelContributor // role of b
 	}
-	levels, _ := DeriveLevels([]*nostr.Event{a, b}, ba)
+	levels, _ := DeriveLevels([]*nostr.Event{a, b}, ba, testBoardD)
 	if got := levels[subject.PubKeyHex()]; got != wantLevel {
 		t.Errorf("tie-break: level = %d, want %d (lowest-id grant wins)", got, wantLevel)
 	}
@@ -148,7 +148,7 @@ func TestDeriveLevels_EscalationCap_MaintainerCannotMintMaintainer(t *testing.T)
 		grant(t, maint, ba, revokee.PubKeyHex(), RoleRevoked, 0, 2002),
 	}
 
-	levels, _ := DeriveLevels(events, ba)
+	levels, _ := DeriveLevels(events, ba, testBoardD)
 
 	if _, ok := levels[target.PubKeyHex()]; ok {
 		t.Errorf("maintainer-signed maintainer grant MUST be ignored; target present with level %d", levels[target.PubKeyHex()])
@@ -174,7 +174,7 @@ func TestDeriveLevels_EscalationCap_ContributorCannotGrant(t *testing.T) {
 		// contributor tries to grant a contributor — ignored (may grant nothing).
 		grant(t, contrib, ba, victim.PubKeyHex(), RoleContributor, 0, 2000),
 	}
-	levels, _ := DeriveLevels(events, ba)
+	levels, _ := DeriveLevels(events, ba, testBoardD)
 	if _, ok := levels[victim.PubKeyHex()]; ok {
 		t.Errorf("contributor-signed grant MUST be ignored; victim present with level %d", levels[victim.PubKeyHex()])
 	}
@@ -195,7 +195,7 @@ func TestDeriveLevels_EscalationCap_MaintainerAuthorityMustPrecedeGrant(t *testi
 		// owner grants maint maintainer only at t=1000.
 		grant(t, owner, ba, maint.PubKeyHex(), RoleMaintainer, 0, 1000),
 	}
-	levels, _ := DeriveLevels(events, ba)
+	levels, _ := DeriveLevels(events, ba, testBoardD)
 	if _, ok := levels[target.PubKeyHex()]; ok {
 		t.Errorf("grant signed before signer had authority MUST be ignored; target level %d", levels[target.PubKeyHex()])
 	}
@@ -219,7 +219,7 @@ func TestDeriveLevels_ProspectiveRevocation(t *testing.T) {
 		grant(t, owner, ba, compromised.PubKeyHex(), RoleMaintainer, 0, 1000),
 		grant(t, owner, ba, compromised.PubKeyHex(), RoleRevoked, 2500, 4000), // from=2500 overrides created_at
 	}
-	levels, until := DeriveLevels(events, ba)
+	levels, until := DeriveLevels(events, ba, testBoardD)
 
 	if got := levels[clean.PubKeyHex()]; got != LevelRevoked {
 		t.Errorf("clean revoked level = %d, want %d", got, LevelRevoked)
@@ -251,9 +251,83 @@ func TestDeriveLevels_ForeignBoardGrantIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build foreign grant: %v", err)
 	}
-	levels, _ := DeriveLevels([]*nostr.Event{foreign}, ba)
+	levels, _ := DeriveLevels([]*nostr.Event{foreign}, ba, testBoardD)
 	if _, ok := levels[self.PubKeyHex()]; ok {
 		t.Errorf("foreign-board grant MUST be ignored; self present with level %d", levels[self.PubKeyHex()])
+	}
+}
+
+// TestDeriveLevels_DifferentBoardDGrantNotHonored is the GAP-2 (ready-885) proof:
+// a grant on 30301:<owner>:<OTHER-d> — SAME owner, DIFFERENT boardD — is NOT honored
+// when deriving for the pinned board 30301:<owner>:ready, while a grant on the pinned
+// coordinate still confers its level. Before the fix deriveGrants bound by owner ALONE
+// (g.BoardOwner != boardAuthor), so a grant on any other boardD of the same owner bled
+// onto the pinned board (cross-board grant bleed). The full-coordinate match closes it.
+func TestDeriveLevels_DifferentBoardDGrantNotHonored(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	crossBoard := testKey(t) // granted on a DIFFERENT boardD (same owner)
+	pinned := testKey(t)     // granted on the PINNED boardD
+
+	otherBoardGrant, err := BuildRoleGrantEvent(owner, RoleGrantSpec{
+		BoardD:      "other-board", // 30301:<owner>:other-board — NOT the pinned "ready"
+		BoardAuthor: ba,
+		Grantee:     crossBoard.PubKeyHex(),
+		Role:        RoleMaintainer,
+	}, 1000)
+	if err != nil {
+		t.Fatalf("build cross-board grant: %v", err)
+	}
+	pinnedGrant := grant(t, owner, ba, pinned.PubKeyHex(), RoleContributor, 0, 1001) // BoardD=testBoardD
+
+	levels, _ := DeriveLevels([]*nostr.Event{otherBoardGrant, pinnedGrant}, ba, testBoardD)
+
+	if _, ok := levels[crossBoard.PubKeyHex()]; ok {
+		t.Errorf("cross-board grant bleed: a grant on a DIFFERENT boardD (same owner) was honored on the pinned board (level %d)", levels[crossBoard.PubKeyHex()])
+	}
+	if got := levels[pinned.PubKeyHex()]; got != LevelContributor {
+		t.Errorf("pinned-board grant must still confer its level: got %d want %d", got, LevelContributor)
+	}
+
+	// CONTROL: deriving for the OTHER boardD honors the cross-board grant and NOT the
+	// pinned one — proving the boardD is the discriminator, not some incidental drop.
+	otherLevels, _ := DeriveLevels([]*nostr.Event{otherBoardGrant, pinnedGrant}, ba, "other-board")
+	if got := otherLevels[crossBoard.PubKeyHex()]; got != LevelMaintainer {
+		t.Errorf("control: the cross-board grant must be honored when deriving for ITS boardD: got %d want %d", got, LevelMaintainer)
+	}
+	if _, ok := otherLevels[pinned.PubKeyHex()]; ok {
+		t.Errorf("control: the pinned-board grant must NOT be honored for the other boardD")
+	}
+}
+
+// TestDeriveReadTrust_MembershipIncludesGranteesAndOwner is the GAP-1 (ready-7c1)
+// unit: the derived read-trust membership set is { board author } ∪ { cap-valid
+// grantees, including revoked }, and EXCLUDES an ungranted foreign key (fail-closed).
+func TestDeriveReadTrust_MembershipIncludesGranteesAndOwner(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	contrib := testKey(t)
+	revoked := testKey(t)
+	foreign := testKey(t) // never granted
+
+	events := []*nostr.Event{
+		grant(t, owner, ba, contrib.PubKeyHex(), RoleContributor, 0, 1000),
+		grant(t, owner, ba, revoked.PubKeyHex(), RoleContributor, 0, 1001),
+		grant(t, owner, ba, revoked.PubKeyHex(), RoleRevoked, 0, 2000),
+	}
+	trust := DeriveReadTrust(events, ba, testBoardD)
+
+	if !trust[ba] {
+		t.Error("board author (bootstrap root) must be in the derived read-trust set")
+	}
+	if !trust[contrib.PubKeyHex()] {
+		t.Error("granted contributor must be in the derived read-trust set")
+	}
+	if !trust[revoked.PubKeyHex()] {
+		t.Error("revoked-but-once-granted key must STAY in read-trust (its PAST events survive; the until gate drops its future)")
+	}
+	if trust[foreign.PubKeyHex()] {
+		t.Error("fail-closed: an ungranted foreign key must NOT be in the derived read-trust set")
 	}
 }
 
@@ -263,7 +337,7 @@ func TestDeriveLevels_ForeignBoardGrantIgnored(t *testing.T) {
 func TestDeriveLevels_ZeroGrantsBootstrapFallback(t *testing.T) {
 	owner := testKey(t)
 	ba := owner.PubKeyHex()
-	levels, until := DeriveLevels(nil, ba)
+	levels, until := DeriveLevels(nil, ba, testBoardD)
 	if len(levels) != 1 || levels[ba] != LevelMaintainer {
 		t.Errorf("zero-grant fallback: levels = %v, want {%s:2}", levels, ba)
 	}
@@ -289,7 +363,7 @@ func TestDeriveLevels_TamperedGrantIgnored(t *testing.T) {
 	if err := e.Verify(); err == nil {
 		t.Fatal("precondition: tampered event should fail Verify")
 	}
-	levels, _ := DeriveLevels([]*nostr.Event{e}, ba)
+	levels, _ := DeriveLevels([]*nostr.Event{e}, ba, testBoardD)
 	if _, ok := levels[subject.PubKeyHex()]; ok {
 		t.Errorf("tampered grant MUST be dropped; subject present with level %d", levels[subject.PubKeyHex()])
 	}

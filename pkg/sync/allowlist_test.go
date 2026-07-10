@@ -36,7 +36,7 @@ func TestDeriveAllowlist_AdmitsLevel1AndAbovePrunesRevoked(t *testing.T) {
 		grant(t, owner, ba, gone.PubKeyHex(), RoleRevoked, 0, 1003),
 	}
 
-	got := DeriveAllowlist(events, ba, ownerLabel)
+	got := DeriveAllowlist(events, ba, testBoardD, ownerLabel)
 
 	want := map[string]string{
 		ba:                  ownerLabel,
@@ -65,7 +65,7 @@ func TestDeriveAllowlist_EscalationCapViolationNotAdmitted(t *testing.T) {
 		// maint (a non-author level-2) tries to mint a new maintainer — cap violation.
 		grant(t, maint, ba, sneak.PubKeyHex(), RoleMaintainer, 0, 1001),
 	}
-	got := DeriveAllowlist(events, ba, ownerLabel)
+	got := DeriveAllowlist(events, ba, testBoardD, ownerLabel)
 	if _, present := got[sneak.PubKeyHex()]; present {
 		t.Errorf("cap-violating grantee %s must not be admitted, got present", sneak.PubKeyHex())
 	}
@@ -93,7 +93,7 @@ func TestPlanAllowlist_AddsGrantedPreservesUnmanaged(t *testing.T) {
 		tenant:         "third-party tenant",
 	}
 
-	plan := PlanAllowlist(events, ba, ownerLabel, baseline)
+	plan := PlanAllowlist(events, ba, testBoardD, ownerLabel, baseline)
 
 	// The tenant (no grant, no revoke) must survive.
 	if _, ok := plan.Final[tenant]; !ok {
@@ -141,7 +141,7 @@ func TestPlanAllowlist_RevokeRemovesOnlyRevokedKey(t *testing.T) {
 		tenant:            "third-party tenant",
 	}
 
-	plan := PlanAllowlist(events, ba, ownerLabel, baseline)
+	plan := PlanAllowlist(events, ba, testBoardD, ownerLabel, baseline)
 
 	if _, ok := plan.Final[agent.PubKeyHex()]; ok {
 		t.Errorf("revoked agent must be pruned from Final")
