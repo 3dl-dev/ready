@@ -74,6 +74,28 @@ func BuildHistoricalStatusEvent(k *nostr.Key, itemID, rdStatus, changedBy, reaso
 	return e, nil
 }
 
+// BuildHistoricalStatusEventWithBoard is BuildHistoricalStatusEvent PLUS an
+// additional board-membership "a" tag (ready-7ec), when boardCoord is
+// non-empty — the migration-replay counterpart to BuildStatusEventWithIssueRoot's
+// board tag, so a board-scoped negentropy filter matches MIGRATED status events
+// too, not just live-written ones. boardCoord == "" reproduces
+// BuildHistoricalStatusEvent's output exactly, so every existing caller
+// (including every current test) is untouched.
+func BuildHistoricalStatusEventWithBoard(k *nostr.Key, itemID, rdStatus, changedBy, boardCoord, reason string, createdAt int64) (*nostr.Event, error) {
+	e, err := BuildHistoricalStatusEvent(k, itemID, rdStatus, changedBy, reason, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	if boardCoord == "" {
+		return e, nil
+	}
+	e.Tags = append(e.Tags, []string{"a", boardCoord})
+	if err := e.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: sign historical status event (board): %w", err)
+	}
+	return e, nil
+}
+
 // CardSpecFromItem materializes a wire CardSpec from a derived *state.Item's
 // CURRENT state. It is the SINGLE source of truth for the item->card field mapping
 // (ready-187): the migration, every live write-path republish (create/claim/
@@ -166,6 +188,15 @@ func BuildItemMigrationEvents(k *nostr.Key, boardD string, item *state.Item) ([]
 	// documented in docs/nostr-migration.md). CROSS-item same-second concurrency stays
 	// the documented ready-194 limitation — this only orders an item against itself.
 	base := itemCreatedAtSecs(item)
+	// The migration always self-publishes the board it re-emits (see the caller,
+	// cmd/rd nostr migrate): the signer IS the board author, so the coordinate is
+	// derived from k directly, mirroring cardBoardCoord's fallback-to-signer path.
+	// Empty boardD (defensive; the migration always supplies one) skips the tag,
+	// matching BuildCardEvent's own skip-the-tag behaviour.
+	var boardCoord string
+	if boardD != "" {
+		boardCoord = BoardCoord(k.PubKeyHex(), boardD)
+	}
 	var statusEvents []*nostr.Event
 	var maxSec int64 = base
 	var prevSec int64
@@ -187,7 +218,7 @@ func BuildItemMigrationEvents(k *nostr.Key, boardD string, item *state.Item) ([]
 		if toStatus == "" {
 			toStatus = state.StatusInbox
 		}
-		se, err := BuildHistoricalStatusEvent(k, item.ID, toStatus, h.ChangedBy, h.Note, sec)
+		se, err := BuildHistoricalStatusEventWithBoard(k, item.ID, toStatus, h.ChangedBy, boardCoord, h.Note, sec)
 		if err != nil {
 			return nil, fmt.Errorf("sync: migrate %s history[%d]: %w", item.ID, i, err)
 		}

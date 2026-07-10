@@ -83,6 +83,64 @@ func TestBoardSyncFilterOmitsCoordWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestBoardSyncFilterMatchesCardAndStatusEvents is the ready-7ec proof: a
+// board-scoped negentropy filter (BoardSyncFilter(boardCoord, nil)) must match
+// BOTH the board's 30302 card AND its accompanying NIP-34 status event — before
+// this change it matched ONLY the card, because BuildStatusEvent's "a" tag was
+// always the CARD's own coordinate (30302:<signer>:<itemID>), never the board's
+// (30301:<owner>:<boardD>). A naive board-scoped sync therefore silently dropped
+// every status transition (claim/close/cancel), breaking NIP-34 status
+// convergence for anything but the author-scoped, whole-portfolio filter.
+//
+// This test proves the fix two ways: (1) the NEW status event shape (built via
+// BuildStatusEventWithIssueRoot with the board coordinate threaded through, the
+// same helper cardBoardCoord/PublishItemWithReason/PublishStatusChange now use)
+// matches the board filter, and (2) the OLD shape (BuildStatusEvent alone, no
+// board tag — reproducing pre-ready-7ec behaviour exactly) does NOT match it —
+// i.e. this is a real regression test, not a tautology that would pass either way.
+func TestBoardSyncFilterMatchesCardAndStatusEvents(t *testing.T) {
+	k := mustKey(t)
+	boardD := "ready-7ec"
+	boardCoord := BoardCoord(k.PubKeyHex(), boardD)
+	itemID := "ready-7ec-x1"
+
+	card, err := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "x1", Status: state.StatusActive, Type: "task", BoardD: boardD}, 1000)
+	if err != nil {
+		t.Fatalf("build card: %v", err)
+	}
+
+	// NEW shape: status event additively carries the board coordinate.
+	newStatus, err := BuildStatusEventWithIssueRoot(k, itemID, state.StatusDone, card.ID, "", boardCoord, "shipped", 1001)
+	if err != nil {
+		t.Fatalf("build status (with board): %v", err)
+	}
+
+	// OLD shape: status event carries ONLY the card coordinate (pre-ready-7ec).
+	oldStatus, err := BuildStatusEvent(k, itemID, state.StatusDone, card.ID, "shipped", 1001)
+	if err != nil {
+		t.Fatalf("build status (old shape): %v", err)
+	}
+
+	filter := BoardSyncFilter(boardCoord, nil)
+
+	if !matchesFilter(card, filter) {
+		t.Error("expected the card to match its own board-scoped filter")
+	}
+	if !matchesFilter(newStatus, filter) {
+		t.Error("BUG: board-scoped filter should match a status event carrying the board 'a' tag (ready-7ec fix), but it did not")
+	}
+	if matchesFilter(oldStatus, filter) {
+		t.Error("sanity check failed: the pre-fix status event shape (no board tag) unexpectedly matched the board filter")
+	}
+
+	// The card-coordinate anchor at tag position 0 must be UNCHANGED by the
+	// additive board tag — rd's own projection (tagValue, first-match) and the
+	// ready-da7 issue anchor depend on this.
+	if got, want := newStatus.Tags[0], ([]string{"a", CardCoord(k.PubKeyHex(), itemID)}); got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("card-coordinate anchor must remain the FIRST tag, got %v", newStatus.Tags[0])
+	}
+}
+
 // TestMergeFromDegradeFloor proves the relay-free degrade floor: machine B merges
 // machine A's committed JSONL log, gaining A's events, idempotently and with a
 // verify gate that rejects forged lines.

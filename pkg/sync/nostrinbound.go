@@ -56,8 +56,26 @@ func ReconcileItem(ctx context.Context, relays []string, log *NostrLog, itemID s
 // log stays authoritative, relays are best-effort/untrusted, every relay may be
 // offline, and only trusted-author events are merged (ready-d53).
 func ReconcileAll(ctx context.Context, relays []string, log *NostrLog, trusted map[string]bool, timeout time.Duration) (ReconcileResult, error) {
+	return ReconcileBoard(ctx, relays, log, "", trusted, timeout)
+}
+
+// ReconcileBoard is ReconcileAll additionally scoped to a single board coordinate
+// (ready-7ec): when boardCoord is non-empty, the relay query is filtered to
+// events whose "a" tag equals it, so a project with a PINNED board
+// (SyncConfig.Board) reconciles only its OWN board's cards+status events instead
+// of pulling the relay's ENTIRE portfolio (every project's every board) into the
+// local log — the same problem BoardSyncFilter already solved for negentropy
+// sync. Cards already carried the board "a" tag (BP-4); status events do too, now
+// that BuildStatusEventWithIssueRoot / BuildHistoricalStatusEventWithBoard
+// additively carry it (ready-7ec), so the board filter matches both event
+// families. boardCoord == "" reproduces ReconcileAll's unscoped behaviour exactly
+// (existing installs with no pinned board are unaffected).
+func ReconcileBoard(ctx context.Context, relays []string, log *NostrLog, boardCoord string, trusted map[string]bool, timeout time.Duration) (ReconcileResult, error) {
 	filter := map[string]any{
 		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
+	}
+	if boardCoord != "" {
+		filter["#a"] = []string{boardCoord}
 	}
 	return reconcile(ctx, relays, log, filter, "", trusted, timeout)
 }

@@ -106,7 +106,7 @@ func (p *Publisher) PublishItemWithReason(ctx context.Context, board *BoardSpec,
 		events = append(events, issueEvent)
 	}
 
-	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, reason, createdAt)
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt)
 	if err != nil {
 		return res, err
 	}
@@ -136,7 +136,7 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 		return res, err
 	}
 
-	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, reason, createdAt)
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt)
 	if err != nil {
 		return res, err
 	}
