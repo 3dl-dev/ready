@@ -260,10 +260,11 @@ func TestPublisher_OfflineBuffers(t *testing.T) {
 	if !res.Buffered {
 		t.Errorf("expected events to be buffered when no relay reachable")
 	}
-	// Authoritative log must contain the 3 events regardless of relay.
+	// Authoritative log must contain the 4 events regardless of relay: board+card+
+	// issue-root(ready-da7, additive NIP-34 interop anchor)+status.
 	evs, err := NewNostrLog(logPath).ReadAll()
-	if err != nil || len(evs) != 3 {
-		t.Fatalf("log should hold board+card+status offline: evs=%d err=%v", len(evs), err)
+	if err != nil || len(evs) != 4 {
+		t.Fatalf("log should hold board+card+issue+status offline: evs=%d err=%v", len(evs), err)
 	}
 	// Read-back from the LOCAL log alone reconstructs current state.
 	items := ProjectItems(evs, ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}})

@@ -64,8 +64,23 @@ type PublishResult struct {
 // PublishItem materializes an item as board+card+status events, appends them to
 // the authoritative log, and publishes to the write relays. createdAt is the
 // item's timestamp in unix SECONDS (NIP-01 granularity). board may be nil to
-// skip re-publishing the board event.
+// skip re-publishing the board event. Equivalent to PublishItemWithReason with
+// reason="" — unchanged behaviour for every existing caller.
 func (p *Publisher) PublishItem(ctx context.Context, board *BoardSpec, card CardSpec, createdAt int64) (PublishResult, error) {
+	return p.PublishItemWithReason(ctx, board, card, "", createdAt)
+}
+
+// PublishItemWithReason is PublishItem plus an explicit NIP-34 status-event
+// reason (ready-da7). It exists so the manual `rd nostr publish` path can carry
+// an item's already-recorded close/change reason (its last history entry's
+// note) through on republish — the create-time and status-change LIVE hooks
+// never had this gap (they receive the reason as an explicit argument already);
+// only the standalone republish command hand-carried an empty one. Also anchors
+// the status event to the item's NIP-34 kind:1621 issue-root event (additive,
+// generic-client interop — see BuildStatusEventWithIssueRoot), publishing that
+// issue event ONCE per item the first time this (or PublishStatusChange) is
+// called for it, never again on subsequent calls.
+func (p *Publisher) PublishItemWithReason(ctx context.Context, board *BoardSpec, card CardSpec, reason string, createdAt int64) (PublishResult, error) {
 	var res PublishResult
 	res.ItemID = card.ItemID
 
@@ -83,7 +98,15 @@ func (p *Publisher) PublishItem(ctx context.Context, board *BoardSpec, card Card
 	}
 	events = append(events, ce)
 
-	se, err := BuildStatusEvent(p.Key, card.ItemID, card.Status, ce.ID, "", createdAt)
+	issueID, issueEvent, err := p.ensureIssueEvent(card, createdAt)
+	if err != nil {
+		return res, err
+	}
+	if issueEvent != nil {
+		events = append(events, issueEvent)
+	}
+
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, reason, createdAt)
 	if err != nil {
 		return res, err
 	}
@@ -95,7 +118,10 @@ func (p *Publisher) PublishItem(ctx context.Context, board *BoardSpec, card Card
 // PublishStatusChange publishes a NIP-34 status event (with optional close/change
 // reason) for an existing item, plus a refreshed card materializing the new
 // current state. This is how status transitions (claim/done/fail/...) ride the
-// hybrid model: history via the status event, current state via the card.
+// hybrid model: history via the status event, current state via the card. The
+// status event also carries the item's NIP-34 issue-root anchor (ready-da7,
+// additive) — see PublishItemWithReason's doc for the one-issue-event-per-item
+// invariant.
 func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reason string, createdAt int64) (PublishResult, error) {
 	var res PublishResult
 	res.ItemID = card.ItemID
@@ -104,11 +130,44 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 	if err != nil {
 		return res, err
 	}
-	se, err := BuildStatusEvent(p.Key, card.ItemID, card.Status, ce.ID, reason, createdAt)
+
+	issueID, issueEvent, err := p.ensureIssueEvent(card, createdAt)
 	if err != nil {
 		return res, err
 	}
-	return p.publishEvents(ctx, res, []*nostr.Event{ce, se})
+
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, reason, createdAt)
+	if err != nil {
+		return res, err
+	}
+	events := []*nostr.Event{ce}
+	if issueEvent != nil {
+		events = append(events, issueEvent)
+	}
+	events = append(events, se)
+	return p.publishEvents(ctx, res, events)
+}
+
+// ensureIssueEvent returns the event id of card.ItemID's NIP-34 issue-root event
+// (ready-da7), building+signing a NEW one for the caller to append+publish only
+// when the item doesn't already have one in the local authoritative log. This
+// keeps the interop anchor to exactly ONE extra event per item's lifetime — not
+// one per status change/republish. Returns ("", nil, err) on a log read error;
+// the caller then fails the whole publish (matching every other build-step
+// error in this file) rather than silently skipping the anchor.
+func (p *Publisher) ensureIssueEvent(card CardSpec, createdAt int64) (issueID string, newEvent *nostr.Event, err error) {
+	existing, err := p.Log.ReadAll()
+	if err != nil {
+		return "", nil, fmt.Errorf("sync: reading log for issue-root lookup: %w", err)
+	}
+	if id := FindIssueEventID(existing, card.ItemID); id != "" {
+		return id, nil, nil
+	}
+	ie, err := BuildIssueEvent(p.Key, card, createdAt)
+	if err != nil {
+		return "", nil, err
+	}
+	return ie.ID, ie, nil
 }
 
 // PublishCardEdit publishes ONLY a refreshed 30302 card (no accompanying NIP-34

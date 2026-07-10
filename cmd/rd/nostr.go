@@ -501,7 +501,13 @@ var nostrPublishCmd = &cobra.Command{
 		if signer == boardAuthor {
 			boardArg = &board // only the owner can author the owner's board
 		}
-		res, err := pub.PublishItem(context.Background(), boardArg, card, time.Now().Unix())
+		// Carry the item's already-recorded close/change reason through the manual
+		// republish path too (ready-da7), matching publishItemStatusChangeNostr's
+		// explicit-reason live hook (ready-2cf/b5f) — this command previously always
+		// published its status event with an empty reason, dropping close-with-reason
+		// on ANY re-publish after the initial live write.
+		reason := lastStatusReason(item)
+		res, err := pub.PublishItemWithReason(context.Background(), boardArg, card, reason, time.Now().Unix())
 		if err != nil {
 			return err
 		}
@@ -518,6 +524,22 @@ var nostrPublishCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// lastStatusReason returns the reason/note associated with the item's CURRENT
+// status — the most recent history entry whose to_status matches item.Status —
+// or "" when there is none (e.g. a freshly-created item with no history yet, or
+// a status reached with no reason given). ready-da7: `rd nostr publish`
+// re-derives the reason from history (it has no reason argument of its own,
+// unlike the live claim/close/cancel hooks) so close-with-reason survives a
+// manual republish.
+func lastStatusReason(item *state.Item) string {
+	for i := len(item.History) - 1; i >= 0; i-- {
+		if item.History[i].ToStatus == item.Status {
+			return item.History[i].Note
+		}
+	}
+	return ""
 }
 
 // nostrReadyCmd is the ready-82c proof surface: it computes the SAME named-view
