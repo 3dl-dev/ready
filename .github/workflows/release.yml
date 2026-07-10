@@ -154,30 +154,6 @@ jobs:
             dist/*.sig
             dist/*.pem
 
-  publish-npm:
-    name: Publish npm package
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Set version and publish
-        run: |
-          VERSION="${{ needs.release.outputs.version_bare }}"
-          cd npm/ready
-          npm version $VERSION --no-git-tag-version --allow-same-version
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
   update-site:
     name: Update site version
     needs: release
