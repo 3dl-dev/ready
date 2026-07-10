@@ -180,7 +180,12 @@ func NegentropySyncMany(ctx context.Context, relays []string, log *NostrLog, fil
 // unit of machine<->machine sync: everything on one project board.
 func BoardSyncFilter(boardCoord string, authors []string) map[string]any {
 	f := map[string]any{
-		"kinds": []int{KindBoard, KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
+		// KindRoleGrant (39301) is included so owner-signed role-grants PROPAGATE across
+		// machines (GAP-1, ready-7c1): a second machine cannot derive read-trust for a
+		// granted contributor unless the grant reaches its local log. Grants carry the
+		// board "a" coordinate, so the #a board scope below matches them; in the
+		// author-scoped (unpinned) path the owner's grants match the authors filter.
+		"kinds": []int{KindBoard, KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant},
 	}
 	if boardCoord != "" {
 		f["#a"] = []string{boardCoord}

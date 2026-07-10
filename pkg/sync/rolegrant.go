@@ -267,16 +267,22 @@ func roleToLevel(role string) int {
 
 // DeriveLevels computes the graded operator-level map and each key's
 // authoritative-until timestamp from a set of signed events, for the authority
-// chain rooted at boardAuthor. It is the nostr port of NewStoreChecker
-// (checker.go) and is PURE: same inputs -> same outputs, no I/O, no clock.
+// chain rooted at the FULL board coordinate 30301:<boardAuthor>:<boardD>. It is the
+// nostr port of NewStoreChecker (checker.go) and is PURE: same inputs -> same
+// outputs, no I/O, no clock.
 //
 // Semantics (design §3, §4):
 //
 //   - Bootstrap: boardAuthor (the 30301 board author / owner) = level 2, the
 //     self-certifying trust anchor (checker.go:102-104).
-//   - Only verified 39301 events whose "a" coordinate names boardAuthor's board
-//     (owner == boardAuthor) are replayed — a grant on a foreign board's authority
-//     chain is ignored (a light BP-2 board binding; full board-D pinning is BP-3).
+//   - Only verified 39301 events whose "a" coordinate names the PINNED board
+//     coordinate EXACTLY — owner == boardAuthor AND d == boardD (GAP-2, ready-885) —
+//     are replayed. Binding by owner alone let a grant on 30301:<owner>:<other-d>
+//     be honored on the pinned board (cross-board grant bleed, contradicting design
+//     §3 "bound per board coordinate 30301:<author>:<d>"); the full-coordinate match
+//     closes it. An empty boardD matches no grant (grants always carry a non-empty
+//     boardD), so a caller that cannot resolve the pinned d derives only the
+//     bootstrap owner — fail-closed, never cross-board.
 //   - Grants are replayed in (created_at, id) order; latest per grantee wins via
 //     the same tie-break as card projection (newerThan, nostrproject.go:392).
 //   - ESCALATION CAP: only boardAuthor may sign a role=maintainer or role=owner
@@ -294,9 +300,36 @@ func roleToLevel(role string) int {
 // keys absent from the map are level 1 (default contributor), matching
 // checker.go's Level() fallback — callers must apply that default, not read a
 // missing key as level 0. The until map is populated in lockstep with levels.
-func DeriveLevels(events []*nostr.Event, boardAuthor string) (levels map[string]int, until map[string]int64) {
-	levels, until, _ = deriveGrants(events, boardAuthor)
+func DeriveLevels(events []*nostr.Event, boardAuthor, boardD string) (levels map[string]int, until map[string]int64) {
+	levels, until, _ = deriveGrants(events, boardAuthor, boardD)
 	return levels, until
+}
+
+// DeriveReadTrust returns the READ-TRUST membership set implied by the signed
+// role-grants for the pinned board coordinate 30301:<boardAuthor>:<boardD> (GAP-1,
+// ready-7c1): the board author (the bootstrap level-2 trust root — ALWAYS present,
+// which is what makes the bootstrap non-circular: owner-signed grants are admitted
+// because the owner is self-rooting from the pin) UNIONED with every grantee that
+// holds a cap-valid winning grant.
+//
+// A revoked grantee (level 0) IS included: its PAST authoritative events must stay
+// admissible so a completed item does not reopen (prospective revocation, design §3
+// A1). Dropping a revoked key from membership entirely would erase its past events —
+// the very bug the point-in-time authoritative-until gate exists to avoid. Future
+// events of a revoked key are dropped by that until gate at projection (and it is
+// pruned from the relay write-allowlist), so including it here is fail-closed.
+//
+// Fail-closed for the case that matters: a key that never received an owner-rooted
+// grant is ABSENT from the returned set, so an ungranted foreign key is never
+// admitted by grant-derivation — only self and the operator's bootstrap
+// Config.TrustedPubkeys can admit it, exactly as before.
+func DeriveReadTrust(events []*nostr.Event, boardAuthor, boardD string) map[string]bool {
+	levels, _, _ := deriveGrants(events, boardAuthor, boardD)
+	out := make(map[string]bool, len(levels))
+	for pk := range levels {
+		out[pk] = true
+	}
+	return out
 }
 
 // deriveGrants is the shared core of DeriveLevels and DeriveAllowlist: it replays
@@ -306,7 +339,7 @@ func DeriveLevels(events []*nostr.Event, boardAuthor string) (levels map[string]
 // replay means the graded read-trust set and the coarse relay allowlist derive from
 // exactly the same signed source — the drift the runbook warns about is closed
 // structurally (design §4, §6, A3), not by keeping two derivations in step by hand.
-func deriveGrants(events []*nostr.Event, boardAuthor string) (levels map[string]int, until map[string]int64, winning map[string]roleGrant) {
+func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map[string]int, until map[string]int64, winning map[string]roleGrant) {
 	levels = make(map[string]int)
 	until = make(map[string]int64)
 
@@ -331,9 +364,12 @@ func deriveGrants(events []*nostr.Event, boardAuthor string) (levels map[string]
 		if !ok {
 			continue
 		}
-		// Bind to the pinned board's authority chain: the grant's "a" owner must be
-		// the board author. A grant on a foreign board is not this board's authority.
-		if boardAuthor == "" || g.BoardOwner != boardAuthor {
+		// Bind to the pinned board's FULL authority coordinate (GAP-2, ready-885): the
+		// grant's "a" must name owner==boardAuthor AND d==boardD. Binding by owner alone
+		// honored a grant on 30301:<owner>:<any-other-d> on the pinned board — cross-board
+		// grant bleed. Requiring the full coordinate closes it; an empty boardD matches
+		// no grant (fail-closed), never every board.
+		if boardAuthor == "" || boardD == "" || g.BoardOwner != boardAuthor || g.BoardD != boardD {
 			continue
 		}
 		grants = append(grants, g)

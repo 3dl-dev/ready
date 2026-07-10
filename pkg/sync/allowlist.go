@@ -41,8 +41,8 @@ import (
 // hand-kept pubkey->label map). boardAuthorLabel labels the bootstrap owner key
 // (which has no grant of its own); when a later grant also names boardAuthor, that
 // grant's label wins.
-func DeriveAllowlist(events []*nostr.Event, boardAuthor, boardAuthorLabel string) map[string]string {
-	_, _, winning := deriveGrants(events, boardAuthor)
+func DeriveAllowlist(events []*nostr.Event, boardAuthor, boardD, boardAuthorLabel string) map[string]string {
+	_, _, winning := deriveGrants(events, boardAuthor, boardD)
 
 	out := make(map[string]string)
 	if boardAuthor != "" {
@@ -62,8 +62,8 @@ func DeriveAllowlist(events []*nostr.Event, boardAuthor, boardAuthorLabel string
 // the authority chain rooted at boardAuthor. A key is in this set iff it has an
 // explicit, currently-effective revoke — the only condition under which
 // PlanAllowlist permits removing a currently-admitted key.
-func revokedSet(events []*nostr.Event, boardAuthor string) map[string]bool {
-	_, _, winning := deriveGrants(events, boardAuthor)
+func revokedSet(events []*nostr.Event, boardAuthor, boardD string) map[string]bool {
+	_, _, winning := deriveGrants(events, boardAuthor, boardD)
 	out := make(map[string]bool)
 	for grantee, g := range winning {
 		if g.Role == RoleRevoked {
@@ -102,9 +102,9 @@ type AllowlistPlan struct {
 // removed IFF it has an explicit role=revoked grant; every other baseline key is
 // preserved. Pure and total — the CLI does the I/O (fetch baseline, write, push);
 // this decides the change so it is unit-testable without a relay.
-func PlanAllowlist(events []*nostr.Event, boardAuthor, boardAuthorLabel string, baseline map[string]string) AllowlistPlan {
-	derived := DeriveAllowlist(events, boardAuthor, boardAuthorLabel)
-	revoked := revokedSet(events, boardAuthor)
+func PlanAllowlist(events []*nostr.Event, boardAuthor, boardD, boardAuthorLabel string, baseline map[string]string) AllowlistPlan {
+	derived := DeriveAllowlist(events, boardAuthor, boardD, boardAuthorLabel)
+	revoked := revokedSet(events, boardAuthor, boardD)
 
 	final := make(map[string]string, len(derived)+len(baseline))
 	for pk, label := range derived {

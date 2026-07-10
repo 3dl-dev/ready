@@ -72,7 +72,13 @@ func ReconcileAll(ctx context.Context, relays []string, log *NostrLog, trusted m
 // (existing installs with no pinned board are unaffected).
 func ReconcileBoard(ctx context.Context, relays []string, log *NostrLog, boardCoord string, trusted map[string]bool, timeout time.Duration) (ReconcileResult, error) {
 	filter := map[string]any{
-		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
+		// KindRoleGrant (39301) rides along so owner-signed grants reach the local log
+		// on reconcile (GAP-1, ready-7c1) — a granted contributor's read-trust is derived
+		// from those grants. Grants carry the board "a" coordinate, so the #a scope below
+		// selects them; without a board scope they arrive with the rest of the board's
+		// events. itemIDForEvent maps a grant to its "d" (boardD:grantee), a non-item id,
+		// so a grant is merged into the log but never mistaken for a card/status.
+		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant},
 	}
 	if boardCoord != "" {
 		filter["#a"] = []string{boardCoord}
@@ -115,6 +121,16 @@ func reconcile(ctx context.Context, relays []string, log *NostrLog, filter map[s
 			// relay cannot poison the local authoritative log with events signed by
 			// a foreign key. A nil `trusted` set disables the gate.
 			if trusted != nil && !trusted[e.PubKey] {
+				continue
+			}
+			// A role-grant (39301) carries no item id but IS an authoritative rd event: its
+			// owner signature feeds grant-derived read-trust (GAP-1, ready-7c1), so it must
+			// reach the local log. Admit it directly (it is trusted+verified above); the
+			// per-item wantItemID post-filter does not apply — grants are board-scoped, not
+			// item-scoped, and ReconcileItem's kind filter excludes them anyway.
+			if e.Kind == KindRoleGrant {
+				fetched = append(fetched, e)
+				res.Fetched++
 				continue
 			}
 			id := itemIDForEvent(e)

@@ -108,6 +108,18 @@ func (opts ProjectOptions) trusts(pubkey string) bool {
 	return opts.Trusted[pubkey]
 }
 
+// grantTrusts reports whether pubkey is admitted to read-trust by the grant-derived
+// level map for the pinned board (GAP-1, ready-7c1). Presence in `levels` means the
+// key is the board author (bootstrap trust root) or holds a cap-valid winning grant —
+// including a revoked one (level 0), whose PAST events must survive (prospective
+// revocation; the until gate drops its future events). When no board is pinned
+// `levels` is empty, so this contributes nothing and the pre-GAP-1 opts.Trusted gate
+// stands alone.
+func grantTrusts(levels map[string]int, pubkey string) bool {
+	_, ok := levels[pubkey]
+	return ok
+}
+
 // ProjectItems reconstructs current item state from a signed-event log slice
 // (already read in append order). It returns a map keyed by rd item ID.
 //
@@ -124,8 +136,10 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	var levels map[string]int
 	var until map[string]int64
 	if opts.PinnedBoard != "" {
-		if owner, _, ok := parseBoardCoord(opts.PinnedBoard); ok {
-			levels, until = DeriveLevels(events, owner)
+		if owner, boardD, ok := parseBoardCoord(opts.PinnedBoard); ok {
+			// GAP-2 (ready-885): bind to the FULL pinned coordinate (owner + boardD), not
+			// the owner alone, so a grant on a different boardD cannot bleed onto this board.
+			levels, until = DeriveLevels(events, owner, boardD)
 		}
 	}
 
@@ -188,7 +202,20 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		// an untrusted key can never influence the winning card, status authority,
 		// or history — even if the event reached the local log (defence in depth
 		// with the ingestion gate in reconcile()).
-		if !opts.trusts(e.PubKey) {
+		//
+		// GRANT-DERIVED READ-TRUST (GAP-1, ready-7c1 — "one signed source feeds
+		// everything"): admission is opts.Trusted (bootstrap: self + Config.TrustedPubkeys)
+		// UNIONED with the grant-derived membership for the pinned board (`levels`, which
+		// includes the board author and every cap-valid grantee — see DeriveReadTrust).
+		// So an owner-GRANTED contributor absent from rd.json is admitted by its
+		// owner-signed grant alone, and projection agrees with the grant-fed ingestion
+		// gate. This is non-circular: the board author is always in `levels` (bootstrap),
+		// so owner-signed grants are always admitted and each admitted grant expands the
+		// set. Fail-closed: a key with neither a grant nor a config/self entry is still
+		// dropped. Prospective revocation is enforced by the until gate just below — a
+		// revoked key stays in `levels` (level 0) so its PAST events survive; its future
+		// events drop on `until`.
+		if !opts.trusts(e.PubKey) && !grantTrusts(levels, e.PubKey) {
 			continue
 		}
 		// POINT-IN-TIME READ-TRUST (BP-3, design §3 A1 — prospective revocation): a key
