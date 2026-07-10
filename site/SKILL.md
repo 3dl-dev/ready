@@ -1,6 +1,6 @@
 ---
 name: rd
-description: "Work management on campfire. Use when the user asks about work items, tasks, bugs, or what needs attention. Commands: rd ready, rd create, rd claim, rd done, rd list, rd delegate, rd invite, rd gate."
+description: "Nostr-native work management. Use when the user asks about work items, tasks, bugs, or what needs attention. Commands: rd ready, rd create, rd claim, rd done, rd list, rd delegate, rd invite, rd gate."
 argument-hint: "<command> [args]"
 ---
 
@@ -26,7 +26,7 @@ Running rd $ARGUMENTS.
 | `rd gate <id> --gate-type design --description "..."` | Escalate to a human |
 | `rd gates` | Show pending escalations |
 | `rd approve <id> --reason "..."` | Approve a gate |
-| `rd init --name <project>` | Create a work campfire |
+| `rd init --name <project>` | Initialize a project (local signed-event log + board) |
 
 ## Usage
 
@@ -41,7 +41,7 @@ rd $ARGUMENTS 2>&1
 If the command fails with "rd: command not found", tell the user to install it:
 
 ```
-curl -fsSL https://ready.getcampfire.dev/install.sh | sh
+curl -fsSL https://ready.3dl.dev/install.sh | sh
 ```
 
 ## Resuming work after context loss

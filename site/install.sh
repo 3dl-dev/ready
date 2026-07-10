@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ready (rd) install script
-# Usage: curl -fsSL https://ready.getcampfire.dev/install.sh | sh
+# Usage: curl -fsSL https://ready.3dl.dev/install.sh | sh
 #
 # Installs rd to ~/.local/bin
 
@@ -195,11 +195,11 @@ main() {
 
   info "Next steps:"
   printf "\n"
-  printf "  rd init --name myproject       # create a work campfire\n"
+  printf "  rd init --name myproject       # initialize a project\n"
   printf "  rd create --title \"First task\" # create an item\n"
   printf "  rd ready                       # what needs attention?\n"
   printf "\n"
-  printf "  Docs: https://ready.getcampfire.dev\n"
+  printf "  Docs: https://ready.3dl.dev\n"
   printf "  Source: https://github.com/campfire-net/ready\n"
   printf "\n"
 }
