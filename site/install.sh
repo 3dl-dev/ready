@@ -6,7 +6,7 @@
 
 set -e
 
-REPO="campfire-net/ready"
+REPO="3dl-dev/ready"
 INSTALL_DIR="${HOME}/.local/bin"
 
 # Colors (only if terminal supports them)
@@ -143,7 +143,7 @@ main() {
         if cosign verify-blob \
              --certificate "${TMP_DIR}/checksums.txt.pem" \
              --signature "${TMP_DIR}/checksums.txt.sig" \
-             --certificate-identity-regexp "https://github.com/campfire-net/ready/" \
+             --certificate-identity-regexp "https://github.com/3dl-dev/ready/" \
              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
              "${TMP_DIR}/checksums.txt" 2>/dev/null; then
           success "  Signature OK (cosign, GitHub Actions OIDC)"
@@ -200,7 +200,7 @@ main() {
   printf "  rd ready                       # what needs attention?\n"
   printf "\n"
   printf "  Docs: https://ready.3dl.dev\n"
-  printf "  Source: https://github.com/campfire-net/ready\n"
+  printf "  Source: https://github.com/3dl-dev/ready\n"
   printf "\n"
 }
 

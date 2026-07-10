@@ -6,7 +6,7 @@
     solo: {
       title: 'Solo workflow',
       subtitle: '01-solo.sh',
-      source: 'https://github.com/campfire-net/ready/blob/main/test/demo/01-solo.sh',
+      source: 'https://github.com/3dl-dev/ready/blob/main/test/demo/01-solo.sh',
       lines: [
         { type: 'comment', text: '# Initialize a project' },
         { type: 'cmd', text: 'rd init --name myproject' },
@@ -35,7 +35,7 @@
     team: {
       title: 'Team with invite tokens',
       subtitle: '02-team.sh',
-      source: 'https://github.com/campfire-net/ready/blob/main/test/demo/02-team.sh',
+      source: 'https://github.com/3dl-dev/ready/blob/main/test/demo/02-team.sh',
       lines: [
         { type: 'comment', text: '# Owner creates project and generates invite' },
         { type: 'cmd', text: 'rd init --name backend' },
@@ -65,7 +65,7 @@
     gate: {
       title: 'Agent escalation',
       subtitle: '06-gate-escalation.sh',
-      source: 'https://github.com/campfire-net/ready/blob/main/test/demo/06-gate-escalation.sh',
+      source: 'https://github.com/3dl-dev/ready/blob/main/test/demo/06-gate-escalation.sh',
       lines: [
         { type: 'comment', text: '# Agent hits a decision point' },
         { type: 'cmd', text: 'rd gate myapp-dd6 --gate-type design \\' },
@@ -93,7 +93,7 @@
     isolation: {
       title: 'Walk-up agent isolation',
       subtitle: '11-filesystem-isolation.sh',
-      source: 'https://github.com/campfire-net/ready/blob/main/test/demo/11-filesystem-isolation.sh',
+      source: 'https://github.com/3dl-dev/ready/blob/main/test/demo/11-filesystem-isolation.sh',
       lines: [
         { type: 'comment', text: '# Project directory with two agent worktrees' },
         { type: 'output', text: 'myproject/' },
