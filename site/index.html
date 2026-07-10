@@ -345,7 +345,7 @@ This project uses `rd` for work management.
           <div class="ds-code-block tier-code"><span class="cmd">rd init --name myproject</span>
 <span class="output">initialized myproject</span>
 <span class="output">  campfire: 6ef132115eed...</span>
-<span class="output">  declarations: 16 operations published</span>
+<span class="output">  declarations: 19 operations published</span>
 
 <span class="cmd">ITEM=$(rd create "Ship login page" --priority p1 --type task)</span>
 <span class="cmd">rd ready</span>
@@ -467,11 +467,11 @@ This project uses `rd` for work management.
           State is derived from the message log &mdash; there's no separate database.</p>
           <p style="margin-top: var(--ds-space-sm);">
           Convention operations are declared in the campfire itself. When <code>rd init</code> runs,
-          it publishes 12 <code>convention:operation</code> declarations that describe every operation,
+          it publishes 19 <code>convention:operation</code> declarations that describe every operation,
           its arguments, and its constraints. Any agent reading the campfire knows what's possible.</p>
         </div>
         <div>
-          <h3>10 operations, complete vocabulary</h3>
+          <h3>The core work vocabulary</h3>
           <div class="ds-code-block" style="font-size: 12px;"><span class="output">work:create       — new item with full payload
 work:claim        — accept work, become performer
 work:status       — transition status
@@ -546,10 +546,6 @@ work:close        — terminal close with reason</span></div>
         <div class="install-option">
           <h3>Shell (Linux / macOS)</h3>
           <div class="ds-code-block">curl -fsSL https://ready.getcampfire.dev/install.sh | sh</div>
-        </div>
-        <div class="install-option">
-          <h3>Homebrew</h3>
-          <div class="ds-code-block">brew install campfire-net/tap/ready</div>
         </div>
         <div class="install-option">
           <h3>npx (no install)</h3>
