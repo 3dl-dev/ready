@@ -185,6 +185,16 @@ var nostrPinBoardCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("no .ready project directory found")
 		}
+		force, _ := cmd.Flags().GetBool("force")
+		if !force {
+			if _, _, campfireOK := projectRoot(); campfireOK {
+				return fmt.Errorf(".campfire/root exists — this project is campfire-backed; " +
+					"pinning a nostr board here would silently orphan the existing campfire " +
+					"history (all future reads/writes would resolve only from the nostr " +
+					"projection). Run 'rd migrate' to move history to nostr instead, or pass " +
+					"--force to pin anyway (existing campfire history will become invisible)")
+			}
+		}
 		owner, _ := cmd.Flags().GetString("owner")
 		boardD, _ := cmd.Flags().GetString("board-d")
 		if owner == "" {
@@ -479,6 +489,7 @@ func init() {
 	nostrRevokeCmd.Flags().Int64("from", 0, "retroactive repudiation from this unix time (0 = prospective / effective now)")
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
+	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though .campfire/root exists (orphans existing campfire history — prefer 'rd migrate')")
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")
