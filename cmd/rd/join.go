@@ -88,7 +88,14 @@ EXAMPLES
 		nameOrID := args[0]
 		force, _ := cmd.Flags().GetBool("force")
 
-		// Detect invite token (rdx1_ prefix) — takes a completely different path.
+		// Detect a nostr mint-and-ship token (rd1_ prefix) — imports the minted
+		// secp256k1 key, pins the board, adopts relays, and syncs (ready-a49).
+		if strings.HasPrefix(nameOrID, nostrInviteTokenPrefix) {
+			return joinViaNostrInviteToken(nameOrID, force)
+		}
+
+		// Detect a campfire invite token (rdx1_ prefix) — takes a completely
+		// different path (campfire admit + ed25519 seed).
 		if strings.HasPrefix(nameOrID, inviteTokenPrefix) {
 			return joinViaInviteToken(nameOrID, force)
 		}

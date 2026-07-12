@@ -54,6 +54,20 @@ EXAMPLES
 		ttl, _ := cmd.Flags().GetDuration("ttl")
 		role, _ := cmd.Flags().GetString("role")
 
+		// Nostr-native projects (a pinned board) mint a nostr mint-and-ship rd1_
+		// token instead of a campfire admit + ed25519-seed rdx1_ token (ready-a49):
+		// a fresh secp256k1 key, an owner-signed kind-39301 contributor grant, and
+		// the board coord + relays + TTL + one-use nonce + secret bundled in the
+		// token. The campfire path below stays for campfire-backed projects.
+		if _, native := nostrNativeProject(); native {
+			token, err := runNostrInvite(ttl)
+			if err != nil {
+				return err
+			}
+			fmt.Println(token)
+			return nil
+		}
+
 		// Load project campfire ID.
 		projectDir, ok := readyProjectDir()
 		if !ok {

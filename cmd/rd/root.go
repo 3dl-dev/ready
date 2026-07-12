@@ -96,7 +96,8 @@ func init() {
 		// If we let protocol.Init run here first, it auto-generates a throwaway
 		// identity, causing joinViaInviteToken to see an "existing" identity and
 		// refuse without --force. (ready-167)
-		if cmd.Name() == "join" && len(args) > 0 && strings.HasPrefix(args[0], inviteTokenPrefix) {
+		if cmd.Name() == "join" && len(args) > 0 &&
+			(strings.HasPrefix(args[0], inviteTokenPrefix) || strings.HasPrefix(args[0], nostrInviteTokenPrefix)) {
 			return nil
 		}
 
