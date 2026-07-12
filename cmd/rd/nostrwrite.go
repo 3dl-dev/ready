@@ -161,7 +161,7 @@ func publishItemFullCreateNostr(dir, signer string, item *state.Item) error {
 	if signer == boardAuthor {
 		boardArg = &board
 	}
-	res, err := pub.PublishItem(context.Background(), boardArg, card, nostrNextCreatedAt(pub.Log))
+	res, err := pub.PublishItem(context.Background(), boardArg, card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
 	}

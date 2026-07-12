@@ -915,3 +915,218 @@ func TestLiveRelay_CreateHookPublishesToLockedRelay(t *testing.T) {
 	}
 	t.Logf("PROVEN: cmd/rd create hook published %d event(s) for %s under the allowlisted key, ACCEPTED by a live relay", len(events), itemID)
 }
+
+// ===========================================================================
+// ready-be1 — nostrNextCreatedAt future-drift -> cross-machine lost update.
+//
+// nostrNextCreatedAt stamps createdAt = max(now, newest+1). BEFORE ready-be1 the
+// "newest" was the LOG-WIDE newest, so a burst of same-second writes to UNRELATED
+// items/grantees drifted the created_at of the NEXT write to ANY item/grantee one
+// second per burst event — pushing a FRESH card/grant arbitrarily into the future.
+// Because latest-wins (newerThan / DeriveLevels) orders purely by (created_at, id),
+// that future-drifted card/grant then BEAT a genuinely-later edit/REVOKE issued at
+// real wall-clock time by another machine: a silent lost update / ignored revoke
+// (violating ready-f92 cross-machine convergence). The MaxCreatedAtSkew=15min
+// ingestion gate only rejects drift BEYOND 15min, so drift inside that window (a few
+// hundred writes) is admitted cross-machine and the bug bites — these tests keep the
+// drift < 15min so the skew defense does NOT mask it.
+//
+// ready-be1 scopes "newest" to the writing item's / grantee-grant's OWN causal chain,
+// so an unrelated burst can no longer poison a fresh chain, while same-chain intent
+// order is preserved. Ordering key (created_at, id) is untouched — convergence holds.
+// ===========================================================================
+
+// TestNostrNextCreatedAt_ScopedToChain_NoCrossChainDrift is the root-cause unit test:
+// an unrelated burst that drove the log's newest event minutes into the future must
+// NOT drift a brand-new item's stamp (different causal chain), yet the SAME item's
+// chain must still be strictly monotonic (intent order for sequential same-machine
+// writes like `rd create && rd claim`).
+func TestNostrNextCreatedAt_ScopedToChain_NoCrossChainDrift(t *testing.T) {
+	base := t.TempDir()
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	log := rdSync.NewNostrLog(filepath.Join(base, "log.jsonl"))
+	now := time.Now().Unix()
+
+	// A burst drove the log's newest event to now+300 (5 min of drift), all on item Y.
+	drift, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{ItemID: "ready-Y", Title: "y", Status: state.StatusActive, Priority: "p2", BoardD: "ready"}, now+300)
+	if err != nil {
+		t.Fatalf("build drift card: %v", err)
+	}
+	if err := log.Append(drift); err != nil {
+		t.Fatalf("append drift card: %v", err)
+	}
+
+	// A brand-new item X (different chain) must be stamped at ~now, NOT now+300.
+	gotX := nostrNextCreatedAt(log, rdSync.ItemDriftScope("ready-X"))
+	if gotX > now+2 {
+		t.Fatalf("cross-chain future drift: fresh item X stamped %ds ahead of now (got=%d now=%d); an unrelated burst on item Y poisoned it", gotX-now, gotX, now)
+	}
+
+	// The SAME chain still gets strict monotonicity — intent order preserved.
+	gotY := nostrNextCreatedAt(log, rdSync.ItemDriftScope("ready-Y"))
+	if gotY != now+301 {
+		t.Fatalf("same-chain monotonicity broken: next write to Y stamped %d, want %d (newest-for-Y + 1)", gotY, now+301)
+	}
+}
+
+// TestNostr_CrossMachineLostUpdate_CardFutureDriftBeatsHonestEdit reproduces the
+// end-to-end card lost update: machine A burst-drifts its log, then stamps item X's
+// card via nostrNextCreatedAt; machine B makes an HONEST edit of X at real wall-clock
+// time (genuinely later than A's real write, but BEFORE A's inflated stamp); after
+// convergence through the REAL skew gate + projection, the honest edit must win.
+func TestNostr_CrossMachineLostUpdate_CardFutureDriftBeatsHonestEdit(t *testing.T) {
+	base := t.TempDir()
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	self := k.PubKeyHex()
+	now := time.Now().Unix()
+	const itemID = "ready-lu1"
+	const driftSecs = 120 // < MaxCreatedAtSkew(15min): A's card is ADMITTED cross-machine.
+
+	// --- Machine A: an unrelated burst drove A's log newest to now+driftSecs. ---
+	aLogPath := filepath.Join(base, "a.jsonl")
+	aLog := rdSync.NewNostrLog(aLogPath)
+	burst, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{ItemID: "ready-burst", Title: "burst", Status: state.StatusActive, Priority: "p2", BoardD: "ready"}, now+driftSecs)
+	if err != nil {
+		t.Fatalf("build burst card: %v", err)
+	}
+	if err := aLog.Append(burst); err != nil {
+		t.Fatalf("append burst: %v", err)
+	}
+	// A creates item X — stamp comes from the code under test.
+	aTs := nostrNextCreatedAt(aLog, rdSync.ItemDriftScope(itemID))
+	aCard, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{ItemID: itemID, Title: "A-stale", Status: state.StatusActive, Priority: "p1", BoardD: "ready"}, aTs)
+	if err != nil {
+		t.Fatalf("build A card: %v", err)
+	}
+	if err := aLog.Append(aCard); err != nil {
+		t.Fatalf("append A card: %v", err)
+	}
+
+	// --- Machine B: HONEST edit of X at real now+10 (10s genuinely after A's real
+	// create), no burst -> no drift. ---
+	bCard, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{ItemID: itemID, Title: "B-honest", Status: state.StatusActive, Priority: "p1", BoardD: "ready"}, now+10)
+	if err != nil {
+		t.Fatalf("build B card: %v", err)
+	}
+	bLogPath := filepath.Join(base, "b.jsonl")
+	bLog := rdSync.NewNostrLog(bLogPath)
+	if err := bLog.Append(bCard); err != nil {
+		t.Fatalf("append B card: %v", err)
+	}
+
+	// --- Converge on machine B through the REAL skew gate (AppendUnique via MergeFrom). ---
+	trust := map[string]bool{self: true}
+	if _, err := bLog.MergeFrom(aLogPath, trust); err != nil {
+		t.Fatalf("merge A into B: %v", err)
+	}
+	events, err := bLog.ReadAll()
+	if err != nil {
+		t.Fatalf("read B log: %v", err)
+	}
+	// Precondition: A's future-drifted card really was ADMITTED (skew gate did NOT mask
+	// the bug) — otherwise the test proves nothing.
+	haveA := false
+	for _, e := range events {
+		if e.ID == aCard.ID {
+			haveA = true
+		}
+	}
+	if !haveA {
+		t.Fatalf("precondition failed: A's card (drift %ds) was rejected by the skew gate; cannot exercise the lost update", driftSecs)
+	}
+
+	items := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trust})
+	it, ok := items[itemID]
+	if !ok {
+		t.Fatalf("item %s not projected", itemID)
+	}
+	if it.Title != "B-honest" {
+		t.Fatalf("cross-machine LOST UPDATE: honest later edit (real now+10) lost to future-drifted card (now+%d); projected title=%q want %q (aTs=%d now=%d)",
+			driftSecs, it.Title, "B-honest", aTs, now)
+	}
+}
+
+// TestNostr_CrossMachineLostRevoke_GrantFutureDriftBeatsHonestRevoke reproduces the
+// lost-REVOKE variant on the 39301 role-grant chain: machine A burst-drifts its log,
+// then stamps a contributor grant for G via nostrNextCreatedAt; machine B (the owner)
+// HONESTLY revokes G at real wall-clock time. After convergence, DeriveLevels must see
+// the revoke win — G must be level 0 (revoked), not left admitted by the stale grant.
+func TestNostr_CrossMachineLostRevoke_GrantFutureDriftBeatsHonestRevoke(t *testing.T) {
+	base := t.TempDir()
+	owner, err := nostr.GenerateKey() // board author: only the owner may grant/revoke contributor
+	if err != nil {
+		t.Fatalf("generate owner key: %v", err)
+	}
+	ownerPub := owner.PubKeyHex()
+	gKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate grantee key: %v", err)
+	}
+	grantee := gKey.PubKeyHex()
+	otherKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate other key: %v", err)
+	}
+	const boardD = "ready"
+	now := time.Now().Unix()
+	const driftSecs = 120 // < MaxCreatedAtSkew.
+
+	// --- Machine A: an unrelated grant burst drove A's log newest to now+driftSecs. ---
+	aLogPath := filepath.Join(base, "a.jsonl")
+	aLog := rdSync.NewNostrLog(aLogPath)
+	burst, err := rdSync.BuildRoleGrantEvent(owner, rdSync.RoleGrantSpec{BoardD: boardD, BoardAuthor: ownerPub, Grantee: otherKey.PubKeyHex(), Role: rdSync.RoleContributor}, now+driftSecs)
+	if err != nil {
+		t.Fatalf("build burst grant: %v", err)
+	}
+	if err := aLog.Append(burst); err != nil {
+		t.Fatalf("append burst grant: %v", err)
+	}
+	// A grants G contributor — stamp from the code under test (per-grantee scope).
+	aTs := nostrNextCreatedAt(aLog, rdSync.GrantDriftScope(boardD, grantee))
+	grant, err := rdSync.BuildRoleGrantEvent(owner, rdSync.RoleGrantSpec{BoardD: boardD, BoardAuthor: ownerPub, Grantee: grantee, Role: rdSync.RoleContributor}, aTs)
+	if err != nil {
+		t.Fatalf("build grant: %v", err)
+	}
+	if err := aLog.Append(grant); err != nil {
+		t.Fatalf("append grant: %v", err)
+	}
+
+	// --- Machine B: owner HONESTLY revokes G at real now+10 (10s after the real grant),
+	// no burst -> no drift. ---
+	revoke, err := rdSync.BuildRoleGrantEvent(owner, rdSync.RoleGrantSpec{BoardD: boardD, BoardAuthor: ownerPub, Grantee: grantee, Role: rdSync.RoleRevoked}, now+10)
+	if err != nil {
+		t.Fatalf("build revoke: %v", err)
+	}
+	bLogPath := filepath.Join(base, "b.jsonl")
+	bLog := rdSync.NewNostrLog(bLogPath)
+	if err := bLog.Append(revoke); err != nil {
+		t.Fatalf("append revoke: %v", err)
+	}
+
+	// --- Converge on machine B through the REAL skew gate. ---
+	trust := map[string]bool{ownerPub: true, grantee: true}
+	if _, err := bLog.MergeFrom(aLogPath, trust); err != nil {
+		t.Fatalf("merge A into B: %v", err)
+	}
+	events, err := bLog.ReadAll()
+	if err != nil {
+		t.Fatalf("read B log: %v", err)
+	}
+
+	levels, until := rdSync.DeriveLevels(events, ownerPub, boardD)
+	if levels[grantee] != rdSync.LevelRevoked {
+		t.Fatalf("cross-machine LOST REVOKE: honest revoke (real now+10) lost to future-drifted grant (now+%d); grantee level=%d want %d (revoked). aTs=%d now=%d",
+			driftSecs, levels[grantee], rdSync.LevelRevoked, aTs, now)
+	}
+	// The point-in-time revocation gate must be armed at the revoke time (now+10), NOT
+	// left at +infinity (which is what a surviving grant would yield).
+	if u, ok := until[grantee]; !ok || u != now+10 {
+		t.Fatalf("revoke not authoritative: authoritative-until for G = %d (ok=%v), want %d (the revoke's created_at)", u, ok, now+10)
+	}
+}

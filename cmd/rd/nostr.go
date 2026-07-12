@@ -120,20 +120,31 @@ func nostrTrustSet(dir, selfPubkey string) map[string]bool {
 	return set
 }
 
-// nostrNextCreatedAt returns a strictly-monotonic-per-log event timestamp in unix
-// SECONDS: max(now, newestLoggedSecond+1). The nostr projection resolves latest-
-// wins at second granularity, tie-breaking identical seconds by event id (ready-f92,
-// for cross-machine convergence). That tie-break is order-INDEPENDENT, so two
-// mutations issued within the same wall-clock second (e.g. a scripted
+// nostrNextCreatedAt returns a strictly-monotonic-PER-CAUSAL-CHAIN event timestamp
+// in unix SECONDS: max(now, newestSecondForThisScope+1). scope is the target write's
+// DriftScope (rdSync.ItemDriftScope / GrantDriftScope). The nostr projection resolves
+// latest-wins at second granularity, tie-breaking identical seconds by event id
+// (ready-f92, for cross-machine convergence). That tie-break is order-INDEPENDENT, so
+// two mutations issued within the same wall-clock second (e.g. a scripted
 // `rd create && rd claim`, common on the nostr-native default path) would otherwise
-// resolve in content-hash order, not intent order — a create card could win over
-// the later claim card, leaving the item stuck at inbox. Stamping each successive
-// same-machine write at least one second AFTER the newest event already in the
-// authoritative log restores intent order for sequential writes WITHOUT weakening
-// convergence: genuinely concurrent cross-machine events (identical created_at)
-// still tie-break by id, and the campfire path never called this. Degrades to
-// time.Now on a log read error (the pre-existing same-second behaviour).
-func nostrNextCreatedAt(log *rdSync.NostrLog) int64 {
+// resolve in content-hash order, not intent order — a create card could win over the
+// later claim card, leaving the item stuck at inbox. Stamping each successive write at
+// least one second AFTER the newest event ALREADY IN THIS SCOPE restores intent order
+// for that item's (or that grantee-grant's) sequential writes.
+//
+// ready-be1 — SCOPED, not log-wide: the newest is taken over events in the SAME causal
+// chain only, never the whole log. Latest-wins orders each item's card/status chain and
+// each role-grant slot independently, so intent ordering only needs to hold within a
+// chain. The old log-wide max let an unrelated burst (rd engage over N items, a grant
+// burst) inflate the created_at of the NEXT write to ANY item/grantee by one second per
+// burst event — drifting a fresh card/grant arbitrarily into the future, where it beat a
+// genuinely-later cross-machine edit/REVOKE (silent lost update / ignored revoke,
+// violating ready-f92 convergence). Scoping bounds any single card/grant's future-drift
+// to the count of same-second writes to THAT chain (a couple of seconds), so an honest
+// later real-time edit from another machine wins. Convergence is unchanged: the ordering
+// key (created_at, id) is untouched; genuinely concurrent cross-machine events still
+// tie-break by id. Degrades to time.Now on a log read error (the pre-existing behaviour).
+func nostrNextCreatedAt(log *rdSync.NostrLog, scope string) int64 {
 	now := time.Now().Unix()
 	events, err := log.ReadAll()
 	if err != nil {
@@ -141,6 +152,9 @@ func nostrNextCreatedAt(log *rdSync.NostrLog) int64 {
 	}
 	var max int64
 	for _, e := range events {
+		if rdSync.DriftScope(e) != scope {
+			continue // different causal chain — its drift must not poison this write
+		}
 		if e.CreatedAt > max {
 			max = e.CreatedAt
 		}
@@ -259,7 +273,7 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		boardArg = &board
 	}
 	ctx := context.Background()
-	res, err := pub.PublishItem(ctx, boardArg, card, nostrNextCreatedAt(pub.Log))
+	res, err := pub.PublishItem(ctx, boardArg, card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(itemID)))
 	if err != nil {
 		return err
 	}
@@ -315,7 +329,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log))
+	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
 	}
@@ -344,7 +358,7 @@ func publishItemCardEditNostr(item *state.Item) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log))
+	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
 	}

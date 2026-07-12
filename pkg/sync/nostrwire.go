@@ -478,6 +478,50 @@ func isStatusKind(kind int) bool {
 	return kind >= KindStatusOpen && kind <= KindStatusDraft
 }
 
+// DriftScope returns the CAUSAL-CHAIN key an event belongs to, for per-scope
+// monotonic created_at stamping (ready-be1). Latest-wins projection orders each
+// item card / status chain and each role-grant slot INDEPENDENTLY, so intent
+// ordering only ever needs to hold WITHIN one such chain — never log-wide. Scoping
+// the monotonic "newest+1" bump to the chain (instead of the whole log) bounds the
+// future-drift of any single card/grant to the number of same-second writes TO THAT
+// SAME chain (create+claim+a few edits — a couple of seconds), so an unrelated burst
+// (rd engage over N items, a grant burst) can no longer inflate a fresh card/grant's
+// created_at arbitrarily into the future and beat a genuinely-later cross-machine
+// edit/revoke (the ready-be1 lost-update / lost-revoke). Returns "" for an event
+// with no rd causal chain (it then matches no scope).
+func DriftScope(e *nostr.Event) string {
+	if e == nil {
+		return ""
+	}
+	if e.Kind == KindRoleGrant {
+		if d := tagValue(e, "d"); d != "" {
+			return "grant:" + d
+		}
+		return ""
+	}
+	if e.Kind == KindBoard {
+		if d := tagValue(e, "d"); d != "" {
+			return "board:" + d
+		}
+		return ""
+	}
+	if id := itemIDForEvent(e); id != "" {
+		return "item:" + id
+	}
+	return ""
+}
+
+// ItemDriftScope is the DriftScope key for an item's card/status/issue chain. A
+// caller about to publish a mutation for itemID passes this to nostrNextCreatedAt so
+// the monotonic bump considers only THIS item's prior events.
+func ItemDriftScope(itemID string) string { return "item:" + itemID }
+
+// GrantDriftScope is the DriftScope key for a role-grant's addressable (board,
+// grantee) slot — matching DriftScope of a 39301 event whose "d" is roleGrantD(
+// boardD, grantee). A grant and its later revoke share this scope, so a revoke
+// stamps strictly after the grant it supersedes without log-wide drift.
+func GrantDriftScope(boardD, grantee string) string { return "grant:" + roleGrantD(boardD, grantee) }
+
 // itemIDForEvent extracts the rd item ID an event pertains to. Cards carry it in
 // "d"; status events carry it in "d" and/or the "a" coordinate. Returns "" when
 // the event is not an rd item event (e.g. a board).

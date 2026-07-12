@@ -91,13 +91,17 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 		From:        from,
 		Label:       label,
 	}
-	// Stamp with a strictly-monotonic-per-log created_at (max(now, newest+1)), NOT a
-	// bare time.Now(): a grant and a subsequent revoke of the SAME key issued within
+	// Stamp with a strictly-monotonic created_at (max(now, newest+1)) SCOPED to THIS
+	// grantee's (board,grantee) grant slot (ready-be1), NOT a bare time.Now() and NOT
+	// the log-wide newest: a grant and a subsequent revoke of the SAME key issued within
 	// one wall-clock second would otherwise share created_at and resolve by the id
 	// tie-break, so a revoke could no-op against the grant it means to supersede
-	// (design §3 NOTE-B). Monotonic stamping restores intent order for sequential
-	// same-machine authz writes without weakening cross-machine convergence.
-	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log))
+	// (design §3 NOTE-B). Per-grantee-scoped stamping restores intent order for
+	// sequential same-machine authz writes without the log-wide future-drift that let an
+	// unrelated grant burst inflate a fresh grant's created_at and beat a genuinely-later
+	// cross-machine revoke (the ready-be1 lost-revoke) — cross-machine convergence
+	// (the (created_at,id) key) is unchanged.
+	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, grantee)))
 	if err != nil {
 		return err
 	}
