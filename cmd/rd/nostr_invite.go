@@ -302,7 +302,10 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 	// (7) Consume the nonce RELAY/LOG-OBSERVABLY: publish a signed marker to the
 	// medium AND the local log so a later re-join (which reads the medium) is
 	// refused. Signed by the minted key — trusted because of its grant.
-	marker, err := rdSync.BuildInviteConsumedEvent(minted, p.Nonce, p.Board, nostrNextCreatedAt(localLog))
+	// The consumed marker is a leaf event (kind 39303, DriftScope==""): it is matched
+	// by nonce (InviteNonceConsumed), never ordered by created_at in latest-wins, so it
+	// takes the empty drift scope — consistent with DriftScope of a 39303 event.
+	marker, err := rdSync.BuildInviteConsumedEvent(minted, p.Nonce, p.Board, nostrNextCreatedAt(localLog, ""))
 	if err != nil {
 		restore()
 		return fmt.Errorf("building consumed marker: %w", err)
@@ -348,7 +351,8 @@ func runNostrInvite(ttl time.Duration) (string, error) {
 		return "", fmt.Errorf("rd invite --nostr requires a nostr-native project (a pinned board); run 'rd nostr pin-board' first")
 	}
 	board := nostrPinnedBoard(dir)
-	if _, _, ok := rdSync.ParseBoardCoord(board); !ok {
+	_, boardD, okBoard := rdSync.ParseBoardCoord(board)
+	if !okBoard {
 		return "", fmt.Errorf("pinned board %q is malformed", board)
 	}
 
@@ -371,7 +375,7 @@ func runNostrInvite(ttl time.Duration) (string, error) {
 	now := time.Now()
 	relays := inviteRelaySet()
 
-	token, grant, err := buildNostrInviteToken(pub.Key, board, minted, relays, nonce, now.Unix(), now.Add(ttl).Unix(), nostrNextCreatedAt(pub.Log))
+	token, grant, err := buildNostrInviteToken(pub.Key, board, minted, relays, nonce, now.Unix(), now.Add(ttl).Unix(), nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, minted.PubKeyHex())))
 	if err != nil {
 		return "", err
 	}
