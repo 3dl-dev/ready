@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
@@ -92,7 +91,13 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 		From:        from,
 		Label:       label,
 	}
-	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, time.Now().Unix())
+	// Stamp with a strictly-monotonic-per-log created_at (max(now, newest+1)), NOT a
+	// bare time.Now(): a grant and a subsequent revoke of the SAME key issued within
+	// one wall-clock second would otherwise share created_at and resolve by the id
+	// tie-break, so a revoke could no-op against the grant it means to supersede
+	// (design §3 NOTE-B). Monotonic stamping restores intent order for sequential
+	// same-machine authz writes without weakening cross-machine convergence.
+	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log))
 	if err != nil {
 		return err
 	}
@@ -111,7 +116,6 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if res.Buffered {
 		fmt.Println("  (reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 	}
-	fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
 	return nil
 }
 
@@ -135,7 +139,11 @@ afterward to regenerate the relay write-allowlist from the grants.`,
 		}
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
-		return publishRoleGrant(grantee, role, label, from)
+		if err := publishRoleGrant(grantee, role, label, from); err != nil {
+			return err
+		}
+		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
+		return nil
 	},
 }
 
@@ -152,7 +160,11 @@ afterward to prune the key from the relay write-allowlist.`,
 		grantee := args[0]
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
-		return publishRoleGrant(grantee, rdSync.RoleRevoked, label, from)
+		if err := publishRoleGrant(grantee, rdSync.RoleRevoked, label, from); err != nil {
+			return err
+		}
+		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
+		return nil
 	},
 }
 
@@ -247,6 +259,11 @@ func writeAllowlistFile(path string, m map[string]string) error {
 		b.WriteString("\n")
 	}
 	b.WriteString("}\n")
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 

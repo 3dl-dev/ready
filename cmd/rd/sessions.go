@@ -84,6 +84,15 @@ revoked (rd kill) or expired grants. Shows each holder's scope and TTL.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonOut, _ := cmd.Flags().GetBool("json")
+
+		// NOSTR-NATIVE default path (ready-477): list the active grant-holders derived
+		// from the signed kind-39301 role-grants (owner + non-revoked grantees). Runs
+		// BEFORE any projectRoot()/requireClient(), so the cf-authority delegation path
+		// is never invoked and no .cf is provisioned.
+		if dir, native := nostrNativeProject(); native {
+			return runSessionsNostr(dir, jsonOut)
+		}
+
 		campfireID, _, ok := projectRoot()
 		if !ok {
 			return fmt.Errorf("no campfire project found — run 'rd init' first")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -32,16 +33,6 @@ EXAMPLES
 		target := args[0]
 		retroactive, _ := cmd.Flags().GetBool("retroactive")
 
-		campfireID, _, ok := projectRoot()
-		if !ok {
-			return fmt.Errorf("no campfire project found — run 'rd init' first")
-		}
-
-		client, err := requireClient()
-		if err != nil {
-			return err
-		}
-
 		// Validate target is a 64-char hex pubkey.
 		// Name-based resolution is intentionally not supported here because
 		// resolveName() resolves names to campfire IDs — a different 64-char hex
@@ -52,6 +43,28 @@ EXAMPLES
 			return fmt.Errorf("revoke target %q is not a valid pubkey: must be a 64-character hex string\n  hint: use the member's public key, not a name or campfire ID", target)
 		}
 		pubKeyHex := target
+
+		// NOSTR-NATIVE default path (ready-477): revocation = publish an owner-signed
+		// kind-39301 role=revoked grant + regenerate the relay write-allowlist. This
+		// runs BEFORE any projectRoot()/requireClient() so the cf-authority delegation
+		// path is never invoked and no .cf is provisioned. Prospective by default;
+		// retroactive (compromise) repudiation is 'rd nostr revoke --from <unix>'.
+		if dir, native := nostrNativeProject(); native {
+			if retroactive {
+				return fmt.Errorf("--retroactive is campfire-only; on a nostr-native project use 'rd nostr revoke %s --from <unix>' for retroactive (compromise) repudiation", pubKeyHex)
+			}
+			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0)
+		}
+
+		campfireID, _, ok := projectRoot()
+		if !ok {
+			return fmt.Errorf("no campfire project found — run 'rd init' first")
+		}
+
+		client, err := requireClient()
+		if err != nil {
+			return err
+		}
 
 		exec, _, execErr := requireExecutor()
 		if execErr != nil {

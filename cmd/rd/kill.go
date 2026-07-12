@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +30,16 @@ EXAMPLE
 		pubKeyHex := args[0]
 		if len(pubKeyHex) != 64 || !isHex(pubKeyHex) {
 			return fmt.Errorf("invalid pubkey %q: must be a 64-character hex string", pubKeyHex)
+		}
+
+		// NOSTR-NATIVE default path (ready-477): actor-key revocation = publish an
+		// owner-signed kind-39301 role=revoked grant + regenerate the relay
+		// write-allowlist (the same primitive as 'rd revoke' under the unified model:
+		// there is no un-grant, only revoke). Runs BEFORE any projectRoot()/
+		// requireClient(), so the cf-authority delegation path is never invoked and no
+		// .cf is provisioned.
+		if dir, native := nostrNativeProject(); native {
+			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0)
 		}
 
 		campfireID, _, ok := projectRoot()
