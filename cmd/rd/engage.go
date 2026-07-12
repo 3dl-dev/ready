@@ -53,6 +53,21 @@ Example:
 			variables[parts[0]] = parts[1]
 		}
 
+		// nostr-native default write path (ready-6ef): engage instantiates a
+		// PLAYBOOK template into concrete work items. The TEMPLATE is campfire-vestigial
+		// storage (scanPlaybooks reads the campfire store; templates are NOT projected
+		// to nostr — I5/ready-9ac deletes the playbook surface), but the ITEMS it
+		// creates are first-class nostr items. Per the spec's NOSTR-PUBLISHER GAP
+		// resolution: source the template from a lazily-opened campfire store — via
+		// openStore(), which reads the store WITHOUT identity.Load and therefore never
+		// provisions .cf/identity.json — then publish each expanded item + its dep
+		// edges through the secp256k1 nostr-native path (publishItemFullCreateNostr).
+		// No requireExecutor / withAgentAndStore, so the no-.cf-on-the-default-path
+		// invariant holds (asserted by assertNoDotCf in the engage native test).
+		if dir, native := nostrNativeProject(); native {
+			return runEngageNostr(dir, playbookID, project, forParty, variables)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			exec, _, err := requireExecutor()
 			if err != nil {

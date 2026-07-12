@@ -52,6 +52,18 @@ Example:
 		label := args[0]
 		description, _ := cmd.Flags().GetString("description")
 
+		// nostr-native default write path (ready-6ef): the label REGISTRY is a
+		// campfire construct (a per-campfire allowlist derived from work:label-define
+		// messages). The nostr projection has no registry — card "l" tags are freeform
+		// and validated only by the name pattern — so `label define` has no nostr
+		// equivalent. Report that clearly (and preserve no-.cf: this runs BEFORE any
+		// identity.Load) rather than crashing on a missing .cf identity.
+		if _, native := nostrNativeProject(); native {
+			return emitMutationResult(
+				fmt.Sprintf("label %q needs no definition on a nostr-native project: card labels are freeform (no registry). Just `rd label add <item> %s`.", label, label),
+				map[string]any{"label": label, "registry": "none", "note": "nostr-native card labels are freeform"})
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			exec, _, err := requireExecutor()
 			if err != nil {
@@ -277,6 +289,35 @@ Example:
 		}
 		contextParts += " To approve: rd label define " + labelName
 
+		// nostr-native default write path (ready-6ef): a label proposal is just a p3
+		// decision ITEM, so create it through the secp256k1 nostr-native path (no .cf).
+		// The "label-proposal" atom is a freeform card "l" tag on nostr (no registry
+		// gate), so it always attaches — no campfire retry-without-labels dance needed.
+		if dir, native := nostrNativeProject(); native {
+			id, err := runCreateNostr(dir, nostrCreateSpec{
+				title:    "Label proposal: " + labelName,
+				itemType: "decision",
+				priority: "p3",
+				context:  contextParts,
+				labels:   []string{"label-proposal"},
+			})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return emitMutationResult("", map[string]any{
+					"id":           id,
+					"label":        labelName,
+					"demand_count": demandCount,
+				})
+			}
+			fmt.Printf("proposed label %q → item %s (p3 decision)\n", labelName, id)
+			if demandCount > 0 {
+				fmt.Printf("  demand count: %d recorded attempt(s)\n", demandCount)
+			}
+			return nil
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			exec, _, err := requireExecutor()
 			if err != nil {
@@ -396,6 +437,12 @@ Example:
 		itemID := args[0]
 		label := args[1]
 
+		// nostr-native default write path (ready-6ef): label is a card "l" tag —
+		// a card-only edit signed by the secp256k1 key; no .cf.
+		if _, native := nostrNativeProject(); native {
+			return runLabelAddNostr(itemID, label)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			exec, _, err := requireExecutor()
 			if err != nil {
@@ -462,6 +509,12 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
 		label := args[1]
+
+		// nostr-native default write path (ready-6ef): label is a card "l" tag —
+		// a card-only edit signed by the secp256k1 key; no .cf.
+		if _, native := nostrNativeProject(); native {
+			return runLabelRemoveNostr(itemID, label)
+		}
 
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			exec, _, err := requireExecutor()

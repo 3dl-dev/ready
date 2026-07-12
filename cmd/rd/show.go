@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/ready/pkg/crossdep"
 	"github.com/spf13/cobra"
@@ -26,11 +27,23 @@ Example:
 
 		autoSyncPull()
 
-		s, err := openStore()
-		if err != nil {
-			return err
+		// On a nostr-native project the read + audit authority is the nostr
+		// projection, never a campfire store. Skip openStore() entirely so
+		// `rd show` (incl. --audit) provisions NO campfire store.db under CFHome
+		// and takes the no-.cf audit path below (ready-6ef veracity fix).
+		// byIDFromJSONLOrStore short-circuits to the projection when reads are
+		// nostr-native, so the nil store is never dereferenced.
+		_, native := nostrNativeProject()
+
+		var s store.Store
+		if !native {
+			var err error
+			s, err = openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
 		}
-		defer s.Close()
 
 		item, err := byIDFromJSONLOrStore(s, itemID)
 		if err != nil {
@@ -38,9 +51,13 @@ Example:
 			return err
 		}
 
-		// Resolve cross-campfire deps when we have a store.
-		aliases := naming.NewAliasStore(CFHome())
-		crossDeps := crossdep.ResolveDeps(item, s, aliases)
+		// Cross-campfire dep resolution is a campfire-federation concern requiring a
+		// campfire store; it does not apply on the nostr-native path.
+		var crossDeps []crossdep.ResolvedDep
+		if !native {
+			aliases := naming.NewAliasStore(CFHome())
+			crossDeps = crossdep.ResolveDeps(item, s, aliases)
+		}
 
 		if jsonOutput {
 			// Augment item with resolved cross-campfire dep info.
@@ -136,10 +153,21 @@ Example:
 			// --audit: annotate each history entry with the cf-authority scope the
 			// actor acted under. Silent (no annotation) for non-pubkey actors and
 			// items whose actors carry no delegation grant.
-			var auth *authorityResolver
+			var auth auditLabeler
 			if auditFlag {
-				if client, cErr := requireClient(); cErr == nil {
-					auth = loadAuthorityResolver(client, item.CampfireID)
+				if native {
+					// Nostr-native: resolve authority from the signed nostr
+					// projection. NEVER requireClient()/protocol.Init here — that
+					// provisions .cf/identity.json, the exact artifact the cutover
+					// eliminates (ready-6ef veracity fix). Assign only a non-nil
+					// concrete resolver so the interface nil-check below is sound.
+					if r := loadNostrAuthorityResolver(); r != nil {
+						auth = r
+					}
+				} else if client, cErr := requireClient(); cErr == nil {
+					if r := loadAuthorityResolver(client, item.CampfireID); r != nil {
+						auth = r
+					}
 				}
 			}
 			fmt.Printf("\nHistory:\n")

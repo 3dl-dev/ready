@@ -42,6 +42,13 @@ Example:
 			return fmt.Errorf("--reason is required (why is this item being closed?)")
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// branch/session are agent-facing traceability metadata with no item-state
+		// field; the durable transition is close(done)-with-reason.
+		if _, native := nostrNativeProject(); native {
+			return runCloseNostr(itemID, "done", reason, "closed")
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err

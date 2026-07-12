@@ -35,7 +35,7 @@ func TestE2E_Topology1_SingleProject_FullLifecycle(t *testing.T) {
 	}
 
 	// rd init — creates campfire + .campfire/root + .ready/
-	stdout, stderr, code := e.Rd("init", "--name", "myproject", "--json", "--confirm")
+	stdout, stderr, code := e.Rd("init", "--name", "myproject", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
 	}
@@ -118,13 +118,13 @@ func TestE2E_Topology2_MultiProject_SharedIdentity(t *testing.T) {
 	eB := &Env{CFHome: cfHome, ProjectDir: projB, t: t}
 
 	// Init project A.
-	_, stderr, code := eA.Rd("init", "--name", "project-a", "--json", "--confirm")
+	_, stderr, code := eA.Rd("init", "--name", "project-a", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init project-a failed (exit %d): %s", code, stderr)
 	}
 
 	// Init project B.
-	_, stderr, code = eB.Rd("init", "--name", "project-b", "--json", "--confirm")
+	_, stderr, code = eB.Rd("init", "--name", "project-b", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init project-b failed (exit %d): %s", code, stderr)
 	}
@@ -272,7 +272,7 @@ func TestE2E_Topology3_GitBacked_FsTransport(t *testing.T) {
 	e := &Env{CFHome: cfHome, ProjectDir: repoDir, t: t}
 
 	// rd init — creates campfire with fs transport (default).
-	stdout, stderr, code := e.Rd("init", "--name", "git-project", "--json", "--confirm")
+	stdout, stderr, code := e.Rd("init", "--name", "git-project", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
 	}
@@ -405,7 +405,7 @@ func TestE2E_Topology4_Hosted_HTTPTransport(t *testing.T) {
 	e := &Env{CFHome: cfHome, ProjectDir: projectDir, t: t}
 
 	// rd init — creates campfire against hosted instance.
-	stdout, stderr, code := e.Rd("init", "--name", "hosted-project", "--json", "--confirm")
+	stdout, stderr, code := e.Rd("init", "--name", "hosted-project", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init (hosted) failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
 	}

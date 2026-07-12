@@ -50,10 +50,17 @@ Example:
 
 		autoSyncPull()
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
+		// nostr-native default READ path (ready-6ef S-read): on an `rd init` project
+		// the session identity is the secp256k1 signer, and the store is opened
+		// read-only (openStore never provisions .cf). withAgentAndStore would call
+		// identity.Load and fail ("run cf init first") on the no-.cf default path, so
+		// branch here: default --for to the secp256k1 self, open the store read-only,
+		// and run the shared body. allItemsFromJSONLOrStore then resolves via the
+		// nostr projection (nostrReadActive() is true on this path).
+		runReady := func(selfHex string, s store.Store) error {
 			// Default --for to the current session identity when not explicitly set.
 			if !cmd.Flags().Changed("for") {
-				forFilter = agentID.PublicKeyHex()
+				forFilter = selfHex
 			}
 
 			items, err := allItemsFromJSONLOrStore(s)
@@ -146,6 +153,23 @@ Example:
 				}
 			}
 			return nil
+		}
+
+		if _, native := nostrNativeProject(); native {
+			self, err := nostrSelfPubkey()
+			if err != nil {
+				return err
+			}
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			return runReady(self, s)
+		}
+
+		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
+			return runReady(agentID.PublicKeyHex(), s)
 		})
 	},
 }

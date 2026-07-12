@@ -13,20 +13,22 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/admission"
-	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/spf13/cobra"
 
 	"github.com/campfire-net/ready/pkg/declarations"
 	"github.com/campfire-net/ready/pkg/durability"
+	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
 
 var initCmd = &cobra.Command{
@@ -77,279 +79,320 @@ DURABILITY
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		description, _ := cmd.Flags().GetString("description")
-		confirm, _ := cmd.Flags().GetBool("confirm")
 		offline, _ := cmd.Flags().GetBool("offline")
-		beaconRoot, _ := cmd.Flags().GetString("beacon-root")
-		joinBeacon, _ := cmd.Flags().GetString("join")
 
-		// Accept optional positional argument as project name.
+		// CUTOVER (ready-6ef): the DEFAULT path is nostr-native (no .cf, no campfire).
+		// The legacy campfire-creating init is kept compiled but is reachable ONLY via
+		// the hidden, explicit `--campfire` flag — never the default path. It exists
+		// solely to keep the still-present campfire-org code (summary/inbox campfires,
+		// beacons, summary-bind, admit/join topology) test-covered until I7/ready-cb6
+		// deletes the campfire code and its tests together. It is NOT a public surface.
+		if campfireMode, _ := cmd.Flags().GetBool("campfire"); campfireMode {
+			return initCampfire(cmd, args)
+		}
+
 		positionalName := ""
 		if len(args) > 0 {
 			positionalName = args[0]
 		}
-
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting cwd: %w", err)
 		}
-
-		// Positional argument takes precedence over --name flag.
 		if positionalName != "" {
 			name = positionalName
 		}
-
-		// Default name from current directory.
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-
-		// --- JSONL-only offline mode ---
+		// JSONL-only escape hatch (no campfire, no nostr log).
 		if offline {
 			return initOffline(cwd, name, description)
 		}
-
-		// --- Join existing project campfire ---
-		if joinBeacon != "" {
-			return initJoin(cwd, name, joinBeacon)
-		}
-
-		// Check we're not already initialized.
-		if _, _, ok := projectRoot(); ok {
-			return fmt.Errorf(".campfire/root already exists — this project is already initialized")
-		}
-		// Also check for .ready/ dir (JSONL-only already initialized).
-		if _, err := os.Stat(filepath.Join(cwd, ".ready")); err == nil {
-			return fmt.Errorf(".ready/ already exists — this project is already initialized (offline mode). Use 'rd sync' to connect to a campfire")
-		}
-
-		// --- Auto-join from [rd].beacon in .cf/config.toml ---
-		// If the project's .cf/config.toml has [rd].beacon set (typically because
-		// machine-1 already ran rd init and committed it), join that campfire
-		// instead of creating a new one. Zero-ceremony machine-2 onboarding.
-		if autoBeacon, err := rdconfig.LoadProjectBeacon(cwd); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: reading .cf/config.toml [rd].beacon: %v\n", err)
-		} else if autoBeacon != "" {
-			return initJoin(cwd, name, autoBeacon)
-		}
-
-		// Load client.
-		client, err := requireClient()
-		if err != nil {
-			return err
-		}
-
-		// Resolve relay URL from config cascade.
-		relayURL := resolveRelayURL()
-
-		// Default description.
-		if description == "" {
-			description = name + " work campfire"
-		}
-
-		// Choose creation function based on relay config.
-		createFn := func(projectDir, joinProtocol string, receptionReqs []string, desc string) (campfireID string, beaconStr string, relayEndpoint string, err error) {
-			if relayURL != "" {
-				return createRelayCampfire(projectDir, joinProtocol, receptionReqs, desc, relayURL)
-			}
-			id, localErr := createLocalCampfire(client, projectDir, joinProtocol, receptionReqs, desc)
-			return id, "", "", localErr
-		}
-
-		// --- Create the campfire (state in ~/.campfire/campfires/<id>/) ---
-
-		campfireDir := filepath.Join(cwd, ".campfire")
-		campfireID, mainBeacon, relayEndpoint, err := createFn(campfireDir, "invite-only", []string{"work:create"}, description)
-		if err != nil {
-			return err
-		}
-
-		// --- Create the shadow summary campfire for org observers ---
-		summaryCampfireID, _, _, err := createFn("", "invite-only", []string{}, description+" (summary)")
-		if err != nil {
-			return fmt.Errorf("creating summary campfire: %w", err)
-		}
-
-		// --- Write .campfire/root (pointer in the project) ---
-
-		if err := os.MkdirAll(campfireDir, 0700); err != nil {
-			return fmt.Errorf("creating .campfire dir: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(campfireID), 0600); err != nil {
-			return fmt.Errorf("writing .campfire/root: %w", err)
-		}
-
-		// --- Post convention:operation declarations via transport ---
-
-		payloads, err := declarations.All()
-		if err != nil {
-			return fmt.Errorf("loading declarations: %w", err)
-		}
-		declClient, err := requireClient()
-		if err != nil {
-			return fmt.Errorf("initializing campfire client for declarations: %w", err)
-		}
-		nDecls := 0
-		for _, payload := range payloads {
-			_, err := declClient.Send(protocol.SendRequest{
-				CampfireID: campfireID,
-				Payload:    payload,
-				Tags:       []string{"convention:operation"},
-			})
-			if err != nil {
-				return fmt.Errorf("posting declaration %d: %w", nDecls, err)
-			}
-			nDecls++
-		}
-
-		// --- Create the maintainer inbox campfire ---
-
-		inboxCampfireID, _, _, err := createFn("", "invite-only", []string{"work:join-request"}, name+" maintainer inbox")
-		if err != nil {
-			return fmt.Errorf("creating inbox campfire: %w", err)
-		}
-
-		// --- Write join-policy.json to campfire home ---
-
-		jp := &naming.JoinPolicy{
-			Policy:          "consult",
-			ConsultCampfire: inboxCampfireID,
-			JoinRoot:        campfireID,
-		}
-		if saveErr := naming.SaveJoinPolicy(CFHome(), jp); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write join-policy.json: %v\n", saveErr)
-		}
-
-		// --- Evaluate durability and store sync config ---
-		var (
-			syncCfg            *rdconfig.SyncConfig
-			durabilityWarnings []string
-		)
-		if relayURL != "" {
-			// Relay campfires go through durability evaluation.
-			syncCfg, durabilityWarnings, err = evaluateCampfireDurability(campfireID, confirm)
-			if err != nil {
-				return err
-			}
-		} else if !isRemoteTransport() {
-			// Local filesystem campfires don't expire — skip durability evaluation.
-			syncCfg = &rdconfig.SyncConfig{
-				CampfireID: campfireID,
-				Durability: &rdconfig.DurabilityAssessment{MeetsMinimum: true},
-			}
-		} else {
-			// Legacy remote transport.
-			syncCfg, durabilityWarnings, err = evaluateCampfireDurability(campfireID, confirm)
-			if err != nil {
-				return err
-			}
-		}
-
-		// --- Register project name in beacon root if configured ---
-
-		if name != filepath.Base(cwd) || positionalName != "" {
-			if err := registerProjectName(client, name, campfireID, beaconRoot); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not register project name: %v\n", err)
-			}
-		}
-
-		// Store project name, summary campfire ID, encryption intent, and relay metadata.
-		syncCfg.ProjectName = name
-		syncCfg.SummaryCampfireID = summaryCampfireID
-		syncCfg.Encrypted = true
-		syncCfg.InboxCampfireID = inboxCampfireID
-		if relayURL != "" {
-			effectiveRelay := relayEndpoint
-			if effectiveRelay == "" {
-				effectiveRelay = relayURL
-			}
-			syncCfg.RelayURL = effectiveRelay
-			syncCfg.Beacon = mainBeacon
-		}
-		if saveErr := rdconfig.SaveSyncConfig(cwd, syncCfg); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not save sync config: %v\n", saveErr)
-		}
-
-		// Persist beacon to .cf/config.toml [rd].beacon so machine-2 can clone
-		// the repo and run `rd init` with no flags or arguments.
-		if mainBeacon != "" {
-			if saveErr := rdconfig.SaveProjectBeacon(cwd, mainBeacon); saveErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not write [rd].beacon to .cf/config.toml: %v\n", saveErr)
-			}
-		}
-
-		// --- Check for home campfire ---
-
-		aliases := naming.NewAliasStore(CFHome())
-		homeID, homeErr := aliases.Get("home")
-		hasHome := homeErr == nil && homeID != ""
-
-		// --- Output ---
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"campfire_id":         campfireID,
-				"summary_campfire_id": summaryCampfireID,
-				"inbox_campfire_id":   inboxCampfireID,
-				"encrypted":           true,
-				"name":                name,
-				"declarations":        nDecls,
-				"description":         description,
-				"has_home":            hasHome,
-				"durability":          syncCfg.Durability,
-			}
-			if hasHome {
-				out["home_campfire_id"] = homeID
-			}
-			if relayURL != "" {
-				out["transport"] = "relay"
-				out["relay"] = syncCfg.RelayURL
-				if mainBeacon != "" {
-					out["beacon"] = mainBeacon
-				}
-			} else {
-				out["transport"] = "filesystem"
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("initialized %s\n", name)
-		fmt.Printf("  campfire: %s\n", campfireID[:12]+"...")
-		fmt.Printf("  summary campfire: %s\n", summaryCampfireID[:12]+"...")
-		fmt.Printf("  inbox campfire: %s\n", inboxCampfireID[:12]+"...")
-		if relayURL != "" {
-			fmt.Printf("  transport: relay (%s)\n", syncCfg.RelayURL)
-			if mainBeacon != "" {
-				fmt.Printf("  beacon: %s\n", mainBeacon)
-			}
-		} else {
-			fmt.Printf("  transport: filesystem\n")
-		}
-		fmt.Printf("  encrypted: true (E2E intent set; SDK encryption enabled when available)\n")
-		fmt.Printf("  declarations: %d operations published\n", nDecls)
-		if len(durabilityWarnings) > 0 {
-			fmt.Println()
-			fmt.Println("  sync config stored with warnings (see .ready/config.json)")
-		}
-		fmt.Println()
-		if hasHome {
-			fmt.Printf("  home campfire: found (%s)\n", homeID[:12]+"...")
-			fmt.Println("  run 'rd register --org <name>' to add naming")
-		} else {
-			fmt.Println("  home campfire: not found")
-			fmt.Println("  your project works standalone. to add naming later:")
-			fmt.Println("    rd register --org <name>        create a home and register")
-			fmt.Println("    rd register --home <id>         join an existing home")
-		}
-		if relayURL != "" && mainBeacon != "" {
-			fmt.Println()
-			fmt.Println("  to join this project on another machine:")
-			fmt.Printf("    rd init --join %s\n", mainBeacon)
-		}
-
-		return nil
+		// CUTOVER (ready-6ef): the default path is nostr-native.
+		return initNostr(cwd, name, description)
 	},
+}
+
+// initCampfire is the LEGACY campfire-creating init, retained but UNINVOKED on the
+// default path post-cutover (ready-6ef). It is kept compiled so the campfire
+// SDK/executor call sites stay present until I7/ready-cb6 deletes them; the default
+// `rd init` no longer calls it. Do not wire it back into the default path.
+func initCampfire(cmd *cobra.Command, args []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	description, _ := cmd.Flags().GetString("description")
+	confirm, _ := cmd.Flags().GetBool("confirm")
+	offline, _ := cmd.Flags().GetBool("offline")
+	beaconRoot, _ := cmd.Flags().GetString("beacon-root")
+	joinBeacon, _ := cmd.Flags().GetString("join")
+
+	// Accept optional positional argument as project name.
+	positionalName := ""
+	if len(args) > 0 {
+		positionalName = args[0]
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting cwd: %w", err)
+	}
+
+	// Positional argument takes precedence over --name flag.
+	if positionalName != "" {
+		name = positionalName
+	}
+
+	// Default name from current directory.
+	if name == "" {
+		name = filepath.Base(cwd)
+	}
+
+	// --- JSONL-only offline mode ---
+	if offline {
+		return initOffline(cwd, name, description)
+	}
+
+	// --- Join existing project campfire ---
+	if joinBeacon != "" {
+		return initJoin(cwd, name, joinBeacon)
+	}
+
+	// Check we're not already initialized.
+	if _, _, ok := projectRoot(); ok {
+		return fmt.Errorf(".campfire/root already exists — this project is already initialized")
+	}
+	// Also check for .ready/ dir (JSONL-only already initialized).
+	if _, err := os.Stat(filepath.Join(cwd, ".ready")); err == nil {
+		return fmt.Errorf(".ready/ already exists — this project is already initialized (offline mode). Use 'rd sync' to connect to a campfire")
+	}
+
+	// --- Auto-join from [rd].beacon in .cf/config.toml ---
+	// If the project's .cf/config.toml has [rd].beacon set (typically because
+	// machine-1 already ran rd init and committed it), join that campfire
+	// instead of creating a new one. Zero-ceremony machine-2 onboarding.
+	if autoBeacon, err := rdconfig.LoadProjectBeacon(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading .cf/config.toml [rd].beacon: %v\n", err)
+	} else if autoBeacon != "" {
+		return initJoin(cwd, name, autoBeacon)
+	}
+
+	// Load client.
+	client, err := requireClient()
+	if err != nil {
+		return err
+	}
+
+	// Resolve relay URL from config cascade.
+	relayURL := resolveRelayURL()
+
+	// Default description.
+	if description == "" {
+		description = name + " work campfire"
+	}
+
+	// Choose creation function based on relay config.
+	createFn := func(projectDir, joinProtocol string, receptionReqs []string, desc string) (campfireID string, beaconStr string, relayEndpoint string, err error) {
+		if relayURL != "" {
+			return createRelayCampfire(projectDir, joinProtocol, receptionReqs, desc, relayURL)
+		}
+		id, localErr := createLocalCampfire(client, projectDir, joinProtocol, receptionReqs, desc)
+		return id, "", "", localErr
+	}
+
+	// --- Create the campfire (state in ~/.campfire/campfires/<id>/) ---
+
+	campfireDir := filepath.Join(cwd, ".campfire")
+	campfireID, mainBeacon, relayEndpoint, err := createFn(campfireDir, "invite-only", []string{"work:create"}, description)
+	if err != nil {
+		return err
+	}
+
+	// --- Create the shadow summary campfire for org observers ---
+	summaryCampfireID, _, _, err := createFn("", "invite-only", []string{}, description+" (summary)")
+	if err != nil {
+		return fmt.Errorf("creating summary campfire: %w", err)
+	}
+
+	// --- Write .campfire/root (pointer in the project) ---
+
+	if err := os.MkdirAll(campfireDir, 0700); err != nil {
+		return fmt.Errorf("creating .campfire dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(campfireID), 0600); err != nil {
+		return fmt.Errorf("writing .campfire/root: %w", err)
+	}
+
+	// --- Post convention:operation declarations via transport ---
+
+	payloads, err := declarations.All()
+	if err != nil {
+		return fmt.Errorf("loading declarations: %w", err)
+	}
+	declClient, err := requireClient()
+	if err != nil {
+		return fmt.Errorf("initializing campfire client for declarations: %w", err)
+	}
+	nDecls := 0
+	for _, payload := range payloads {
+		_, err := declClient.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    payload,
+			Tags:       []string{"convention:operation"},
+		})
+		if err != nil {
+			return fmt.Errorf("posting declaration %d: %w", nDecls, err)
+		}
+		nDecls++
+	}
+
+	// --- Create the maintainer inbox campfire ---
+
+	inboxCampfireID, _, _, err := createFn("", "invite-only", []string{"work:join-request"}, name+" maintainer inbox")
+	if err != nil {
+		return fmt.Errorf("creating inbox campfire: %w", err)
+	}
+
+	// --- Write join-policy.json to campfire home ---
+
+	jp := &naming.JoinPolicy{
+		Policy:          "consult",
+		ConsultCampfire: inboxCampfireID,
+		JoinRoot:        campfireID,
+	}
+	if saveErr := naming.SaveJoinPolicy(CFHome(), jp); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write join-policy.json: %v\n", saveErr)
+	}
+
+	// --- Evaluate durability and store sync config ---
+	var (
+		syncCfg            *rdconfig.SyncConfig
+		durabilityWarnings []string
+	)
+	if relayURL != "" {
+		// Relay campfires go through durability evaluation.
+		syncCfg, durabilityWarnings, err = evaluateCampfireDurability(campfireID, confirm)
+		if err != nil {
+			return err
+		}
+	} else if !isRemoteTransport() {
+		// Local filesystem campfires don't expire — skip durability evaluation.
+		syncCfg = &rdconfig.SyncConfig{
+			CampfireID: campfireID,
+			Durability: &rdconfig.DurabilityAssessment{MeetsMinimum: true},
+		}
+	} else {
+		// Legacy remote transport.
+		syncCfg, durabilityWarnings, err = evaluateCampfireDurability(campfireID, confirm)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --- Register project name in beacon root if configured ---
+
+	if name != filepath.Base(cwd) || positionalName != "" {
+		if err := registerProjectName(client, name, campfireID, beaconRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not register project name: %v\n", err)
+		}
+	}
+
+	// Store project name, summary campfire ID, encryption intent, and relay metadata.
+	syncCfg.ProjectName = name
+	syncCfg.SummaryCampfireID = summaryCampfireID
+	syncCfg.Encrypted = true
+	syncCfg.InboxCampfireID = inboxCampfireID
+	if relayURL != "" {
+		effectiveRelay := relayEndpoint
+		if effectiveRelay == "" {
+			effectiveRelay = relayURL
+		}
+		syncCfg.RelayURL = effectiveRelay
+		syncCfg.Beacon = mainBeacon
+	}
+	if saveErr := rdconfig.SaveSyncConfig(cwd, syncCfg); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save sync config: %v\n", saveErr)
+	}
+
+	// Persist beacon to .cf/config.toml [rd].beacon so machine-2 can clone
+	// the repo and run `rd init` with no flags or arguments.
+	if mainBeacon != "" {
+		if saveErr := rdconfig.SaveProjectBeacon(cwd, mainBeacon); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write [rd].beacon to .cf/config.toml: %v\n", saveErr)
+		}
+	}
+
+	// --- Check for home campfire ---
+
+	aliases := naming.NewAliasStore(CFHome())
+	homeID, homeErr := aliases.Get("home")
+	hasHome := homeErr == nil && homeID != ""
+
+	// --- Output ---
+
+	if jsonOutput {
+		out := map[string]interface{}{
+			"campfire_id":         campfireID,
+			"summary_campfire_id": summaryCampfireID,
+			"inbox_campfire_id":   inboxCampfireID,
+			"encrypted":           true,
+			"name":                name,
+			"declarations":        nDecls,
+			"description":         description,
+			"has_home":            hasHome,
+			"durability":          syncCfg.Durability,
+		}
+		if hasHome {
+			out["home_campfire_id"] = homeID
+		}
+		if relayURL != "" {
+			out["transport"] = "relay"
+			out["relay"] = syncCfg.RelayURL
+			if mainBeacon != "" {
+				out["beacon"] = mainBeacon
+			}
+		} else {
+			out["transport"] = "filesystem"
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	fmt.Printf("initialized %s\n", name)
+	fmt.Printf("  campfire: %s\n", campfireID[:12]+"...")
+	fmt.Printf("  summary campfire: %s\n", summaryCampfireID[:12]+"...")
+	fmt.Printf("  inbox campfire: %s\n", inboxCampfireID[:12]+"...")
+	if relayURL != "" {
+		fmt.Printf("  transport: relay (%s)\n", syncCfg.RelayURL)
+		if mainBeacon != "" {
+			fmt.Printf("  beacon: %s\n", mainBeacon)
+		}
+	} else {
+		fmt.Printf("  transport: filesystem\n")
+	}
+	fmt.Printf("  encrypted: true (E2E intent set; SDK encryption enabled when available)\n")
+	fmt.Printf("  declarations: %d operations published\n", nDecls)
+	if len(durabilityWarnings) > 0 {
+		fmt.Println()
+		fmt.Println("  sync config stored with warnings (see .ready/config.json)")
+	}
+	fmt.Println()
+	if hasHome {
+		fmt.Printf("  home campfire: found (%s)\n", homeID[:12]+"...")
+		fmt.Println("  run 'rd register --org <name>' to add naming")
+	} else {
+		fmt.Println("  home campfire: not found")
+		fmt.Println("  your project works standalone. to add naming later:")
+		fmt.Println("    rd register --org <name>        create a home and register")
+		fmt.Println("    rd register --home <id>         join an existing home")
+	}
+	if relayURL != "" && mainBeacon != "" {
+		fmt.Println()
+		fmt.Println("  to join this project on another machine:")
+		fmt.Printf("    rd init --join %s\n", mainBeacon)
+	}
+
+	return nil
 }
 
 // registerProjectName attempts to register the project name through the beacon root.
@@ -553,6 +596,112 @@ func createLocalCampfire(client *protocol.Client, projectDir string, joinProtoco
 	}
 
 	return result.CampfireID, nil
+}
+
+// initNostr initializes a nostr-native ready project (ready-6ef cutover). It:
+//   - creates .ready/,
+//   - loads/creates the secp256k1 OWNER signing key under $RD_HOME (never .cf),
+//   - pins the authoritative board coordinate 30301:<owner>:<boardD> in
+//     .ready/config.json,
+//   - ensures a relay config exists (rd.json under $RD_HOME; relays are a
+//     replaceable cache, the local log is authoritative), and
+//   - builds and appends the signed 30301 board event to .ready/nostr-log.jsonl.
+//
+// It writes NO .campfire/ and NO .cf/ — the default post-cutover path provisions
+// no campfire identity. boardD equals the project prefix so item ids (create.go)
+// and published cards bind to the same pinned board.
+func initNostr(cwd, name, description string) error {
+	// Reject double-init (campfire-backed or nostr/JSONL-backed).
+	if _, _, ok := projectRoot(); ok {
+		return fmt.Errorf(".campfire/root already exists — this project is already initialized")
+	}
+	readyDir := filepath.Join(cwd, ".ready")
+	if _, err := os.Stat(readyDir); err == nil {
+		return fmt.Errorf(".ready/ already exists — this project is already initialized")
+	}
+
+	boardD := projectPrefix(cwd)
+	if boardD == "" {
+		return fmt.Errorf("cannot derive a board identifier from directory %q (need a name of at least 2 alphanumeric characters)", filepath.Base(cwd))
+	}
+
+	if err := os.MkdirAll(readyDir, 0o700); err != nil {
+		return fmt.Errorf("creating .ready dir: %w", err)
+	}
+
+	// OWNER signing key under $RD_HOME (secp256k1) — no .cf dependency.
+	k, err := nostrKey()
+	if err != nil {
+		return fmt.Errorf("provisioning nostr owner identity: %w", err)
+	}
+	owner := k.PubKeyHex()
+	coord := rdSync.BoardCoord(owner, boardD)
+
+	// Pin the authoritative board coordinate + project name in .ready/config.json.
+	syncCfg := &rdconfig.SyncConfig{
+		ProjectName: name,
+		Board:       coord,
+	}
+	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
+		return fmt.Errorf("writing .ready/config.json: %w", err)
+	}
+
+	// Ensure a relay config exists under $RD_HOME (defaults when unset).
+	if err := ensureRelayConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not persist relay config: %v\n", err)
+	}
+
+	// Build + append the signed 30301 board event to the authoritative log.
+	board := rdSync.BoardSpec{BoardD: boardD, Title: name, Maintainers: []string{owner}}
+	be, err := rdSync.BuildBoardEvent(k, board, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("building board event: %w", err)
+	}
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(cwd))
+	if _, err := log.AppendUnique([]*nostr.Event{be}); err != nil {
+		return fmt.Errorf("appending board event to nostr log: %w", err)
+	}
+
+	if jsonOutput {
+		out := map[string]interface{}{
+			"name":        name,
+			"description": description,
+			"board":       coord,
+			"owner":       owner,
+			"board_d":     boardD,
+			"transport":   "nostr",
+			"ready_dir":   readyDir,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	fmt.Printf("initialized %s (nostr-native)\n", name)
+	fmt.Printf("  board: %s\n", coord)
+	fmt.Printf("  owner: %s\n", owner)
+	fmt.Printf("  log:   %s\n", rdSync.NostrLogPath(cwd))
+	fmt.Println()
+	fmt.Println("  work items are signed events in .ready/nostr-log.jsonl (the source of truth);")
+	fmt.Println("  relays are a replaceable cache. create your first item with:")
+	fmt.Println("    rd create \"...\" --type task --priority p1")
+	return nil
+}
+
+// ensureRelayConfig persists the default nostr relay topology into rd.json under
+// $RD_HOME when no relay endpoints are configured yet, so a freshly initialized
+// project has an on-disk relay config. It never clobbers an existing config.
+func ensureRelayConfig() error {
+	home := RDHome()
+	cfg, err := rdconfig.Load(home)
+	if err != nil {
+		cfg = &rdconfig.Config{}
+	}
+	if len(cfg.RelayEndpoints) > 0 {
+		return nil // already configured — do not clobber
+	}
+	cfg.RelayEndpoints = rdconfig.DefaultRelays()
+	return rdconfig.Save(home, cfg)
 }
 
 // initOffline initializes a project in JSONL-only mode — no campfire required.
@@ -921,10 +1070,13 @@ func writeJoinedProjectFiles(cwd, name, campfireID, relayEndpoint, beaconStr str
 
 func init() {
 	initCmd.Flags().String("name", "", "project name (default: current directory name)")
-	initCmd.Flags().String("description", "", "campfire description (default: '<name> work campfire')")
-	initCmd.Flags().Bool("confirm", false, "proceed without prompting even if campfire does not meet minimum durability requirements")
-	initCmd.Flags().Bool("offline", false, "initialize in JSONL-only mode (no campfire required)")
-	initCmd.Flags().String("beacon-root", "", "beacon root campfire ID for naming registration (default: CF_BEACON_ROOT env var)")
-	initCmd.Flags().String("join", "", "join an existing project campfire via beacon (e.g. beacon:SGlK...)")
+	initCmd.Flags().String("description", "", "project description")
+	initCmd.Flags().Bool("offline", false, "initialize in JSONL-only mode (no nostr log, no campfire)")
+	// Hidden, explicit-only escape hatch to the LEGACY campfire-creating init
+	// (ready-6ef). The default path is nostr-native; this exists only to keep the
+	// vestigial campfire-org code test-covered until I7/ready-cb6 removes it. Not a
+	// public surface — do NOT document or wire into the default path.
+	initCmd.Flags().Bool("campfire", false, "")
+	_ = initCmd.Flags().MarkHidden("campfire")
 	rootCmd.AddCommand(initCmd)
 }

@@ -8,71 +8,28 @@ import (
 	"testing"
 )
 
-// TestE2E_Init_CreatesProjectCampfire verifies rd init creates a campfire,
-// writes .campfire/root, and posts convention declarations.
-func TestE2E_Init_CreatesProjectCampfire(t *testing.T) {
-	e := NewEnv(t)
+// ready-6ef cutover: the default `rd init` is now NOSTR-NATIVE — it pins a board
+// coordinate and writes a signed nostr log, provisioning NO .campfire/ and NO .cf/.
+// The old campfire-creating init (declarations, beacons, .campfire/root, --confirm)
+// is preserved UNINVOKED as initCampfire (I7 deletes it). These tests assert the
+// post-cutover default-path behaviour. The campfire-org REGISTER surface is
+// campfire-vestigial (register requires a .campfire/root and has no nostr
+// equivalent), so its tests build a campfire-backed project directly via the
+// harness helper instead of via `rd init`.
 
-	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "testproj", "--json")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("JSON parse failed: %v\noutput: %s", err, stdout)
-	}
-
-	if result["campfire_id"] == nil || result["campfire_id"] == "" {
-		t.Error("campfire_id should be non-empty")
-	}
-	if result["name"] != "testproj" {
-		t.Errorf("name: got %v, want testproj", result["name"])
-	}
-	decls, ok := result["declarations"].(float64)
-	if !ok || decls < 10 {
-		t.Errorf("declarations: got %v, want >= 10", result["declarations"])
-	}
-
-	// Verify .campfire/root was written.
-	rootFile := filepath.Join(projectDir, ".campfire", "root")
-	data, err := os.ReadFile(rootFile)
-	if err != nil {
-		t.Fatalf("reading .campfire/root: %v", err)
-	}
-	rootID := strings.TrimSpace(string(data))
-	if len(rootID) != 64 {
-		t.Errorf(".campfire/root has wrong length %d: %q", len(rootID), rootID)
-	}
-	if rootID != result["campfire_id"] {
-		t.Errorf(".campfire/root (%s) != JSON campfire_id (%s)", rootID, result["campfire_id"])
-	}
-}
-
-// TestE2E_Init_FailsIfAlreadyInitialized verifies rd init rejects double-init.
-func TestE2E_Init_FailsIfAlreadyInitialized(t *testing.T) {
-	e := NewEnv(t)
-
-	_, stderr, code := e.Rd("init", "--name", "test")
-	if code == 0 {
-		t.Fatal("expected rd init to fail when .campfire/root already exists")
-	}
-	if !strings.Contains(stderr, "already") {
-		t.Errorf("expected 'already' in error, got: %q", stderr)
-	}
-}
-
-// TestE2E_Init_DefaultsNameFromDirectory verifies name is inferred from cwd.
-func TestE2E_Init_DefaultsNameFromDirectory(t *testing.T) {
-	e := NewEnv(t)
-
-	projectDir := filepath.Join(t.TempDir(), "my-project")
+// TestE2E_Init_NostrNative_DefaultsNameFromDirectory verifies the project name is
+// inferred from the cwd and pinned in .ready/config.json (nostr-native default).
+func TestE2E_Init_NostrNative_DefaultsNameFromDirectory(t *testing.T) {
+	base := t.TempDir()
+	projectDir := filepath.Join(base, "my-project")
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	home := t.TempDir()
+	rdHome := t.TempDir()
+	cfHome := filepath.Join(t.TempDir(), "cf") // must NOT be created by the default path
 
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--json")
+	stdout, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--json")
 	if code != 0 {
 		t.Fatalf("rd init failed (exit %d):\nstderr: %s", code, stderr)
 	}
@@ -84,75 +41,153 @@ func TestE2E_Init_DefaultsNameFromDirectory(t *testing.T) {
 	if result["name"] != "my-project" {
 		t.Errorf("name: got %v, want my-project", result["name"])
 	}
+	if _, hasCampfire := result["campfire_id"]; hasCampfire {
+		t.Errorf("nostr-native init must not emit campfire_id; got %v", result["campfire_id"])
+	}
+
+	// config.json pins the project name and a board coordinate.
+	cfgData, err := os.ReadFile(filepath.Join(projectDir, ".ready", "config.json"))
+	if err != nil {
+		t.Fatalf("reading .ready/config.json: %v", err)
+	}
+	var cfg struct {
+		Board       string `json:"board"`
+		ProjectName string `json:"project_name"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parsing config.json: %v", err)
+	}
+	if cfg.ProjectName != "my-project" {
+		t.Errorf("config project_name: got %q, want my-project", cfg.ProjectName)
+	}
+	if !strings.HasPrefix(cfg.Board, "30301:") {
+		t.Errorf("config board: got %q, want a 30301:<owner>:<boardD> coordinate", cfg.Board)
+	}
+	if _, err := os.Stat(cfHome); err == nil {
+		t.Errorf("nostr-native init must NOT provision the campfire home %q", cfHome)
+	}
 }
 
-// TestE2E_Init_ReportsNoHome verifies init reports when no home campfire exists.
-func TestE2E_Init_ReportsNoHome(t *testing.T) {
-	e := NewEnv(t)
-
-	// Remove auto-discovered home alias so this env has no home campfire.
-	os.Remove(filepath.Join(e.CFHome, "aliases.json"))
-
+// TestE2E_Init_NostrNative_FailsIfAlreadyInitialized verifies a second init in an
+// already-initialized dir is rejected.
+func TestE2E_Init_NostrNative_FailsIfAlreadyInitialized(t *testing.T) {
 	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "standalone", "--json")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d):\nstderr: %s", code, stderr)
-	}
+	home := t.TempDir()
+	rdHome := t.TempDir()
+	cfHome := filepath.Join(t.TempDir(), "cf")
 
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("JSON parse: %v\noutput: %s", err, stdout)
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--name", "test"); code != 0 {
+		t.Fatalf("first init failed: %s", stderr)
 	}
-	if result["has_home"] != false {
-		t.Errorf("has_home: got %v, want false (no home alias set in test env)", result["has_home"])
+	_, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--name", "test")
+	if code == 0 {
+		t.Fatal("expected rd init to fail when already initialized")
+	}
+	if !strings.Contains(stderr, "already") {
+		t.Errorf("expected 'already' in error, got: %q", stderr)
 	}
 }
 
-// TestE2E_Init_ThenCreateItem verifies the full flow: init → create → show.
-func TestE2E_Init_ThenCreateItem(t *testing.T) {
-	e := NewEnv(t)
-
+// TestE2E_Init_NostrNative_ThenCreateClaimClose is the full default-path lifecycle
+// (ready-6ef DONE#2 at the e2e layer): a fresh nostr-native `rd init`, then
+// create → show → claim → close → list, all resolving through the nostr projection,
+// with NO .cf/identity.json ever created anywhere.
+func TestE2E_Init_NostrNative_ThenCreateClaimClose(t *testing.T) {
 	projectDir := t.TempDir()
-	_, stderr, code := e.RdInDir(projectDir, "init", "--name", "testproj")
-	if code != 0 {
+	home := t.TempDir()
+	rdHome := t.TempDir()
+	cfHome := filepath.Join(t.TempDir(), "cf")
+
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--name", "life"); code != 0 {
 		t.Fatalf("rd init failed (exit %d): %s", code, stderr)
 	}
 
-	var item Item
-	stdout, stderr, code := e.RdInDir(projectDir, "create",
-		"--title", "First item",
-		"--priority", "p1",
-		"--type", "task",
-		"--json")
+	// create
+	stdout, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome,
+		"create", "--title", "First item", "--priority", "p1", "--type", "task", "--json")
 	if code != 0 {
 		t.Fatalf("rd create failed (exit %d): %s", code, stderr)
 	}
+	var item map[string]interface{}
 	if err := json.Unmarshal([]byte(stdout), &item); err != nil {
-		t.Fatalf("JSON parse: %v", err)
+		t.Fatalf("create JSON parse: %v\n%s", err, stdout)
 	}
-	if item.ID == "" {
-		t.Error("created item has empty ID")
+	id, _ := item["id"].(string)
+	if id == "" {
+		t.Fatal("created item has empty ID")
+	}
+
+	// show resolves it from the nostr projection
+	showOut, showErr, showCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "show", id, "--json")
+	if showCode != 0 {
+		t.Fatalf("rd show failed (exit %d): %s", showCode, showErr)
+	}
+	var shown map[string]interface{}
+	if err := json.Unmarshal([]byte(showOut), &shown); err != nil {
+		t.Fatalf("show JSON parse: %v\n%s", err, showOut)
+	}
+	if shown["title"] != "First item" {
+		t.Errorf("show title: got %v, want First item", shown["title"])
+	}
+
+	// claim, then close
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "claim", id); code != 0 {
+		t.Fatalf("rd claim failed (exit %d): %s", code, stderr)
+	}
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "close", id, "--reason", "done"); code != 0 {
+		t.Fatalf("rd close failed (exit %d): %s", code, stderr)
+	}
+
+	// list --all shows the item as terminal
+	listOut, listErr, listCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "list", "--all", "--json")
+	if listCode != 0 {
+		t.Fatalf("rd list failed (exit %d): %s", listCode, listErr)
+	}
+	var items []map[string]interface{}
+	if err := json.Unmarshal([]byte(listOut), &items); err != nil {
+		t.Fatalf("list JSON parse: %v\n%s", err, listOut)
+	}
+	var found map[string]interface{}
+	for _, it := range items {
+		if it["id"] == id {
+			found = it
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("item %s not present in the nostr-projected list", id)
+	}
+	if found["status"] != "done" {
+		t.Errorf("status: got %v, want done", found["status"])
+	}
+
+	// The default path must never provision a .cf identity or a .campfire pointer.
+	if _, err := os.Stat(filepath.Join(cfHome, "identity.json")); err == nil {
+		t.Errorf("default nostr path must NOT provision .cf/identity.json at %s", cfHome)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".campfire")); err == nil {
+		t.Errorf("default nostr path must NOT create .campfire/ in the project dir")
 	}
 }
 
-// TestE2E_Register_NoFlags_NoHome verifies rd register with no flags
-// succeeds gracefully when no home exists.
+// --- Campfire-vestigial REGISTER surface (org topology; I5/I7 deletes it) ---
+// These exercise `rd register` on a campfire-backed project built directly (not via
+// the now-nostr-native `rd init`), which is register's real substrate.
+
+// TestE2E_Register_NoFlags_NoHome verifies rd register with no flags succeeds
+// gracefully when no home exists.
 func TestE2E_Register_NoFlags_NoHome(t *testing.T) {
 	e := NewEnv(t)
 
 	// Remove auto-discovered home alias so this env has no home campfire.
 	os.Remove(filepath.Join(e.CFHome, "aliases.json"))
 
-	projectDir := t.TempDir()
-	_, stderr, code := e.RdInDir(projectDir, "init", "--name", "standalone")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d): %s", code, stderr)
-	}
+	projectDir, _ := e.newCampfireProjectDir(t)
 
 	// Register with no flags — should succeed with guidance, not error.
-	stdout, _, code := e.RdInDir(projectDir, "register", "--json")
+	stdout, stderr, code := e.RdInDir(projectDir, "register", "--json")
 	if code != 0 {
-		t.Fatalf("rd register (no flags) should succeed, got exit %d", code)
+		t.Fatalf("rd register (no flags) should succeed, got exit %d\nstderr: %s", code, stderr)
 	}
 
 	var result map[string]interface{}
@@ -168,11 +203,7 @@ func TestE2E_Register_NoFlags_NoHome(t *testing.T) {
 func TestE2E_Register_WithOrg_CreatesHome(t *testing.T) {
 	e := NewEnv(t)
 
-	projectDir := t.TempDir()
-	_, stderr, code := e.RdInDir(projectDir, "init", "--name", "myapp")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d): %s", code, stderr)
-	}
+	projectDir, projectID := e.newCampfireProjectDir(t)
 
 	stdout, stderr, code := e.RdInDir(projectDir, "register", "--org", "testorg", "--name", "myapp", "--json")
 	if code != 0 {
@@ -197,92 +228,16 @@ func TestE2E_Register_WithOrg_CreatesHome(t *testing.T) {
 		t.Errorf("namespace: got %v, want cf://testorg.ready.myapp", result["namespace"])
 	}
 
-	// Verify all three campfire IDs are distinct.
-	projectID := result["campfire_id"].(string)
+	// Verify all three campfire IDs are distinct and the project ID round-trips.
+	gotProjectID := result["campfire_id"].(string)
 	homeID := result["home_campfire_id"].(string)
 	readyID := result["ready_campfire_id"].(string)
-	if projectID == homeID || projectID == readyID || homeID == readyID {
+	if gotProjectID != projectID {
+		t.Errorf("campfire_id: got %s, want project campfire %s", gotProjectID, projectID)
+	}
+	if gotProjectID == homeID || gotProjectID == readyID || homeID == readyID {
 		t.Errorf("expected 3 distinct campfire IDs, got project=%s home=%s ready=%s",
-			projectID[:12], homeID[:12], readyID[:12])
-	}
-}
-
-// TestE2E_Init_ClientCreate_BeaconAndDeclarations verifies the refactored
-// createLocalCampfire (using client.Create) produces the expected artifacts:
-//   - .campfire/root contains a 64-char campfire ID matching JSON output
-//   - .campfire/beacons/ contains at least one beacon file (project-local publish)
-//   - Declarations are posted (JSON output shows >= 10)
-//   - rd create works in the resulting project (campfire is functional)
-//
-// This is the integration test required by rudi-kpz.
-func TestE2E_Init_ClientCreate_BeaconAndDeclarations(t *testing.T) {
-	e := NewEnv(t)
-
-	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "client-create-test", "--json", "--confirm")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
-	}
-
-	// --- 1. .campfire/root must exist and contain a valid campfire ID ---
-	rootFile := filepath.Join(projectDir, ".campfire", "root")
-	rootBytes, err := os.ReadFile(rootFile)
-	if err != nil {
-		t.Fatalf(".campfire/root not found: %v", err)
-	}
-	campfireID := strings.TrimSpace(string(rootBytes))
-	if len(campfireID) != 64 {
-		t.Errorf(".campfire/root: expected 64-char ID, got %d chars: %q", len(campfireID), campfireID)
-	}
-
-	// --- 2. JSON output must include campfire_id matching root file ---
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("JSON parse failed: %v\noutput: %s", err, stdout)
-	}
-	if result["campfire_id"] != campfireID {
-		t.Errorf("JSON campfire_id %q != .campfire/root %q", result["campfire_id"], campfireID)
-	}
-
-	// --- 3. Declarations must be posted ---
-	decls, _ := result["declarations"].(float64)
-	if decls < 10 {
-		t.Errorf("declarations count: got %v, want >= 10", result["declarations"])
-	}
-
-	// --- 4. Project-local beacon must be published to .campfire/beacons/ ---
-	beaconsDir := filepath.Join(projectDir, ".campfire", "beacons")
-	entries, err := os.ReadDir(beaconsDir)
-	if err != nil {
-		t.Fatalf(".campfire/beacons/ not found: %v\n(project-local beacon publish is broken — createLocalCampfire must publish to projectDir/beacons/)", err)
-	}
-	hasBeacon := false
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".beacon") {
-			hasBeacon = true
-			break
-		}
-	}
-	if !hasBeacon {
-		t.Errorf(".campfire/beacons/ exists but contains no .beacon files: %v", entries)
-	}
-
-	// --- 5. rd create must succeed in the new project (campfire is functional) ---
-	createOut, createErr, createCode := e.RdInDir(projectDir, "create",
-		"--title", "post-init item",
-		"--priority", "p2",
-		"--type", "task",
-		"--json",
-	)
-	if createCode != 0 {
-		t.Fatalf("rd create after init failed (exit %d): %s", createCode, createErr)
-	}
-	var item Item
-	if err := json.Unmarshal([]byte(createOut), &item); err != nil {
-		t.Fatalf("JSON parse of rd create output: %v\noutput: %s", err, createOut)
-	}
-	if item.ID == "" {
-		t.Error("created item has empty ID")
+			gotProjectID[:12], homeID[:12], readyID[:12])
 	}
 }
 
@@ -291,9 +246,8 @@ func TestE2E_Init_ClientCreate_BeaconAndDeclarations(t *testing.T) {
 func TestE2E_Register_SecondProject_DiscoverExisting(t *testing.T) {
 	e := NewEnv(t)
 
-	// First project: init + register with --org (creates home + ready).
-	proj1 := t.TempDir()
-	e.RdInDir(proj1, "init", "--name", "proj1")
+	// First project: register with --org (creates home + ready).
+	proj1, _ := e.newCampfireProjectDir(t)
 	stdout1, stderr, code := e.RdInDir(proj1, "register", "--org", "testorg", "--name", "proj1", "--json")
 	if code != 0 {
 		t.Fatalf("register proj1 failed (exit %d): %s", code, stderr)
@@ -301,9 +255,8 @@ func TestE2E_Register_SecondProject_DiscoverExisting(t *testing.T) {
 	var res1 map[string]interface{}
 	json.Unmarshal([]byte(stdout1), &res1)
 
-	// Second project: init + register WITHOUT --org — should discover home.
-	proj2 := t.TempDir()
-	e.RdInDir(proj2, "init", "--name", "proj2")
+	// Second project: register WITHOUT --org — should discover home.
+	proj2, _ := e.newCampfireProjectDir(t)
 	stdout2, stderr, code := e.RdInDir(proj2, "register", "--name", "proj2", "--json")
 	if code != 0 {
 		t.Fatalf("register proj2 failed (exit %d): %s", code, stderr)

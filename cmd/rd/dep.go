@@ -49,6 +49,12 @@ var depAddCmd = &cobra.Command{
 			return fmt.Errorf("cross-project deps not supported for blocked item: %q looks like a cross-campfire reference", blockedArg)
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// Closes the dep publisher gap (deps are card "i" tags; a card-only edit).
+		if _, native := nostrNativeProject(); native {
+			return runDepAddNostr(blockedArg, blockerArg)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Resolve blocked item (must be local).
 			blocked, err := byIDFromJSONLOrStore(s, blockedArg)
@@ -154,6 +160,13 @@ var depRemoveCmd = &cobra.Command{
 		blockedArg := args[0]
 		blockerArg := args[1]
 		reason, _ := cmd.Flags().GetString("reason")
+
+		// nostr-native default write path (ready-6ef): deps are card "i" tags —
+		// removal is a card-only edit; no work:block message lookup needed.
+		if _, native := nostrNativeProject(); native {
+			_ = reason
+			return runDepRemoveNostr(blockedArg, blockerArg)
+		}
 
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Resolve both items to get their canonical IDs.

@@ -38,7 +38,7 @@ func TestE2E_Init_CreatesSummaryCampfire(t *testing.T) {
 	e := NewEnv(t)
 
 	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "summary-test", "--json", "--confirm")
+	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "summary-test", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
 	}
@@ -151,7 +151,7 @@ func TestE2E_OrgObserver_ListSeesOnlySummaryCampfire(t *testing.T) {
 		return outBuf.String(), errBuf.String(), code
 	}
 
-	initOut, initErr, initCode := rdExec(ownerEnv, ownerProjectDir, "init", "--name", "observer-test", "--json", "--confirm")
+	initOut, initErr, initCode := rdExec(ownerEnv, ownerProjectDir, "init", "--name", "observer-test", "--json", "--campfire")
 	if initCode != 0 {
 		t.Fatalf("rd init (owner) failed (exit %d):\nstderr: %s", initCode, initErr)
 	}
@@ -311,7 +311,7 @@ func TestE2E_SummaryBind_IsPostedByInit(t *testing.T) {
 	e := NewEnv(t)
 
 	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "bind-test", "--json", "--confirm")
+	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "bind-test", "--json", "--campfire")
 	if code != 0 {
 		t.Fatalf("rd init failed (exit %d):\nstderr: %s", code, stderr)
 	}

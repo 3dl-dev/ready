@@ -34,6 +34,12 @@ Example:
 			return fmt.Errorf("--to is required")
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// Closes the delegate publisher gap (previously published NO nostr event).
+		if _, native := nostrNativeProject(); native {
+			return runDelegateNostr(itemID, to, reason)
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err

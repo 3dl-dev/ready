@@ -27,6 +27,14 @@ import (
 // carries the owner's transport dir in Transport.Config["dir"].
 func TestE2E_JoinAdmit_TwoSidedHandshake(t *testing.T) {
 	// --- Setup: two isolated identities ---
+	//
+	// ready-6ef SURVIVE (campfire-org infra; I7 deletes this test with the campfire
+	// code): the two-sided rd admit / rd join handshake is a campfire feature with no
+	// nostr-native equivalent. The default `rd init` is now nostr-native, so the owner's
+	// project campfire — and the beacon carrying its transport dir to the member, plus
+	// the .ready/config.json campfire_id `rd admit` reads — are provisioned via the
+	// hidden, explicit-only `rd init --campfire` legacy path (which runs the still-present
+	// campfire-init code faithfully, without faking any of its outputs).
 
 	ownerCFHome := t.TempDir()
 	memberCFHome := t.TempDir()
@@ -58,10 +66,8 @@ func TestE2E_JoinAdmit_TwoSidedHandshake(t *testing.T) {
 	runCmd(t, envFor(ownerCFHome), "cf init (owner)", "cf", "init", "--cf-home", ownerCFHome)
 	runCmd(t, envFor(memberCFHome), "cf init (member)", "cf", "init", "--cf-home", memberCFHome)
 
-	// Owner: rd init — creates project campfire and publishes beacon.
-	// The beacon is written to $HOME/.campfire/beacons/ with Transport.Config["dir"]
-	// pointing to ownerCFHome/campfires/. This is what enables the member to find
-	// the campfire's transport dir when calling 'rd join'.
+	// Owner: rd init --campfire — creates project campfire, publishes beacon (transport
+	// dir carried in Transport.Config["dir"]), and writes .ready/config.json campfire_id.
 	ownerEnv := envFor(ownerCFHome)
 	ownerRd := func(args ...string) (stdout, stderr string, code int) {
 		t.Helper()
@@ -79,9 +85,9 @@ func TestE2E_JoinAdmit_TwoSidedHandshake(t *testing.T) {
 		return outBuf.String(), errBuf.String(), code
 	}
 
-	_, initStderr, initCode := ownerRd("init", "--name", "handshake-test", "--confirm")
+	_, initStderr, initCode := ownerRd("init", "--name", "handshake-test", "--campfire")
 	if initCode != 0 {
-		t.Fatalf("rd init (owner) failed (exit %d): %s", initCode, initStderr)
+		t.Fatalf("rd init --campfire (owner) failed (exit %d): %s", initCode, initStderr)
 	}
 
 	// Read campfire ID from .campfire/root.
@@ -90,7 +96,6 @@ func TestE2E_JoinAdmit_TwoSidedHandshake(t *testing.T) {
 		t.Fatalf("reading .campfire/root: %v", err)
 	}
 	campfireID := string(campfireIDBytes)
-	// Trim newline if present.
 	for len(campfireID) > 0 && (campfireID[len(campfireID)-1] == '\n' || campfireID[len(campfireID)-1] == '\r') {
 		campfireID = campfireID[:len(campfireID)-1]
 	}

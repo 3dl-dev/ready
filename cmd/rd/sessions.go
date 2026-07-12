@@ -12,6 +12,7 @@ import (
 	trust "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -180,6 +181,72 @@ func shortKey(k string) string {
 		return k[:12] + "..."
 	}
 	return k
+}
+
+// auditLabeler renders the authority annotation for a history actor in
+// `rd show --audit`. Two implementations back it: the campfire authorityResolver
+// (campfire/JSONL projects) and the nostrAuthorityResolver (nostr-native default
+// path). The interface lets show.go pick the source by project type WITHOUT the
+// nostr-native path ever calling requireClient()/protocol.Init — the call that was
+// provisioning .cf/identity.json (ready-6ef veracity fix).
+type auditLabeler interface {
+	label(actor string) string
+}
+
+// nostrAuthorityResolver renders `rd show --audit` authority annotations from the
+// nostr projection — the signed kind-39301 role-grants in the local authoritative
+// log — NOT from a campfire client. This is the whole point of the fix: the
+// nostr-native path resolves audit authority with ZERO campfire init and provisions
+// NO .cf. The board author is the root principal (level-2 bootstrap trust root);
+// every other actor's label is its graded role derived by DeriveLevels.
+type nostrAuthorityResolver struct {
+	owner  string         // board author pubkey (root principal)
+	levels map[string]int // graded operator level per explicitly-granted key
+}
+
+// label mirrors authorityResolver.label's contract: "" for non-pubkey actors so
+// the show loop prints no annotation; a short authority description otherwise.
+func (r *nostrAuthorityResolver) label(actor string) string {
+	if len(actor) != 64 || !isHex(actor) {
+		return ""
+	}
+	if actor == r.owner {
+		return "owner (root principal)"
+	}
+	lvl, ok := r.levels[actor]
+	if !ok {
+		return "no delegation grant"
+	}
+	switch lvl {
+	case rdSync.LevelRevoked:
+		return "revoked"
+	case rdSync.LevelMaintainer:
+		return "maintainer"
+	default:
+		return "contributor"
+	}
+}
+
+// loadNostrAuthorityResolver builds the nostr-native audit resolver from the pinned
+// board coordinate and the signed role-grants in the local authoritative log. It
+// performs NO campfire init and provisions NO .cf. Returns nil when the project is
+// not nostr-native or the log/pin is unreadable, so show.go degrades to
+// non-annotated (but still correct) audit output.
+func loadNostrAuthorityResolver() *nostrAuthorityResolver {
+	dir, native := nostrNativeProject()
+	if !native {
+		return nil
+	}
+	owner, boardD, ok := rdSync.ParseBoardCoord(nostrPinnedBoard(dir))
+	if !ok {
+		return nil
+	}
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		return nil
+	}
+	levels, _ := rdSync.DeriveLevels(events, owner, boardD)
+	return &nostrAuthorityResolver{owner: owner, levels: levels}
 }
 
 // authorityResolver renders the cf-authority attribution for an actor pubkey

@@ -33,6 +33,11 @@ Example:
 			resolution = "done"
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		if _, native := nostrNativeProject(); native {
+			return runCloseNostr(itemID, resolution, reason, "closed")
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err

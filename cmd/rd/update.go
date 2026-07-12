@@ -88,6 +88,16 @@ Examples:
 			due = normalized
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		if _, native := nostrNativeProject(); native {
+			return runUpdateNostr(itemID, nostrUpdateSpec{
+				title: title, context: context, priority: priority,
+				eta: eta, due: due, level: level,
+				statusTo: statusTo, waitingOn: waitingOn, waitingType: waitingType, note: note,
+				hasFieldUpdate: hasFieldUpdate, hasStatusUpdate: hasStatusUpdate, claim: claim,
+			})
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err

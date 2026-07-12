@@ -142,31 +142,15 @@ func TestE2E_CFHome_LegacyPath_FullSmoke(t *testing.T) {
 	}
 	cfInitInHome(t, legacyCFHome)
 
-	// Create a project dir.
-	projectDir := t.TempDir()
-
-	// --- Run rd init with CF_HOME pointing to legacy path ---
-	cmd := exec.Command(rdBinary, "init", "--name", "testproject")
-	cmd.Dir = projectDir
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + fakeHome,
-		"CF_HOME=" + legacyCFHome, // Explicit legacy CF_HOME
-	}
-	var initStdout, initStderr bytes.Buffer
-	cmd.Stdout = &initStdout
-	cmd.Stderr = &initStderr
-	initCode := 0
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			initCode = exitErr.ExitCode()
-		}
-	}
-
-	if initCode != 0 {
-		t.Fatalf("rd init failed (exit %d) with legacy CF_HOME:\nstderr: %s\nstdout: %s",
-			initCode, initStderr.String(), initStdout.String())
-	}
+	// ready-6ef SURVIVE: the default `rd init` is now nostr-native and creates NO
+	// campfire, so the campfire substrate is built directly at the SAME legacy
+	// ~/.campfire home via newCampfireProjectDir (cf create --cf-home <legacy> +
+	// .campfire/root). The create/list/show lifecycle below then exercises CFHome
+	// resolution against that legacy path exactly as before. (I7 deletes this test
+	// with the campfire code.)
+	eHome := &Env{CFHome: legacyCFHome, t: t}
+	projectDir, _ := eHome.newCampfireProjectDir(t)
+	var initStderr bytes.Buffer // no init step post-cutover; kept for the stderr scan below
 
 	// --- Verify .campfire/root was created in the project ---
 	rootFile := filepath.Join(projectDir, ".campfire", "root")
@@ -326,31 +310,14 @@ func TestE2E_CFHome_NewInstall_FullSmoke(t *testing.T) {
 		t.Fatalf("identity.json not found in ~/.cf: %v", err)
 	}
 
-	// Create a project dir.
-	projectDir := t.TempDir()
-
-	// --- Run rd init with CF_HOME pointing to new .cf path ---
-	cmd := exec.Command(rdBinary, "init", "--name", "testproject")
-	cmd.Dir = projectDir
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + fakeHome,
-		"CF_HOME=" + newCFHome, // Explicit new CF_HOME
-	}
-	var initStdout, initStderr bytes.Buffer
-	cmd.Stdout = &initStdout
-	cmd.Stderr = &initStderr
-	initCode := 0
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			initCode = exitErr.ExitCode()
-		}
-	}
-
-	if initCode != 0 {
-		t.Fatalf("rd init failed (exit %d) with new-install CF_HOME:\nstderr: %s\nstdout: %s",
-			initCode, initStderr.String(), initStdout.String())
-	}
+	// ready-6ef SURVIVE: the default `rd init` is now nostr-native and creates NO
+	// campfire, so the campfire substrate is built directly at the SAME new ~/.cf home
+	// via newCampfireProjectDir (cf create --cf-home <newCFHome> + .campfire/root). The
+	// create/list/show lifecycle below then exercises CFHome resolution against that new
+	// path exactly as before. (I7 deletes this test with the campfire code.)
+	eHome := &Env{CFHome: newCFHome, t: t}
+	projectDir, _ := eHome.newCampfireProjectDir(t)
+	var initStderr bytes.Buffer // no init step post-cutover; kept for the stderr scan below
 
 	// --- Verify .campfire/root was created in the project ---
 	rootFile := filepath.Join(projectDir, ".campfire", "root")

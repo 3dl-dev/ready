@@ -148,6 +148,51 @@ func NewEnv(t *testing.T) *Env {
 	}
 }
 
+// newCampfireProjectDir creates an ADDITIONAL campfire-backed project directory
+// sharing this env's CF_HOME identity: it runs `cf create` and writes
+// .campfire/root, exactly as NewEnv does for e.ProjectDir. Post-cutover the default
+// `rd init` is nostr-native and provisions NO campfire, so campfire-vestigial
+// commands (register, join, admit — the campfire-org topology surface that I5/I7
+// deletes) can no longer be set up via `rd init`. Tests that exercise those
+// campfire features build their substrate directly through this helper instead.
+// Returns the new project dir and its campfire ID.
+func (e *Env) newCampfireProjectDir(t *testing.T) (projectDir, campfireID string) {
+	t.Helper()
+	createCmd := exec.Command("cf", "create", "--cf-home", e.CFHome,
+		"--description", fmt.Sprintf("e2e-extra-%s", t.Name()),
+		"--json")
+	createCmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+	}
+	out, err := createCmd.Output()
+	if err != nil {
+		t.Fatalf("cf create (extra) failed: %v\n%s", err, out)
+	}
+	jsonStart := bytes.IndexByte(out, '{')
+	if jsonStart < 0 {
+		t.Fatalf("cf create (extra): no JSON object in output: %s", out)
+	}
+	var result struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal(out[jsonStart:], &result); err != nil {
+		t.Fatalf("cf create (extra) JSON parse failed: %v\noutput: %s", err, out)
+	}
+	if result.CampfireID == "" {
+		t.Fatalf("cf create (extra) returned empty campfire_id; output: %s", out)
+	}
+	projectDir = t.TempDir()
+	campfireDir := filepath.Join(projectDir, ".campfire")
+	if err := os.MkdirAll(campfireDir, 0700); err != nil {
+		t.Fatalf("mkdir .campfire (extra): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(result.CampfireID), 0600); err != nil {
+		t.Fatalf("write .campfire/root (extra): %v", err)
+	}
+	return projectDir, result.CampfireID
+}
+
 // Rd runs rd with the given args in the project dir.
 // Returns stdout, stderr, and exit code.
 func (e *Env) Rd(args ...string) (stdout, stderr string, exitCode int) {

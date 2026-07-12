@@ -7,45 +7,69 @@ import (
 	"testing"
 )
 
-// TestE2E_Recovery_MislocatedTransport verifies that rd detects campfire state
-// in an ephemeral location (/tmp) and migrates it to ~/.campfire/campfires/<id>/.
+// TestE2E_Recovery_MislocatedTransport exercises the campfire transport with state
+// in an ephemeral (/tmp) location.
+//
+// ready-6ef cutover: campfire transport recovery is campfire-infra (SURVIVE, per the
+// e2e ruling — I7/ready-cb6 deletes the campfire code and this test together). The
+// pre-cutover test drove a NEW campfire via `rd init` and asserted it landed in
+// $CF_HOME/campfires/<id>; the default `rd init` is now nostr-native and creates NO
+// campfire, so that path — and its `campfire_id` output the old test dereferenced
+// (the source of the nil→string panic) — is gone. This SURVIVE form drives the
+// still-present campfire transport: a campfire whose state lives in the ephemeral
+// /tmp transport dir where `cf create` places it is fully usable by rd — mutations
+// reach the on-disk transport state and items round-trip back through it, on both the
+// primary env campfire and an additional harness-built campfire.
 func TestE2E_Recovery_MislocatedTransport(t *testing.T) {
 	e := NewEnv(t)
 
-	// NewEnv uses cf create which puts state in /tmp/campfire/<id>/.
-	// Create an item — this writes via the /tmp transport.
+	// NewEnv uses cf create which puts state in an ephemeral /tmp transport dir.
+	// Create an item — this writes via that (mislocated) /tmp transport.
 	var item Item
 	if err := e.RdJSON(&item, "create",
-		"--title", "item before migration",
+		"--title", "item on mislocated transport",
 		"--priority", "p1",
 		"--type", "task",
 	); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Verify the transport dir has campfire state.
-	tmpDir := e.TransportDir
-	if _, err := os.Stat(filepath.Join(tmpDir, "campfire.cbor")); err != nil {
-		t.Fatalf("expected campfire state in %s: %v", tmpDir, err)
+	// The mutation reached the /tmp campfire transport state.
+	if _, err := os.Stat(filepath.Join(e.TransportDir, "campfire.cbor")); err != nil {
+		t.Fatalf("expected campfire state in the /tmp transport %s: %v", e.TransportDir, err)
 	}
 
-	// Now use rd init in a new project dir — this should use the good location.
-	projectDir := t.TempDir()
-	stdout, stderr, code := e.RdInDir(projectDir, "init", "--name", "migtest", "--json")
-	if code != 0 {
-		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
+	// The item round-trips back through that /tmp transport.
+	if !containsItem(e.ListItems(), item.ID) {
+		t.Fatalf("item %s not readable back through the /tmp transport", item.ID)
 	}
 
-	var initResult map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &initResult); err != nil {
-		t.Fatalf("parse init JSON: %v", err)
+	// An additional harness-built campfire (also transported under /tmp) is likewise
+	// fully usable: its mutations round-trip through its own transport independently.
+	projectDir, _ := e.newCampfireProjectDir(t)
+	var item2 Item
+	out2, stderr2, code2 := e.RdInDir(projectDir, "create",
+		"--title", "item on second mislocated transport",
+		"--priority", "p2",
+		"--type", "task",
+		"--json")
+	if code2 != 0 {
+		t.Fatalf("create in second campfire failed (exit %d):\nstderr: %s", code2, stderr2)
 	}
-	newCampfireID := initResult["campfire_id"].(string)
+	if err := json.Unmarshal([]byte(out2), &item2); err != nil {
+		t.Fatalf("parse create JSON: %v\noutput: %s", err, out2)
+	}
 
-	// Verify the new campfire is in the good location, not /tmp.
-	goodDir := filepath.Join(e.CFHome, "campfires", newCampfireID)
-	if _, err := os.Stat(filepath.Join(goodDir, "campfire.cbor")); err != nil {
-		t.Fatalf("expected campfire state in %s: %v", goodDir, err)
+	list2Out, list2Err, list2Code := e.RdInDir(projectDir, "list", "--all", "--json")
+	if list2Code != 0 {
+		t.Fatalf("list in second campfire failed (exit %d): %s", list2Code, list2Err)
+	}
+	var items2 []Item
+	if err := json.Unmarshal([]byte(list2Out), &items2); err != nil {
+		t.Fatalf("parse list JSON: %v\noutput: %s", err, list2Out)
+	}
+	if !containsItem(items2, item2.ID) {
+		t.Fatalf("item %s not readable back through the second campfire transport", item2.ID)
 	}
 }
 

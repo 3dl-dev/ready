@@ -75,10 +75,18 @@ func setupCenterCampfireForTest(t *testing.T, cfHome string) string {
 	return result.CampfireID
 }
 
-// TestE2E_CenterAdoption verifies:
-//  1. rd init succeeds with a center campfire present in the walk-up path
-//  2. The authorize hook fires (non-interactively returns false — no crash)
-//  3. The project is fully functional after init (create/ready/done lifecycle)
+// TestE2E_CenterAdoption verifies (ready-6ef SURVIVE — campfire-org infra; I7 deletes):
+//  1. A campfire command succeeds with a center campfire present in the walk-up path
+//  2. The authorize hook (WithAuthorizeFunc(centerAuthorize), wired in requireClient)
+//     fires (non-interactively returns false — no crash) and does not block the command
+//  3. The project is fully functional (create/ready/done lifecycle)
+//
+// Pre-cutover this drove the campfire-native `rd init --confirm`; the default `rd init`
+// is now nostr-native and provisions NO campfire, so the campfire substrate is built
+// directly via newCampfireProjectDir. The center-adoption hook is NOT init-specific — it
+// is armed on every campfire client init (requireClient → protocol.Init), so a plain
+// `rd create` on a campfire-backed project exercises exactly the same surviving code
+// path with the center sentinel in the walk-up.
 func TestE2E_CenterAdoption(t *testing.T) {
 	// Create a structured directory hierarchy so walk-up finds the center:
 	//   parentDir/
@@ -109,27 +117,14 @@ func TestE2E_CenterAdoption(t *testing.T) {
 		t.Fatalf("center sentinel not found at %s: %v", sentinelPath, err)
 	}
 
-	// Create project dir and env.
-	projectDir := t.TempDir()
-	e := &Env{CFHome: cfHome, ProjectDir: projectDir, t: t}
+	// Build the campfire-backed project directly (rd init no longer creates campfires).
+	e := &Env{CFHome: cfHome, t: t}
+	projectDir, _ := e.newCampfireProjectDir(t)
+	e.ProjectDir = projectDir
 
-	// rd init — must succeed even though center is present and hook returns false.
-	// The authorize hook fires (stdin is not a tty in tests), returns false,
-	// and init continues normally without posting a claim.
-	stdout, stderr, code := e.Rd("init", "--name", "center-test-project", "--json", "--confirm")
-	if code != 0 {
-		t.Fatalf("rd init failed with center present (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
-	}
-
-	var initResult map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &initResult); err != nil {
-		t.Fatalf("rd init JSON parse: %v\noutput: %s", err, stdout)
-	}
-	if initResult["campfire_id"] == nil || initResult["campfire_id"] == "" {
-		t.Error("rd init: campfire_id should be non-empty")
-	}
-
-	// Full lifecycle verification: create → ready → done.
+	// A campfire mutation runs requireClient → protocol.Init(WithAuthorizeFunc), so the
+	// center-adoption authorize hook fires here (stdin is not a tty → returns false) and
+	// must not block. Full lifecycle verification: create → ready → done.
 	var item Item
 	if err := e.RdJSON(&item, "create",
 		"--title", "center adoption test item",
@@ -147,9 +142,9 @@ func TestE2E_CenterAdoption(t *testing.T) {
 		t.Fatalf("item %s not found in rd ready", item.ID)
 	}
 
-	_, stderr, code = e.Rd("done", item.ID, "--reason", "center adoption test complete")
-	if code != 0 {
-		t.Fatalf("rd done: exit %d: %s", code, stderr)
+	_, doneStderr, doneCode := e.Rd("done", item.ID, "--reason", "center adoption test complete")
+	if doneCode != 0 {
+		t.Fatalf("rd done: exit %d: %s", doneCode, doneStderr)
 	}
 
 	got := e.ShowItem(item.ID)
@@ -180,23 +175,16 @@ func TestE2E_CenterAdoption_SubsequentDirNoBlock(t *testing.T) {
 
 	_ = setupCenterCampfireForTest(t, cfHome)
 
-	projA := t.TempDir()
-	projB := t.TempDir()
-
-	eA := &Env{CFHome: cfHome, ProjectDir: projA, t: t}
-	eB := &Env{CFHome: cfHome, ProjectDir: projB, t: t}
-
-	// First rd init — succeeds.
-	_, stderr, code := eA.Rd("init", "--name", "proj-a", "--json", "--confirm")
-	if code != 0 {
-		t.Fatalf("rd init proj-a failed (exit %d): %s", code, stderr)
-	}
-
-	// Second rd init in a different directory — must also succeed.
-	_, stderr, code = eB.Rd("init", "--name", "proj-b", "--json", "--confirm")
-	if code != 0 {
-		t.Fatalf("rd init proj-b failed (exit %d): %s", code, stderr)
-	}
+	// Build two campfire-backed projects sharing the same cfHome (rd init no longer
+	// creates campfires). The center sentinel sits in the shared walk-up path, so a
+	// campfire mutation in EITHER project arms the authorize hook — the first firing
+	// (returning false) must not block the second project's commands.
+	eA := &Env{CFHome: cfHome, t: t}
+	eB := &Env{CFHome: cfHome, t: t}
+	projA, _ := eA.newCampfireProjectDir(t)
+	projB, _ := eB.newCampfireProjectDir(t)
+	eA.ProjectDir = projA
+	eB.ProjectDir = projB
 
 	// Both projects must be functional.
 	var itemA, itemB Item

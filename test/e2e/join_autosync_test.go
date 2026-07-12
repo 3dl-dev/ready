@@ -73,7 +73,7 @@ func TestE2E_JoinAutoSyncPull(t *testing.T) {
 	}
 
 	// Owner: rd init — creates project campfire and publishes beacon.
-	_, initStderr, initCode := rdInDir(ownerProjectDir, ownerEnv, "init", "--name", "auto-sync-test", "--confirm")
+	_, initStderr, initCode := rdInDir(ownerProjectDir, ownerEnv, "init", "--name", "auto-sync-test", "--campfire")
 	if initCode != 0 {
 		t.Fatalf("rd init (owner) failed (exit %d): %s", initCode, initStderr)
 	}

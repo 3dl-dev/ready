@@ -10,13 +10,11 @@ import (
 
 	cfauthprov "github.com/campfire-net/campfire/cf-conventions/cf-authority/provenance"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
 	cfprov "github.com/campfire-net/campfire/pkg/provenance"
-	"github.com/campfire-net/campfire/cf-protocol/protocol"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/mattn/go-isatty"
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/conventionserver"
 	"github.com/campfire-net/ready/pkg/crossdep"
 	"github.com/campfire-net/ready/pkg/declarations"
@@ -24,6 +22,8 @@ import (
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/resolve"
 	"github.com/campfire-net/ready/pkg/state"
+	"github.com/mattn/go-isatty"
+	"github.com/spf13/cobra"
 )
 
 // Version is set at build time via -ldflags.
@@ -100,6 +100,16 @@ func init() {
 			return nil
 		}
 
+		// CUTOVER (ready-6ef): the default path is nostr-native and provisions NO
+		// campfire client and NO .cf identity. Only campfire-BACKED projects (a
+		// .campfire/root exists) still start the in-process convention server here.
+		// A nostr-native or JSONL-only project has no campfire root, so PreRunE does
+		// nothing — protocol.Init (which auto-generates a throwaway .cf identity) is
+		// never called on the default path. The remaining campfire-vestigial commands
+		// (admit/playbook) lazy-init their client only when explicitly invoked.
+		if _, _, ok := projectRoot(); !ok {
+			return nil
+		}
 		client, err := requireClient()
 		if err != nil {
 			// Client init failure is non-fatal here — individual commands report it.

@@ -38,6 +38,11 @@ Example:
 			return fmt.Errorf("--gate-type is required: choose from budget, design, scope, review, human, stall, periodic")
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		if _, native := nostrNativeProject(); native {
+			return runGateNostr(itemID, gateType, description)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Resolve the item.
 			item, err := byIDFromJSONLOrStore(s, itemID)

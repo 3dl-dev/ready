@@ -30,6 +30,12 @@ Example:
 		itemID := args[0]
 		reason, _ := cmd.Flags().GetString("reason")
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// Closes the reject publisher gap (previously published NO nostr event).
+		if _, native := nostrNativeProject(); native {
+			return runRejectNostr(itemID, reason)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Resolve the item.
 			item, err := byIDFromJSONLOrStore(s, itemID)

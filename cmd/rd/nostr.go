@@ -120,6 +120,37 @@ func nostrTrustSet(dir, selfPubkey string) map[string]bool {
 	return set
 }
 
+// nostrNextCreatedAt returns a strictly-monotonic-per-log event timestamp in unix
+// SECONDS: max(now, newestLoggedSecond+1). The nostr projection resolves latest-
+// wins at second granularity, tie-breaking identical seconds by event id (ready-f92,
+// for cross-machine convergence). That tie-break is order-INDEPENDENT, so two
+// mutations issued within the same wall-clock second (e.g. a scripted
+// `rd create && rd claim`, common on the nostr-native default path) would otherwise
+// resolve in content-hash order, not intent order — a create card could win over
+// the later claim card, leaving the item stuck at inbox. Stamping each successive
+// same-machine write at least one second AFTER the newest event already in the
+// authoritative log restores intent order for sequential writes WITHOUT weakening
+// convergence: genuinely concurrent cross-machine events (identical created_at)
+// still tie-break by id, and the campfire path never called this. Degrades to
+// time.Now on a log read error (the pre-existing same-second behaviour).
+func nostrNextCreatedAt(log *rdSync.NostrLog) int64 {
+	now := time.Now().Unix()
+	events, err := log.ReadAll()
+	if err != nil {
+		return now
+	}
+	var max int64
+	for _, e := range events {
+		if e.CreatedAt > max {
+			max = e.CreatedAt
+		}
+	}
+	if max+1 > now {
+		return max + 1
+	}
+	return now
+}
+
 // nostrPublisher builds a Publisher rooted at the current project. Returns
 // (nil,false,nil) when there is no project dir (nothing to publish into).
 func nostrPublisher() (*rdSync.Publisher, bool, error) {
@@ -186,7 +217,7 @@ func nostrBoardAuthor(dir, signerPubkey string) string {
 // failure never fails `rd create` (the event is durable in the log; the campfire
 // / JSONL write already succeeded). Returns nil when nostr is disabled.
 func publishItemCreateNostr(itemID, title, itemType, priority, status, itemContext, forParty string) error {
-	if !nostrEnabled() {
+	if !nostrWriteActive() {
 		return nil
 	}
 	pub, ok, err := nostrPublisher()
@@ -228,7 +259,7 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 		boardArg = &board
 	}
 	ctx := context.Background()
-	res, err := pub.PublishItem(ctx, boardArg, card, time.Now().Unix())
+	res, err := pub.PublishItem(ctx, boardArg, card, nostrNextCreatedAt(pub.Log))
 	if err != nil {
 		return err
 	}
@@ -272,7 +303,7 @@ func closeResolutionToStatus(resolution string) string {
 // mutation, since the campfire/JSONL write already succeeded and the nostr event
 // is durable in the local authoritative log regardless of relay reachability.
 func publishItemStatusChangeNostr(item *state.Item, reason string) error {
-	if !nostrEnabled() {
+	if !nostrWriteActive() {
 		return nil
 	}
 	pub, ok, err := nostrPublisher()
@@ -284,7 +315,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishStatusChange(context.Background(), card, reason, time.Now().Unix())
+	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log))
 	if err != nil {
 		return err
 	}
@@ -301,7 +332,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 // with no accompanying status event, proving the hybrid invariant that editing
 // the addressable 30302 card does not add — or erase — history (ready-b5f).
 func publishItemCardEditNostr(item *state.Item) error {
-	if !nostrEnabled() {
+	if !nostrWriteActive() {
 		return nil
 	}
 	pub, ok, err := nostrPublisher()
@@ -313,7 +344,7 @@ func publishItemCardEditNostr(item *state.Item) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishCardEdit(context.Background(), card, time.Now().Unix())
+	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log))
 	if err != nil {
 		return err
 	}
@@ -920,7 +951,7 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 // so the caller falls back to the campfire/JSONL path. Additive: no behaviour
 // change unless RD_NOSTR_READ=1.
 func nostrDualReadAll() ([]*state.Item, bool, error) {
-	if !nostrReadEnabled() {
+	if !nostrReadActive() {
 		return nil, false, nil
 	}
 	items, _, err := nostrProjectAllItems()
@@ -931,7 +962,7 @@ func nostrDualReadAll() ([]*state.Item, bool, error) {
 // enabled. Returns (item, true, err) on a hit path (err set if not found);
 // (nil,false,nil) when dual-read is off.
 func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
-	if !nostrReadEnabled() {
+	if !nostrReadActive() {
 		return nil, false, nil
 	}
 	_, byID, err := nostrProjectAllItems()

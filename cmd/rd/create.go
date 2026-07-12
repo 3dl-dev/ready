@@ -176,6 +176,35 @@ Note: use --context for descriptions, not --description.`,
 			due = normalized
 		}
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// The item is materialized as board+card+status(inbox) events; --for
+		// defaults to the signing pubkey.
+		if dir, native := nostrNativeProject(); native {
+			id, err := runCreateNostr(dir, nostrCreateSpec{
+				id: id, title: title, context: context, itemType: itemType,
+				level: level, project: project, forParty: forParty, by: by,
+				priority: priority, parentID: parentID, eta: eta, due: due,
+				labels: labelSlice, forChanged: cmd.Flags().Changed("for"),
+			})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				out := map[string]interface{}{
+					"id": id, "title": title, "type": itemType, "priority": priority,
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+				fmt.Printf("created %s\n", id)
+			} else {
+				fmt.Println(id)
+			}
+			return nil
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Default --for to the current session identity when not explicitly set.
 			if !cmd.Flags().Changed("for") {

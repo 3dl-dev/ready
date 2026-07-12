@@ -28,6 +28,11 @@ Example:
 		itemID := args[0]
 		reason, _ := cmd.Flags().GetString("reason")
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		if _, native := nostrNativeProject(); native {
+			return runApproveNostr(itemID, reason)
+		}
+
 		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
 			// Resolve the item.
 			item, err := byIDFromJSONLOrStore(s, itemID)

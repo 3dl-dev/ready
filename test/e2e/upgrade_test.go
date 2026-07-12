@@ -67,7 +67,7 @@ func TestE2E_Upgrade_ReadsLegacyFlatLayoutStore(t *testing.T) {
 	ownerEnv := envFor(ownerCFHome)
 
 	// Owner: init project + create two items (written to the bucketed layout).
-	if _, stderr, code := rdInDir(t, ownerProjectDir, ownerEnv, "init", "--name", "upgrade-test", "--confirm"); code != 0 {
+	if _, stderr, code := rdInDir(t, ownerProjectDir, ownerEnv, "init", "--name", "upgrade-test", "--campfire"); code != 0 {
 		t.Fatalf("rd init (owner) failed (exit %d): %s", code, stderr)
 	}
 	campfireID := readCampfireRoot(t, ownerProjectDir)

@@ -24,6 +24,11 @@ Example:
 		itemID := args[0]
 		reason, _ := cmd.Flags().GetString("reason")
 
+		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		if _, native := nostrNativeProject(); native {
+			return runClaimNostr(itemID, reason)
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err

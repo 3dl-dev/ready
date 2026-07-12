@@ -59,8 +59,8 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if len(grantee) != 64 || !isHex(grantee) {
 		return fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
-	if !nostrEnabled() {
-		return fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1")
+	if !nostrWriteActive() {
+		return fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
 	}
 	pub, ok, err := nostrPublisher()
 	if err != nil {
