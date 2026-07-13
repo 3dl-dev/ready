@@ -3,14 +3,14 @@ package state_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
 // BUG-12: Verify that the clear sentinel "-" clears fields via work:update.
 func TestDerive_UpdateClearField(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1", "due": "2026-04-01T00:00:00Z",
@@ -34,7 +34,7 @@ func TestDerive_UpdateClearField(t *testing.T) {
 // BUG-12: Verify that normal non-sentinel values still work.
 func TestDerive_UpdateNonSentinelPreserved(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -75,7 +75,7 @@ func TestDerive_ETAFromPriority_AllLevels(t *testing.T) {
 		{"unknown", true}, // defaults to +24h
 	}
 	for _, tc := range cases {
-		msgs := []store.MessageRecord{
+		msgs := []msgrec.MessageRecord{
 			makeMsg("msg-"+tc.priority, []string{"work:create"}, map[string]interface{}{
 				"id": "ready-" + tc.priority, "title": "Test " + tc.priority, "type": "task",
 				"for": "baron@3dl.dev", "priority": tc.priority,

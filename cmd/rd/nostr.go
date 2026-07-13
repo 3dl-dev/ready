@@ -8,7 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
@@ -120,6 +119,51 @@ func nostrTrustSet(dir, selfPubkey string) map[string]bool {
 	return set
 }
 
+// nostrNextCreatedAt returns a strictly-monotonic-PER-CAUSAL-CHAIN event timestamp
+// in unix SECONDS: max(now, newestSecondForThisScope+1). scope is the target write's
+// DriftScope (rdSync.ItemDriftScope / GrantDriftScope). The nostr projection resolves
+// latest-wins at second granularity, tie-breaking identical seconds by event id
+// (ready-f92, for cross-machine convergence). That tie-break is order-INDEPENDENT, so
+// two mutations issued within the same wall-clock second (e.g. a scripted
+// `rd create && rd claim`, common on the nostr-native default path) would otherwise
+// resolve in content-hash order, not intent order — a create card could win over the
+// later claim card, leaving the item stuck at inbox. Stamping each successive write at
+// least one second AFTER the newest event ALREADY IN THIS SCOPE restores intent order
+// for that item's (or that grantee-grant's) sequential writes.
+//
+// ready-be1 — SCOPED, not log-wide: the newest is taken over events in the SAME causal
+// chain only, never the whole log. Latest-wins orders each item's card/status chain and
+// each role-grant slot independently, so intent ordering only needs to hold within a
+// chain. The old log-wide max let an unrelated burst (rd engage over N items, a grant
+// burst) inflate the created_at of the NEXT write to ANY item/grantee by one second per
+// burst event — drifting a fresh card/grant arbitrarily into the future, where it beat a
+// genuinely-later cross-machine edit/REVOKE (silent lost update / ignored revoke,
+// violating ready-f92 convergence). Scoping bounds any single card/grant's future-drift
+// to the count of same-second writes to THAT chain (a couple of seconds), so an honest
+// later real-time edit from another machine wins. Convergence is unchanged: the ordering
+// key (created_at, id) is untouched; genuinely concurrent cross-machine events still
+// tie-break by id. Degrades to time.Now on a log read error (the pre-existing behaviour).
+func nostrNextCreatedAt(log *rdSync.NostrLog, scope string) int64 {
+	now := time.Now().Unix()
+	events, err := log.ReadAll()
+	if err != nil {
+		return now
+	}
+	var max int64
+	for _, e := range events {
+		if rdSync.DriftScope(e) != scope {
+			continue // different causal chain — its drift must not poison this write
+		}
+		if e.CreatedAt > max {
+			max = e.CreatedAt
+		}
+	}
+	if max+1 > now {
+		return max + 1
+	}
+	return now
+}
+
 // nostrPublisher builds a Publisher rooted at the current project. Returns
 // (nil,false,nil) when there is no project dir (nothing to publish into).
 func nostrPublisher() (*rdSync.Publisher, bool, error) {
@@ -171,73 +215,20 @@ func boardSpecForProject(dir, pubkey string) rdSync.BoardSpec {
 // .ready/config.json (30301:<owner>:<boardD>) is authoritative when set; otherwise
 // fall back to the signer's own pubkey — the owner signing their own board, which
 // reproduces the pre-pin behaviour exactly (zero migration for existing installs).
-func nostrBoardAuthor(dir, signerPubkey string) string {
+func nostrBoardAuthor(dir, signerPubkey string) (string, error) {
 	if pin := nostrPinnedBoard(dir); pin != "" {
-		if owner, _, ok := rdSync.ParseBoardCoord(pin); ok {
-			return owner
+		owner, _, ok := rdSync.ParseBoardCoord(pin)
+		if !ok {
+			// HIGH-2 (fail-open fix): a present-but-unparseable pin must HARD-ERROR,
+			// matching resolveBoardAuthorD. Silently falling back to signerPubkey here
+			// published items under the WRONG authority (the signer's own key instead
+			// of the intended board owner), diverging the item onto a foreign board.
+			return "", fmt.Errorf("pinned board coordinate %q is malformed (want 30301:<owner>:<boardD>); "+
+				"refusing to publish under the signer's own authority — fix .ready/config.json", pin)
 		}
+		return owner, nil
 	}
-	return signerPubkey
-}
-
-// publishItemCreateNostr is the create-time hook: when nostr is enabled it
-// publishes the board + card + status events for a freshly created item and
-// appends them to the local authoritative log. It is best-effort — a relay
-// failure never fails `rd create` (the event is durable in the log; the campfire
-// / JSONL write already succeeded). Returns nil when nostr is disabled.
-func publishItemCreateNostr(itemID, title, itemType, priority, status, itemContext, forParty string) error {
-	if !nostrEnabled() {
-		return nil
-	}
-	pub, ok, err := nostrPublisher()
-	if err != nil || !ok {
-		return err
-	}
-	dir, _ := readyProjectDir()
-	signer := pub.Key.PubKeyHex()
-	boardAuthor := nostrBoardAuthor(dir, signer)
-	board := boardSpecForProject(dir, boardAuthor)
-	if status == "" {
-		status = state.StatusInbox
-	}
-	card := rdSync.CardSpec{
-		ItemID:   itemID,
-		Title:    title,
-		Status:   status,
-		Priority: priority,
-		Type:     itemType,
-		Context:  itemContext,
-		BoardD:   board.BoardD,
-		// Board MEMBERSHIP points at the OWNER's board coordinate (BP-4), so an
-		// agent-signed card is accepted by the owner's pinned board. Owner-signed
-		// cards resolve boardAuthor==signer, unchanged.
-		BoardAuthor: boardAuthor,
-		// Carry the assignment scope at create time (ready-187) — forParty is the
-		// only extra field available here. Other card-only fields (labels/eta/due/
-		// level/parent) are materialized by the first full-item republish through
-		// rdSync.CardSpecFromItem (any subsequent mutation), which supersedes this
-		// create card latest-wins.
-		For: forParty,
-	}
-	// Only the board AUTHOR (owner) can sign the owner's 30301 board. An agent must
-	// not fork its OWN board (a parallel-board self-escalation BP-3 pins against), so
-	// skip the board event when signing as a non-owner actor — its card still joins
-	// the owner's board via BoardAuthor above.
-	var boardArg *rdSync.BoardSpec
-	if signer == boardAuthor {
-		boardArg = &board
-	}
-	ctx := context.Background()
-	res, err := pub.PublishItem(ctx, boardArg, card, time.Now().Unix())
-	if err != nil {
-		return err
-	}
-	if debugOutput {
-		for _, ev := range res.Events {
-			fmt.Fprintf(os.Stderr, "nostr: published kind %d id %s (relay-accepted=%v)\n", ev.Kind, ev.EventID, ev.AnyRelay)
-		}
-	}
-	return nil
+	return signerPubkey, nil
 }
 
 // warnNostrPublishFailure prints the standard best-effort nostr-publish-failure
@@ -268,11 +259,11 @@ func closeResolutionToStatus(resolution string) string {
 // (current field state) PLUS a NIP-34 status event carrying the optional
 // close/change reason. This is what makes `rd show`'s history replay see every
 // transition, with close-with-reason preserved exactly (ready-b5f). Best-effort:
-// mirrors publishItemCreateNostr — a relay failure never fails the caller's
+// mirrors publishItemFullCreateNostr — a relay failure never fails the caller's
 // mutation, since the campfire/JSONL write already succeeded and the nostr event
 // is durable in the local authoritative log regardless of relay reachability.
 func publishItemStatusChangeNostr(item *state.Item, reason string) error {
-	if !nostrEnabled() {
+	if !nostrWriteActive() {
 		return nil
 	}
 	pub, ok, err := nostrPublisher()
@@ -280,11 +271,14 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	boardAuthor, err := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishStatusChange(context.Background(), card, reason, time.Now().Unix())
+	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
 	}
@@ -301,7 +295,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 // with no accompanying status event, proving the hybrid invariant that editing
 // the addressable 30302 card does not add — or erase — history (ready-b5f).
 func publishItemCardEditNostr(item *state.Item) error {
-	if !nostrEnabled() {
+	if !nostrWriteActive() {
 		return nil
 	}
 	pub, ok, err := nostrPublisher()
@@ -309,11 +303,14 @@ func publishItemCardEditNostr(item *state.Item) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	boardAuthor, err := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
-	res, err := pub.PublishCardEdit(context.Background(), card, time.Now().Unix())
+	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
 	}
@@ -348,31 +345,6 @@ func strSliceRemove(s []string, vals ...string) []string {
 		}
 	}
 	return out
-}
-
-// publishImplicitUnblockNostr mirrors pkg/state's implicit-unblock-on-close
-// (handleWorkClose): when an item reaches a terminal status, campfire removes the
-// dependency edge from EVERY item that item was blocking, so those items no longer
-// list it in blocked_by. The nostr card of a blocked item still carries the "i"
-// dep tag, so without this the projection would keep the stale edge and diverge.
-// For each item the just-closed item was blocking (blockedIDs, captured from its
-// pre-close Blocks list), re-derive the now-current item from campfire (the edge
-// is already gone there) and re-publish its card so the nostr projection drops the
-// edge too — deps parity across every close path (close/done/fail/cancel/complete
-// and cascade). Best-effort; nostr-gated; a relay failure never fails the close.
-func publishImplicitUnblockNostr(s store.Store, blockedIDs []string) {
-	if !nostrEnabled() || len(blockedIDs) == 0 {
-		return
-	}
-	for _, id := range blockedIDs {
-		it, err := byIDFromJSONLOrStore(s, id)
-		if err != nil {
-			continue
-		}
-		if nostrErr := publishItemCardEditNostr(it); nostrErr != nil {
-			warnNostrPublishFailure(fmt.Sprintf("implicit-unblock %s; campfire durable", id), nostrErr)
-		}
-	}
 }
 
 var nostrCmd = &cobra.Command{
@@ -516,7 +488,10 @@ var nostrPublishCmd = &cobra.Command{
 			return fmt.Errorf("no project dir for publisher")
 		}
 		signer := pub.Key.PubKeyHex()
-		boardAuthor := nostrBoardAuthor(dir, signer)
+		boardAuthor, err := nostrBoardAuthor(dir, signer)
+		if err != nil {
+			return err
+		}
 		board := boardSpecForProject(dir, boardAuthor)
 		// Route through the SINGLE shared helper (ready-187). The old inline literal
 		// omitted Labels/ETA/Assignee (and would never have carried Level/For/Parent/
@@ -578,7 +553,7 @@ var nostrReadyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Compute the attention-engine readiness set from the nostr projection (ready-82c)",
 	Long: `Like 'rd ready', but the item set is projected from the nostr event log
-instead of the campfire-backed store. Proves the dependency- and gate-aware
+instead of the legacy-backed store. Proves the dependency- and gate-aware
 attention engine (pkg/views + pkg/state.Item) computes the same readiness set
 regardless of substrate.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -920,7 +895,7 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 // so the caller falls back to the campfire/JSONL path. Additive: no behaviour
 // change unless RD_NOSTR_READ=1.
 func nostrDualReadAll() ([]*state.Item, bool, error) {
-	if !nostrReadEnabled() {
+	if !nostrReadActive() {
 		return nil, false, nil
 	}
 	items, _, err := nostrProjectAllItems()
@@ -931,7 +906,7 @@ func nostrDualReadAll() ([]*state.Item, bool, error) {
 // enabled. Returns (item, true, err) on a hit path (err set if not found);
 // (nil,false,nil) when dual-read is off.
 func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
-	if !nostrReadEnabled() {
+	if !nostrReadActive() {
 		return nil, false, nil
 	}
 	_, byID, err := nostrProjectAllItems()
@@ -956,26 +931,20 @@ func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
 // id: re-running adds nothing. Campfire is untouched and stays authoritative.
 var nostrMigrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Re-emit the current campfire item set as nostr events (ready-d65 cutover, non-destructive)",
-	Long: `Read the current campfire/JSONL rd item set and re-emit every item as nostr
+	Short: "Re-emit the current legacy item set as nostr events (ready-d65 cutover, non-destructive)",
+	Long: `Read the current legacy (JSONL) rd item set and re-emit every item as nostr
 events (30301 board, 30302 card, NIP-34 status log) into the local authoritative
 log and the locked write relays, preserving id, status, priority, type, deps,
-gates, full history + close-reasons, and provenance. Campfire is NOT modified and
-remains the default backend. Idempotent by event id (safe to re-run).`,
+gates, full history + close-reasons, and provenance. The legacy source is NOT
+modified. Idempotent by event id (safe to re-run).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		localOnly, _ := cmd.Flags().GetBool("local-only")
 		limit, _ := cmd.Flags().GetInt("limit")
 		includeTerminal, _ := cmd.Flags().GetBool("all")
 		only, _ := cmd.Flags().GetStringSlice("only")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
 		// SOURCE = campfire/JSONL (the default backend), NEVER the nostr projection.
-		src, err := allItemsFromJSONLOrStore(s)
+		src, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading campfire source items: %w", err)
 		}
@@ -1016,6 +985,36 @@ remains the default backend. Idempotent by event id (safe to re-run).`,
 		if err != nil {
 			return err
 		}
+
+		// ready-14b — PIN THE SIGNER TO THE BOARD OWNER before re-emitting anything.
+		// migrate re-authors the 30301 board (the trust ROOT) signed by k, the ACTIVE
+		// $RD_ACTOR key, and stamps every card's board-membership under k's pubkey. If
+		// k is NOT the board owner, the whole projection is rooted on the wrong key: the
+		// board author (implicit level-2 trust anchor, checker.go bootstrap) becomes an
+		// agent, every migrated card is attributed to the wrong owner, and authz breaks
+		// portfolio-wide — silently. Two ways k can be wrong, both refused here BEFORE
+		// any event is built/published (fail-closed, nothing half-migrated):
+		//  1. A named agent actor ($RD_ACTOR != "owner") signs with an agent key that is
+		//     definitionally not the owner — refused even on a fresh (unpinned) bootstrap
+		//     migration where nostrBoardAuthor would otherwise fall back to the signer.
+		//  2. Even as the owner actor, if the board is already PINNED to a specific owner
+		//     pubkey and this machine's owner key is not that pubkey (wrong machine / a
+		//     regenerated key), nostrBoardAuthor resolves the pinned owner and the signer
+		//     mismatch is caught.
+		signer := k.PubKeyHex()
+		if a := rdActor(); a != nostr.OwnerActor {
+			return fmt.Errorf("rd migrate: refusing to migrate as actor %q — the migration re-authors the 30301 board (the trust root) and only the OWNER may sign it; "+
+				"a non-owner key would mis-bind the trust root and attribute every migrated item to the wrong owner. Re-run as the owner (unset $RD_ACTOR, or set RD_ACTOR=owner on the owner's machine)", a)
+		}
+		boardAuthor, err := nostrBoardAuthor(dir, signer)
+		if err != nil {
+			return err
+		}
+		if signer != boardAuthor {
+			return fmt.Errorf("rd migrate: refusing to migrate — the active owner signing key (pubkey %s) is NOT the owner of the pinned target board (owner pubkey %s); "+
+				"migrating under it would re-author the 30301 board and mis-bind the trust root. Run migrate on the machine holding the pinned board owner's key", signer, boardAuthor)
+		}
+
 		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
 		boardD := projectPrefix(dir)
 
@@ -1098,18 +1097,12 @@ remains the default backend. Idempotent by event id (safe to re-run).`,
 // gate: NEVER fabricated — it reads the real 174/1565 live items.
 var nostrParityCmd = &cobra.Command{
 	Use:   "parity",
-	Short: "Assert item-for-item parity: campfire source == nostr projection (ready-d65)",
+	Short: "Assert item-for-item parity: legacy source == nostr projection (ready-d65)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("verbose")
 		sample, _ := cmd.Flags().GetBool("sample")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		srcSlice, err := allItemsFromJSONLOrStore(s)
+		srcSlice, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading campfire source items: %w", err)
 		}
@@ -1199,7 +1192,9 @@ func init() {
 	nostrCmd.AddCommand(nostrReadyCmd)
 	nostrCmd.AddCommand(nostrSeedDemoCmd)
 	nostrCmd.AddCommand(nostrPutCmd)
-	nostrCmd.AddCommand(nostrSyncCmd)
+	// nostrSyncCmd is NOT registered here: `rd nostr sync` was promoted to the
+	// top-level `rd sync` (ready-9ac). The command var stays as the reused
+	// substrate for that top-level surface (cmd/rd/sync.go).
 	nostrCmd.AddCommand(nostrFlushCmd)
 	nostrCmd.AddCommand(nostrMergeCmd)
 	rootCmd.AddCommand(nostrCmd)

@@ -101,30 +101,33 @@ func TestE2E_Dep_Tree_JSON_ShowsStructure(t *testing.T) {
 	}
 }
 
-// TestE2E_Dep_Add_CrossProjectSyntax verifies that passing a cross-campfire
+// TestE2E_Dep_Add_CrossProjectSyntax verifies that a dotted cross-project
 // reference (e.g. "other.project.item-abc") to rd dep add fails with a clear
-// error when the user is not a member of the referenced campfire.
+// error. CUTOVER (ready-cb6 I7): cross-campfire dep resolution was a
+// campfire-federation feature and has been deleted — a nostr board is a single
+// project. Such a reference now resolves against THIS board's nostr projection
+// and fails as an unknown item, which is the correct, unambiguous outcome.
 func TestE2E_Dep_Add_CrossProjectSyntax(t *testing.T) {
 	e := NewEnv(t)
 	local := createItem(e, t, "Local item for cross-project test", "p1", "task")
 
-	// Try to use a cross-project ref as the blocker (not a member of that campfire).
+	// A dotted ref in the blocker position resolves against this board's nostr
+	// projection and fails as an unknown item.
 	stderr := e.RdMustFail("dep", "add", local.ID, "other.project.item-abc")
-
-	if !strings.Contains(stderr, "cross-campfire") && !strings.Contains(stderr, "cross-project") {
-		t.Errorf("expected 'cross-campfire' or 'cross-project' in error message, got: %q", stderr)
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found' in error message, got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "not found") && !strings.Contains(stderr, "not supported") {
-		t.Errorf("expected 'not found' or 'not supported' in error message, got: %q", stderr)
+	if !strings.Contains(stderr, "other.project.item-abc") {
+		t.Errorf("error should name the unresolvable blocker ref, got: %q", stderr)
 	}
 
-	// Also verify cross-project ref as the blocked arg.
+	// A dotted ref in the blocked position is rejected up front by dep add's
+	// cross-project guard.
 	stderr2 := e.RdMustFail("dep", "add", "other.project.item-xyz", local.ID)
-
-	if !strings.Contains(stderr2, "cross-campfire") && !strings.Contains(stderr2, "cross-project") {
-		t.Errorf("expected 'cross-campfire' or 'cross-project' in error message for blocked arg, got: %q", stderr2)
+	if !strings.Contains(stderr2, "not supported") {
+		t.Errorf("expected 'not supported' in error message for blocked arg, got: %q", stderr2)
 	}
-	if !strings.Contains(stderr2, "not found") && !strings.Contains(stderr2, "not supported") {
-		t.Errorf("expected 'not found' or 'not supported' in error message for blocked arg, got: %q", stderr2)
+	if !strings.Contains(stderr2, "other.project.item-xyz") {
+		t.Errorf("error should name the unresolvable blocked ref, got: %q", stderr2)
 	}
 }

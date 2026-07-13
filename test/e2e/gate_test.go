@@ -2,72 +2,52 @@ package e2e_test
 
 // gate_test.go — end-to-end tests for the gate/approve/reject escalation cycle.
 //
-// Done condition (ready-dd3):
-//   - Two isolated identities (owner CF_HOME, approver CF_HOME) complete the
-//     full gate escalation cycle:
-//     (1) owner creates item and calls 'rd gate <id> --gate-type design'
-//     (2) 'rd gates' lists the pending gate
-//     (3) approver calls 'rd approve <id>' or 'rd reject <id> --reason ...'
-//     (4) item status updates correctly after approval/rejection
-//   - All four commands exit 0. Exit non-zero for bad inputs.
+// ready-6ef cutover: `rd gate`/`approve`/`reject` were re-headed onto the
+// nostr-native secp256k1 signing path in S-write. The full-cycle tests below are
+// MIGRATED to the nostr-native default path (mirroring init_test.go's
+// _NostrNative_ThenCreateClaimClose): a single secp256k1 self-identity created by
+// the default `rd init` gates and resolves the gate, and every transition is read
+// back through the nostr projection. The default path provisions NO .cf and NO
+// .campfire — asserted at the end of each test.
 //
-// No mocks. Two real CF_HOME dirs, two real campfire clients, real filesystem transport.
-// Both identities share the same project dir (and therefore the same mutations.jsonl).
+// TestE2E_Gate_BadInputs stays on the campfire harness (NewEnv) — it exercises the
+// still-present campfire error paths and is deleted with the campfire code in I7.
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestE2E_Gate_ApproveFullCycle verifies the full gate escalation cycle with approval:
-//   - Owner creates item, gates it (rd gate <id> --gate-type design)
+// TestE2E_Gate_ApproveFullCycle verifies the full gate escalation cycle with
+// approval on the nostr-native default path:
+//   - Owner (secp256k1 self) creates an item and gates it (rd gate <id> --gate-type design)
 //   - rd gates lists the pending gate
-//   - Approver (second identity, campfire member) calls rd approve <id>
-//   - Item transitions to active after approval
+//   - rd approve <id> resolves the gate
+//   - Item transitions to active after approval; gate cleared
+//   - NO .cf / .campfire is ever provisioned
 func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
-	ownerCFHome, approverCFHome, projectDir := gateTwoIdentitySetup(t)
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	rdHome := t.TempDir()
+	cfHome := filepath.Join(t.TempDir(), "cf") // must NOT be created by the default path
 
-	envFor := func(cfHome string) []string {
-		return []string{
-			"PATH=" + os.Getenv("PATH"),
-			"HOME=" + os.Getenv("HOME"),
-			"CF_HOME=" + cfHome,
-		}
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--name", "gate-approve"); code != 0 {
+		t.Fatalf("rd init failed (exit %d): %s", code, stderr)
 	}
 
-	rdCmd := func(cfHome string, args ...string) (stdout, stderr string, code int) {
-		t.Helper()
-		cmd := exec.Command(rdBinary, args...)
-		cmd.Dir = projectDir
-		cmd.Env = envFor(cfHome)
-		var outBuf, errBuf bytes.Buffer
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &errBuf
-		_ = cmd.Run()
-		code = 0
-		if cmd.ProcessState != nil && !cmd.ProcessState.Success() {
-			code = cmd.ProcessState.ExitCode()
-		}
-		return outBuf.String(), errBuf.String(), code
-	}
-
-	// Step 1: Owner creates an item.
-	createOut, createStderr, createCode := rdCmd(ownerCFHome, "create",
+	// Step 1: create an item.
+	createOut, createStderr, createCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "create",
 		"--title", "Gate approve test item",
 		"--priority", "p1",
 		"--type", "task",
 		"--json",
 	)
 	if createCode != 0 {
-		t.Fatalf("rd create (owner) failed (exit %d): %s", createCode, createStderr)
+		t.Fatalf("rd create failed (exit %d): %s", createCode, createStderr)
 	}
-
 	var item Item
 	if err := json.Unmarshal([]byte(createOut), &item); err != nil {
 		t.Fatalf("parse create JSON: %v\noutput: %s", err, createOut)
@@ -76,20 +56,19 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 		t.Fatal("rd create returned empty ID")
 	}
 
-	// Step 2: Owner gates the item.
-	gateOut, gateStderr, gateCode := rdCmd(ownerCFHome, "gate", item.ID,
+	// Step 2: gate the item.
+	gateOut, gateStderr, gateCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "gate", item.ID,
 		"--gate-type", "design",
 		"--description", "Confirm API shape before implementing",
 		"--json",
 	)
 	if gateCode != 0 {
-		t.Fatalf("rd gate (owner) failed (exit %d): %s\nstdout: %s", gateCode, gateStderr, gateOut)
+		t.Fatalf("rd gate failed (exit %d): %s\nstdout: %s", gateCode, gateStderr, gateOut)
 	}
-
 	var gateResult struct {
-		ID        string `json:"id"`
-		MsgID     string `json:"msg_id"`
-		GateType  string `json:"gate_type"`
+		ID       string `json:"id"`
+		MsgID    string `json:"msg_id"`
+		GateType string `json:"gate_type"`
 	}
 	if err := json.Unmarshal([]byte(gateOut), &gateResult); err != nil {
 		t.Fatalf("parse gate JSON: %v\noutput: %s", err, gateOut)
@@ -104,8 +83,8 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 		t.Error("gate msg_id should be non-empty")
 	}
 
-	// Step 3: Verify item is in waiting status with waiting_type=gate.
-	showOut, showStderr, showCode := rdCmd(ownerCFHome, "show", item.ID, "--json")
+	// Step 3: item is now waiting with waiting_type=gate.
+	showOut, showStderr, showCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "show", item.ID, "--json")
 	if showCode != 0 {
 		t.Fatalf("rd show after gate (exit %d): %s", showCode, showStderr)
 	}
@@ -124,7 +103,7 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 	}
 
 	// Step 4: rd gates lists the pending gate.
-	gatesOut, gatesStderr, gatesCode := rdCmd(ownerCFHome, "gates", "--json")
+	gatesOut, gatesStderr, gatesCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "gates", "--json")
 	if gatesCode != 0 {
 		t.Fatalf("rd gates failed (exit %d): %s", gatesCode, gatesStderr)
 	}
@@ -140,19 +119,17 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 		}
 	}
 	if !gateFound {
-		t.Errorf("item %s should appear in rd gates output after gating", item.ID)
-		t.Logf("gates output: %s", gatesOut)
+		t.Errorf("item %s should appear in rd gates output after gating\ngates: %s", item.ID, gatesOut)
 	}
 
-	// Step 5: Approver (second identity) approves the gate.
-	approveOut, approveStderr, approveCode := rdCmd(approverCFHome, "approve", item.ID,
+	// Step 5: approve the gate.
+	approveOut, approveStderr, approveCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "approve", item.ID,
 		"--reason", "Approved, proceed with design approach",
 		"--json",
 	)
 	if approveCode != 0 {
-		t.Fatalf("rd approve (approver) failed (exit %d): %s\nstdout: %s", approveCode, approveStderr, approveOut)
+		t.Fatalf("rd approve failed (exit %d): %s\nstdout: %s", approveCode, approveStderr, approveOut)
 	}
-
 	var approveResult struct {
 		ID         string `json:"id"`
 		Resolution string `json:"resolution"`
@@ -167,8 +144,8 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 		t.Errorf("approve resolution=%q, want approved", approveResult.Resolution)
 	}
 
-	// Step 6: Verify item is now active after approval.
-	showOut2, showStderr2, showCode2 := rdCmd(ownerCFHome, "show", item.ID, "--json")
+	// Step 6: item is now active after approval; gate cleared.
+	showOut2, showStderr2, showCode2 := runIsolatedRd(projectDir, home, rdHome, cfHome, "show", item.ID, "--json")
 	if showCode2 != 0 {
 		t.Fatalf("rd show after approve (exit %d): %s", showCode2, showStderr2)
 	}
@@ -187,59 +164,40 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 	}
 
 	// Step 7: rd gates should no longer list the item.
-	gatesOut2, _, gatesCode2 := rdCmd(ownerCFHome, "gates", "--json")
-	if gatesCode2 != 0 {
-		t.Logf("rd gates after approve: non-zero exit (may be empty list)")
-	}
-	// Empty array or "no pending gates" — item must not appear.
+	gatesOut2, _, _ := runIsolatedRd(projectDir, home, rdHome, cfHome, "gates", "--json")
 	if strings.Contains(gatesOut2, item.ID) {
 		t.Errorf("item %s should not appear in rd gates after approval", item.ID)
 	}
+
+	assertNoDotCfCampfire(t, projectDir, cfHome)
 }
 
-// TestE2E_Gate_RejectFullCycle verifies the full gate escalation cycle with rejection:
-//   - Owner creates item, gates it (rd gate <id> --gate-type scope)
-//   - Approver (second identity, campfire member) calls rd reject <id> --reason ...
-//   - Item remains in waiting status after rejection
-//   - Gate message ID is still set (gate not cleared on rejection)
+// TestE2E_Gate_RejectFullCycle verifies the full gate escalation cycle with
+// rejection on the nostr-native default path:
+//   - Owner (secp256k1 self) creates an item, gates it (rd gate <id> --gate-type scope)
+//   - rd reject <id> --reason ... records the rejection
+//   - Item remains in waiting status after rejection (gate not cleared)
+//   - NO .cf / .campfire is ever provisioned
 func TestE2E_Gate_RejectFullCycle(t *testing.T) {
-	ownerCFHome, approverCFHome, projectDir := gateTwoIdentitySetup(t)
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	rdHome := t.TempDir()
+	cfHome := filepath.Join(t.TempDir(), "cf")
 
-	envFor := func(cfHome string) []string {
-		return []string{
-			"PATH=" + os.Getenv("PATH"),
-			"HOME=" + os.Getenv("HOME"),
-			"CF_HOME=" + cfHome,
-		}
+	if _, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome, "init", "--name", "gate-reject"); code != 0 {
+		t.Fatalf("rd init failed (exit %d): %s", code, stderr)
 	}
 
-	rdCmd := func(cfHome string, args ...string) (stdout, stderr string, code int) {
-		t.Helper()
-		cmd := exec.Command(rdBinary, args...)
-		cmd.Dir = projectDir
-		cmd.Env = envFor(cfHome)
-		var outBuf, errBuf bytes.Buffer
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &errBuf
-		_ = cmd.Run()
-		code = 0
-		if cmd.ProcessState != nil && !cmd.ProcessState.Success() {
-			code = cmd.ProcessState.ExitCode()
-		}
-		return outBuf.String(), errBuf.String(), code
-	}
-
-	// Step 1: Owner creates an item.
-	createOut, createStderr, createCode := rdCmd(ownerCFHome, "create",
+	// Step 1: create an item.
+	createOut, createStderr, createCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "create",
 		"--title", "Gate reject test item",
 		"--priority", "p2",
 		"--type", "task",
 		"--json",
 	)
 	if createCode != 0 {
-		t.Fatalf("rd create (owner) failed (exit %d): %s", createCode, createStderr)
+		t.Fatalf("rd create failed (exit %d): %s", createCode, createStderr)
 	}
-
 	var item Item
 	if err := json.Unmarshal([]byte(createOut), &item); err != nil {
 		t.Fatalf("parse create JSON: %v\noutput: %s", err, createOut)
@@ -248,17 +206,17 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 		t.Fatal("rd create returned empty ID")
 	}
 
-	// Step 2: Owner gates the item.
-	_, gateStderr, gateCode := rdCmd(ownerCFHome, "gate", item.ID,
+	// Step 2: gate the item.
+	_, gateStderr, gateCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "gate", item.ID,
 		"--gate-type", "scope",
 		"--description", "Scope too broad, needs design review",
 	)
 	if gateCode != 0 {
-		t.Fatalf("rd gate (owner) failed (exit %d): %s", gateCode, gateStderr)
+		t.Fatalf("rd gate failed (exit %d): %s", gateCode, gateStderr)
 	}
 
-	// Step 3: Verify item is in waiting status.
-	showOut, showStderr, showCode := rdCmd(ownerCFHome, "show", item.ID, "--json")
+	// Step 3: item is waiting with waiting_type=gate.
+	showOut, showStderr, showCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "show", item.ID, "--json")
 	if showCode != 0 {
 		t.Fatalf("rd show after gate (exit %d): %s", showCode, showStderr)
 	}
@@ -277,7 +235,7 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 	}
 
 	// Step 4: rd gates lists the pending gate.
-	gatesOut, gatesStderr, gatesCode := rdCmd(ownerCFHome, "gates", "--json")
+	gatesOut, gatesStderr, gatesCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "gates", "--json")
 	if gatesCode != 0 {
 		t.Fatalf("rd gates failed (exit %d): %s", gatesCode, gatesStderr)
 	}
@@ -293,19 +251,17 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 		}
 	}
 	if !gateFound {
-		t.Errorf("item %s should appear in rd gates output after gating", item.ID)
-		t.Logf("gates output: %s", gatesOut)
+		t.Errorf("item %s should appear in rd gates output after gating\ngates: %s", item.ID, gatesOut)
 	}
 
-	// Step 5: Approver (second identity) rejects the gate.
-	rejectOut, rejectStderr, rejectCode := rdCmd(approverCFHome, "reject", item.ID,
+	// Step 5: reject the gate.
+	rejectOut, rejectStderr, rejectCode := runIsolatedRd(projectDir, home, rdHome, cfHome, "reject", item.ID,
 		"--reason", "Scope too broad, split into smaller pieces first",
 		"--json",
 	)
 	if rejectCode != 0 {
-		t.Fatalf("rd reject (approver) failed (exit %d): %s\nstdout: %s", rejectCode, rejectStderr, rejectOut)
+		t.Fatalf("rd reject failed (exit %d): %s\nstdout: %s", rejectCode, rejectStderr, rejectOut)
 	}
-
 	var rejectResult struct {
 		ID         string `json:"id"`
 		Resolution string `json:"resolution"`
@@ -320,8 +276,8 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 		t.Errorf("reject resolution=%q, want rejected", rejectResult.Resolution)
 	}
 
-	// Step 6: Verify item remains in waiting status after rejection.
-	showOut2, showStderr2, showCode2 := rdCmd(ownerCFHome, "show", item.ID, "--json")
+	// Step 6: item remains waiting after rejection; gate not cleared.
+	showOut2, showStderr2, showCode2 := runIsolatedRd(projectDir, home, rdHome, cfHome, "show", item.ID, "--json")
 	if showCode2 != 0 {
 		t.Fatalf("rd show after reject (exit %d): %s", showCode2, showStderr2)
 	}
@@ -332,13 +288,12 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 	if rejectedItem.Status != "waiting" {
 		t.Errorf("after reject: status=%q, want waiting (rejection does not close the gate)", rejectedItem.Status)
 	}
-	// GateMsgID should still be set after rejection (gate not cleared).
 	if rejectedItem.GateMsgID == "" {
 		t.Error("after reject: gate_msg_id should still be set (gate unresolved until approved)")
 	}
 
 	// Step 7: rd gates should still list the item (rejection keeps it waiting).
-	gatesOut2, gatesStderr2, gatesCode2 := rdCmd(ownerCFHome, "gates", "--json")
+	gatesOut2, gatesStderr2, gatesCode2 := runIsolatedRd(projectDir, home, rdHome, cfHome, "gates", "--json")
 	if gatesCode2 != 0 {
 		t.Fatalf("rd gates after reject (exit %d): %s", gatesCode2, gatesStderr2)
 	}
@@ -356,6 +311,8 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 	if !stillFound {
 		t.Errorf("item %s should still appear in rd gates after rejection", item.ID)
 	}
+
+	assertNoDotCfCampfire(t, projectDir, cfHome)
 }
 
 // TestE2E_Gate_BadInputs verifies that gate/approve/reject fail cleanly on bad inputs:
@@ -396,102 +353,18 @@ func TestE2E_Gate_BadInputs(t *testing.T) {
 	}
 }
 
-// gateTwoIdentitySetup creates two isolated identities (owner and approver) that
-// share the same project campfire. Returns:
-//   - ownerCFHome: CF_HOME for the campfire owner/creator
-//   - approverCFHome: CF_HOME for the approver (second identity, campfire member)
-//   - projectDir: shared project directory with .campfire/root and .ready/
-//
-// Setup sequence:
-//  1. cf init for owner identity
-//  2. cf init for approver identity
-//  3. rd init (owner) — creates campfire and .ready/
-//  4. rd admit <approver-pubkey> (owner) — pre-admits the approver
-//  5. rd join <campfire-id> (approver) — approver joins the campfire
-func gateTwoIdentitySetup(t *testing.T) (ownerCFHome, approverCFHome, projectDir string) {
+// assertNoDotCfCampfire asserts the nostr-native default path provisioned neither a
+// .cf identity home nor a .campfire pointer — the ready-6ef "no .cf on the default
+// path" invariant, verified at the e2e layer.
+func assertNoDotCfCampfire(t *testing.T, projectDir, cfHome string) {
 	t.Helper()
-
-	ownerCFHome = t.TempDir()
-	approverCFHome = t.TempDir()
-	projectDir = t.TempDir()
-	sharedHome := os.Getenv("HOME")
-
-	envFor := func(cfHome string) []string {
-		return []string{
-			"PATH=" + os.Getenv("PATH"),
-			"HOME=" + sharedHome,
-			"CF_HOME=" + cfHome,
-		}
+	if _, err := os.Stat(filepath.Join(cfHome, "identity.json")); err == nil {
+		t.Errorf("default nostr path must NOT provision .cf/identity.json at %s", cfHome)
 	}
-
-	runCmdOK := func(name string, env []string, args ...string) string {
-		t.Helper()
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%s failed: %v\n%s", name, err, out)
-		}
-		return string(out)
+	if _, err := os.Stat(filepath.Join(projectDir, ".campfire")); err == nil {
+		t.Errorf("default nostr path must NOT create .campfire/ in the project dir")
 	}
-
-	rdCmdInDir := func(cfHome string, dir string, args ...string) (stdout, stderr string, code int) {
-		t.Helper()
-		cmd := exec.Command(rdBinary, args...)
-		cmd.Dir = dir
-		cmd.Env = envFor(cfHome)
-		var outBuf, errBuf bytes.Buffer
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &errBuf
-		_ = cmd.Run()
-		code = 0
-		if cmd.ProcessState != nil && !cmd.ProcessState.Success() {
-			code = cmd.ProcessState.ExitCode()
-		}
-		return outBuf.String(), errBuf.String(), code
+	if _, err := os.Stat(filepath.Join(projectDir, ".cf")); err == nil {
+		t.Errorf("default nostr path must NOT create .cf/ in the project dir")
 	}
-
-	// 1. cf init for both identities.
-	runCmdOK("cf init (owner)", envFor(ownerCFHome), "cf", "init", "--cf-home", ownerCFHome)
-	runCmdOK("cf init (approver)", envFor(approverCFHome), "cf", "init", "--cf-home", approverCFHome)
-
-	// 2. rd init (owner) — creates campfire and project structure.
-	_, initStderr, initCode := rdCmdInDir(ownerCFHome, projectDir, "init", "--name", "gate-e2e-test", "--confirm")
-	if initCode != 0 {
-		t.Fatalf("rd init (owner) failed (exit %d): %s", initCode, initStderr)
-	}
-
-	// Read campfire ID from .campfire/root.
-	campfireIDBytes, err := os.ReadFile(filepath.Join(projectDir, ".campfire", "root"))
-	if err != nil {
-		t.Fatalf("reading .campfire/root: %v", err)
-	}
-	campfireID := strings.TrimRight(string(campfireIDBytes), "\r\n")
-	if len(campfireID) != 64 {
-		t.Fatalf("campfire ID has wrong length %d: %q", len(campfireID), campfireID)
-	}
-
-	// 3. Read approver public key.
-	approverPubKey := memberPubKeyHex(t, approverCFHome)
-
-	// 4. rd admit <approver-pubkey> (owner) — pre-admits the approver.
-	_, admitStderr, admitCode := rdCmdInDir(ownerCFHome, projectDir, "admit", approverPubKey)
-	if admitCode != 0 {
-		t.Fatalf("rd admit (owner) failed (exit %d): %s", admitCode, admitStderr)
-	}
-
-	// 5. rd join <campfire-id> (approver) — approver joins the campfire.
-	_, joinStderr, joinCode := rdCmdInDir(approverCFHome, projectDir, "join", campfireID)
-	if joinCode != 0 {
-		t.Fatalf("rd join (approver) failed (exit %d): %s", joinCode, joinStderr)
-	}
-
-	t.Logf("gate setup: owner=%s approver=%s campfire=%s project=%s",
-		fmt.Sprintf("...%s", ownerCFHome[len(ownerCFHome)-8:]),
-		fmt.Sprintf("...%s", approverCFHome[len(approverCFHome)-8:]),
-		campfireID[:8]+"...",
-		projectDir,
-	)
-
-	return ownerCFHome, approverCFHome, projectDir
 }

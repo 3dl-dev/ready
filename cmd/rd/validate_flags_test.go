@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/ready/pkg/declarations"
 )
 
@@ -15,9 +14,7 @@ import (
 // This is the primary regression test: before this change, invalid type values
 // passed client-side and only failed convention-side (exit 0 + warning).
 func TestValidateEnumFlags_InvalidType(t *testing.T) {
-	decl := loadCreateDeclaration(t)
-
-	err := ValidateEnumFlags(decl, map[string]string{
+	err := ValidateEnumFlags("create", map[string]string{
 		"type":     "bug",
 		"priority": "p1",
 	})
@@ -43,9 +40,7 @@ func TestValidateEnumFlags_InvalidType(t *testing.T) {
 // TestValidateEnumFlags_InvalidPriority verifies that an invalid --priority value
 // is rejected and names the valid values.
 func TestValidateEnumFlags_InvalidPriority(t *testing.T) {
-	decl := loadCreateDeclaration(t)
-
-	err := ValidateEnumFlags(decl, map[string]string{
+	err := ValidateEnumFlags("create", map[string]string{
 		"type":     "task",
 		"priority": "high",
 	})
@@ -65,9 +60,7 @@ func TestValidateEnumFlags_InvalidPriority(t *testing.T) {
 
 // TestValidateEnumFlags_InvalidLevel verifies that an invalid --level value is rejected.
 func TestValidateEnumFlags_InvalidLevel(t *testing.T) {
-	decl := loadCreateDeclaration(t)
-
-	err := ValidateEnumFlags(decl, map[string]string{
+	err := ValidateEnumFlags("create", map[string]string{
 		"type":     "task",
 		"priority": "p1",
 		"level":    "mega",
@@ -84,8 +77,6 @@ func TestValidateEnumFlags_InvalidLevel(t *testing.T) {
 // TestValidateEnumFlags_ValidInput verifies that valid enum values pass through
 // without error — the acceptance test bundled with the rejection test.
 func TestValidateEnumFlags_ValidInput(t *testing.T) {
-	decl := loadCreateDeclaration(t)
-
 	validCases := []map[string]string{
 		{"type": "task", "priority": "p0"},
 		{"type": "decision", "priority": "p1"},
@@ -100,7 +91,7 @@ func TestValidateEnumFlags_ValidInput(t *testing.T) {
 		{"type": "task", "priority": "p1", "level": "subtask"},
 	}
 	for _, flagValues := range validCases {
-		if err := ValidateEnumFlags(decl, flagValues); err != nil {
+		if err := ValidateEnumFlags("create", flagValues); err != nil {
 			t.Errorf("ValidateEnumFlags(%v): unexpected error: %v", flagValues, err)
 		}
 	}
@@ -109,10 +100,8 @@ func TestValidateEnumFlags_ValidInput(t *testing.T) {
 // TestValidateEnumFlags_EmptyValueSkipped verifies that empty string values are
 // not validated (they may be optional flags that weren't supplied).
 func TestValidateEnumFlags_EmptyValueSkipped(t *testing.T) {
-	decl := loadCreateDeclaration(t)
-
 	// level is an optional enum; when empty it should not be checked.
-	err := ValidateEnumFlags(decl, map[string]string{
+	err := ValidateEnumFlags("create", map[string]string{
 		"type":     "task",
 		"priority": "p1",
 		"level":    "", // not supplied
@@ -123,40 +112,37 @@ func TestValidateEnumFlags_EmptyValueSkipped(t *testing.T) {
 }
 
 // TestValidateEnumFlags_DerivesFromDeclaration verifies that the valid values
-// come from the loaded declaration, not a hardcoded list. It does this by
-// constructing a synthetic declaration with a single enum arg and checking
-// that the validation uses those values exactly.
+// come from the embedded operation declaration (pkg/declarations), not a
+// hardcoded list. It cross-checks that every enum value ValidateEnumFlags accepts
+// for "create" is exactly the set declarations.EnumArgs reports for that op, and
+// that a value outside that set is rejected with those values in the message.
 func TestValidateEnumFlags_DerivesFromDeclaration(t *testing.T) {
-	// Build a synthetic declaration with a custom enum.
-	syntheticDecl := &convention.Declaration{
-		Args: []convention.ArgDescriptor{
-			{
-				Name:   "color",
-				Type:   "enum",
-				Values: []string{"red", "green", "blue"},
-			},
-		},
+	args, err := declarations.EnumArgs("create")
+	if err != nil {
+		t.Fatalf("declarations.EnumArgs(create): %v", err)
 	}
-
-	// Valid value should pass.
-	if err := ValidateEnumFlags(syntheticDecl, map[string]string{"color": "red"}); err != nil {
-		t.Errorf("expected no error for valid enum value 'red', got: %v", err)
+	if len(args) == 0 {
+		t.Fatal("expected create to declare at least one enum arg")
 	}
-
-	// Invalid value should fail with the custom enum's values in the message.
-	err := ValidateEnumFlags(syntheticDecl, map[string]string{"color": "purple"})
-	if err == nil {
-		t.Fatal("expected error for 'purple' not in ['red','green','blue'], got nil")
-	}
-	for _, v := range []string{"red", "green", "blue"} {
-		if !strings.Contains(err.Error(), v) {
-			t.Errorf("error should list %q from synthetic enum, got: %q", v, err.Error())
+	for _, arg := range args {
+		// Every declared value must pass validation for its own arg.
+		for _, v := range arg.Values {
+			if err := ValidateEnumFlags("create", map[string]string{arg.Name: v}); err != nil {
+				t.Errorf("declared value %q for --%s should validate, got: %v", v, arg.Name, err)
+			}
 		}
-	}
-	// Should NOT mention "task", "p0", etc. — no hardcoded lists.
-	for _, hardcoded := range []string{"task", "decision", "p0", "p1"} {
-		if strings.Contains(err.Error(), hardcoded) {
-			t.Errorf("error should not contain hardcoded value %q — validation must derive from declaration", hardcoded)
+		// A value not in the declared set must be rejected, and the error must
+		// list the declaration's values (proving derivation, not hardcoding).
+		bogus := "zzz-not-a-real-" + arg.Name
+		rejErr := ValidateEnumFlags("create", map[string]string{arg.Name: bogus})
+		if rejErr == nil {
+			t.Errorf("bogus value for --%s should be rejected", arg.Name)
+			continue
+		}
+		for _, v := range arg.Values {
+			if !strings.Contains(rejErr.Error(), v) {
+				t.Errorf("error for --%s should list declared value %q, got: %q", arg.Name, v, rejErr.Error())
+			}
 		}
 	}
 }
@@ -368,18 +354,4 @@ func TestCreateCmd_ValidType_ProceedsToStore(t *testing.T) {
 		// It's expected to fail at store/identity level; that's fine.
 		t.Logf("createCmd.RunE failed past enum validation (expected in test env): %v", err)
 	}
-}
-
-// loadCreateDeclaration is a test helper that loads the real create.json declaration.
-func loadCreateDeclaration(t *testing.T) *convention.Declaration {
-	t.Helper()
-	data, err := declarations.Load("create")
-	if err != nil {
-		t.Fatalf("declarations.Load('create'): %v", err)
-	}
-	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "", convention.DefaultDeniedTagPrefixes)
-	if err != nil {
-		t.Fatalf("convention.Parse: %v", err)
-	}
-	return decl
 }

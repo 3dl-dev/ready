@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
@@ -59,8 +58,8 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if len(grantee) != 64 || !isHex(grantee) {
 		return fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
-	if !nostrEnabled() {
-		return fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1")
+	if !nostrWriteActive() {
+		return fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
 	}
 	pub, ok, err := nostrPublisher()
 	if err != nil {
@@ -75,14 +74,22 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if err != nil {
 		return err
 	}
-	// Escalation cap (design §3): only the board author (owner) may mint a maintainer
-	// or owner grant. A non-author signer can grant only contributor/revoked.
-	switch role {
-	case rdSync.RoleMaintainer, rdSync.RoleOwner:
-		if signer != boardAuthor {
-			return fmt.Errorf("escalation cap: only the board author (owner %s) may grant %q; you are %s",
-				boardAuthor, role, signer)
-		}
+	// Escalation cap (design §3), enforced client-side as a FAIL-FAST mirror of the
+	// read-side rule (MED-6): rd.MayGrant derives the operator levels from the local
+	// log and applies the SAME check DeriveLevels/signerMayGrant enforce at the
+	// projection seam — only the board author may mint maintainer/owner; a maintainer
+	// may grant contributor/revoked but NOT revoke/downgrade the owner (irrevocable)
+	// or a peer maintainer; a contributor may grant nothing. DeriveLevels also ignores
+	// a cap-violating grant, but refusing to PUBLISH it keeps the log clean and gives
+	// the operator a clear error instead of a silently-dropped grant.
+	events, err := pub.Log.ReadAll()
+	if err != nil {
+		return fmt.Errorf("reading local log for escalation-cap check: %w", err)
+	}
+	if !rdSync.MayGrant(events, boardAuthor, boardD, signer, grantee, role) {
+		return fmt.Errorf("escalation cap: signer %s may not grant role %q to %s on board %s "+
+			"(only the owner may mint maintainer/owner or revoke the owner/a maintainer; "+
+			"a contributor may grant nothing)", signer, role, grantee, rdSync.BoardCoord(boardAuthor, boardD))
 	}
 	spec := rdSync.RoleGrantSpec{
 		BoardD:      boardD,
@@ -92,7 +99,17 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 		From:        from,
 		Label:       label,
 	}
-	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, time.Now().Unix())
+	// Stamp with a strictly-monotonic created_at (max(now, newest+1)) SCOPED to THIS
+	// grantee's (board,grantee) grant slot (ready-be1), NOT a bare time.Now() and NOT
+	// the log-wide newest: a grant and a subsequent revoke of the SAME key issued within
+	// one wall-clock second would otherwise share created_at and resolve by the id
+	// tie-break, so a revoke could no-op against the grant it means to supersede
+	// (design §3 NOTE-B). Per-grantee-scoped stamping restores intent order for
+	// sequential same-machine authz writes without the log-wide future-drift that let an
+	// unrelated grant burst inflate a fresh grant's created_at and beat a genuinely-later
+	// cross-machine revoke (the ready-be1 lost-revoke) — cross-machine convergence
+	// (the (created_at,id) key) is unchanged.
+	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, grantee)))
 	if err != nil {
 		return err
 	}
@@ -111,7 +128,6 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if res.Buffered {
 		fmt.Println("  (reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 	}
-	fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
 	return nil
 }
 
@@ -135,7 +151,11 @@ afterward to regenerate the relay write-allowlist from the grants.`,
 		}
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
-		return publishRoleGrant(grantee, role, label, from)
+		if err := publishRoleGrant(grantee, role, label, from); err != nil {
+			return err
+		}
+		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
+		return nil
 	},
 }
 
@@ -152,7 +172,11 @@ afterward to prune the key from the relay write-allowlist.`,
 		grantee := args[0]
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
-		return publishRoleGrant(grantee, rdSync.RoleRevoked, label, from)
+		if err := publishRoleGrant(grantee, rdSync.RoleRevoked, label, from); err != nil {
+			return err
+		}
+		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
+		return nil
 	},
 }
 
@@ -168,6 +192,16 @@ var nostrPinBoardCmd = &cobra.Command{
 		dir, ok := readyProjectDir()
 		if !ok {
 			return fmt.Errorf("no .ready project directory found")
+		}
+		force, _ := cmd.Flags().GetBool("force")
+		if !force {
+			if _, _, campfireOK := projectRoot(); campfireOK {
+				return fmt.Errorf(".campfire/root exists — this project is campfire-backed; " +
+					"pinning a nostr board here would silently orphan the existing campfire " +
+					"history (all future reads/writes would resolve only from the nostr " +
+					"projection). Run 'rd migrate' to move history to nostr instead, or pass " +
+					"--force to pin anyway (existing campfire history will become invisible)")
+			}
 		}
 		owner, _ := cmd.Flags().GetString("owner")
 		boardD, _ := cmd.Flags().GetString("board-d")
@@ -247,6 +281,11 @@ func writeAllowlistFile(path string, m map[string]string) error {
 		b.WriteString("\n")
 	}
 	b.WriteString("}\n")
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
@@ -458,6 +497,7 @@ func init() {
 	nostrRevokeCmd.Flags().Int64("from", 0, "retroactive repudiation from this unix time (0 = prospective / effective now)")
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
+	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists (orphans existing legacy history — prefer 'rd migrate')")
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")

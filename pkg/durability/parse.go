@@ -20,13 +20,9 @@ type DurabilityResult struct {
 	Error          string   // first fatal conformance error; non-empty means Valid=false
 }
 
-// ParseTags parses a beacon tags array and returns the durability conformance result.
-// It follows the conformance checker specification from §7 of the convention.
-func ParseTags(tags []string) (*DurabilityResult, error) {
-	return ParseTagsAt(tags, time.Now().UTC())
-}
-
-// ParseTagsAt is like ParseTags but accepts an explicit reference time (for testing §8.11).
+// ParseTagsAt parses a beacon tags array and returns the durability conformance
+// result, using now as the reference time. It follows the conformance checker
+// specification from §7 of the convention.
 func ParseTagsAt(tags []string, now time.Time) (*DurabilityResult, error) {
 	r := &DurabilityResult{Valid: true}
 

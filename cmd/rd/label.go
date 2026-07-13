@@ -12,8 +12,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/spf13/cobra"
 
 	"github.com/campfire-net/ready/pkg/state"
@@ -21,8 +19,8 @@ import (
 
 var labelCmd = &cobra.Command{
 	Use:   "label",
-	Short: "Manage labels in the campfire label registry",
-	Long: `Manage labels in the per-campfire label registry.
+	Short: "Manage labels in the project label registry",
+	Long: `Manage labels in the per-project label registry.
 
 Labels are named atoms used to categorize and filter work items.
 The registry is seeded with built-in labels (bug, feature, question,
@@ -38,8 +36,8 @@ Commands:
 
 var labelDefineCmd = &cobra.Command{
 	Use:   "define <name>",
-	Short: "Define a label in the campfire registry",
-	Long: `Define a label in the per-campfire label registry.
+	Short: "Define a label in the project registry",
+	Long: `Define a label in the per-project label registry.
 
 Only grant-holders (operator level >= 2) can define labels.
 The label name must match: ^[a-z0-9][a-z0-9-]{0,31}$
@@ -51,53 +49,28 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		label := args[0]
 		description, _ := cmd.Flags().GetString("description")
+		_ = description
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("label-define")
-			if err != nil {
-				return err
-			}
+		// nostr-native default write path (ready-6ef): the label REGISTRY is a
+		// campfire construct (a per-campfire allowlist derived from work:label-define
+		// messages). The nostr projection has no registry — card "l" tags are freeform
+		// and validated only by the name pattern — so `label define` has no nostr
+		// equivalent. Report that clearly (and preserve no-.cf: this runs BEFORE any
+		// identity.Load) rather than crashing on a missing .cf identity.
+		if _, native := nostrNativeProject(); native {
+			return emitMutationResult(
+				fmt.Sprintf("label %q needs no definition on a nostr-native project: card labels are freeform (no registry). Just `rd label add <item> %s`.", label, label),
+				map[string]any{"label": label, "registry": "none", "note": "nostr-native card labels are freeform"})
+		}
 
-			argsMap := map[string]any{
-				"label": label,
-			}
-			if description != "" {
-				argsMap["description"] = description
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"label":       label,
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-				}
-				if description != "" {
-					out["description"] = description
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("defined label %q\n", label)
-			return nil
-		})
+		return errNotNostrProject()
 	},
 }
 
 var labelListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List labels in the campfire registry",
-	Long: `List all labels in the per-campfire label registry.
+	Short: "List labels in the project registry",
+	Long: `List all labels in the per-project label registry.
 
 Includes seed atoms (always present) and user-defined atoms.
 The defined-by column shows "seed" for built-in labels or a truncated
@@ -107,31 +80,10 @@ Example:
   rd label list
   rd label list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-		_ = agentID
-
-		campfireID, _, hasCampfire := projectRoot()
-		var result *state.DeriveResult
-		if hasCampfire && campfireID != "" {
-			result, err = state.DeriveAllFromStore(s, campfireID)
-			if err != nil {
-				return fmt.Errorf("deriving label registry: %w", err)
-			}
-		} else {
-			// JSONL-only mode: derive from JSONL file.
-			items, jsonlErr := allItemsFromJSONLOrStore(s)
-			_ = items
-			if jsonlErr != nil {
-				return fmt.Errorf("loading items: %w", jsonlErr)
-			}
-			// Fall through with empty registry (seed atoms only).
-			result = state.DeriveAll("", nil)
-		}
-
+		// nostr-native (ready-cb6): the label registry was a campfire construct.
+		// The nostr projection has no registry — card "l" tags are freeform — so
+		// `label list` shows the built-in seed atoms only.
+		result := state.DeriveAll("", nil)
 		registry := result.LabelRegistry()
 
 		entries := sortedLabelEntries(registry)
@@ -247,7 +199,7 @@ func sanitizeLabelText(s string) string {
 var labelProposeCmd = &cobra.Command{
 	Use:   "propose <name>",
 	Short: "Propose a new label for the registry",
-	Long: `Propose a new label for promotion into the campfire label registry.
+	Long: `Propose a new label for promotion into the project label registry.
 
 Creates a p3 decision item titled "Label proposal: <name>" with context
 that includes the demand count from .ready/label-demand.jsonl (how many
@@ -277,76 +229,36 @@ Example:
 		}
 		contextParts += " To approve: rd label define " + labelName
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			exec, _, err := requireExecutor()
+		// nostr-native default write path (ready-6ef): a label proposal is just a p3
+		// decision ITEM, so create it through the secp256k1 nostr-native path (no .cf).
+		// The "label-proposal" atom is a freeform card "l" tag on nostr (no registry
+		// gate), so it always attaches — no campfire retry-without-labels dance needed.
+		if dir, native := nostrNativeProject(); native {
+			id, err := runCreateNostr(dir, nostrCreateSpec{
+				title:    "Label proposal: " + labelName,
+				itemType: "decision",
+				priority: "p3",
+				context:  contextParts,
+				labels:   []string{"label-proposal"},
+			})
 			if err != nil {
 				return err
 			}
-			decl, err := loadDeclaration("create")
-			if err != nil {
-				return err
-			}
-
-			// Generate an ID.
-			existingItems, _ := allItemsFromJSONLOrStore(s)
-			existingIDs := map[string]struct{}{}
-			for _, it := range existingItems {
-				existingIDs[it.ID] = struct{}{}
-			}
-			_, projectDir, hasCampfire := projectRoot()
-			prefix := ""
-			if hasCampfire {
-				prefix = projectPrefix(projectDir)
-			} else if dir, ok := readyProjectDir(); ok {
-				prefix = projectPrefix(dir)
-			}
-			id, err := generateID(prefix, existingIDs)
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"id":       id,
-				"title":    "Label proposal: " + labelName,
-				"type":     "decision",
-				"for":      agentID.PublicKeyHex(),
-				"priority": "p3",
-				"context":  contextParts,
-				"labels":   "label-proposal",
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				// If label-proposal label isn't in registry, retry without it.
-				delete(argsMap, "labels")
-				var err2 error
-				msg, campfireID, err2 = executeConventionOp(agentID, s, exec, decl, argsMap)
-				if err2 != nil {
-					return err // return original error
-				}
-			}
-
 			if jsonOutput {
-				out := map[string]interface{}{
+				return emitMutationResult("", map[string]any{
 					"id":           id,
-					"msg_id":       msg.ID,
-					"campfire_id":  campfireID,
 					"label":        labelName,
 					"demand_count": demandCount,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
+				})
 			}
-
-			_ = msg
-			_ = campfireID
 			fmt.Printf("proposed label %q → item %s (p3 decision)\n", labelName, id)
 			if demandCount > 0 {
 				fmt.Printf("  demand count: %d recorded attempt(s)\n", demandCount)
 			}
 			return nil
-		})
+		}
+
+		return errNotNostrProject()
 	},
 }
 
@@ -385,7 +297,7 @@ var labelAddCmd = &cobra.Command{
 	Short: "Add a label to an existing item",
 	Long: `Add a label to an existing work item.
 
-The label must be registered in the campfire label registry (see rd label list).
+The label must be registered in the project label registry (see rd label list).
 Any member can add labels to items — only DEFINING new label atoms is grant-gated.
 
 Example:
@@ -396,55 +308,13 @@ Example:
 		itemID := args[0]
 		label := args[1]
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("label-add")
-			if err != nil {
-				return err
-			}
+		// nostr-native default write path (ready-6ef): label is a card "l" tag —
+		// a card-only edit signed by the secp256k1 key; no .cf.
+		if _, native := nostrNativeProject(); native {
+			return runLabelAddNostr(itemID, label)
+		}
 
-			argsMap := map[string]any{
-				"id":    itemID,
-				"label": label,
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-2cf): a label add changes the item's
-			// label set — re-publish its card with the updated "l" tags so a nostr
-			// reader reconstructs Item.Labels. Card-only edit (no status change).
-			// AFTER the label-add enforcement (pattern + registry) succeeded;
-			// best-effort. Only re-derive when nostr is active.
-			if nostrEnabled() {
-				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
-					item.Labels = strSliceAppendUnique(item.Labels, label)
-					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-						warnNostrPublishFailure("label added; campfire durable", nostrErr)
-					}
-				}
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"item_id":     itemID,
-					"label":       label,
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("label %q added to %s\n", label, itemID)
-			return nil
-		})
+		return errNotNostrProject()
 	},
 }
 
@@ -463,54 +333,13 @@ Example:
 		itemID := args[0]
 		label := args[1]
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("label-remove")
-			if err != nil {
-				return err
-			}
+		// nostr-native default write path (ready-6ef): label is a card "l" tag —
+		// a card-only edit signed by the secp256k1 key; no .cf.
+		if _, native := nostrNativeProject(); native {
+			return runLabelRemoveNostr(itemID, label)
+		}
 
-			argsMap := map[string]any{
-				"id":    itemID,
-				"label": label,
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-2cf): a label remove drops the atom
-			// from the item's label set — re-publish its card with the updated "l"
-			// tags. Card-only edit. AFTER enforcement; best-effort. Removing an
-			// absent label is idempotent (mirrors the campfire remove semantics).
-			if nostrEnabled() {
-				if item, ferr := byIDFromJSONLOrStore(s, itemID); ferr == nil {
-					item.Labels = strSliceRemove(item.Labels, label)
-					if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-						warnNostrPublishFailure("label removed; campfire durable", nostrErr)
-					}
-				}
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"item_id":     itemID,
-					"label":       label,
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("label %q removed from %s\n", label, itemID)
-			return nil
-		})
+		return errNotNostrProject()
 	},
 }
 

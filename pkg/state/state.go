@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/declarations"
+	"github.com/campfire-net/ready/pkg/msgrec"
 )
 
 // labelAtomPattern is the per-atom validation pattern for label names.
@@ -267,29 +267,6 @@ type gateResolvePayload struct {
 	Reason     string `json:"reason,omitempty"`
 }
 
-// serverBindingPayload mirrors the fields in a convention:server-binding message payload.
-// ValidFrom and ValidUntil are Unix timestamps in seconds (int64), matching the
-// JSON numbers written by conventionserver/server.go.
-type serverBindingPayload struct {
-	Convention   string `json:"convention"`
-	Operation    string `json:"operation"`
-	ServerPubkey string `json:"server_pubkey"`
-	ValidFrom    int64  `json:"valid_from"`
-	ValidUntil   int64  `json:"valid_until,omitempty"`
-}
-
-// capabilityTokenPayload represents an offline capability token embedded in an operation.
-type capabilityTokenPayload struct {
-	Subject      string   `json:"subject"`
-	Campfire     string   `json:"campfire"`
-	Role         string   `json:"role"`
-	Operations   []string `json:"operations"`
-	IssuedAt     int64    `json:"issued_at"`
-	ExpiresAt    int64    `json:"expires_at"`
-	BindingMsgID string   `json:"binding_msg_id,omitempty"`
-	Signature    string   `json:"signature"`
-}
-
 // hasTag reports whether tags contains the given tag.
 func hasTag(tags []string, tag string) bool {
 	for _, t := range tags {
@@ -333,14 +310,6 @@ func resolveItemID(msgIndex map[string]string, target string, antecedents []stri
 	return ""
 }
 
-// serverBinding represents an active server-binding declaration for a (convention, operation) pair.
-type serverBinding struct {
-	serverPubkey string
-	validFrom    int64 // nanoseconds (unix timestamp converted)
-	validUntil   int64 // nanoseconds, 0 means no expiration
-	msgID        string
-}
-
 // roleInfo represents a member's role state from work:role-grant messages.
 type roleInfo struct {
 	role      string
@@ -381,161 +350,6 @@ func parseTimestampValue(v interface{}) int64 {
 	default:
 		return 0
 	}
-}
-
-// findActiveServerBinding finds the most recent server-binding declaration
-// that is valid at the given timestamp for the specified convention and operation.
-func findActiveServerBinding(msgs []store.MessageRecord, convention, operation string, atTime int64) *serverBinding {
-	var active *serverBinding
-	for _, m := range msgs {
-		if !hasTag(m.Tags, "convention:server-binding") {
-			continue
-		}
-		var p serverBindingPayload
-		if err := json.Unmarshal(m.Payload, &p); err != nil {
-			continue
-		}
-		if p.Convention != convention || p.Operation != operation {
-			continue
-		}
-		validFrom := p.ValidFrom * int64(time.Second)
-		if validFrom == 0 || validFrom > atTime {
-			// Binding not yet valid at this message's timestamp
-			continue
-		}
-		validUntil := p.ValidUntil * int64(time.Second)
-		if validUntil != 0 && validUntil < atTime {
-			// Binding has expired
-			continue
-		}
-		// Keep the most recent valid binding
-		if active == nil || validFrom > active.validFrom {
-			active = &serverBinding{
-				serverPubkey: p.ServerPubkey,
-				validFrom:    validFrom,
-				validUntil:   validUntil,
-				msgID:        m.ID,
-			}
-		}
-	}
-	return active
-}
-
-// findFirstServerBinding finds the earliest server-binding declaration for the
-// specified convention and operation, without filtering by timestamp. Returns the
-// binding with the smallest non-zero validFrom, or nil if none exists.
-func findFirstServerBinding(msgs []store.MessageRecord, convention, operation string) *serverBinding {
-	var first *serverBinding
-	for _, m := range msgs {
-		if !hasTag(m.Tags, "convention:server-binding") {
-			continue
-		}
-		var p serverBindingPayload
-		if err := json.Unmarshal(m.Payload, &p); err != nil {
-			continue
-		}
-		if p.Convention != convention || p.Operation != operation {
-			continue
-		}
-		validFrom := p.ValidFrom * int64(time.Second)
-		if validFrom == 0 {
-			// No valid_from — skip; can't determine pre-binding boundary.
-			continue
-		}
-		if first == nil || validFrom < first.validFrom {
-			validUntil := p.ValidUntil * int64(time.Second)
-			first = &serverBinding{
-				serverPubkey: p.ServerPubkey,
-				validFrom:    validFrom,
-				validUntil:   validUntil,
-				msgID:        m.ID,
-			}
-		}
-	}
-	return first
-}
-
-// findFulfillmentForOperation finds a fulfillment message that matches the given
-// target message, sent by the specified sender pubkey.
-func findFulfillmentForOperation(msgs []store.MessageRecord, targetMsgID string, senderPubkey string) *store.MessageRecord {
-	for i, m := range msgs {
-		if hasTag(m.Tags, "fulfills") && m.Sender == senderPubkey {
-			// Check if this fulfillment targets the operation
-			// Fulfillment messages have the target in their Antecedents
-			for _, ant := range m.Antecedents {
-				if ant == targetMsgID {
-					return &msgs[i]
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// isOperationAuthorized checks if a consequential operation is authorized under
-// the server-binding gating rules.
-//
-// Rules:
-// - If no server-binding exists (bypass mode): accept all (Wave 1 behavior)
-// - If binding exists and operation has a valid fulfillment from the bound server: accept
-// - If binding exists and operation has a valid capability token: accept
-// - If binding exists and operation was issued before the binding's valid_from: accept (pre-binding)
-// - Otherwise: reject (drop from derived state)
-//
-// roleMap is reserved for Wave 3+ role-based authorization (currently unused here).
-func isOperationAuthorized(msgs []store.MessageRecord, op store.MessageRecord, convention, operation string, _ map[string]roleInfo) bool {
-	// Find the earliest server-binding ever declared for this operation.
-	firstBinding := findFirstServerBinding(msgs, convention, operation)
-
-	// Bypass mode: no binding has ever been declared for this operation (Wave 1 behavior).
-	if firstBinding == nil {
-		return true
-	}
-
-	// 1. Pre-binding: operation was issued before the first binding became valid.
-	// These operations were submitted when no authorization requirement existed yet.
-	if op.Timestamp < firstBinding.validFrom {
-		return true
-	}
-
-	// Find the active server-binding at the time of this operation.
-	binding := findActiveServerBinding(msgs, convention, operation, op.Timestamp)
-	if binding == nil {
-		// A binding has been declared but is not active at this timestamp
-		// (e.g. op falls in a gap or after expiry). Reject.
-		return false
-	}
-
-	// 2. Check for a fulfillment message from the bound server.
-	if findFulfillmentForOperation(msgs, op.ID, binding.serverPubkey) != nil {
-		return true
-	}
-
-	// 3. Check for a valid capability token in the operation payload.
-	if hasValidCapabilityToken(&op, binding.serverPubkey) {
-		return true
-	}
-
-	// No authorization path succeeded.
-	return false
-}
-
-// hasValidCapabilityToken checks if an operation message contains a valid
-// capability token signed by the specified server pubkey.
-//
-// For now, this is a stub that returns false. Full implementation requires
-// cryptographic signature verification (Ed25519), which is deferred to Wave 2+
-// as part of the capability token verification framework.
-func hasValidCapabilityToken(op *store.MessageRecord, serverPubkey string) bool {
-	// Stub implementation. Full token verification requires:
-	// 1. Extract token from operation payload
-	// 2. Verify signature against serverPubkey
-	// 3. Check expires_at > now
-	// 4. Check operation in token's operations list
-	// 5. Check subject matches sender
-	//
-	// For now, always return false to avoid false positives.
-	return false
 }
 
 // replayState holds mutable intermediate state used during Pass 2 of Derive.
@@ -581,13 +395,13 @@ type blockEdgeKey struct {
 // Pass 3: Stranded-item reclaim — flip active items owned by revoked members back to inbox.
 //
 // Deprecated: use DeriveAll to also get the label registry.
-func Derive(campfireID string, msgs []store.MessageRecord) map[string]*Item {
+func Derive(campfireID string, msgs []msgrec.MessageRecord) map[string]*Item {
 	return DeriveAll(campfireID, msgs).items
 }
 
 // DeriveAll replays all work convention messages and returns a DeriveResult
 // containing both the item map and the label registry.
-func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
+func DeriveAll(campfireID string, msgs []msgrec.MessageRecord) *DeriveResult {
 	roleMap := buildRoleMap(msgs)
 	registry := buildLabelRegistry(msgs)
 
@@ -607,9 +421,9 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 		case hasTag(m.Tags, "work:claim"):
 			handleWorkClaim(m, rs)
 		case hasTag(m.Tags, "work:delegate"):
-			handleWorkDelegate(msgs, m, rs, roleMap)
+			handleWorkDelegate(m, rs)
 		case hasTag(m.Tags, "work:close"):
-			handleWorkClose(msgs, m, rs, roleMap)
+			handleWorkClose(m, rs)
 		case hasTag(m.Tags, "work:update"):
 			handleWorkUpdate(m, rs)
 		case hasTag(m.Tags, "work:block"):
@@ -619,7 +433,7 @@ func DeriveAll(campfireID string, msgs []store.MessageRecord) *DeriveResult {
 		case hasTag(m.Tags, "work:gate"):
 			handleWorkGate(m, rs)
 		case hasTag(m.Tags, "work:gate-resolve"):
-			handleWorkGateResolve(msgs, m, rs, roleMap)
+			handleWorkGateResolve(m, rs)
 		case hasTag(m.Tags, "work:label-add"):
 			handleWorkLabelAdd(m, rs, registry)
 		case hasTag(m.Tags, "work:label-remove"):
@@ -649,7 +463,7 @@ type labelDefinePayload struct {
 // (demand-then-promote flow: retroactive legitimization is intentional).
 // Registry membership is timestamp-independent — all messages are scanned
 // in a single pass regardless of order.
-func buildLabelRegistry(msgs []store.MessageRecord) map[string]LabelDef {
+func buildLabelRegistry(msgs []msgrec.MessageRecord) map[string]LabelDef {
 	registry := make(map[string]LabelDef)
 
 	// Populate seed atoms first.
@@ -693,7 +507,7 @@ func buildLabelRegistry(msgs []store.MessageRecord) map[string]LabelDef {
 
 // buildRoleMap scans msgs for work:role-grant messages and returns a map of
 // pubkey → roleInfo. The most recent grant per pubkey wins.
-func buildRoleMap(msgs []store.MessageRecord) map[string]roleInfo {
+func buildRoleMap(msgs []msgrec.MessageRecord) map[string]roleInfo {
 	roleMap := make(map[string]roleInfo)
 	for _, m := range msgs {
 		if !hasTag(m.Tags, "work:role-grant") {
@@ -738,7 +552,7 @@ func buildRoleMap(msgs []store.MessageRecord) map[string]roleInfo {
 
 // handleWorkCreate processes a work:create message and adds the new item to rs.
 // registry is the label registry built in Pass 1; used for derive-time label enforcement.
-func handleWorkCreate(campfireID string, m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+func handleWorkCreate(campfireID string, m msgrec.MessageRecord, rs *replayState, registry map[string]LabelDef) {
 	var p createPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -815,7 +629,7 @@ type labelMutPayload struct {
 // handleWorkLabelAdd processes a work:label-add message, adding the label to the item
 // identified by payload.ID (the item ID). Enforcement is identical to handleWorkCreate:
 // pattern-invalid and unregistered labels are dropped with a warning.
-func handleWorkLabelAdd(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+func handleWorkLabelAdd(m msgrec.MessageRecord, rs *replayState, registry map[string]LabelDef) {
 	var p labelMutPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -847,7 +661,7 @@ func handleWorkLabelAdd(m store.MessageRecord, rs *replayState, registry map[str
 
 // handleWorkLabelRemove processes a work:label-remove message, removing the label
 // from the item identified by payload.ID. Removing a label not present is idempotent.
-func handleWorkLabelRemove(m store.MessageRecord, rs *replayState, registry map[string]LabelDef) {
+func handleWorkLabelRemove(m msgrec.MessageRecord, rs *replayState, registry map[string]LabelDef) {
 	var p labelMutPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -874,7 +688,7 @@ func handleWorkLabelRemove(m store.MessageRecord, rs *replayState, registry map[
 }
 
 // handleWorkStatus processes a work:status message, updating item status and waiting fields.
-func handleWorkStatus(m store.MessageRecord, rs *replayState) {
+func handleWorkStatus(m msgrec.MessageRecord, rs *replayState) {
 	var p statusPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -906,7 +720,7 @@ func handleWorkStatus(m store.MessageRecord, rs *replayState) {
 }
 
 // handleWorkClaim processes a work:claim message, setting by=sender and transitioning to active.
-func handleWorkClaim(m store.MessageRecord, rs *replayState) {
+func handleWorkClaim(m msgrec.MessageRecord, rs *replayState) {
 	var p claimPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -928,11 +742,8 @@ func handleWorkClaim(m store.MessageRecord, rs *replayState) {
 	})
 }
 
-// handleWorkDelegate processes a work:delegate message (fulfillment-gated).
-func handleWorkDelegate(msgs []store.MessageRecord, m store.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "delegate", roleMap) {
-		return
-	}
+// handleWorkDelegate processes a work:delegate message.
+func handleWorkDelegate(m msgrec.MessageRecord, rs *replayState) {
 	var p delegatePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -946,12 +757,9 @@ func handleWorkDelegate(msgs []store.MessageRecord, m store.MessageRecord, rs *r
 	item.UpdatedAt = m.Timestamp
 }
 
-// handleWorkClose processes a work:close message (fulfillment-gated), transitioning to a
+// handleWorkClose processes a work:close message, transitioning to a
 // terminal status and implicitly unblocking any items this item was blocking.
-func handleWorkClose(msgs []store.MessageRecord, m store.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "close", roleMap) {
-		return
-	}
+func handleWorkClose(m msgrec.MessageRecord, rs *replayState) {
 	var p closePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -994,7 +802,7 @@ func handleWorkClose(msgs []store.MessageRecord, m store.MessageRecord, rs *repl
 }
 
 // handleWorkUpdate processes a work:update message, applying field-level updates.
-func handleWorkUpdate(m store.MessageRecord, rs *replayState) {
+func handleWorkUpdate(m msgrec.MessageRecord, rs *replayState) {
 	var p updatePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -1042,7 +850,7 @@ func handleWorkUpdate(m store.MessageRecord, rs *replayState) {
 
 // handleWorkBlock processes a work:block message, recording the blocker→blocked edge.
 // Cross-campfire references are recorded as warnings and do not create blocking edges.
-func handleWorkBlock(m store.MessageRecord, rs *replayState) {
+func handleWorkBlock(m msgrec.MessageRecord, rs *replayState) {
 	var p blockPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -1079,7 +887,7 @@ func handleWorkBlock(m store.MessageRecord, rs *replayState) {
 }
 
 // handleWorkUnblock processes a work:unblock message, removing the referenced block edge.
-func handleWorkUnblock(m store.MessageRecord, rs *replayState) {
+func handleWorkUnblock(m msgrec.MessageRecord, rs *replayState) {
 	var p unblockPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -1104,7 +912,7 @@ func handleWorkUnblock(m store.MessageRecord, rs *replayState) {
 }
 
 // handleWorkGate processes a work:gate message, transitioning the item to waiting/gate.
-func handleWorkGate(m store.MessageRecord, rs *replayState) {
+func handleWorkGate(m msgrec.MessageRecord, rs *replayState) {
 	// work:gate implicitly transitions item to waiting with waiting_type=gate.
 	// The gate message is always sent as --future in a full implementation.
 	// TODO: when campfire transport supports --future, this should be sent
@@ -1127,12 +935,9 @@ func handleWorkGate(m store.MessageRecord, rs *replayState) {
 	rs.gateMsgIndex[m.ID] = itemID
 }
 
-// handleWorkGateResolve processes a work:gate-resolve message (fulfillment-gated).
+// handleWorkGateResolve processes a work:gate-resolve message.
 // approved → transitions to active; rejected → item remains waiting.
-func handleWorkGateResolve(msgs []store.MessageRecord, m store.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "gate-resolve", roleMap) {
-		return
-	}
+func handleWorkGateResolve(m msgrec.MessageRecord, rs *replayState) {
 	var p gateResolvePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -1205,59 +1010,8 @@ func applyStrandedItemReclaim(items map[string]*Item, roleMap map[string]roleInf
 	}
 }
 
-// DeriveFromStore loads all messages from the given campfire and derives item state.
-func DeriveFromStore(s store.Store, campfireID string) (map[string]*Item, error) {
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{})
-	if err != nil {
-		return nil, err
-	}
-	return Derive(campfireID, msgs), nil
-}
-
-// DeriveAllFromStore loads all messages from the given campfire and returns a
-// DeriveResult containing both the item map and the label registry.
-func DeriveAllFromStore(s store.Store, campfireID string) (*DeriveResult, error) {
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{})
-	if err != nil {
-		return nil, err
-	}
-	return DeriveAll(campfireID, msgs), nil
-}
-
-// DeriveAllFromJSONL is like DeriveFromJSONLWithCampfire but returns a full
-// DeriveResult (items + label registry) instead of only the item map.
-// Use this when you need the label registry from a JSONL-only project (no store).
-//
-// Returns a DeriveResult with an empty registry when the file does not exist.
-func DeriveAllFromJSONL(path, campfireID string) (*DeriveResult, error) {
-	records, err := readMutations(path)
-	if err != nil {
-		return DeriveAll(campfireID, nil), nil //nolint:nilerr — missing file is valid
-	}
-	if len(records) == 0 {
-		return DeriveAll(campfireID, nil), nil
-	}
-	if campfireID == "" {
-		campfireID = records[0].CampfireID
-	}
-	msgs := make([]store.MessageRecord, len(records))
-	for i, r := range records {
-		msgs[i] = store.MessageRecord{
-			ID:          r.MsgID,
-			CampfireID:  r.CampfireID,
-			Timestamp:   r.Timestamp,
-			Payload:     []byte(r.Payload),
-			Tags:        r.Tags,
-			Sender:      r.Sender,
-			Antecedents: r.Antecedents,
-			ReceivedAt:  r.Timestamp,
-		}
-	}
-	return DeriveAll(campfireID, msgs), nil
-}
-
 // DeriveFromJSONL reads all MutationRecords from the given JSONL file path,
-// converts them to store.MessageRecord, and derives item state by replaying
+// converts them to msgrec.MessageRecord, and derives item state by replaying
 // the mutation log. The campfireID is inferred from the first record's
 // CampfireID field; callers may pass an empty string to use that default,
 // or pass an explicit value to override (useful in tests).
@@ -1283,10 +1037,10 @@ func DeriveFromJSONLWithCampfire(path, campfireID string) (map[string]*Item, err
 	if campfireID == "" {
 		campfireID = records[0].CampfireID
 	}
-	// Convert MutationRecords → store.MessageRecord.
-	msgs := make([]store.MessageRecord, len(records))
+	// Convert MutationRecords → msgrec.MessageRecord.
+	msgs := make([]msgrec.MessageRecord, len(records))
 	for i, r := range records {
-		msgs[i] = store.MessageRecord{
+		msgs[i] = msgrec.MessageRecord{
 			ID:          r.MsgID,
 			CampfireID:  r.CampfireID,
 			Timestamp:   r.Timestamp,

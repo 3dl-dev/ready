@@ -1,12 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/campfire-net/ready/pkg/state"
 )
 
 var delegateCmd = &cobra.Command{
@@ -34,62 +31,11 @@ Example:
 			return fmt.Errorf("--to is required")
 		}
 
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
+		if _, native := nostrNativeProject(); native {
+			return runDelegateNostr(itemID, to, reason)
 		}
-		defer s.Close()
-
-		// Resolve the item.
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
-		}
-
-		// Check not already terminal.
-		if state.IsTerminal(item) {
-			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-		}
-
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-		decl, err := loadDeclaration("delegate")
-		if err != nil {
-			return err
-		}
-
-		argsMap := map[string]any{
-			"target": item.MsgID,
-			"to":     to,
-		}
-		if item.By != "" {
-			argsMap["from"] = item.By
-		}
-		if reason != "" {
-			argsMap["reason"] = reason
-		}
-
-		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-		if err != nil {
-			return err
-		}
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      msg.ID,
-				"campfire_id": campfireID,
-				"to":          to,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("delegated %s to %s\n", item.ID, to)
-		return nil
+		return errNotNostrProject()
 	},
 }
 

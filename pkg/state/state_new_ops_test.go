@@ -3,15 +3,15 @@ package state_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
 // TestDerive_Delegate verifies that a work:delegate message sets the By field.
-// Replays real store.MessageRecord slices per test requirements.
+// Replays real msgrec.MessageRecord slices per test requirements.
 func TestDerive_Delegate(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -41,7 +41,7 @@ func TestDerive_Delegate(t *testing.T) {
 // and transitions to active.
 func TestDerive_DelegateThenClaim(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -74,7 +74,7 @@ func TestDerive_DelegateThenClaim(t *testing.T) {
 // TestDerive_UpdateTitle verifies that work:update can change an item's title.
 func TestDerive_UpdateTitle(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Original Title", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p2",
@@ -98,7 +98,7 @@ func TestDerive_UpdateTitle(t *testing.T) {
 // TestDerive_UpdateLevel verifies that work:update can change an item's level.
 func TestDerive_UpdateLevel(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -125,7 +125,7 @@ func TestDerive_UpdateLevel(t *testing.T) {
 //   rd update <id> --priority p0 --eta 2026-04-01
 func TestDerive_UpdatePriorityAndETA(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p3",
@@ -154,7 +154,7 @@ func TestDerive_UpdatePriorityAndETA(t *testing.T) {
 // the specified fields and leaves others intact.
 func TestDerive_UpdatePreservesUnchangedFields(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Original", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -192,7 +192,7 @@ func TestDerive_UpdatePreservesUnchangedFields(t *testing.T) {
 // when target is not in payload (fallback path in state derivation).
 func TestDerive_ClaimWithAntecedents(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

@@ -95,36 +95,36 @@ func TestParseTagsVectors(t *testing.T) {
 		},
 		// §8.7 Invalid — max-ttl with unknown unit
 		{
-			name: "8.7 unknown unit",
-			tags: []string{"durability:max-ttl:30w"},
+			name:           "8.7 unknown unit",
+			tags:           []string{"durability:max-ttl:30w"},
 			wantValid:      false,
 			wantErrContain: "unknown unit 'w'",
 		},
 		// §8.8 Invalid — max-ttl with zero N (0d)
 		{
-			name: "8.8 zero N with unit (0d)",
-			tags: []string{"durability:max-ttl:0d"},
+			name:           "8.8 zero N with unit (0d)",
+			tags:           []string{"durability:max-ttl:0d"},
 			wantValid:      false,
 			wantErrContain: "'0d' is invalid",
 		},
 		// §8.9 Invalid — lifecycle with unknown type
 		{
-			name: "8.9 unknown lifecycle type",
-			tags: []string{"durability:lifecycle:temporary"},
+			name:           "8.9 unknown lifecycle type",
+			tags:           []string{"durability:lifecycle:temporary"},
 			wantValid:      false,
 			wantErrContain: "unknown type 'temporary'",
 		},
 		// §8.10 Invalid — bounded with malformed date
 		{
-			name: "8.10 malformed bounded date",
-			tags: []string{"durability:lifecycle:bounded:June-2026"},
+			name:           "8.10 malformed bounded date",
+			tags:           []string{"durability:lifecycle:bounded:June-2026"},
 			wantValid:      false,
 			wantErrContain: "not valid ISO 8601 UTC",
 		},
 		// §8.11 Warning — bounded date in the past (referenceTime = 2026-03-28)
 		{
-			name: "8.11 past bounded date",
-			tags: []string{"durability:lifecycle:bounded:2025-01-01T00:00:00Z"},
+			name:        "8.11 past bounded date",
+			tags:        []string{"durability:lifecycle:bounded:2025-01-01T00:00:00Z"},
 			wantValid:   true,
 			wantLCType:  "bounded",
 			wantLCValue: "2025-01-01T00:00:00Z",
@@ -134,8 +134,8 @@ func TestParseTagsVectors(t *testing.T) {
 		},
 		// §8.12 Warning — max-ttl exceeds 100 years
 		{
-			name: "8.12 max-ttl exceeds 100 years",
-			tags: []string{"durability:max-ttl:50000d"},
+			name:       "8.12 max-ttl exceeds 100 years",
+			tags:       []string{"durability:max-ttl:50000d"},
 			wantValid:  true,
 			wantMaxTTL: "0",
 			wantWarnings: []string{
@@ -144,8 +144,8 @@ func TestParseTagsVectors(t *testing.T) {
 		},
 		// §8.13 Invalid — ephemeral with no timeout
 		{
-			name: "8.13 ephemeral no timeout",
-			tags: []string{"durability:lifecycle:ephemeral:"},
+			name:           "8.13 ephemeral no timeout",
+			tags:           []string{"durability:lifecycle:ephemeral:"},
 			wantValid:      false,
 			wantErrContain: "ephemeral timeout is empty",
 		},
@@ -161,22 +161,22 @@ func TestParseTagsVectors(t *testing.T) {
 		},
 		// §8.15 Invalid — negative duration
 		{
-			name: "8.15 negative duration",
-			tags: []string{"durability:max-ttl:-5d"},
+			name:           "8.15 negative duration",
+			tags:           []string{"durability:max-ttl:-5d"},
 			wantValid:      false,
 			wantErrContain: "negative or non-numeric value",
 		},
 		// §8.16 Invalid — leading zero in N
 		{
-			name: "8.16 leading zero",
-			tags: []string{"durability:max-ttl:030d"},
+			name:           "8.16 leading zero",
+			tags:           []string{"durability:max-ttl:030d"},
 			wantValid:      false,
 			wantErrContain: "leading zero",
 		},
 		// §8.17 Invalid — ephemeral:0
 		{
-			name: "8.17 ephemeral:0",
-			tags: []string{"durability:lifecycle:ephemeral:0"},
+			name:           "8.17 ephemeral:0",
+			tags:           []string{"durability:lifecycle:ephemeral:0"},
 			wantValid:      false,
 			wantErrContain: "ephemeral timeout must be a positive integer with unit",
 		},
@@ -195,8 +195,8 @@ func TestParseTagsVectors(t *testing.T) {
 		},
 		// §8.19 Invalid — N exceeds 6 digits
 		{
-			name: "8.19 N exceeds 6 digits",
-			tags: []string{"durability:max-ttl:1234567d"},
+			name:           "8.19 N exceeds 6 digits",
+			tags:           []string{"durability:max-ttl:1234567d"},
 			wantValid:      false,
 			wantErrContain: "duration value exceeds 6-digit maximum",
 		},

@@ -166,10 +166,10 @@ func TestBuildUnblockArgsMap_ReasonOmittedWhenEmpty(t *testing.T) {
 
 // TestBuildDepTree_CyclicDependencies verifies that buildDepTree handles cyclic
 // dependencies correctly without infinite recursion. The bug occurred when:
-// 1. A blocks B, B blocks A (simple cycle)
-// 2. A third item or reference path leads to a node in the cycle
-// 3. After processing a child and deleting from visited, the same node could be
-//    revisited on another path, causing infinite recursion.
+//  1. A blocks B, B blocks A (simple cycle)
+//  2. A third item or reference path leads to a node in the cycle
+//  3. After processing a child and deleting from visited, the same node could be
+//     revisited on another path, causing infinite recursion.
 //
 // Fix: Keep cycle detection state persistent across all branches, not just the
 // current recursion path. Use a separate inPath map for the current recursion path.
@@ -318,11 +318,14 @@ func containsString(s, substring string) bool {
 // TestBuildDepTree_DiamondDependency verifies that buildDepTree correctly handles
 // diamond dependency patterns without duplicating nodes.
 // Pattern: A blocks both B and C, both B and C block D
-//   A
-//  / \
+//
+//	 A
+//	/ \
+//
 // B   C
-//  \ /
-//   D
+//
+//	\ /
+//	 D
 func TestBuildDepTree_DiamondDependency(t *testing.T) {
 	itemA := &state.Item{
 		ID:     "ready-a",
@@ -699,55 +702,5 @@ func TestBuildDepTree_RootNotInItems(t *testing.T) {
 	}
 	if len(tree.Children) != 0 {
 		t.Errorf("root should have 0 children, got %d", len(tree.Children))
-	}
-}
-
-// TestHasTagStr verifies that hasTagStr correctly identifies tag presence.
-func TestHasTagStr(t *testing.T) {
-	tests := []struct {
-		name     string
-		tags     []string
-		search   string
-		expected bool
-	}{
-		{
-			name:     "tag present",
-			tags:     []string{"work:block", "work:status"},
-			search:   "work:block",
-			expected: true,
-		},
-		{
-			name:     "tag not present",
-			tags:     []string{"work:status", "work:close"},
-			search:   "work:block",
-			expected: false,
-		},
-		{
-			name:     "empty tags",
-			tags:     []string{},
-			search:   "work:block",
-			expected: false,
-		},
-		{
-			name:     "partial match should not match",
-			tags:     []string{"work:blocka"},
-			search:   "work:block",
-			expected: false,
-		},
-		{
-			name:     "single tag matches",
-			tags:     []string{"work:block"},
-			search:   "work:block",
-			expected: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := hasTagStr(tt.tags, tt.search)
-			if result != tt.expected {
-				t.Errorf("hasTagStr(%v, %q) = %v, want %v", tt.tags, tt.search, result, tt.expected)
-			}
-		})
 	}
 }

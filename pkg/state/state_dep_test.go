@@ -3,7 +3,7 @@ package state_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
@@ -11,7 +11,7 @@ import (
 // a specific work:block message ID removes the block edge via blockMsgIndex.
 func TestDerive_UnblockRemovesEdge(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -53,7 +53,7 @@ func TestDerive_UnblockRemovesEdge(t *testing.T) {
 // message via antecedents when the target field is empty.
 func TestDerive_UnblockByAntecedent(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -89,7 +89,7 @@ func TestDerive_UnblockByAntecedent(t *testing.T) {
 // does not disturb other block edges in the same campfire.
 func TestDerive_UnblockDoesNotAffectOtherEdges(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker A", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -147,7 +147,7 @@ func TestDerive_UnblockDoesNotAffectOtherEdges(t *testing.T) {
 func TestDerive_DepTreeChain(t *testing.T) {
 	ts := now()
 	// Chain: t01 blocks t02 blocks t03
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Step 1", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -221,7 +221,7 @@ func TestDerive_DepTreeChain(t *testing.T) {
 // same block message is a no-op (not a double-removal that corrupts state).
 func TestDerive_ImplicitUnblockCleansIndex(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

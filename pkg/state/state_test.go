@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
 const testCampfire = "abc123"
 
 // makeMsg is a test helper that constructs a MessageRecord.
-func makeMsg(id string, tags []string, payload interface{}, antecedents []string, ts int64) store.MessageRecord {
+func makeMsg(id string, tags []string, payload interface{}, antecedents []string, ts int64) msgrec.MessageRecord {
 	p, _ := json.Marshal(payload)
-	return store.MessageRecord{
+	return msgrec.MessageRecord{
 		ID:          id,
 		CampfireID:  testCampfire,
 		Sender:      "testsender",
@@ -28,7 +28,7 @@ func makeMsg(id string, tags []string, payload interface{}, antecedents []string
 func now() int64 { return time.Now().UnixNano() }
 
 func TestDerive_Create(t *testing.T) {
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id":       "ready-t01",
 			"title":    "Test item",
@@ -62,7 +62,7 @@ func TestDerive_Create(t *testing.T) {
 
 func TestDerive_StatusTransition(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -85,7 +85,7 @@ func TestDerive_StatusTransition(t *testing.T) {
 
 func TestDerive_Claim(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -111,7 +111,7 @@ func TestDerive_Claim(t *testing.T) {
 
 func TestDerive_Close(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -138,7 +138,7 @@ func TestDerive_Close(t *testing.T) {
 
 func TestDerive_Block(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -170,7 +170,7 @@ func TestDerive_Block(t *testing.T) {
 
 func TestDerive_BlockImplicitUnblockOnClose(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-t01", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -204,7 +204,7 @@ func TestDerive_BlockImplicitUnblockOnClose(t *testing.T) {
 
 func TestDerive_Waiting(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -238,7 +238,7 @@ func TestDerive_Waiting(t *testing.T) {
 
 func TestDerive_ETAFromPriority(t *testing.T) {
 	ts := time.Now().UnixNano()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-p0", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-p0", "title": "P0", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p0",
@@ -280,7 +280,7 @@ func TestDerive_ETAFromPriority(t *testing.T) {
 
 func TestDerive_MultipleItems(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-a", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-a", "title": "A", "type": "task",
 			"for": "a@test.dev", "priority": "p1",

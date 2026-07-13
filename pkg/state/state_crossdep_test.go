@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
@@ -21,7 +21,7 @@ import (
 // Done condition 6: item A deps on B; user NOT a member → warning shown, A not blocked.
 func TestDerive_CrossCampfireRef_NonBlocking(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Item A is in acme.backend (the local campfire for this test).
 		makeMsg("msg-a01", []string{"work:create"}, map[string]interface{}{
 			"id": "backend-a01", "title": "Item A", "type": "task",
@@ -77,7 +77,7 @@ func TestDerive_CrossCampfireRef_NonBlocking(t *testing.T) {
 // still blocks normally even when a cross-campfire dep is also present.
 func TestDerive_CrossCampfireRef_LocalDepStillBlocks(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-local-blocker", []string{"work:create"}, map[string]interface{}{
 			"id": "backend-blocker", "title": "Local blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p0",
@@ -173,7 +173,7 @@ func TestDerive_StrandedItemReclaim(t *testing.T) {
 	const campfireID = "aaaa0000bbbb1111cccc2222dddd3333eeee4444ffff5555aaaa0000bbbb1111"
 	const claimerKey = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		{
 			ID: "m1", CampfireID: campfireID, Sender: "admin",
 			Tags: []string{"work:create"},
@@ -237,7 +237,7 @@ func TestDerive_StrandedItemReclaim_IgnoresUnclaimedActive(t *testing.T) {
 	const campfireID = "bbbb0000cccc1111dddd2222eeee3333ffff4444aaaa5555bbbb0000cccc1111"
 	const someKey = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		{
 			ID: "m1", CampfireID: campfireID, Sender: "admin",
 			Tags: []string{"work:create"},
@@ -297,7 +297,7 @@ func TestDerive_RoleGrant_RFC3339GrantedAt(t *testing.T) {
 	// RFC3339 timestamp: 2026-04-08T15:30:45Z
 	grantedAt := "2026-04-08T15:30:45Z"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		{
 			ID: "m1", CampfireID: campfireID, Sender: "admin",
 			Tags: []string{"work:create"},
@@ -363,7 +363,7 @@ func TestDerive_RoleGrant_RFC3339GrantedAt(t *testing.T) {
 // to the correct local item with the correct cross-campfire ref.
 func TestDerive_CrossCampfireRef_BlockedIsCross(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Item A is local in acme.backend.
 		makeMsg("msg-a01", []string{"work:create"}, map[string]interface{}{
 			"id": "backend-a01", "title": "Item A", "type": "task",

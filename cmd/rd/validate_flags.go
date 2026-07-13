@@ -5,36 +5,39 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/ready/pkg/declarations"
 )
 
-// ValidateEnumFlags validates flag values against their declaration enum constraints.
-// It derives the valid values from the loaded declaration — no hardcoded lists.
+// ValidateEnumFlags validates flag values against the enum constraints of the
+// named convention operation declaration. It derives the valid values natively
+// from the embedded declaration JSON (pkg/declarations) — no cf-convention parse,
+// no hardcoded lists.
 //
 // flagValues is a map of arg name → supplied string value. Only non-empty values
-// are checked; absent/empty flags are left for the convention executor to reject
-// if they are required.
+// are checked; absent/empty flags are left for the write path to reject if they
+// are required.
 //
 // This is the validation entry point designed so that a pre-validation rewrite hook
 // (ready-b0c, alias rewriting) can normalise values before this function runs.
 // The expected call sequence in create's RunE is:
 //
 //  1. Parse flags into local variables.
-//  2. (ready-b0c hook) rewriteCreateAliases(&itemType, &priority, &level) — rewrites
+//  2. (ready-b0c hook) rewriteTypeAlias(&itemType, &labels) — rewrites
 //     human-friendly aliases to canonical enum values before validation.
-//  3. ValidateEnumFlags(decl, map[string]string{...}) — rejects unknown values.
-//  4. Proceed with withAgentAndStore / executeConventionOp.
+//  3. ValidateEnumFlags("create", map[string]string{...}) — rejects unknown values.
+//  4. Proceed with the nostr-native write path.
 //
 // Errors are returned as user-visible messages listing the valid values.
-func ValidateEnumFlags(decl *convention.Declaration, flagValues map[string]string) error {
+func ValidateEnumFlags(operation string, flagValues map[string]string) error {
+	args, err := declarations.EnumArgs(operation)
+	if err != nil {
+		return fmt.Errorf("loading %q declaration for validation: %w", operation, err)
+	}
 	var errs []string
-	for _, arg := range decl.Args {
-		if arg.Type != "enum" {
-			continue
-		}
+	for _, arg := range args {
 		val, ok := flagValues[arg.Name]
 		if !ok || val == "" {
-			// Not supplied; executor handles required-arg checking.
+			// Not supplied; the write path handles required-arg checking.
 			continue
 		}
 		if !enumContains(arg.Values, val) {

@@ -9,10 +9,10 @@ import (
 // code was using direct slicing like s[:12] without bounds checking.
 func TestTruncateID_SafelyHandlesShortStrings(t *testing.T) {
 	tests := []struct {
-		input   string
-		maxLen  int
-		want    string
-		desc    string
+		input  string
+		maxLen int
+		want   string
+		desc   string
 	}{
 		// Typical case: 64-char hex ID truncated to 12 chars (9 chars + "...")
 		{"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01", 12, "abcdefghi...", "64-char truncated to 12"},

@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/views"
 	"github.com/mattn/go-isatty"
@@ -48,15 +46,18 @@ Example:
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 
-		autoSyncPull()
-
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
+		// nostr-native default READ path (ready-6ef S-read): on an `rd init` project
+		// the session identity is the secp256k1 signer. The read spine resolves items
+		// from the nostr projection (nostrReadActive() is true on this path) — no
+		// campfire store is opened. Default --for to the secp256k1 self and run the
+		// shared body.
+		runReady := func(selfHex string) error {
 			// Default --for to the current session identity when not explicitly set.
 			if !cmd.Flags().Changed("for") {
-				forFilter = agentID.PublicKeyHex()
+				forFilter = selfHex
 			}
 
-			items, err := allItemsFromJSONLOrStore(s)
+			items, err := allItemsFromJSONLOrStore()
 			if err != nil {
 				return fmt.Errorf("loading items: %w", err)
 			}
@@ -95,26 +96,19 @@ Example:
 				}
 				// Emit a stderr hint for any atom not in the registry when result is empty.
 				if len(items) == 0 {
-					printUnknownLabelHints(labelFilters, nil, s)
+					printUnknownLabelHints(labelFilters)
 				}
 			}
 
 			// Scope gate (ready-a55): restrict the list to what the given
-			// grant-holder is authorized to claim. The campfire creator is always
-			// allowed; otherwise the key needs an active grant covering "claim".
+			// grant-holder is authorized to claim, derived from the signed
+			// kind-39301 role-grants (ready-cb6 I7). The board owner is always
+			// allowed; otherwise the key needs a live contributor/maintainer grant.
 			if scopeKey != "" {
 				if len(scopeKey) != 64 || !isHex(scopeKey) {
 					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
 				}
-				campfireID, _, ok := projectRoot()
-				if !ok {
-					return fmt.Errorf("--scope requires a campfire project")
-				}
-				client, err := requireClient()
-				if err != nil {
-					return fmt.Errorf("--scope requires a campfire client: %w", err)
-				}
-				allowed, note := scopeForKey(client, campfireID, scopeKey)
+				allowed, note := nostrScopeForKey(scopeKey)
 				if !allowed {
 					if !jsonOutput {
 						fmt.Fprintln(os.Stderr, note)
@@ -146,7 +140,18 @@ Example:
 				}
 			}
 			return nil
-		})
+		}
+
+		if _, native := nostrNativeProject(); native {
+			self, err := nostrSelfPubkey()
+			if err != nil {
+				return err
+			}
+			return runReady(self)
+		}
+
+		// nostr-native only (ready-cb6): no campfire/JSONL agent-and-store read path.
+		return errNotNostrProject()
 	},
 }
 

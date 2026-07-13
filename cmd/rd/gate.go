@@ -1,13 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +18,7 @@ Use 'rd approve <item-id>' or 'rd reject <item-id>' to resolve.
 
 Note: In a full implementation this would be sent as --future so the agent can
 block on 'cf await' until the human resolves it. This requires futures transport
-support (TODO: add --future flag when campfire transport supports cf await).
+support (TODO: add --future flag when the transport supports cf await).
 
 Example:
   rd gate ready-a1b --gate-type design --description "Confirm approach before implementing"
@@ -38,70 +33,11 @@ Example:
 			return fmt.Errorf("--gate-type is required: choose from budget, design, scope, review, human, stall, periodic")
 		}
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			// Resolve the item.
-			item, err := byIDFromJSONLOrStore(s, itemID)
-			if err != nil {
-				return err
-			}
-
-			// Check not already terminal.
-			if state.IsTerminal(item) {
-				return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-			}
-
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("gate")
-			if err != nil {
-				return err
-			}
-
-			// Fire-and-forget gate (no futures, D5).
-			argsMap := map[string]any{
-				"target":    item.MsgID,
-				"gate_type": gateType,
-			}
-			if description != "" {
-				argsMap["description"] = description
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-2cf): rd gate transitions the item to
-			// waiting (waiting_type=gate), mirroring pkg/state.handleWorkGate exactly.
-			// Publish a status change carrying the gate description as the reason so
-			// (a) the card materializes s=waiting + waiting_type/waiting_on tags
-			// (the projection then derives GateMsgID → views.GatesFilter sees a
-			// pending gate) and (b) the gate action lands in the audit-history
-			// replay. AFTER enforcement; best-effort.
-			item.Status = state.StatusWaiting
-			item.WaitingType = "gate"
-			item.WaitingOn = description
-			if nostrErr := publishItemStatusChangeNostr(item, description); nostrErr != nil {
-				warnNostrPublishFailure("gate sent; campfire durable", nostrErr)
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"id":          item.ID,
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-					"gate_type":   gateType,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("gate sent for %s (%s)\n", item.ID, gateType)
-			return nil
-		})
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
+		if _, native := nostrNativeProject(); native {
+			return runGateNostr(itemID, gateType, description)
+		}
+		return errNotNostrProject()
 	},
 }
 

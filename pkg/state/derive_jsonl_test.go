@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/jsonl"
 	"github.com/campfire-net/ready/pkg/state"
 )
@@ -61,8 +61,8 @@ func payload(v interface{}) json.RawMessage {
 	return b
 }
 
-// mutFromMsg converts a store.MessageRecord to a mutRec for test round-tripping.
-func mutFromMsg(m store.MessageRecord) mutRec {
+// mutFromMsg converts a msgrec.MessageRecord to a mutRec for test round-tripping.
+func mutFromMsg(m msgrec.MessageRecord) mutRec {
 	op := ""
 	for _, t := range m.Tags {
 		if strings.HasPrefix(t, jsonl.WorkTagPrefix) && len(t) > len(jsonl.WorkTagPrefix) {
@@ -121,7 +121,7 @@ func TestDeriveFromJSONL_MatchesDeriveCreate(t *testing.T) {
 		"parent_id": "ready-parent-x",
 	})
 
-	msg := store.MessageRecord{
+	msg := msgrec.MessageRecord{
 		ID:         "msg-j01",
 		CampfireID: jsonlTestCampfire,
 		Sender:     "testsender",
@@ -130,8 +130,8 @@ func TestDeriveFromJSONL_MatchesDeriveCreate(t *testing.T) {
 		Timestamp:  ts,
 	}
 
-	// Derive via store.MessageRecord (reference).
-	want := state.Derive(jsonlTestCampfire, []store.MessageRecord{msg})
+	// Derive via msgrec.MessageRecord (reference).
+	want := state.Derive(jsonlTestCampfire, []msgrec.MessageRecord{msg})
 
 	// Derive via JSONL.
 	path := writeMutJSONL(t, []mutRec{mutFromMsg(msg)})
@@ -193,7 +193,7 @@ func TestDeriveFromJSONL_MatchesDeriveCreate(t *testing.T) {
 // (create → status → claim → close) produces identical state via both paths.
 func TestDeriveFromJSONL_MutationSequence(t *testing.T) {
 	base := time.Now().UnixNano()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		{
 			ID: "msg-seq-create", CampfireID: jsonlTestCampfire, Sender: "human",
 			Payload:   payload(map[string]interface{}{"id": "ready-seq", "title": "Sequence Test", "type": "task", "for": "baron@3dl.dev", "priority": "p2"}),
@@ -245,7 +245,7 @@ func TestDeriveFromJSONL_MutationSequence(t *testing.T) {
 // replayed correctly from JSONL.
 func TestDeriveFromJSONL_BlockDependency(t *testing.T) {
 	base := time.Now().UnixNano()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		{
 			ID: "msg-b-blocker", CampfireID: jsonlTestCampfire, Sender: "human",
 			Payload:   payload(map[string]interface{}{"id": "ready-b-blocker", "title": "Blocker", "type": "task", "for": "baron@3dl.dev", "priority": "p0"}),

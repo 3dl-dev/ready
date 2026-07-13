@@ -1,16 +1,19 @@
-# rd — work management as a campfire convention
+# rd — work management as a nostr convention
 
-`rd` surfaces what needs attention. No separate backend — your [campfire](https://getcampfire.dev) is the database, audit trail, and coordination layer. Primary users are AI agents; humans use it too.
+`rd` surfaces what needs attention. No separate backend — a local append-only
+signed-event log (`.ready/nostr-log.jsonl`) is the source of truth, synced over
+nostr relays as a replaceable cache. Primary users are AI agents; humans use it
+too.
 
 ## Install
 
 ```bash
-curl -fsSL https://ready.getcampfire.dev/install.sh | sh
-# or: brew install campfire-net/tap/ready
+curl -fsSL https://ready.3dl.dev/install.sh | sh
 # or: go install github.com/campfire-net/ready/cmd/rd@latest
 ```
 
-Self-contained binary. For MCP access: `npx @campfire-net/campfire-mcp`.
+Self-contained binary, no separate identity ceremony — a secp256k1 signing key
+is created on first use under `$RD_HOME` (default `~/.config/rd`).
 
 ---
 
@@ -29,7 +32,7 @@ For recurring work shapes (incident runbooks, release prep, feature rollouts), c
 ### Install the skill
 
 ```bash
-curl -fsSL https://ready.getcampfire.dev/claude-skill.sh | sh
+curl -fsSL https://ready.3dl.dev/claude-skill.sh | sh
 ```
 
 ### The work loop
@@ -72,30 +75,47 @@ rd show <id>            # full description + audit trail
 
 ## For teams
 
-### Invite / join — no key exchange
+### Invite / join — mint-and-ship, no separate key exchange
 
 ```bash
-# One person creates the campfire and issues a token:
-rd invite                     # prints a single-use token with TTL
+# One person creates the project and issues a token:
+rd invite                     # mints a fresh secp256k1 identity, publishes an
+                               # owner-signed grant for it, and bundles the board
+                               # coordinate + relays + TTL + secret into an rd1_ token
 
 # Teammate joins with one command:
-rd join <token>               # configures identity, joins campfire, ready to go
+rd join rd1_...                # imports the minted identity, pins the board,
+                                # adopts the relays, and syncs — ready to go
 ```
 
-Tokens are single-use and server-enforced. Failed joins roll back identity automatically.
+Tokens are single-use: the first redeemer publishes a signed consumed marker.
+Use `--ttl` on `rd invite` to limit the exposure window (default 2h).
 
-### Walk-up identity
+### Identity — `$RD_HOME`, no key exchange at runtime
 
-`.cf/identity.json` is found by walking up from your working directory. No env vars required.
+Every identity is a secp256k1 signing key under `$RD_HOME` (default
+`~/.config/rd`, overridable with `--rd-home` or `$RD_HOME`). There is no
+separate identity file to walk up or symlink — the key is resolved once per
+process from `$RD_HOME`.
 
-Put a project-level identity in your repo root. Agents running in worktrees automatically get isolated identities — the filesystem is your config.
+Agents running in isolated worktrees get isolated identities by pointing
+`$RD_HOME` at a worktree-local directory:
 
+```bash
+RD_HOME=worktrees/feature-x/.rd rd join rd1_<token-for-agent>
 ```
-myproject/
-  .cf/identity.json        ← project identity (shared via git or per-machine)
-  worktrees/
-    feature-x/
-      .cf/identity.json    ← isolated identity for this worktree (auto-used)
+
+### Authorization — kind-39301 owner-signed grants
+
+Delegation is a signed act, not implicit trust. The board owner publishes an
+owner-signed `kind-39301` role-grant naming a grantee pubkey and a role; the
+relay write-allowlist and the client trust set are both derived from the same
+signed log, so there is one source of truth for "who can write here."
+
+```bash
+rd grant <pubkeyHex> contributor   # grant a role
+rd sessions                              # list active grant-holders
+rd kill <pubkeyHex>                      # revoke a grant-holder's delegation
 ```
 
 ### Gate escalation — agent blocks on human decision
@@ -116,9 +136,9 @@ rd approve <gate-id> --ruling "Pessimistic. Reason: concurrent request rate too 
 
 | Command | What it does |
 |---------|-------------|
-| `rd init --name <project>` | Create a work campfire |
-| `rd invite` | Issue a single-use join token |
-| `rd join <token>` | Join a campfire from a token |
+| `rd init [--name <project>]` | Initialize a nostr-native project (creates `.ready/`, signing key under `$RD_HOME` on first use) |
+| `rd invite` | Mint a one-use `rd1_` invite token (fresh identity + owner-signed grant, bundled) |
+| `rd join rd1_...` | Join a project via an invite token |
 | `rd create "..." [--type task] [--priority p0]` | Create a work item |
 | `rd ready` | What's actionable now (auto-synced) |
 | `rd ready --view work` | Items currently in_progress |
@@ -127,12 +147,17 @@ rd approve <gate-id> --ruling "Pessimistic. Reason: concurrent request rate too 
 | `rd update <id> --status in_progress` | Claim an item |
 | `rd done <id> --reason "..."` | Close with reason |
 | `rd update <id> --note "..."` | Add a progress note |
-| `rd dep add <child> <blocker>` | Wire a dependency (cross-campfire OK) |
+| `rd dep add <child> <blocker>` | Wire a dependency (cross-project OK) |
 | `rd dep tree <id>` | View dependency hierarchy |
 | `rd gate <id> --question "..."` | Block item on human decision |
 | `rd approve <gate-id> --ruling "..."` | Fulfill a gate |
+| `rd grant <pubkeyHex> <role>` | Publish an owner-signed role grant |
+| `rd sessions` | List active grant-holders |
+| `rd kill <pubkeyHex>` | Revoke a grant-holder's delegation |
+| `rd migrate` | Re-emit a legacy campfire item set as nostr events, preserving ids + history |
+| `rd migrate --parity` | Assert item-for-item parity between legacy source and nostr projection |
 | `rd playbook list` | List registered playbook templates |
-| `rd playbook create "..." --id <id> --items-file <path>` | Register a reusable work tree |
+| `rd playbook create "..." --id <id> --items-file <path>` | Register a reusable work tree (store-free, `.ready/playbooks.jsonl`) |
 | `rd playbook show <id>` | Inspect a playbook's item tree |
 | `rd engage <id> --project <p> --for <who> --var k=v` | Stamp a playbook into work items |
 
@@ -142,9 +167,14 @@ rd approve <gate-id> --ruling "Pessimistic. Reason: concurrent request rate too 
 
 ## How it works
 
-Ready is a **convention**, not an application. It defines structured operations (`work:create`, `work:claim`, `work:close`, etc.) as campfire messages. `rd` is a thin CLI wrapper that speaks this convention.
+Ready is a **convention**, not an application. Work items are structured
+operations (`work:create`, `work:claim`, `work:close`, etc.) projected as
+signed nostr events — a `kind-30301` board, `kind-30302` cards, and a status
+log per item. `rd` is a thin CLI wrapper that speaks this convention over a
+local authoritative log, with relays as a replaceable sync cache.
 
-`rd list`, `rd ready`, and `rd show` auto-pull from campfire on every call — no manual sync step.
+`rd list`, `rd ready`, and `rd show` read from the local log on every call —
+no manual sync step.
 
 **WHO is first-class.** Every item has `for` (who needs the outcome) and `by` (who's doing the work). Delegation is an explicit act.
 
@@ -152,7 +182,30 @@ Ready is a **convention**, not an application. It defines structured operations 
 
 ---
 
-- [campfire](https://getcampfire.dev) — the protocol
-- [agentic internet](https://aietf.getcampfire.dev) — conventions for agent coordination
+## Migrating an existing campfire project
+
+If your project still runs on the retired campfire backend (`.campfire/`),
+migrate it to the nostr-native log without losing history:
+
+```bash
+rd migrate            # re-emits the legacy item set as nostr events —
+                       # ids and full status history are preserved; the
+                       # legacy source is left intact (non-destructive)
+
+rd migrate --parity   # verifies item-for-item field equality between the
+                       # legacy source and the nostr projection; exits
+                       # non-zero on any mismatch — run this before trusting
+                       # the migration
+
+rm -rf .campfire      # once parity passes, drop the legacy store
+```
+
+`rd migrate` is idempotent by event id, so it is safe to re-run. See
+`docs/nostr-migration.md` for the full migration + dual-read design.
+
+---
+
+- [docs/getting-started.md](docs/getting-started.md) — full walkthrough
+- [docs/relay-runbook.md](docs/relay-runbook.md) — operating a relay
 
 MIT License

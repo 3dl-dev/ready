@@ -4,9 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
 
 // TestAllowlistFileRoundtrip proves writeAllowlistFile emits stable, sorted-key JSON
@@ -85,6 +88,48 @@ func TestResolveBoardAuthorD_PinnedWins(t *testing.T) {
 	if gotOwner != owner || gotD != "ready" {
 		t.Errorf("resolveBoardAuthorD = (%s,%s), want (%s,ready)", gotOwner, gotD, owner)
 	}
+}
+
+// TestPublishRoleGrant_NonMaintainerRejectedClientSide is the MED-6 proof: a signer
+// that is NOT the board owner and holds NO maintainer grant is rejected CLIENT-SIDE
+// when it runs `rd nostr grant/revoke` — a clear early error, not a silently-ignored
+// grant. The project's board is pinned to a FOREIGN owner, so the local signer is a
+// plain contributor (absent from the derived level map) and MayGrant returns false.
+func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
+
+	// Re-pin the board to a FOREIGN owner so the local signer is not the board author
+	// and has no maintainer grant.
+	foreign, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey (foreign owner): %v", err)
+	}
+	boardD := projectPrefix(dir)
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	cfg.Board = rdSync.BoardCoord(foreign.PubKeyHex(), boardD)
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	grantee, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey (grantee): %v", err)
+	}
+
+	// A plain contributor attempting to grant a contributor must be rejected client-side.
+	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
+		t.Fatalf("non-maintainer grant = %v, want an 'escalation cap' client-side rejection", err)
+	}
+	// And attempting to revoke must be rejected the same way.
+	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
+		t.Fatalf("non-maintainer revoke = %v, want an 'escalation cap' client-side rejection", err)
+	}
+	assertNoDotCf(t)
 }
 
 // TestResolveBoardAuthorD_UnpinnedFallsBackToSigner proves that with no pin,

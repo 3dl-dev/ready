@@ -5,7 +5,6 @@ import (
 	"os"
 	"sort"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/views"
 	"github.com/mattn/go-isatty"
@@ -15,7 +14,7 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List work items",
-	Long: `List work items across all campfires.
+	Long: `List work items across all projects.
 
 Filters (all optional, combinable):
   --status    filter by status (repeatable, OR semantics)
@@ -47,15 +46,7 @@ Example:
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 		all, _ := cmd.Flags().GetBool("all")
 
-		autoSyncPull()
-
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		items, err := allItemsFromJSONLOrStore(s)
+		items, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}
@@ -71,7 +62,7 @@ Example:
 			// Emit a stderr hint for any atom that does not appear in any item's
 			// labels — it may be an unknown atom or a typo.
 			if len(filtered) == 0 {
-				printUnknownLabelHints(labelFilters, items, s)
+				printUnknownLabelHints(labelFilters)
 			}
 		}
 
@@ -155,9 +146,13 @@ func applyListFilters(items []*state.Item, statusFilters []string, forFilter, by
 // that is not present in the label registry. This is called only when the
 // label-filtered result is empty, to help users distinguish "valid label, no
 // matching items" from "atom not in registry / possible typo".
-// Errors fetching the registry are silently ignored — the hint is best-effort.
-func printUnknownLabelHints(atoms []string, allItems []*state.Item, s store.Store) {
-	registry := labelRegistryForHint(s)
+//
+// nostr-native (ready-cb6): the label registry is no longer a campfire store
+// construct. The nostr projection has no per-project registry — card "l" tags are
+// freeform — so the hint checks against the built-in seed atoms only (the same set
+// `rd label list` shows). Best-effort: an atom outside the seed set is flagged.
+func printUnknownLabelHints(atoms []string) {
+	registry := state.DeriveAll("", nil).LabelRegistry()
 	if registry == nil {
 		return
 	}
@@ -166,24 +161,6 @@ func printUnknownLabelHints(atoms []string, allItems []*state.Item, s store.Stor
 			fmt.Fprintf(os.Stderr, "hint: label %q is not in the registry — run `rd label list` to see valid atoms\n", atom)
 		}
 	}
-}
-
-// labelRegistryForHint returns the label registry for hint purposes.
-// Returns nil when the registry is unavailable (nil store, JSONL-only mode
-// without campfire, or on any error) — callers treat nil as "no hint available".
-func labelRegistryForHint(s store.Store) map[string]state.LabelDef {
-	if s == nil {
-		return nil
-	}
-	campfireID, _, hasCampfire := projectRoot()
-	if !hasCampfire || campfireID == "" {
-		return nil
-	}
-	result, err := state.DeriveAllFromStore(s, campfireID)
-	if err != nil {
-		return nil
-	}
-	return result.LabelRegistry()
 }
 
 func init() {

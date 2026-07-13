@@ -3,7 +3,7 @@ package state_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
@@ -11,7 +11,7 @@ import (
 // with waiting_type=gate and sets GateMsgID.
 func TestDerive_Gate(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -49,7 +49,7 @@ func TestDerive_Gate(t *testing.T) {
 // a corresponding gate-resolve leaves the item in waiting status.
 func TestDerive_GateWithoutResolveKeepsWaiting(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -77,7 +77,7 @@ func TestDerive_GateWithoutResolveKeepsWaiting(t *testing.T) {
 // transitions the item back to active and clears gate fields.
 func TestDerive_GateApproved(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -119,7 +119,7 @@ func TestDerive_GateApproved(t *testing.T) {
 // keeps the item in waiting status with GateMsgID still set.
 func TestDerive_GateRejected(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -153,7 +153,7 @@ func TestDerive_GateRejected(t *testing.T) {
 // its target gate message via antecedents when the target field is empty.
 func TestDerive_GateResolveViaAntecedents(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

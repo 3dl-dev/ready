@@ -1,5 +1,19 @@
 # campfire → nostr migration + dual-read (ready-d65, the CUTOVER)
 
+> **STATUS UPDATE.** This doc was written mid-cutover, when campfire was still
+> the default backend and nostr was opt-in behind a flag. **That flag day has
+> since happened**: nostr is now the sole, default backend for every project
+> (no `RD_NOSTR`/`RD_NOSTR_READ` opt-in needed), and there is no `.cf` —
+> identity lives under `$RD_HOME`. The migration mechanics below
+> (`rd nostr migrate` / `rd nostr parity`) are unchanged and are exactly what
+> the top-level operator commands wrap: run **`rd migrate`** to re-emit a
+> legacy campfire project's item set as nostr events, and
+> **`rd migrate --parity`** to verify the projection before deleting
+> `.campfire/`. See the [README migration runbook](../README.md#migrating-an-existing-campfire-project)
+> for the short version. The dual-read flag (`RD_NOSTR_READ`) described below
+> was the internal verification mechanism used to prove the cutover before it
+> shipped as default — it is no longer something a project needs to set.
+
 This documents the **non-destructive** cutover: the existing campfire rd item set
 is re-emitted as nostr events with item-for-item parity, a dual-read window lets rd
 resolve items from either backend, and rd is proven to operate nostr-only behind a

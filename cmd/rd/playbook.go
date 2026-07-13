@@ -4,39 +4,48 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
+	"path/filepath"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/playbook"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 
-// playbookCreatePayload is the JSON payload for a work:playbook-create message.
-type playbookCreatePayload struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description,omitempty"`
-	Items       json.RawMessage `json:"items"`
+// playbooksStore returns the store-free playbook template store for a project
+// directory: <dir>/.ready/playbooks.jsonl. No campfire store, no .cf identity.
+func playbooksStore(dir string) *playbook.Store {
+	return playbook.NewStore(filepath.Join(dir, rdSync.ReadyDir, playbook.PlaybooksFile))
+}
+
+// requireNostrPlaybookStore resolves the current project's playbook store, erroring
+// unless the project is nostr-native (the only supported path after the cutover).
+func requireNostrPlaybookStore() (*playbook.Store, error) {
+	dir, native := nostrNativeProject()
+	if !native {
+		return nil, errNotNostrProject()
+	}
+	return playbooksStore(dir), nil
 }
 
 // playbookCmd is the parent command for playbook subcommands.
 var playbookCmd = &cobra.Command{
 	Use:   "playbook",
 	Short: "Manage playbook templates",
-	Long: `Manage reusable playbook templates.
+	Long: `Manage reusable playbook templates stored store-free in .ready/playbooks.jsonl.
 
-  rd playbook create <title> --items-file <path>  register a new playbook
-  rd playbook list                                 list registered playbooks
-  rd playbook show <id>                            show playbook details`,
+  rd playbook create <title> --id <id> --items-file <path>  register a new playbook
+  rd playbook list                                           list registered playbooks
+  rd playbook show <id>                                      show playbook details`,
 }
 
-// playbookCreateCmd implements rd playbook create <title> --items-file <path>.
+// playbookCreateCmd implements rd playbook create <title> --id <id> --items-file <path>.
 var playbookCreateCmd = &cobra.Command{
 	Use:   "create <title>",
 	Short: "Register a new playbook template",
 	Long: `Register a playbook template by reading item definitions from a JSON file.
+
+The template is appended store-free to .ready/playbooks.jsonl.
 
 The items file must be a JSON array of template items, each with:
   title     - item title (may contain {{variable}} placeholders)
@@ -44,6 +53,7 @@ The items file must be a JSON array of template items, each with:
   priority  - one of p0, p1, p2, p3
   level     - (optional) epic, task, subtask
   context   - (optional) description text (may contain {{variable}} placeholders)
+  labels    - (optional) label atoms to attach at engage time
   deps      - (optional) 0-based indices of items that must complete first
 
 Example:
@@ -67,58 +77,31 @@ Example:
 			return fmt.Errorf("reading items file: %w", err)
 		}
 
-		// Parse and validate the template.
 		tmpl, err := playbook.Parse(id, title, description, itemsJSON)
 		if err != nil {
 			return fmt.Errorf("invalid playbook: %w", err)
 		}
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			// Re-marshal the items as raw JSON for the payload.
-			itemsRaw, err := tmpl.ItemsJSON()
-			if err != nil {
-				return fmt.Errorf("encoding items: %w", err)
-			}
+		store, err := requireNostrPlaybookStore()
+		if err != nil {
+			return err
+		}
+		if err := store.Add(tmpl); err != nil {
+			return fmt.Errorf("registering playbook: %w", err)
+		}
 
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
+		if jsonOutput {
+			out := map[string]interface{}{
+				"id":         tmpl.ID,
+				"title":      tmpl.Title,
+				"item_count": len(tmpl.Items),
 			}
-			decl, err := loadDeclaration("playbook-create")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"id":    tmpl.ID,
-				"title": tmpl.Title,
-				"items": json.RawMessage(itemsRaw),
-			}
-			if tmpl.Description != "" {
-				argsMap["description"] = tmpl.Description
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"id":          tmpl.ID,
-					"title":       tmpl.Title,
-					"item_count":  len(tmpl.Items),
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("playbook %s registered (%d items, msg: %s)\n", tmpl.ID, len(tmpl.Items), msg.ID)
-			return nil
-		})
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(out)
+		}
+		fmt.Printf("playbook %s registered (%d items)\n", tmpl.ID, len(tmpl.Items))
+		return nil
 	},
 }
 
@@ -127,21 +110,14 @@ var playbookListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List registered playbooks",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := openStore()
+		store, err := requireNostrPlaybookStore()
 		if err != nil {
 			return err
 		}
-		defer s.Close()
-
-		playbooks, err := scanPlaybooks(s)
+		playbooks, err := store.List()
 		if err != nil {
 			return err
 		}
-
-		// Sort by ID for stable output.
-		sort.Slice(playbooks, func(i, j int) bool {
-			return playbooks[i].ID < playbooks[j].ID
-		})
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -155,12 +131,11 @@ var playbookListCmd = &cobra.Command{
 		}
 
 		for _, pb := range playbooks {
-			itemCount := len(pb.Items)
 			desc := pb.Description
 			if desc == "" {
 				desc = "(no description)"
 			}
-			fmt.Printf("  %-24s  %-5d items  %s\n", pb.ID, itemCount, truncate(desc, 48))
+			fmt.Printf("  %-24s  %-5d items  %s\n", pb.ID, len(pb.Items), truncate(desc, 48))
 		}
 		return nil
 	},
@@ -174,13 +149,11 @@ var playbookShowCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		playbookID := args[0]
 
-		s, err := openStore()
+		store, err := requireNostrPlaybookStore()
 		if err != nil {
 			return err
 		}
-		defer s.Close()
-
-		pb, err := findPlaybook(s, playbookID)
+		pb, err := store.Find(playbookID)
 		if err != nil {
 			return err
 		}
@@ -199,87 +172,13 @@ var playbookShowCmd = &cobra.Command{
 		fmt.Printf("Items:       %d\n", len(pb.Items))
 		fmt.Println()
 		fmt.Println("Item tree:")
-		printPlaybookTree(pb.Items, "", map[int]bool{})
+		printPlaybookTree(pb.Items)
 		return nil
 	},
 }
 
-// playbookRecord is used for scanning playbook-create messages.
-type playbookRecord struct {
-	*playbook.PlaybookTemplate
-	MsgID      string `json:"msg_id"`
-	CampfireID string `json:"campfire_id"`
-}
-
-// scanPlaybooks scans all campfires for work:playbook-create messages.
-// If a playbook ID appears multiple times, the most recent registration wins.
-func scanPlaybooks(s store.Store) ([]*playbookRecord, error) {
-	memberships, err := s.ListMemberships()
-	if err != nil {
-		return nil, fmt.Errorf("listing memberships: %w", err)
-	}
-
-	// Track most recent registration per playbook ID.
-	type entry struct {
-		record *playbookRecord
-		ts     int64
-	}
-	byID := map[string]entry{}
-
-	for _, m := range memberships {
-		msgs, err := s.ListMessages(m.CampfireID, 0, store.MessageFilter{})
-		if err != nil {
-			continue
-		}
-		for _, msg := range msgs {
-			if !hasTagStr(msg.Tags, "work:playbook-create") {
-				continue
-			}
-			var p playbookCreatePayload
-			if err := json.Unmarshal(msg.Payload, &p); err != nil {
-				continue
-			}
-			// Parse the full template.
-			tmpl, err := playbook.Parse(p.ID, p.Title, p.Description, []byte(p.Items))
-			if err != nil {
-				continue
-			}
-			rec := &playbookRecord{
-				PlaybookTemplate: tmpl,
-				MsgID:            msg.ID,
-				CampfireID:       m.CampfireID,
-			}
-			if prev, ok := byID[p.ID]; !ok || msg.Timestamp > prev.ts {
-				byID[p.ID] = entry{rec, msg.Timestamp}
-			}
-		}
-	}
-
-	result := make([]*playbookRecord, 0, len(byID))
-	for _, e := range byID {
-		result = append(result, e.record)
-	}
-	return result, nil
-}
-
-// findPlaybook finds a registered playbook by ID.
-func findPlaybook(s store.Store, id string) (*playbookRecord, error) {
-	playbooks, err := scanPlaybooks(s)
-	if err != nil {
-		return nil, err
-	}
-	for _, pb := range playbooks {
-		if pb.ID == id {
-			return pb, nil
-		}
-	}
-	return nil, fmt.Errorf("playbook %q not found", id)
-}
-
-// printPlaybookTree prints an item tree for playbook show.
-func printPlaybookTree(items []playbook.TemplateItem, prefix string, visited map[int]bool) {
-	// Find root items (no deps or no one depends on them from above).
-	// Show all items with dep-child relationships indicated.
+// printPlaybookTree prints the template items with their dep edges for playbook show.
+func printPlaybookTree(items []playbook.TemplateItem) {
 	for i, item := range items {
 		depStr := ""
 		if len(item.Deps) > 0 {

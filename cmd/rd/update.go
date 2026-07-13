@@ -1,14 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
+	"github.com/spf13/cobra"
 )
 
 var updateCmd = &cobra.Command{
@@ -88,160 +87,16 @@ Examples:
 			due = normalized
 		}
 
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
+		if _, native := nostrNativeProject(); native {
+			return runUpdateNostr(itemID, nostrUpdateSpec{
+				title: title, context: context, priority: priority,
+				eta: eta, due: due, level: level,
+				statusTo: statusTo, waitingOn: waitingOn, waitingType: waitingType, note: note,
+				hasFieldUpdate: hasFieldUpdate, hasStatusUpdate: hasStatusUpdate, claim: claim,
+			})
 		}
-		defer s.Close()
-
-		// Resolve the item.
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
-		}
-
-		// Check not already terminal for non-terminal operations.
-		if state.IsTerminal(item) && hasFieldUpdate {
-			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-		}
-
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-
-		var lastMsgID string
-		var lastCampfireID string
-
-		// Send work:update if field updates are requested.
-		if hasFieldUpdate {
-			decl, err := loadDeclaration("update")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"target": item.MsgID,
-			}
-			if title != "" {
-				argsMap["title"] = title
-			}
-			if context != "" {
-				argsMap["context"] = context
-			}
-			if priority != "" {
-				argsMap["priority"] = priority
-			}
-			if eta != "" {
-				argsMap["eta"] = eta
-			}
-			if due != "" {
-				argsMap["due"] = due
-			}
-			if level != "" {
-				argsMap["level"] = level
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-			lastMsgID = msg.ID
-			lastCampfireID = campfireID
-
-			// rd->nostr hybrid publish (ready-b5f): a field-only edit (title/
-			// context/priority/eta/due/level) is a card-only edit — no status
-			// change, so publish the refreshed card with NO status event. Proves
-			// editing the card never touches history.
-			if title != "" {
-				item.Title = title
-			}
-			if context != "" {
-				item.Context = context
-			}
-			if priority != "" {
-				item.Priority = priority
-			}
-			if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-				warnNostrPublishFailure("item updated; campfire durable", nostrErr)
-			}
-		}
-
-		// Send work:status if a status transition is requested.
-		if hasStatusUpdate {
-			decl, err := loadDeclaration("status")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"target": item.MsgID,
-				"to":     statusTo,
-			}
-			if note != "" {
-				argsMap["reason"] = note
-			}
-			if waitingOn != "" {
-				argsMap["waiting_on"] = waitingOn
-			}
-			if waitingType != "" {
-				argsMap["waiting_type"] = waitingType
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-			lastMsgID = msg.ID
-			lastCampfireID = campfireID
-
-			// rd->nostr hybrid publish (ready-b5f): this IS a status change —
-			// publish a NIP-34 status event so the audit trail replay sees it.
-			item.Status = statusTo
-			if nostrErr := publishItemStatusChangeNostr(item, note); nostrErr != nil {
-				warnNostrPublishFailure("status updated; campfire durable", nostrErr)
-			}
-		}
-
-		// Send work:claim if --claim is set.
-		if claim {
-			decl, err := loadDeclaration("claim")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"target": item.MsgID,
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-			lastMsgID = msg.ID
-			lastCampfireID = campfireID
-
-			// rd->nostr hybrid publish (ready-b5f): --claim is a status change too.
-			item.Status = state.StatusActive
-			item.By = agentID.PublicKeyHex()
-			if nostrErr := publishItemStatusChangeNostr(item, ""); nostrErr != nil {
-				warnNostrPublishFailure("item claimed; campfire durable", nostrErr)
-			}
-		}
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      lastMsgID,
-				"campfire_id": lastCampfireID,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("updated %s\n", item.ID)
-		return nil
+		return errNotNostrProject()
 	},
 }
 

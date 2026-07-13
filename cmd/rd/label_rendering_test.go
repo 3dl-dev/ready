@@ -425,21 +425,23 @@ func TestList_UnknownAtom_StderrHint(t *testing.T) {
 		t.Errorf("filtering by unknown atom must yield empty result, got %d items", len(filtered))
 	}
 
-	// printUnknownLabelHints with nil store returns immediately (no-op) because
-	// registry lookup requires a store. No panic must occur.
+	// printUnknownLabelHints checks requested atoms against the built-in seed
+	// registry (nostr-native: card labels are freeform, so the registry is the
+	// seed atoms only). An unknown atom yields a best-effort stderr hint. No panic
+	// must occur.
 	var stderrOutput string
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Errorf("printUnknownLabelHints must not panic with nil store: %v", r)
+				t.Errorf("printUnknownLabelHints must not panic: %v", r)
 			}
 		}()
 		stderrOutput = captureStderr(t, func() {
-			printUnknownLabelHints([]string{"not-in-registry"}, items, nil)
+			printUnknownLabelHints([]string{"not-in-registry"})
 		})
 	}()
-	// With nil store (no campfire), no hint is written — best-effort is acceptable.
-	// The key contract is: no panic and no error return.
+	// "not-in-registry" is not a seed atom, so a hint is expected — the key
+	// contract is: no panic and no error return.
 	_ = stderrOutput
 }
 

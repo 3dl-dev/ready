@@ -1,4 +1,13 @@
-# Upgrade: rd on campfire v0.17.5 → v0.32.0
+# Upgrade: rd on campfire v0.17.5 → v0.32.0 (historical)
+
+> **HISTORICAL RECORD.** This note describes an intra-campfire upgrade
+> (v0.17.5 → v0.32.0) from before the nostr-native cutover. The campfire
+> backend, `rd admit`, and the dual-write/dual-read authority model it
+> describes have all been retired. If you are migrating an existing project
+> off campfire onto the current nostr-native `rd`, use
+> [`docs/nostr-migration.md`](nostr-migration.md) and the `rd migrate` /
+> `rd migrate --parity` runbook in the [README](../README.md#migrating-an-existing-campfire-project)
+> instead. Kept here only for archaeology.
 
 This release moves rd onto campfire **v0.32.0** (the cf 0.30 layered/frozen-wire
 release plus 0.31 storage scaling and 0.32 multi-consumer surface) and adopts the

@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/views"
+	"github.com/spf13/cobra"
 )
 
 var workCmd = &cobra.Command{
@@ -17,13 +17,7 @@ Use --for to filter by the party the work is assigned to.`,
 		forFilter, _ := cmd.Flags().GetString("for")
 		projectFilter, _ := cmd.Flags().GetString("project")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		items, err := allItemsFromJSONLOrStore(s)
+		items, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}

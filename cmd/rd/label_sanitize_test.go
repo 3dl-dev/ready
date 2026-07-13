@@ -1,171 +1,75 @@
 package main
 
-// label_sanitize_test.go — regression + gate tests for ready-b2c.
-//
-// VULN (from opus security review ready-bc9): the label DESCRIPTION field is
-// free-form producer-controlled text. It was rendered to the terminal by
-// `rd label list` with zero escaping, and the write-side declaration had a
-// max_length but no pattern — so arbitrary bytes (ANSI/ESC, CR/LF, BEL, NUL)
-// could reach a human or agent terminal, enabling terminal hijack and agent
-// prompt-injection. The label trust contract promises rendered atoms are safe;
-// description broke that promise.
-//
-// Defense in depth (the ready-a92 ruling): BOTH layers must hold.
-//   1. Write-side: label_define.json description arg rejects control characters.
-//   2. Render-side: cmd/rd/label.go escapes control characters before printing —
-//      because the write gate can be bypassed by a raw campfire flush
-//      (ready-1c2 / buildLabelRegistry admits any work:label-define unchecked).
-
 import (
-	"bytes"
-	"context"
-	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
-
-	"github.com/campfire-net/ready/pkg/storetest"
 )
 
-// TestLabelList_DescriptionControlBytesEscaped is the backported PoC, promoted to
-// a regression test. It injects a control-byte description via the RAW flush path
-// (storetest.LabelDefine writes work:label-define straight to the store, bypassing
-// the executor write gate exactly as a malicious raw sender would), derives the
-// real registry, then drives the real render path and asserts no control byte
-// survives to the terminal.
-//
-// RED against pre-fix code (renderLabelTable printed e.def.Description raw);
-// GREEN after sanitizeLabelText escapes non-printable runes.
-func TestLabelList_DescriptionControlBytesEscaped(t *testing.T) {
-	h := storetest.New(t)
-
-	// ESC-based ANSI color, BEL, CR/LF, NUL, DEL — the terminal-hijack vectors.
-	payload := "danger\x1b[31mRED\x1b[0m\r\nLINE2\x07\x00\x7f"
-	h.LabelDefine("evil", payload)
-
-	registry := h.DeriveAll().LabelRegistry()
-
-	// Vuln precondition: derive admits the raw define with bytes intact. If this
-	// ever stops holding, the render-side defense is no longer load-bearing and
-	// this test's premise must be revisited.
-	if got := registry["evil"].Description; got != payload {
-		t.Fatalf("precondition: derived description = %q, want raw payload %q", got, payload)
-	}
-
-	var buf bytes.Buffer
-	if err := renderLabelTable(&buf, sortedLabelEntries(registry)); err != nil {
-		t.Fatalf("renderLabelTable: %v", err)
-	}
-	out := buf.String()
-
-	// No raw control byte may reach the terminal. (Row-terminating '\n' added by
-	// the table writer itself is fine — we check the injection vectors only.)
-	for _, b := range []byte{0x1b, 0x07, 0x00, 0x7f, '\r'} {
-		if strings.IndexByte(out, b) >= 0 {
-			t.Errorf("rendered output contains raw control byte 0x%02x — terminal injection NOT neutralized", b)
-		}
-	}
-
-	// The label name and the printable text survive; the ESC is shown escaped.
-	if !strings.Contains(out, "evil") {
-		t.Errorf("rendered output dropped label name 'evil':\n%q", out)
-	}
-	if !strings.Contains(out, "\\x1b") {
-		t.Errorf("expected ESC rendered as escaped \\x1b, output:\n%q", out)
-	}
-}
-
-// TestLabelDefine_DescriptionControlBytesRejected is the write-side gate proof:
-// the executor must refuse a label-define whose description carries control
-// characters (the description arg now has a control-char-rejecting pattern).
-func TestLabelDefine_DescriptionControlBytesRejected(t *testing.T) {
-	decl, err := loadDeclaration("label-define")
-	if err != nil {
-		t.Fatalf("loadDeclaration(label-define): %v", err)
-	}
-
-	// Level-2 caller so any rejection comes from the description pattern, not provenance.
-	const callerKey = "test-key-desc-reject"
-	exec := convention.NewExecutorForTest(&noopBackend{}, callerKey).
-		WithProvenance(&staticProvenanceChecker{levels: map[string]int{callerKey: 2}})
-
-	tests := []struct {
-		name string
-		desc string
-	}{
-		{"esc-ansi", "hello\x1b[31mworld"},
-		{"newline", "line1\nline2"},
-		{"carriage-return", "a\rb"},
-		{"tab", "col1\tcol2"},
-		{"bell", "ding\x07"},
-		{"nul", "x\x00y"},
-		{"del", "x\x7fy"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			argsMap := map[string]any{"label": "okname", "description": tc.desc}
-			_, err := exec.Execute(context.Background(), decl, "cf-test-campfire", argsMap)
-			if err == nil {
-				t.Errorf("executor should reject description with %s control char(s) %q, but accepted it", tc.name, tc.desc)
-			}
-		})
-	}
-}
-
-// TestLabelDefine_DescriptionPrintableAccepted is the acceptance counterpart:
-// ordinary descriptions — spaces, punctuation, Unicode, at max_length — pass the
-// write gate. A rejection here would mean the pattern is too strict.
-func TestLabelDefine_DescriptionPrintableAccepted(t *testing.T) {
-	decl, err := loadDeclaration("label-define")
-	if err != nil {
-		t.Fatalf("loadDeclaration(label-define): %v", err)
-	}
-
-	const callerKey = "test-key-desc-accept"
-	exec := convention.NewExecutorForTest(&noopBackend{}, callerKey).
-		WithProvenance(&staticProvenanceChecker{levels: map[string]int{callerKey: 2}})
-
-	valid := []string{
-		"A normal description.",
-		"Bugs, features & questions — all OK!",
-		"unicode: café résumé naïve 日本語 😀",
-		"punctuation: (parens) [brackets] {braces} /slash/ \"quotes\" 'apostrophe' #100%",
-		strings.Repeat("x", 256), // exactly at max_length
-	}
-
-	for i, desc := range valid {
-		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {
-			argsMap := map[string]any{"label": "okname", "description": desc}
-			_, err := exec.Execute(context.Background(), decl, "cf-test-campfire", argsMap)
-			if err != nil {
-				t.Errorf("executor should accept printable description %q, got error: %v", desc, err)
-			}
-		})
-	}
-}
-
-// TestSanitizeLabelText_UnitBehavior pins the escaping contract directly.
-func TestSanitizeLabelText_UnitBehavior(t *testing.T) {
-	tests := []struct {
+// TestSanitizeLabelText_EscapesTerminalInjection is the coverage-sweep security
+// unit for label.go:sanitizeLabelText — the trusted-vocabulary READ contract. Label
+// descriptions are free-form and the write-side control-char gate can be bypassed by
+// a raw campfire flush (ready-1c2), so the read path must neutralize ANSI/control
+// payloads before they reach a terminal (or an agent reading `rd label list`). Every
+// non-printable rune must be replaced with an escaped \xNN/\uNNNN form; no raw ESC,
+// bell, or C0 control byte may survive.
+func TestSanitizeLabelText_EscapesTerminalInjection(t *testing.T) {
+	cases := []struct {
 		name string
 		in   string
-		want string
+		// mustNotContain lists raw control bytes that must be gone from the output.
+		mustNotContain []string
+		// mustContain lists the escaped forms that must appear.
+		mustContain []string
 	}{
-		{"plain", "hello world", "hello world"},
-		{"unicode-printable-untouched", "café 日本語 😀", "café 日本語 😀"},
-		{"esc", "a\x1bb", "a\\x1bb"},
-		{"newline", "a\nb", "a\\x0ab"},
-		{"tab", "a\tb", "a\\x09b"},
-		{"del", "a\x7fb", "a\\x7fb"},
-		{"empty", "", ""},
+		{
+			name:           "ANSI color escape",
+			in:             "\x1b[31mHACKED\x1b[0m",
+			mustNotContain: []string{"\x1b"},
+			mustContain:    []string{"\\x1b", "HACKED"},
+		},
+		{
+			name:           "bell + carriage return + newline",
+			in:             "line1\r\n\x07beep",
+			mustNotContain: []string{"\x07", "\r", "\n"},
+			mustContain:    []string{"\\x07", "\\x0d", "\\x0a", "line1", "beep"},
+		},
+		{
+			name:           "cursor-move ANSI injecting a fake prompt",
+			in:             "ok\x1b[2K\x1b[1Grm -rf /",
+			mustNotContain: []string{"\x1b"},
+			mustContain:    []string{"\\x1b", "rm -rf /"},
+		},
 	}
-	for _, tc := range tests {
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sanitizeLabelText(tc.in); got != tc.want {
-				t.Errorf("sanitizeLabelText(%q) = %q, want %q", tc.in, got, tc.want)
+			got := sanitizeLabelText(tc.in)
+			for _, bad := range tc.mustNotContain {
+				if strings.Contains(got, bad) {
+					t.Errorf("sanitizeLabelText(%q) = %q still contains raw control byte %q", tc.in, got, bad)
+				}
+			}
+			for _, want := range tc.mustContain {
+				if !strings.Contains(got, want) {
+					t.Errorf("sanitizeLabelText(%q) = %q missing expected %q", tc.in, got, want)
+				}
 			}
 		})
+	}
+}
+
+// TestSanitizeLabelText_PrintablePassthrough proves a fully-printable description
+// (including non-ASCII printable Unicode) is returned byte-for-byte unchanged — the
+// sanitizer neutralizes only non-printable runes and never mangles legitimate text.
+func TestSanitizeLabelText_PrintablePassthrough(t *testing.T) {
+	for _, s := range []string{
+		"a plain description",
+		"unicode ok: café — naïve — 日本語 — ✓",
+		"symbols: <>&{}[]()!@#$%^*",
+		"",
+	} {
+		if got := sanitizeLabelText(s); got != s {
+			t.Errorf("sanitizeLabelText(%q) = %q, want unchanged", s, got)
+		}
 	}
 }

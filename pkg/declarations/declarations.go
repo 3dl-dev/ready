@@ -48,6 +48,35 @@ func ArgEnumValues(operation, argName string) ([]string, error) {
 	return nil, fmt.Errorf("arg %q not found in declaration %q", argName, operation)
 }
 
+// EnumArg is a single enum-typed declaration arg: its name and the set of
+// accepted values. It is a native, campfire-free projection of a
+// convention:operation declaration arg used for flag validation.
+type EnumArg struct {
+	Name   string
+	Values []string
+}
+
+// EnumArgs returns the enum-typed args of the named operation declaration, in
+// declaration order. Non-enum args are omitted. This is the SDK-free replacement
+// for parsing a declaration via cf-convention just to read its enum constraints.
+func EnumArgs(operation string) ([]EnumArg, error) {
+	data, err := Load(operation)
+	if err != nil {
+		return nil, err
+	}
+	var decl declarationArgs
+	if err := json.Unmarshal(data, &decl); err != nil {
+		return nil, fmt.Errorf("parsing declaration %q: %w", operation, err)
+	}
+	var out []EnumArg
+	for _, arg := range decl.Args {
+		if arg.Type == "enum" {
+			out = append(out, EnumArg{Name: arg.Name, Values: arg.Values})
+		}
+	}
+	return out, nil
+}
+
 //go:embed ops/*.json
 var opsFS embed.FS
 

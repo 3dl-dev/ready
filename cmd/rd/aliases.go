@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
+	"github.com/spf13/cobra"
 )
 
 // doneCmd closes an item with resolution=done.
@@ -94,116 +92,31 @@ Example:
 			return fmt.Errorf("--reason is required (why is this item being closed?)")
 		}
 
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		// Resolve the item.
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
+		if _, native := nostrNativeProject(); !native {
+			return errNotNostrProject()
 		}
 
-		if state.IsTerminal(item) {
-			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-		}
-
-		var closedIDs []string
-
-		// Cascade: close open descendants (recursive subtree).
+		// Cascade: close open descendants (recursive subtree) first, leaves-up.
 		if cascade {
-			allItems, err := allItemsFromJSONLOrStore(s)
+			allItems, err := allItemsFromJSONLOrStore()
 			if err != nil {
 				return fmt.Errorf("loading items for cascade: %w", err)
 			}
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			closeDecl, err := loadDeclaration("close")
-			if err != nil {
-				return err
-			}
-			closedIDs, err = cascadeCloseDescendants(allItems, item.ID, reason, func(child *state.Item, reason string) error {
-				childArgs := map[string]any{
-					"target":     child.MsgID,
-					"resolution": "cancelled",
-					"reason":     reason,
-				}
-				if _, _, err := executeConventionOp(agentID, s, exec, closeDecl, childArgs); err != nil {
-					return err
-				}
-				// rd->nostr hybrid publish (ready-2cf): publish a status change for
-				// EACH cascaded descendant, not just the parent — so cascade-closed
-				// children get the same audit-history + terminal-status parity on
-				// nostr as a directly-closed item. AFTER the child's close
-				// enforcement succeeded; best-effort.
-				childBlocks := child.Blocks
-				child.Status = state.StatusCancelled
-				if nostrErr := publishItemStatusChangeNostr(child, reason); nostrErr != nil {
-					warnNostrPublishFailure(fmt.Sprintf("child %s cascaded; campfire durable", child.ID), nostrErr)
-				}
-				// Implicit unblock parity (ready-2cf): a cascaded child may itself
-				// have been blocking other items — re-publish those cards too.
-				publishImplicitUnblockNostr(s, childBlocks)
-				return nil
+			closedIDs, err := cascadeCloseDescendants(allItems, itemID, reason, func(child *state.Item, reason string) error {
+				return runCloseNostr(child.ID, "cancelled", reason, "closed")
 			})
 			if err != nil {
 				return err
 			}
-		}
-
-		// Close the parent item.
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-		closeDecl, err := loadDeclaration("close")
-		if err != nil {
-			return err
-		}
-		parentArgs := map[string]any{
-			"target":     item.MsgID,
-			"resolution": "cancelled",
-			"reason":     reason,
-		}
-		msg, campfireID, err := executeConventionOp(agentID, s, exec, closeDecl, parentArgs)
-		if err != nil {
-			return err
-		}
-
-		// rd->nostr hybrid publish (ready-b5f): cancel is a close-with-reason
-		// status change (cascaded children each publish their own, above).
-		blockedByParent := item.Blocks
-		item.Status = state.StatusCancelled
-		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			warnNostrPublishFailure("item cancelled; campfire durable", nostrErr)
-		}
-		// Implicit unblock parity (ready-2cf): re-publish cards the parent unblocks.
-		publishImplicitUnblockNostr(s, blockedByParent)
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      msg.ID,
-				"campfire_id": campfireID,
-				"resolution":  "cancelled",
-				"cascaded":    closedIDs,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		if len(closedIDs) > 0 {
 			for _, childID := range closedIDs {
-				fmt.Printf("closed %s (cancelled, cascaded)\n", childID)
+				if !jsonOutput {
+					fmt.Printf("closed %s (cancelled, cascaded)\n", childID)
+				}
 			}
 		}
-		fmt.Printf("closed %s (cancelled)\n", item.ID)
-		return nil
+
+		return runCloseNostr(itemID, "cancelled", reason, "closed")
 	},
 }
 
@@ -240,62 +153,11 @@ Example:
 			return fmt.Errorf("invalid --eta: %w", err)
 		}
 
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
+		// nostr-native write path (ready-cb6): defer is a card-only ETA edit.
+		if _, native := nostrNativeProject(); !native {
+			return errNotNostrProject()
 		}
-		defer s.Close()
-
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
-		}
-
-		if state.IsTerminal(item) {
-			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-		}
-
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-		decl, err := loadDeclaration("update")
-		if err != nil {
-			return err
-		}
-
-		argsMap := map[string]any{
-			"target": item.MsgID,
-			"eta":    etaRFC3339,
-		}
-		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-		if err != nil {
-			return err
-		}
-
-		// rd->nostr hybrid publish (ready-2cf): defer updates the item's ETA with no
-		// status change — publish a refreshed card carrying the new "eta" tag so a
-		// nostr reader reconstructs the same schedule. Card-only edit (history
-		// untouched). AFTER enforcement; best-effort.
-		item.ETA = etaRFC3339
-		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-			warnNostrPublishFailure("deferred; campfire durable", nostrErr)
-		}
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      msg.ID,
-				"campfire_id": campfireID,
-				"eta":         etaRFC3339,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("deferred %s → %s\n", item.ID, etaRFC3339)
-		return nil
+		return runUpdateNostr(itemID, nostrUpdateSpec{eta: etaRFC3339, hasFieldUpdate: true})
 	},
 }
 
@@ -319,17 +181,14 @@ Example:
 			return fmt.Errorf("--notes is required")
 		}
 
-		agentID, s, err := requireAgentAndStore()
+		// nostr-native write path (ready-cb6): progress appends to the card context.
+		if _, native := nostrNativeProject(); !native {
+			return errNotNostrProject()
+		}
+		item, err := nostrResolveItem(itemID)
 		if err != nil {
 			return err
 		}
-		defer s.Close()
-
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
-		}
-
 		if state.IsTerminal(item) {
 			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
 		}
@@ -342,47 +201,7 @@ Example:
 		} else {
 			newContext = "[" + now + "] " + notes
 		}
-
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-		decl, err := loadDeclaration("update")
-		if err != nil {
-			return err
-		}
-
-		argsMap := map[string]any{
-			"target":  item.MsgID,
-			"context": newContext,
-		}
-		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-		if err != nil {
-			return err
-		}
-
-		// rd->nostr hybrid publish (ready-b5f): progress is a card-only edit (no
-		// status change) — publish a refreshed card with NO status event, proving
-		// the invariant that editing the addressable card does not touch history.
-		item.Context = newContext
-		if nostrErr := publishItemCardEditNostr(item); nostrErr != nil {
-			warnNostrPublishFailure("progress noted; campfire durable", nostrErr)
-		}
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      msg.ID,
-				"campfire_id": campfireID,
-				"context":     newContext,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("progress noted on %s\n", item.ID)
-		return nil
+		return runUpdateNostr(itemID, nostrUpdateSpec{context: newContext, hasFieldUpdate: true})
 	},
 }
 
@@ -396,65 +215,11 @@ func runCloseAlias(resolution string) func(cmd *cobra.Command, args []string) er
 			return fmt.Errorf("--reason is required (why is this item being closed?)")
 		}
 
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
+		if _, native := nostrNativeProject(); !native {
+			return errNotNostrProject()
 		}
-		defer s.Close()
-
-		item, err := byIDFromJSONLOrStore(s, itemID)
-		if err != nil {
-			return err
-		}
-
-		if state.IsTerminal(item) {
-			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
-		}
-
-		exec, _, err := requireExecutor()
-		if err != nil {
-			return err
-		}
-		decl, err := loadDeclaration("close")
-		if err != nil {
-			return err
-		}
-
-		argsMap := map[string]any{
-			"target":     item.MsgID,
-			"resolution": resolution,
-			"reason":     reason,
-		}
-		msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-		if err != nil {
-			return err
-		}
-
-		// rd->nostr hybrid publish (ready-b5f): done/fail are close-with-reason
-		// aliases; publish the same status-change event as close so the audit
-		// trail replay preserves the reason exactly.
-		blockedByThis := item.Blocks
-		item.Status = closeResolutionToStatus(resolution)
-		if nostrErr := publishItemStatusChangeNostr(item, reason); nostrErr != nil {
-			warnNostrPublishFailure("item closed; campfire durable", nostrErr)
-		}
-		// Implicit unblock parity (ready-2cf): re-publish cards this item unblocks.
-		publishImplicitUnblockNostr(s, blockedByThis)
-
-		if jsonOutput {
-			out := map[string]interface{}{
-				"id":          item.ID,
-				"msg_id":      msg.ID,
-				"campfire_id": campfireID,
-				"resolution":  resolution,
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
-		}
-
-		fmt.Printf("closed %s (%s)\n", item.ID, resolution)
-		return nil
+		return runCloseNostr(itemID, resolution, reason, "closed")
 	}
 }
 

@@ -1,6 +1,6 @@
 # Getting Started with Ready
 
-Ready is work management as a campfire convention. Items, dependencies, gates, and views are all convention-conforming messages on a campfire. No server backend — the campfire *is* the backend.
+Ready is work management as a nostr convention. Items, dependencies, gates, and views are all convention-conforming operations projected onto signed nostr events. No server backend — a local append-only signed-event log (`.ready/nostr-log.jsonl`) is the source of truth, synced over nostr relays as a replaceable cache.
 
 ## Table of Contents
 
@@ -8,7 +8,7 @@ Ready is work management as a campfire convention. Items, dependencies, gates, a
 - [Prerequisites](#prerequisites)
 - [Part 1: Solo (5 minutes)](#part-1-solo-5-minutes)
 - [Part 2: Team (invite tokens)](#part-2-team-invite-tokens)
-- [Part 3: Multi-agent (walk-up config)](#part-3-multi-agent-walk-up-config)
+- [Part 3: Multi-agent (per-worktree `$RD_HOME`)](#part-3-multi-agent-per-worktree-rdhome)
 - [Part 4: Dependencies](#part-4-dependencies)
 - [Part 5: Playbooks (reusable work trees)](#part-5-playbooks-reusable-work-trees)
 - [Part 6: Gate escalation](#part-6-gate-escalation)
@@ -19,32 +19,29 @@ Ready is work management as a campfire convention. Items, dependencies, gates, a
 
 ## Concepts
 
-**Campfire** — an append-only message log with named views, compaction, and convention enforcement. `rd init` creates one campfire per project. The campfire is the work item store.
+**Project log** — a local append-only signed-event log (`.ready/nostr-log.jsonl`), one per project, synced over nostr relays. `rd init` creates it and establishes (or reuses) the local secp256k1 signing identity. The local log is authoritative; relays are a replaceable cache — a project works standalone with no reachable relay.
 
-**Item** — a convention-conforming message. Fields: `id`, `title`, `type`, `priority`, `status`, `for`, `by`, `eta`, `due`. All state transitions are messages — the log is the audit trail.
+**Item** — a convention-conforming card, materialized from a `kind-30302` event plus its status history (one `NIP-34` status event per transition). Fields: `id`, `title`, `type`, `priority`, `status`, `for`, `by`, `eta`, `due`. All state transitions are signed events — the log is the audit trail.
 
-**Views** — named filter predicates evaluated server-side. `rd ready` runs the `ready` view: items that are not done, not blocked, and need attention within 4 hours. `rd list` runs `my-work`. Auto-sync means every read pulls the latest state — no manual sync required.
+**Identity** — a secp256k1 key under `$RD_HOME` (default `~/.config/rd`). There is no separate identity file or backend to configure; the key is resolved once per process from `$RD_HOME` (or `--rd-home` / `$RD_HOME`).
+
+**Authorization** — an owner-signed `kind-39301` role-grant. The board owner grants a pubkey a role; the relay write-allowlist and the client trust set are both derived from the same signed grant log.
+
+**Views** — named filter predicates. `rd ready` runs the `ready` view: items that are not done, not blocked, and need attention within 4 hours. `rd list` runs `my-work`. Every read pulls the latest state from the local log — no manual sync required.
 
 ---
 
 ## Prerequisites
 
-Install `cf` (campfire CLI):
-
-```bash
-curl -fsSL https://getcampfire.dev/install.sh | sh
-```
-
 Install `rd`:
 
 ```bash
-curl -fsSL https://ready.getcampfire.dev/install.sh | sh
+curl -fsSL https://ready.3dl.dev/install.sh | sh
 ```
 
-Verify both are on your PATH:
+Verify it's on your PATH:
 
 ```bash
-cf version
 rd version
 ```
 
@@ -57,20 +54,22 @@ One person, one project.
 ### Initialize
 
 ```bash
-# Create your identity (once per machine)
-cf init --cf-home ~/.cf
-
-# Initialize a work campfire in your project
 cd ~/projects/myproject
 rd init --name myproject
 ```
 
-Output:
+No separate identity ceremony — a secp256k1 signing key is created (or reused,
+if `$RD_HOME` already has one) automatically. Output:
 
 ```
-initialized myproject
-  campfire: 7b0929f77f95...
-  declarations: 16 operations published
+initialized myproject (nostr-native)
+  board: 30301:<owner-pubkey>:myproject
+  owner: <owner-pubkey>
+  log:   .ready/nostr-log.jsonl
+
+  work items are signed events in .ready/nostr-log.jsonl (the source of truth);
+  relays are a replaceable cache. create your first item with:
+    rd create "..." --type task --priority p1
 ```
 
 ### Daily workflow
@@ -101,7 +100,7 @@ When stdout is piped, `rd create` emits only the bare item ID — no decoration.
 rd show <id>
 ```
 
-Output (from `test/demo/output/06-gate-escalation.txt`):
+Output:
 
 ```
 ID:       rdtestgateprojyar-dd6
@@ -131,34 +130,30 @@ rd cancel <id> --reason "..."        # cancel with reason
 
 ## Part 2: Team (invite tokens)
 
-Teammates join via single-use invite tokens. No pubkey exchange. Tokens expire server-side (default 2 hours).
+Teammates join via single-use `rd1_` invite tokens. No separate pubkey exchange
+— the token mints a fresh secp256k1 identity, publishes an owner-signed
+contributor grant for it, and bundles the board coordinate, relay set, TTL,
+a one-use nonce, and the minted secret. Tokens are single-use: the first
+redeemer publishes a signed consumed marker.
 
 ### Owner: generate an invite token
 
 ```bash
 cd ~/projects/myproject
 rd invite
-# rdx1_...  (invite token — treat as secret, share out of band)
-```
+# rd1_...  (invite token — contains a private key, treat as secret, share out of band)
 
-For agents, include a role flag:
-
-```bash
-rd invite --role agent
-# rdx1_...  (agent invite token)
+rd invite --ttl 30m   # shorter exposure window (default 2h)
 ```
 
 ### Teammate: join
 
 ```bash
-# One-time identity bootstrap (cf init creates .cf/identity.json)
-cf init --cf-home ~/projects/myproject/.cf
+# Join the project using the token — imports the minted identity, pins the
+# board, adopts the relays, and syncs. No separate identity bootstrap step.
+rd join rd1_...
 
-# Join the project campfire using the token
-rd join rdx1_...
-# joined 00d5716f0154... via invite token (expires in 1h59m0s)
-
-# Items are auto-synced — no rd sync needed
+# Items are already synced — no rd sync needed
 rd ready
 ```
 
@@ -167,8 +162,8 @@ rd ready
 ```bash
 # Owner creates and delegates an item
 rd create "Build API" --type task --priority p1
-rd delegate <item-id> --to <member-identity>
-# delegated <item-id> to <member-identity>
+rd delegate <item-id> --to <member-pubkey>
+# delegated <item-id> to <member-pubkey>
 
 # Teammate claims it
 rd update <item-id> --status active
@@ -177,78 +172,61 @@ rd update <item-id> --status active
 rd done <item-id> --reason "API complete"
 ```
 
-Real transcript excerpt (`test/demo/output/02-team.txt`):
-
-```
-$ rd invite
-rdx1_...  (invite token — treat as secret)
-
-$ rd join <invite-token>
-joined 00d5716f0154... via invite token (expires in 1h59m0s)
-
-$ rd ready
-rdtestteamproj-776
-
-$ rd done rdtestteamproj-776 --reason 'API complete'
-closed rdtestteamproj-776 (done)
-```
-
 ---
 
-## Part 3: Multi-agent (walk-up config)
+## Part 3: Multi-agent (per-worktree `$RD_HOME`)
 
-Multiple agents on the same project each get their own identity. `rd` walks up from the current directory to find `.cf/identity.json` — no env vars needed at runtime.
+Multiple agents on the same project each get their own identity. Identity is
+resolved once per process from `$RD_HOME` (default `~/.config/rd`), so
+pointing an agent's `$RD_HOME` at a worktree-local directory gives it an
+isolated identity — no walk-up, no per-directory identity file to manage.
 
 ### Filesystem layout
 
 ```
 myproject/
-  .campfire/root              ← project campfire pointer (committed to git)
-  .cf/identity.json           ← owner identity
+  .ready/nostr-log.jsonl      ← the project's authoritative log (committed to git)
   worktree-a/
-    .cf/identity.json         ← agent A identity
+    .rd/keys/owner.json       ← agent A identity ($RD_HOME=worktree-a/.rd)
   worktree-b/
-    .cf/identity.json         ← agent B identity
+    .rd/keys/owner.json       ← agent B identity ($RD_HOME=worktree-b/.rd)
 ```
 
 ### Setup
 
 ```bash
-# Owner initializes the project
+# Owner initializes the project (signing key created under $RD_HOME on first use)
 cd ~/projects/myproject
-cf init --cf-home .cf
 rd init --name myproject
-
-# Add the campfire pointer to git (how teammates find the campfire)
-echo ".cf/" >> .gitignore          # don't commit identity keys
-git add .campfire/ .gitignore
-git commit -m "chore: add work campfire"
+git add .ready/ .gitignore
+git commit -m "chore: add work project"
 
 # Create worktrees for agents
 git worktree add worktree-a
 git worktree add worktree-b
 
-# Bootstrap each agent identity and join
-cf init --cf-home worktree-a/.cf
-cd ~/projects/myproject && CF_HOME=worktree-a/.cf rd join rdx1_<token-for-agent-a>
-
-cf init --cf-home worktree-b/.cf
-cd ~/projects/myproject && CF_HOME=worktree-b/.cf rd join rdx1_<token-for-agent-b>
+# Each agent joins with its own $RD_HOME — the token mints and ships a fresh
+# identity, so no separate bootstrap step is needed.
+cd ~/projects/myproject && RD_HOME=worktree-a/.rd rd join rd1_<token-for-agent-a>
+cd ~/projects/myproject && RD_HOME=worktree-b/.rd rd join rd1_<token-for-agent-b>
 ```
 
 ### Each agent works independently
 
 ```bash
-# Agent A — walk-up finds worktree-a/.cf/identity.json automatically
+# Agent A
 cd ~/projects/myproject/worktree-a
-rd ready                            # sees items assigned to agent A
+RD_HOME=../worktree-a/.rd rd ready     # sees items assigned to agent A
 
-# Agent B — walk-up finds worktree-b/.cf/identity.json
+# Agent B
 cd ~/projects/myproject/worktree-b
-rd ready                            # sees items assigned to agent B
+RD_HOME=../worktree-b/.rd rd ready     # sees items assigned to agent B
 ```
 
-Walk-up resolution order: current directory → parent directories → `~/.cf/identity.json`. The first `.cf/identity.json` found wins. No `CF_HOME` needed after initial bootstrap.
+`$RD_HOME` resolution order: `--rd-home` flag → `$RD_HOME` env → default
+`~/.config/rd` (XDG). Set `$RD_HOME` once per agent's environment (e.g. in the
+worktree's shell profile or launch script) and every `rd` invocation in that
+worktree uses the right identity automatically.
 
 ---
 
@@ -286,23 +264,23 @@ rd ready
 
 ### Cross-project
 
-Cross-project deps work when both projects use identities from the same `cf init`. The dep add resolves the blocker across campfires automatically.
+Cross-project deps work when the signer has visibility into both projects'
+boards (e.g. the same identity, or a granted role on each). `rd dep add`
+resolves the blocker across projects automatically:
 
-Real transcript excerpt (`test/demo/output/03-multiproject.txt`):
+```bash
+cd FRONTEND && rd dep add frontend-a91 backend-322
+# blocked: frontend-a91 is now blocked by backend-322 [cross]
 
-```
-$ cd FRONTEND && rd dep add rdtestfrontendtisl-a91 rdtestbackendn8e2-322
-blocked: rdtestfrontendtisl-a91 is now blocked by db468d83b830....rdtestbackendn8e2-322 [cross]
-
-$ cd FRONTEND && rd ready
+cd FRONTEND && rd ready
 # (frontend item blocked — not shown)
 
-$ cd BACKEND && rd done rdtestbackendn8e2-322 --reason "API endpoint /api/v1/users deployed"
-closed rdtestbackendn8e2-322 (done)
+cd BACKEND && rd done backend-322 --reason "API endpoint /api/v1/users deployed"
+# closed backend-322 (done)
 
-$ cd FRONTEND && rd ready
-rdtestfrontendtisl-a91
-# frontend item is now unblocked
+cd FRONTEND && rd ready
+# frontend-a91
+# ↑ frontend item is now unblocked
 ```
 
 ---
@@ -445,7 +423,7 @@ rd approve <item-id> --reason "Use option B. Safety over 2ms gain."
 rd reject <item-id> --reason "Split into smaller items first."
 ```
 
-Real transcript excerpt (`test/demo/output/06-gate-escalation.txt`):
+Example:
 
 ```
 $ rd gate rdtestgateprojyar-dd6 --gate-type design --description '...'
@@ -576,10 +554,12 @@ rd create "Quarterly review" --priority p2 --eta "2026-04-15T09:00"
 | `--json` | `rd ready`, `rd list`, `rd gates`, `rd show`, `rd gate`, `rd approve` | Machine-readable output |
 | `--all` | `rd list` | Include done and cancelled items |
 | `--view <name>` | `rd ready`, `rd list` | Use a named view predicate |
-| `--role agent` | `rd invite` | Generate an agent-scoped token |
+| `--ttl <duration>` | `rd invite` | Invite token time-to-live (default 2h) |
+| `--rd-home <path>` | any `rd` command | Override `$RD_HOME` for this invocation |
 
 ### Further reading
 
 - Convention spec: `docs/convention/work-management.md` — full operation declarations, field validation, compaction policy
 - Named view predicates: `pkg/views/` — S-expression predicates for each built-in view
-- Campfire protocol: https://getcampfire.dev/docs
+- Identity model: [`docs/design/nostr-identity-model.md`](design/nostr-identity-model.md) — `$RD_HOME`, per-actor keys, kind-39301 grants
+- Migration runbook: [`docs/nostr-migration.md`](nostr-migration.md), or the short version in the [README](../README.md#migrating-an-existing-campfire-project)

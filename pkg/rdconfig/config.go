@@ -22,11 +22,6 @@ type Config struct {
 	// ReadyCampfireID is the hex campfire ID of the cf://<org>.ready namespace campfire.
 	ReadyCampfireID string `json:"ready_campfire_id,omitempty"`
 
-	// BeaconRoot is the TOFU-pinned beacon root campfire ID. Set on first use of
-	// a non-default beacon root via "rd join". Once pinned, deviations require
-	// explicit user confirmation.
-	BeaconRoot string `json:"beacon_root,omitempty"`
-
 	// RelayEndpoints lists the self-hosted nostr relays (strfry) the portfolio
 	// identity reads/writes for the nostr migration. When empty, DefaultRelays()
 	// is used. See relay.go and docs/relay-runbook.md. The relays are a cache /
@@ -103,48 +98,6 @@ func Save(cfHome string, c *Config) error {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 	return os.WriteFile(Path(cfHome), data, 0600)
-}
-
-// PinBeaconRoot atomically pins the beacon root in the config if not already set.
-// Returns true if the pin was set by this call, false if another process set it first.
-// Uses file locking to prevent TOCTOU races on concurrent rd join (ready-2dc).
-func PinBeaconRoot(cfHome string, beaconRoot string) (bool, error) {
-	configPath := Path(cfHome)
-
-	// Create or open the lock file (distinct from the config file to avoid
-	// holding an exclusive lock while doing I/O).
-	lockPath := configPath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return false, fmt.Errorf("opening lock file: %w", err)
-	}
-	defer lockFile.Close()
-
-	// Acquire exclusive lock. This blocks until we hold the lock.
-	fd := int(lockFile.Fd())
-	if err := FlockExclusive(fd); err != nil {
-		return false, fmt.Errorf("acquiring lock: %w", err)
-	}
-	defer FlockUnlock(fd)
-
-	// Load config under lock. Another process may have updated it while we waited.
-	cfg, err := Load(cfHome)
-	if err != nil {
-		return false, err
-	}
-
-	// If another process already pinned the root, return false (not set by us).
-	if cfg.BeaconRoot != "" {
-		return false, nil
-	}
-
-	// Pin this beacon root.
-	cfg.BeaconRoot = beaconRoot
-	if err := Save(cfHome, cfg); err != nil {
-		return false, err
-	}
-
-	return true, nil
 }
 
 // DurabilityAssessment holds the result of a durability evaluation stored

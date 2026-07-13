@@ -1,197 +1,171 @@
 package main
 
-// engage_test.go — integration test for engageCmd.RunE label-warning path.
-//
-// Verifies the gap identified in the ready-ef7 veracity review: when engageCmd
-// engages a playbook whose template item carries a label atom that is NOT in the
-// target campfire's label registry, the command emits a warning line to stderr
-// naming the absent label.
-//
-// This tests the UX warning path only (engage.go lines 107-115). The derive-time
-// drop is proven separately in pkg/state tests (LabelWarnings).
+// engage_test.go — nostr-native, store-free playbook + engage integration tests
+// (ready-a4a). Proves the rebuilt surface:
+//   - rd playbook create -> rd playbook list round-trips via .ready/playbooks.jsonl
+//   - rd engage instantiates N items + dep edges into the nostr log (asserted via
+//     the projection), with NO .cf ever written (assertNoDotCf).
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/ready/pkg/playbook"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/campfire-net/ready/pkg/state"
 )
 
-// testCampfireID is a 64-hex campfire ID used across engage tests.
-const testEngageCampfireID = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233"
+// TestPlaybookCreateList_RoundTrip drives the real playbook create/list cobra
+// commands on a nostr-native project and proves the template round-trips through
+// .ready/playbooks.jsonl — no campfire store, no .cf.
+func TestPlaybookCreateList_RoundTrip(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
 
-// TestEngageCmd_LabelNotInRegistry_WarnsOnStderr verifies that engageCmd.RunE
-// emits a warning to stderr when a playbook item's label is absent from the
-// target campfire's label registry. The warning must name the absent label atom.
-//
-// Setup:
-//  1. Fresh rdHome (temp dir) — requireClient() initialises identity + store there.
-//  2. Campfire membership with filesystem transport (no network calls).
-//  3. work:label-define message for "known-label" (populates registry).
-//  4. work:playbook-create message: one item carrying "unknown-label" (not defined).
-//  5. Project dir with .campfire/root pointing at the test campfire.
-//
-// Assertions:
-//   - stderr contains `warning: label "unknown-label" on item …`
-//   - RunE either succeeds or returns an error unrelated to the warning
-//     (engage may fail to send if executor rejects; the warning must fire first)
-func TestEngageCmd_LabelNotInRegistry_WarnsOnStderr(t *testing.T) {
-	// ── 1. Isolated CF home ─────────────────────────────────────────────────
-	cfHome := t.TempDir()
+	itemsFile := filepath.Join(t.TempDir(), "items.json")
+	itemsJSON := `[
+	  {"title":"Triage {{env}}","type":"task","priority":"p0"},
+	  {"title":"Postmortem","type":"task","priority":"p2","deps":[0]}
+	]`
+	if err := os.WriteFile(itemsFile, []byte(itemsJSON), 0o600); err != nil {
+		t.Fatalf("write items file: %v", err)
+	}
 
-	// Override the global rdHome variable so CFHome() and openStore() use our
-	// temp directory rather than the real ~/.cf.
-	origRDHome := rdHome
-	rdHome = cfHome
-	t.Cleanup(func() { rdHome = origRDHome })
-
-	// Reset the cached protocol client so requireClient() re-initialises from
-	// our temp cfHome (creating identity.json + store.db there).
-	origClient := protocolClient
-	protocolClient = nil
-	t.Cleanup(func() {
-		if protocolClient != nil {
-			protocolClient.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("flag set: %v", err)
 		}
-		protocolClient = origClient
+	}
+	must(playbookCreateCmd.Flags().Set("id", "sre-incident"))
+	must(playbookCreateCmd.Flags().Set("items-file", itemsFile))
+	must(playbookCreateCmd.Flags().Set("description", "incident response"))
+	t.Cleanup(func() {
+		_ = playbookCreateCmd.Flags().Set("id", "")
+		_ = playbookCreateCmd.Flags().Set("items-file", "")
+		_ = playbookCreateCmd.Flags().Set("description", "")
 	})
 
-	// Initialise identity + store in cfHome.
-	if _, err := requireClient(); err != nil {
-		t.Fatalf("requireClient: %v", err)
+	if err := playbookCreateCmd.RunE(playbookCreateCmd, []string{"SRE Incident"}); err != nil {
+		t.Fatalf("playbook create RunE: %v", err)
 	}
 
-	// ── 2. Campfire membership with filesystem transport ─────────────────────
-	transportDir := t.TempDir()
-	s, err := store.Open(store.StorePath(cfHome))
+	// The JSONL file must exist under .ready/ — store-free, project-local.
+	pbPath := filepath.Join(dir, rdSync.ReadyDir, playbook.PlaybooksFile)
+	if _, err := os.Stat(pbPath); err != nil {
+		t.Fatalf("expected %s to exist after playbook create: %v", pbPath, err)
+	}
+
+	// list reads it back with the dep edge + description intact.
+	store := playbooksStore(dir)
+	got, err := store.List()
 	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+		t.Fatalf("store.List: %v", err)
 	}
-	if addErr := s.AddMembership(store.Membership{
-		CampfireID:   testEngageCampfireID,
-		TransportDir: transportDir,
-		JoinProtocol: "invite-only",
-		Role:         "full",
-		JoinedAt:     time.Now().Unix(),
-	}); addErr != nil {
-		t.Fatalf("AddMembership: %v", addErr)
+	if len(got) != 1 {
+		t.Fatalf("List = %d playbooks; want 1", len(got))
 	}
-
-	// ── 3. work:label-define for "known-label" ────────────────────────────────
-	// Writing this message into the store populates dr.LabelRegistry() at engage
-	// time, so "known-label" is registered but "unknown-label" is not.
-	labelPayload, _ := json.Marshal(map[string]string{"label": "known-label"})
-	msgID := "msg-labeldef-0001"
-	now := time.Now().UnixNano()
-	if _, addErr := s.AddMessage(store.MessageRecord{
-		ID:          msgID,
-		CampfireID:  testEngageCampfireID,
-		Sender:      "testkey",
-		Payload:     labelPayload,
-		Tags:        []string{"work:label-define"},
-		Antecedents: nil,
-		Timestamp:   now,
-		Signature:   []byte("fakesig-labeldef"),
-		ReceivedAt:  now,
-	}); addErr != nil {
-		t.Fatalf("AddMessage(label-define): %v", addErr)
+	pb := got[0]
+	if pb.ID != "sre-incident" || pb.Title != "SRE Incident" || pb.Description != "incident response" {
+		t.Fatalf("round-trip mismatch: %+v", pb)
+	}
+	if len(pb.Items) != 2 || len(pb.Items[1].Deps) != 1 || pb.Items[1].Deps[0] != 0 {
+		t.Fatalf("dep edge lost on round-trip: %+v", pb.Items)
 	}
 
-	// ── 4. work:playbook-create: one item with "unknown-label" ────────────────
-	itemsJSON := `[{"title":"Test task","type":"task","priority":"p2","labels":["unknown-label"]}]`
-	pbPayload, _ := json.Marshal(map[string]interface{}{
-		"id":    "test-pb-warn",
-		"title": "Test Playbook Warning",
-		"items": json.RawMessage(itemsJSON),
-	})
-	pbMsgID := "msg-pbcreate-0001"
-	now2 := time.Now().UnixNano() + int64(time.Millisecond)
-	if _, addErr := s.AddMessage(store.MessageRecord{
-		ID:          pbMsgID,
-		CampfireID:  testEngageCampfireID,
-		Sender:      "testkey",
-		Payload:     pbPayload,
-		Tags:        []string{"work:playbook-create"},
-		Antecedents: nil,
-		Timestamp:   now2,
-		Signature:   []byte("fakesig-pbcreate"),
-		ReceivedAt:  now2,
-	}); addErr != nil {
-		t.Fatalf("AddMessage(playbook-create): %v", addErr)
-	}
-	s.Close()
-
-	// ── 5. Project dir with .campfire/root ────────────────────────────────────
-	projectDir := t.TempDir()
-	campfireDir := filepath.Join(projectDir, ".campfire")
-	if err := os.MkdirAll(campfireDir, 0755); err != nil {
-		t.Fatalf("mkdir .campfire: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(testEngageCampfireID), 0600); err != nil {
-		t.Fatalf("write .campfire/root: %v", err)
-	}
-	readyDir := filepath.Join(projectDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0700); err != nil {
-		t.Fatalf("mkdir .ready: %v", err)
+	// playbook list RunE must succeed on the same project.
+	if err := playbookListCmd.RunE(playbookListCmd, nil); err != nil {
+		t.Fatalf("playbook list RunE: %v", err)
 	}
 
-	// Chdir to project dir so projectRoot() walks up and finds .campfire/root.
-	origWD, err := os.Getwd()
+	assertNoDotCf(t)
+}
+
+// TestEngage_InstantiatesItemsAndDepEdges drives rd engage on a nostr-native
+// project and proves it materializes N items + the dep edge into the nostr
+// projection, attributed to the secp256k1 signer, with NO .cf written.
+func TestEngage_InstantiatesItemsAndDepEdges(t *testing.T) {
+	dir, owner := setupNostrNativeProject(t)
+
+	// Register a 2-item template store-free (item[1] depends on item[0]).
+	tmpl := &playbook.PlaybookTemplate{
+		ID:    "deploy",
+		Title: "Deploy",
+		Items: []playbook.TemplateItem{
+			{Title: "Build {{svc}}", Type: "task", Priority: "p1"},
+			{Title: "Release {{svc}}", Type: "task", Priority: "p1", Deps: []int{0}},
+		},
+	}
+	if err := playbooksStore(dir).Add(tmpl); err != nil {
+		t.Fatalf("Add template: %v", err)
+	}
+
+	if err := engageCmd.Flags().Set("var", "svc=api"); err != nil {
+		t.Fatalf("set --var: %v", err)
+	}
+	t.Cleanup(func() { _ = engageCmd.Flags().Set("var", "") })
+
+	if err := engageCmd.RunE(engageCmd, []string{"deploy"}); err != nil {
+		t.Fatalf("engage RunE: %v", err)
+	}
+
+	_, byID, err := nostrProjectAllItems()
 	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origWD) })
-
-	// ── 6. Redirect os.Stderr to capture warning output ──────────────────────
-	origStderr := os.Stderr
-	r, w, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		t.Fatalf("os.Pipe: %v", pipeErr)
-	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	// ── 7. Run engageCmd.RunE ─────────────────────────────────────────────────
-	// Reset cobra flag state so re-use across tests is safe.
-	if err := engageCmd.Flags().Set("project", "testproject"); err != nil {
-		t.Fatalf("set --project: %v", err)
-	}
-	if err := engageCmd.Flags().Set("for", "test@example.com"); err != nil {
-		t.Fatalf("set --for: %v", err)
+		t.Fatalf("project: %v", err)
 	}
 
-	// RunE may return an error if the executor cannot send (e.g. transport
-	// rejects the message). That is acceptable — the warning fires before any
-	// send attempt, so we only need to inspect stderr.
-	_ = engageCmd.RunE(engageCmd, []string{"test-pb-warn"})
-
-	// Flush and read stderr.
-	w.Close()
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	os.Stderr = origStderr
-
-	stderrOutput := buf.String()
-
-	// ── 8. Assert warning line is present and names the absent label ──────────
-	if !strings.Contains(stderrOutput, "unknown-label") {
-		t.Errorf("expected stderr to contain warning for absent label %q, got:\n%s",
-			"unknown-label", stderrOutput)
+	// Locate the two instantiated items by their substituted titles.
+	var build, release *state.Item
+	for _, it := range byID {
+		switch it.Title {
+		case "Build api":
+			build = it
+		case "Release api":
+			release = it
+		}
 	}
-	if !strings.Contains(stderrOutput, "warning:") {
-		t.Errorf("expected stderr to contain 'warning:', got:\n%s", stderrOutput)
+	if build == nil || release == nil {
+		t.Fatalf("engage did not create both items (build=%v release=%v) in the projection", build, release)
 	}
-	// Full expected fragment: warning: label "unknown-label" on item … is not in the target campfire registry
-	if !strings.Contains(stderrOutput, "not in the target campfire registry") {
-		t.Errorf("expected stderr to mention registry, got:\n%s", stderrOutput)
+
+	// Variable substitution proves the {{svc}} placeholder resolved.
+	if build.Title != "Build api" || release.Title != "Release api" {
+		t.Fatalf("variable substitution failed: build=%q release=%q", build.Title, release.Title)
 	}
+
+	// The dep edge landed: Release is blocked by Build.
+	if !sliceContains(release.BlockedBy, build.ID) {
+		t.Fatalf("dep edge not instantiated: release %s BlockedBy = %v; want to contain build %s",
+			release.ID, release.BlockedBy, build.ID)
+	}
+	// Build has no incoming dep.
+	if len(build.BlockedBy) != 0 {
+		t.Fatalf("build %s should have no dep edge, got BlockedBy = %v", build.ID, build.BlockedBy)
+	}
+
+	// Attributed to the secp256k1 signer (default --for = signer).
+	if build.For != owner || release.For != owner {
+		t.Fatalf("engaged items not attributed to signer %q: build.For=%q release.For=%q", owner, build.For, release.For)
+	}
+	// Build (no incoming dep) starts in inbox; Release projects to blocked because
+	// its dep on the still-open Build is honored by the projection — the dep edge
+	// is live, not just recorded.
+	if build.Status != state.StatusInbox {
+		t.Fatalf("build status = %q; want inbox", build.Status)
+	}
+	if release.Status != state.StatusBlocked {
+		t.Fatalf("release status = %q; want blocked (its dep on open Build must gate it)", release.Status)
+	}
+
+	assertNoDotCf(t)
+}
+
+// TestEngage_PlaybookNotFound proves engage errors cleanly when the playbook is
+// absent from .ready/playbooks.jsonl (no panic, no .cf).
+func TestEngage_PlaybookNotFound(t *testing.T) {
+	setupNostrNativeProject(t)
+	if err := engageCmd.RunE(engageCmd, []string{"does-not-exist"}); err == nil {
+		t.Fatalf("engage of missing playbook = nil error; want not-found")
+	}
+	assertNoDotCf(t)
 }
