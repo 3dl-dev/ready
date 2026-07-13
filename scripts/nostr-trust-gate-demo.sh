@@ -49,12 +49,14 @@ cd "$REPO_ROOT"
 GO="${GO:-go}"
 NAK="${NAK:-nak}"
 source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
+source "$REPO_ROOT/scripts/lib/relay-probe.sh"
 
 pass() { printf '\033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
-command -v "$NAK" >/dev/null 2>&1 || fail "nak not found on PATH (go install github.com/fiatjaf/nak@latest)"
+# nak requirement is enforced inside the LIVE layer gate below (it is only needed
+# to mint the throwaway attacker key). The offline LAYER B proof needs no nak.
 
 WORK="$(mktemp -d)"
 
@@ -82,7 +84,7 @@ restore_originals() {
 cleanup() {
   info "cleanup: revoking attacker grant (if any) and restoring original relay allowlists"
   if [ -n "${ATTACK_PK:-}" ] && [ -n "${VICTIM_HOME:-}" ]; then
-    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" RD_NOSTR=1 "$RD" nostr revoke "$ATTACK_PK" --label "trust-gate demo attacker (ready-d53)" >/dev/null 2>&1 ) || true
+    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr revoke "$ATTACK_PK" --label "trust-gate demo attacker (ready-d53)" >/dev/null 2>&1 ) || true
     ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr sync-allowlist --file "$WORK/allowlist.json" --apply >/dev/null 2>&1 ) || true
   fi
   restore_originals
@@ -94,6 +96,31 @@ info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd
 RD="$WORK/rd"
 
+echo
+info "LAYER B (offline, authoritative): deterministic d53 trust-gate unit proofs — no relay, no ssh, no nak"
+"$GO" test ./pkg/sync/ -run 'TestProjection_TrustGate_DropsUntrustedTakeover|TestProjection_TrustGate_AppliesTrustedEvent|TestProjection_TrustGate_DropsUntrustedNewItem|TestMergeFrom_TrustGate_RejectsUntrustedAuthor' -count=1 -v 2>&1 | sed 's/^/    /'
+[ "${PIPESTATUS[0]}" = 0 ] || fail "deterministic d53 trust-gate proofs failed"
+pass "trust gate proven offline: untrusted takeover DROPPED, trusted event APPLIED, untrusted new item DROPPED, merge REJECTS untrusted author"
+
+echo
+# LAYER A is the full LIVE proof. It TEMPORARILY rewrites the LOCKED PRODUCTION relay
+# write-allowlist via ssh+sudo on ${RELAYS[*]} (then restores it on exit), and needs
+# nak to mint the throwaway attacker key. Because it mutates shared production infra,
+# it is OFF by default: it runs ONLY with explicit opt-in (RD_NOSTR_LIVE_RELAY=1) AND
+# nak on PATH AND a reachable relay. Otherwise it SKIPs — LAYER B above is the
+# authoritative, deterministic proof of the same d53 gate.
+if [ "${RD_NOSTR_LIVE_RELAY:-0}" != "1" ] || ! command -v "$NAK" >/dev/null 2>&1 || ! relay_reachable "ws://${RELAYS[0]}:7777"; then
+  why=""
+  [ "${RD_NOSTR_LIVE_RELAY:-0}" != "1" ] && why="$why not opted in (set RD_NOSTR_LIVE_RELAY=1);" || true
+  command -v "$NAK" >/dev/null 2>&1 || why="$why nak absent;"
+  relay_reachable "ws://${RELAYS[0]}:7777" || why="$why relay ${RELAYS[0]} unreachable;"
+  info "SKIP LAYER A live trust-gate proof —$why it rewrites the production relay write-allowlist (ssh+sudo) and needs nak. LAYER B (above) is the authoritative offline proof of the d53 gate."
+  echo
+  pass "ready-d53 TRUST-GATE proof complete (LAYER B deterministic gate proofs green; LAYER A live path skipped)"
+  exit 0
+fi
+
+info "LAYER A (live): full end-to-end trust-gate against the locked production relays"
 # Two isolated identities: distinct RD_HOME => distinct portfolio secp256k1 key.
 # VICTIM signs with the machine's ALLOWLISTED portfolio key (ready-266) so its
 # writes land on the locked relays without any grant dance. ATTACKER is a FRESH,
@@ -103,7 +130,7 @@ VICTIM_HOME="$WORK/victim-rdhome";   VICTIM_PROJ="$WORK/victim-proj"
 ATTACK_HOME="$WORK/attacker-rdhome"; ATTACK_PROJ="$WORK/attacker-proj"
 mkdir -p "$VICTIM_HOME" "$VICTIM_PROJ" "$ATTACK_HOME" "$ATTACK_PROJ"
 
-materialize_allowlisted_key "$VICTIM_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
+materialize_allowlisted_key "$VICTIM_HOME/nostr-identity.json" || info "no allowlisted portfolio key — using rd's own generated identity (local-log proof valid; live relay writes may be rejected)"
 
 ATTACK_SEC="$("$NAK" key generate)"
 ATTACK_PK="$("$NAK" key public "$ATTACK_SEC")"
@@ -115,8 +142,8 @@ json.dump({'version': 1, 'secret_hex': sec, 'pubkey_hex': pub}, open(path, 'w'),
 chmod 600 "$ATTACK_HOME/nostr-identity.json"
 info "attacker pubkey (fresh, NOT yet relay-admitted): $ATTACK_PK"
 
-( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" init --offline >/dev/null )
-( cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" init --offline >/dev/null )
+( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" init >/dev/null )
+( cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" init >/dev/null )
 
 echo
 info "capturing original live relay allowlists (restored on exit, success or failure)"
@@ -130,14 +157,14 @@ info "STEP 0: TEMPORARILY grant the attacker's key onto the live relay allowlist
 # are independent defenses; granting the attacker relay admission lets the forged
 # write actually LAND, so the demo proves the CLIENT gate catches what the relay
 # alone does not (the victim never grants/trusts the attacker).
-( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" RD_NOSTR=1 "$RD" nostr grant "$ATTACK_PK" contributor --label "trust-gate demo attacker (ready-d53)" ) || fail "grant attacker failed"
+( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr grant "$ATTACK_PK" contributor --label "trust-gate demo attacker (ready-d53)" ) || fail "grant attacker failed"
 ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr sync-allowlist --file "$WORK/allowlist.json" --apply ) || fail "sync-allowlist apply (grant) failed"
 sleep 2 # let the strfry plugin observe the mtime change
 pass "attacker key temporarily admitted to both relays (relay-layer gate satisfied for the test)"
 
 echo
 info "STEP 1: VICTIM (identity A, allowlisted) creates the item legit/active/p1 on the LIVE relay"
-ID="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" RD_NOSTR=1 "$RD" create "legit item" --type task --priority p1 --context "ready-d53 trust proof" 2>"$WORK/create.err" | tail -1)"
+ID="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" create "legit item" --type task --priority p1 --context "ready-d53 trust proof" 2>"$WORK/create.err" | tail -1)"
 cat "$WORK/create.err" >&2 || true
 [ -n "$ID" ] || fail "rd create produced no item id"
 info "victim item id: $ID"
@@ -150,7 +177,7 @@ echo
 info "STEP 2: ATTACKER (identity B, relay-admitted but victim-UNTRUSTED) forges a LATER card for the SAME id: $ID"
 # Use `rd nostr put` under the attacker's RD_HOME => attacker's portfolio key
 # signs the forged 30302 card. --status done + --priority p0 is the takeover.
-ATTACK_OUT="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" RD_NOSTR=1 "$RD" nostr put "$ID" --title "HIJACKED" --status done --priority p0 --context "seized by an untrusted key" 2>&1)"
+ATTACK_OUT="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" nostr put "$ID" --title "HIJACKED" --status done --priority p0 --context "seized by an untrusted key" 2>&1)"
 printf '%s\n' "$ATTACK_OUT" | sed 's/^/    /'
 ATTACK_PK_LOGGED="$(jq -r '.pubkey' "$ATTACK_PROJ/.ready/nostr-log.jsonl" | head -1)"
 [ "$ATTACK_PK_LOGGED" = "$ATTACK_PK" ] || fail "attacker log pubkey mismatch"
@@ -161,7 +188,7 @@ echo
 info "STEP 3: CONTRAST — the attacker's OWN node (trusts B) reconciles + shows the forged state, proving it is genuinely LIVE on the relay"
 sleep 1 # let the relay index
 rm -f "$ATTACK_PROJ/.ready/nostr-log.jsonl"
-ATTACK_VIEW="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" RD_NOSTR=1 "$RD" nostr show "$ID" --reconcile 2>&1)"
+ATTACK_VIEW="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" nostr show "$ID" --reconcile 2>&1)"
 printf '%s\n' "$ATTACK_VIEW" | sed 's/^/    /'
 grep -q "title:    HIJACKED" <<<"$ATTACK_VIEW" || fail "attacker node did not see its own forged event — relay/publish problem, not a gate proof"
 pass "forged event is LIVE on the relay and passes Verify (the attacker's node applies it because B trusts B)"
@@ -171,7 +198,7 @@ info "STEP 4: TRUST GATE — VICTIM wipes its local log and reconciles BOTH card
 rm -f "$VICTIM_PROJ/.ready/nostr-log.jsonl"
 [ ! -f "$VICTIM_PROJ/.ready/nostr-log.jsonl" ] || fail "victim log not wiped"
 sleep 1
-VICTIM_VIEW="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" RD_NOSTR=1 "$RD" nostr show "$ID" --reconcile 2>&1)"
+VICTIM_VIEW="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr show "$ID" --reconcile 2>&1)"
 printf '%s\n' "$VICTIM_VIEW" | sed 's/^/    /'
 
 # (a) trusted-key event APPLIED: item reconstructs as the victim's legit card

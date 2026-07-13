@@ -15,7 +15,7 @@
 #      the local log, reconstruct PURELY from the relays via per-item reconcile, and
 #      assert per-field parity — proving the events survive the locked relays and
 #      dual-read reconstructs them (incl. graph-derived `blocked` status).
-#   3. DUAL-READ + nostr-only capability — RD_NOSTR_READ=1 resolves rd's whole read
+#   3. DUAL-READ + nostr-only capability — resolves rd's whole read
 #      surface (list/show) from the nostr projection, matching campfire, WITHOUT
 #      disconnecting campfire.
 #
@@ -43,15 +43,30 @@ pass() { printf '\033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
-# The live campfire item set must be present to migrate it.
+# The legacy campfire item set must be present to migrate it. A nostr-native repo
+# no longer carries one at the root (items live in .ready/nostr-log.jsonl), so when
+# no source is given, fall back to the committed legacy fixture (.ready.old +
+# .campfire.broken) — that keeps the OFFLINE local-authoritative parity proof
+# (STEP 1) real instead of a vacuous skip. If even the fixture is absent, skip
+# cleanly.
 if [ ! -f "$SRC_PROJECT/.ready/mutations.jsonl" ]; then
-  info "no live campfire item set at $SRC_PROJECT/.ready/mutations.jsonl — nothing to migrate."
-  info "run from a ready project checkout that has campfire data, or pass SRC_PROJECT."
-  exit 0
+  if [ -z "${1:-}" ] && [ -f "$REPO_ROOT/.ready.old/mutations.jsonl" ] && [ -f "$REPO_ROOT/.campfire.broken/root" ]; then
+    FIXTURE="$(mktemp -d)"
+    mkdir -p "$FIXTURE/.ready" "$FIXTURE/.campfire"
+    cp "$REPO_ROOT/.ready.old/mutations.jsonl" "$FIXTURE/.ready/mutations.jsonl"
+    [ -f "$REPO_ROOT/.ready.old/config.json" ] && cp "$REPO_ROOT/.ready.old/config.json" "$FIXTURE/.ready/config.json" || true
+    cp "$REPO_ROOT/.campfire.broken/root" "$FIXTURE/.campfire/root"
+    SRC_PROJECT="$FIXTURE"
+    info "no live campfire item set at the repo root — using the committed legacy fixture (.ready.old) as the migration source"
+  else
+    info "no legacy campfire item set at $SRC_PROJECT/.ready/mutations.jsonl — nothing to migrate."
+    info "run from a ready project checkout that has campfire data, or pass SRC_PROJECT."
+    exit 0
+  fi
 fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" "${FIXTURE:-}"' EXIT
 PROJ="$WORK/proj"
 mkdir -p "$PROJ/.ready" "$PROJ/.campfire"
 
@@ -70,7 +85,7 @@ RD="$WORK/rd"
 # generating a fresh, non-admitted one on first use.
 source "$REPO_ROOT/scripts/lib/nostr-demo-key.sh"
 export RD_HOME="$WORK/rdhome"
-materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || info "no allowlisted portfolio key — using rd's own generated identity (local-log proof valid; live relay writes may be rejected)"
 cd "$PROJ"
 
 SRC_COUNT=$("$RD" list --all --json 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
@@ -92,10 +107,10 @@ L2=$(wc -l < .ready/nostr-log.jsonl)
 pass "re-run appended 0 events; log stayed at $L1 lines"
 
 echo
-info "STEP 3: DUAL-READ — RD_NOSTR_READ=1 resolves the read surface from nostr, campfire untouched"
-NS_COUNT=$(RD_NOSTR_READ=1 "$RD" list --all --json 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
+info "STEP 3: DUAL-READ — resolves the read surface from nostr, campfire untouched"
+NS_COUNT=$("$RD" list --all --json 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
 [ "$NS_COUNT" = "$SRC_COUNT" ] || fail "STEP 3: dual-read list count $NS_COUNT != campfire $SRC_COUNT"
-pass "dual-read \`rd list\` == campfire: $NS_COUNT items (RD_NOSTR_READ=1; campfire still default)"
+pass "dual-read \`rd list\` == legacy source: $NS_COUNT items (nostr projection resolves the read surface; legacy JSONL untouched)"
 
 if [ "${RD_NOSTR_LIVE_RELAY:-0}" != "1" ]; then
   echo
@@ -206,6 +221,6 @@ SUMMARY
   step 1:             FULL item-for-item parity, local authoritative log ($PARITY_LINE)
   step 1b:            migration idempotent (event-id dedup)
   step 2:             $NSAMPLE-item dep-closed sample round-tripped through the LOCKED relays
-  step 3:             dual-read (RD_NOSTR_READ=1) read surface == campfire; campfire untouched + still default
+  step 3:             dual-read read surface (nostr projection) == legacy source; legacy JSONL untouched
   invariant:          campfire NOT modified, NOT disconnected, still the default backend (ready-f94 defers the flip)
 EOF

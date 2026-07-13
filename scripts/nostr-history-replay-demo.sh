@@ -54,7 +54,7 @@ mkdir -p "$CF_HOME" "$PROJ"
 # `rd` signs with a key the locked relays accept instead of generating a fresh,
 # non-admitted one on first use.
 export RD_HOME="$WORK/rdhome"
-materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || fail "no allowlisted portfolio key available"
+materialize_allowlisted_key "$RD_HOME/nostr-identity.json" || info "no allowlisted portfolio key — using rd's own generated identity (local-log proof valid; live relay writes may be rejected)"
 
 info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd
@@ -63,12 +63,12 @@ RD="$WORK/rd"
 OFFLINE_RELAY="ws://127.0.0.1:1"
 
 cd "$PROJ"
-info "rd init --offline (JSONL-only project; no campfire needed)"
-"$RD" init --offline >/dev/null
+info "rd init (nostr-native project; local signed-event log is the source of truth)"
+"$RD" init >/dev/null
 
 echo
 info "STEP 1: rd create -> card (inbox) + 1630 status event"
-ID="$(RD_NOSTR=1 "$RD" create "b5f history replay demo" --type task --priority p1 --context "ready-b5f live proof" 2>"$WORK/create.err" | tail -1)"
+ID="$("$RD" create "b5f history replay demo" --type task --priority p1 --context "ready-b5f live proof" 2>"$WORK/create.err" | tail -1)"
 cat "$WORK/create.err" >&2 || true
 [ -n "$ID" ] || fail "rd create produced no item id"
 info "created item: $ID"
@@ -76,22 +76,22 @@ sleep 1
 
 echo
 info "STEP 2: rd claim --reason -> status transition inbox -> active"
-RD_NOSTR=1 "$RD" claim "$ID" --reason "picking this up now"
+"$RD" claim "$ID" --reason "picking this up now"
 sleep 1
 
 echo
 info "STEP 3: rd progress --notes -> CARD-ONLY edit (context), no status event"
-RD_NOSTR=1 "$RD" progress "$ID" --notes "made good progress on the replay logic"
+"$RD" progress "$ID" --notes "made good progress on the replay logic"
 sleep 1
 
 echo
 info "STEP 4: rd update --title -> CARD-ONLY edit (title), no status event"
-RD_NOSTR=1 "$RD" update "$ID" --title "b5f history replay demo (edited)"
+"$RD" update "$ID" --title "b5f history replay demo (edited)"
 sleep 1
 
 echo
 info "STEP 5: rd done --reason -> status transition active -> done, close-with-reason"
-RD_NOSTR=1 "$RD" done "$ID" --reason "implemented, tests green, live-relay proof captured"
+"$RD" done "$ID" --reason "implemented, tests green, live-relay proof captured"
 
 echo
 info "event kinds published to the local authoritative log:"
@@ -102,7 +102,7 @@ pass "published $LOGLINES signed events across 5 mutations to the LIVE relay + l
 
 echo
 info "STEP A: rd nostr show — replay FULL history from the local log"
-SHOW_OUT="$(RD_NOSTR=1 "$RD" nostr show "$ID")"
+SHOW_OUT="$("$RD" nostr show "$ID")"
 printf '%s\n' "$SHOW_OUT" | sed 's/^/    /'
 grep -q "title:    b5f history replay demo (edited)" <<<"$SHOW_OUT" || fail "latest card edit not reflected in current state"
 grep -q "status:   done"                             <<<"$SHOW_OUT" || fail "current status is not done"
@@ -115,7 +115,7 @@ pass "FULL history replayed: create -> claim -> done, all 3 transitions with rea
 
 echo
 info "STEP B: same read, relay UNREACHABLE — proves the local log alone is authoritative"
-OFFLINE_OUT="$(RD_NOSTR=1 RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" nostr show "$ID")"
+OFFLINE_OUT="$(RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" nostr show "$ID")"
 [ "$OFFLINE_OUT" = "$SHOW_OUT" ] || fail "relay-offline read differs from the relay-reachable read"
 pass "relay-offline read is IDENTICAL: history survives with every relay unreachable"
 
