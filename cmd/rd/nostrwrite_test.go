@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -662,5 +663,77 @@ func TestNostrNative_LabelDefine_NoRegistryNoDotCf(t *testing.T) {
 	if err := labelDefineCmd.RunE(labelDefineCmd, []string{"hotfix"}); err != nil {
 		t.Fatalf("label define RunE on nostr-native should succeed as a no-op, got: %v", err)
 	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf is the ready-50a
+// regression proof: `rd nostr publish <id>` on a nostr-native project must resolve
+// the item via nostrResolveItem (the nostr projection) — NOT via the legacy
+// jsonlPath()/DeriveFromJSONLWithCampfire lookup, which has no mutations.jsonl on
+// a nostr-native project and always failed with "item %q not found in rd state".
+//
+// BEFORE the fix this FAILS: nostrPublishCmd.RunE returns an item-not-found error
+// (either "no mutations.jsonl found" or "item %q not found in rd state") for ANY
+// item on a nostr-native project, because jsonlPath()/DeriveFromJSONLWithCampfire
+// never sees the item — it was only ever recorded in the nostr log, not JSONL.
+//
+// AFTER the fix: the command resolves the item via nostrResolveItem, republishes a
+// card event + a status event carrying the item's recorded close reason, and
+// provisions no .cf/.campfire state anywhere.
+func TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf(t *testing.T) {
+	setupNostrNativeProject(t)
+
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{
+		title: "Republish me", itemType: "task", priority: "p1", context: "ctx",
+	})
+	if err != nil {
+		t.Fatalf("runCreateNostr: %v", err)
+	}
+	if err := runCloseNostr(id, "done", "shipped it", "closed"); err != nil {
+		t.Fatalf("runCloseNostr: %v", err)
+	}
+
+	origJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	stdout := captureStdoutPipe(t, func() {
+		if err := nostrPublishCmd.RunE(nostrPublishCmd, []string{id}); err != nil {
+			t.Fatalf("nostrPublishCmd.RunE: %v (item-not-found means the legacy JSONL lookup is still in place)", err)
+		}
+	})
+
+	var res rdSync.PublishResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("unmarshal publish result: %v\nstdout=%s", err, stdout)
+	}
+	var sawCard, sawStatus bool
+	for _, ev := range res.Events {
+		switch ev.Kind {
+		case rdSync.KindCard:
+			sawCard = true
+		case rdSync.KindStatusOpen, rdSync.KindStatusResolved, rdSync.KindStatusClosed, rdSync.KindStatusDraft:
+			sawStatus = true
+		}
+	}
+	if !sawCard {
+		t.Fatalf("publish result events = %+v; want a card event", res.Events)
+	}
+	if !sawStatus {
+		t.Fatalf("publish result events = %+v; want a status event", res.Events)
+	}
+
+	// The republished status event must carry the item's recorded close reason
+	// (ready-da7): lastStatusReason(item) reads the reason back off the resolved
+	// item's history, so this only passes once the resolver reads the SAME item
+	// the close actually wrote (the nostr projection, not an empty legacy lookup).
+	item, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("nostrResolveItem after publish: %v", err)
+	}
+	if got := lastStatusReason(item); got != "shipped it" {
+		t.Fatalf("lastStatusReason(item) = %q; want %q", got, "shipped it")
+	}
+
 	assertNoDotCf(t)
 }
