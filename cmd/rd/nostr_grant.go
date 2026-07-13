@@ -17,17 +17,16 @@ import (
 )
 
 // ONE SIGNED ACT admits or revokes an actor across BOTH the client trust set and the
-// relay write-allowlist (ready-84e / BP-5). `rd nostr grant` / `rd nostr revoke`
-// publish an owner-signed kind-39301 role-grant; `rd nostr sync-allowlist`
-// regenerates scripts/relay-policy/write-allowlist.json from those grants and pushes
-// it to the live locked relays. The ready-266 plugin contract (binary {pubkey:label},
+// relay write-allowlist (ready-84e / BP-5). `rd grant` / `rd revoke` publish an
+// owner-signed kind-39301 role-grant; `rd relay sync-allowlist` regenerates
+// scripts/relay-policy/write-allowlist.json from those grants and pushes it to the
+// live locked relays. The ready-266 plugin contract (binary {pubkey:label},
 // mtime-reload, fail-closed) is UNCHANGED — only its feed becomes the signed log, so
 // the client TrustSet and the relay file now share ONE source (design §4/§6, A3).
 //
-// These live under `rd nostr`, not a bare `rd grant`/`rd revoke`: `rd revoke` already
-// means campfire-membership revocation (cmd/rd/revoke.go), and every other nostr
-// operation is grouped under `rd nostr`. `rd nostr sync-allowlist` is the exact name
-// used in the design doc.
+// ready-f58: grant/revoke are the top-level `rd grant`/`rd revoke` (cmd/rd/authz_nostr.go,
+// cmd/rd/revoke.go); the allowlist regeneration is `rd relay sync-allowlist`. The old
+// `rd nostr` grouping is gone — nostr is the substrate, not a user-typed mode.
 
 // resolveBoardAuthorD resolves the (boardAuthor, boardD) a grant binds to. It prefers
 // the PINNED board coordinate in .ready/config.json (30301:<owner>:<boardD>) — the
@@ -44,7 +43,7 @@ func resolveBoardAuthorD(dir, signerPubkey string) (boardAuthor, boardD string, 
 	}
 	d := projectPrefix(dir)
 	if d == "" {
-		return "", "", fmt.Errorf("cannot resolve board d from project dir %q; pin a board with 'rd nostr pin-board'", dir)
+		return "", "", fmt.Errorf("cannot resolve board d from project dir %q; pin a board with 'rd pin-board'", dir)
 	}
 	return signerPubkey, d, nil
 }
@@ -131,54 +130,12 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	return nil
 }
 
-var nostrGrantCmd = &cobra.Command{
-	Use:   "grant <pubkeyHex> <role>",
-	Short: "Publish an owner-signed role-grant (owner|maintainer|contributor) for the pinned board",
-	Long: `Publish a kind-39301 role-grant assigning <role> to <pubkeyHex> on the pinned
-board. role is one of owner|maintainer|contributor. Only the board author (owner)
-may grant maintainer/owner (the escalation cap). The grant is appended to the local
-authoritative log and published to the write relays. Run 'rd nostr sync-allowlist'
-afterward to regenerate the relay write-allowlist from the grants.`,
-	Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		grantee, role := args[0], args[1]
-		switch role {
-		case rdSync.RoleOwner, rdSync.RoleMaintainer, rdSync.RoleContributor:
-		case rdSync.RoleRevoked:
-			return fmt.Errorf("use 'rd nostr revoke %s' to revoke; 'grant' is for owner|maintainer|contributor", grantee)
-		default:
-			return fmt.Errorf("invalid role %q: choose owner|maintainer|contributor", role)
-		}
-		label, _ := cmd.Flags().GetString("label")
-		from, _ := cmd.Flags().GetInt64("from")
-		if err := publishRoleGrant(grantee, role, label, from); err != nil {
-			return err
-		}
-		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
-		return nil
-	},
-}
-
-var nostrRevokeCmd = &cobra.Command{
-	Use:   "revoke <pubkeyHex>",
-	Short: "Publish an owner-signed role=revoked grant, removing an actor's trust + relay admission",
-	Long: `Publish a kind-39301 grant with role=revoked for <pubkeyHex> on the pinned
-board. By default the revocation is PROSPECTIVE (effective now): the key's PAST
-authoritative events stay honored (completed items do not reopen). Pass --from <unix>
-for a retroactive repudiation from T (compromise case). Run 'rd nostr sync-allowlist'
-afterward to prune the key from the relay write-allowlist.`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		grantee := args[0]
-		label, _ := cmd.Flags().GetString("label")
-		from, _ := cmd.Flags().GetInt64("from")
-		if err := publishRoleGrant(grantee, rdSync.RoleRevoked, label, from); err != nil {
-			return err
-		}
-		fmt.Println("  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist")
-		return nil
-	},
-}
+// ready-f58: `rd nostr grant` / `rd nostr revoke` are GONE — they duplicated the
+// canonical top-level `rd grant` / `rd revoke` (ready-477, cmd/rd/authz_nostr.go and
+// cmd/rd/revoke.go), which publish the same owner-signed kind-39301 role-grant and
+// regenerate the relay write-allowlist in one act. The retroactive-repudiation
+// `--from` (and `--label`) that used to be unique to `rd nostr revoke` were migrated
+// onto the top-level `rd revoke`. The shared body is publishRoleGrant (above).
 
 // nostrPinBoardCmd establishes the pinned authoritative board coordinate in
 // .ready/config.json (BP-3's pin, activated for this project — design DONE#3). Once
@@ -327,7 +284,7 @@ func pushAllowlist(user, relay, localFile, remotePath string) error {
 }
 
 // defaultAllowlistFile resolves the version-controlled relay allowlist under the git
-// repo root, so `rd nostr sync-allowlist` regenerates the same file lock-relays.sh
+// repo root, so `rd relay sync-allowlist` regenerates the same file lock-relays.sh
 // ships. Falls back to a repo-relative path when the git query fails.
 func defaultAllowlistFile() string {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
@@ -491,10 +448,6 @@ func splitCSV(s string) []string {
 }
 
 func init() {
-	nostrGrantCmd.Flags().String("label", "", "human label carried in the grant content (used as the relay allowlist label)")
-	nostrGrantCmd.Flags().Int64("from", 0, "effective-from unix seconds (0 = prospective / effective now)")
-	nostrRevokeCmd.Flags().String("label", "", "human label carried in the grant content")
-	nostrRevokeCmd.Flags().Int64("from", 0, "retroactive repudiation from this unix time (0 = prospective / effective now)")
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
 	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists (orphans existing legacy history — prefer 'rd migrate')")
@@ -505,8 +458,8 @@ func init() {
 	nostrSyncAllowlistCmd.Flags().String("relay-user", "baron", "ssh user for the relay VMs")
 	nostrSyncAllowlistCmd.Flags().String("remote-path", "/etc/strfry/write-allowlist.json", "path the strfry writePolicy plugin reads on each relay")
 	nostrSyncAllowlistCmd.Flags().Bool("no-fetch", false, "do not fetch the live relay allowlist for the baseline; use the on-disk --file instead")
-	nostrCmd.AddCommand(nostrGrantCmd)
-	nostrCmd.AddCommand(nostrRevokeCmd)
-	nostrCmd.AddCommand(nostrPinBoardCmd)
-	nostrCmd.AddCommand(nostrSyncAllowlistCmd)
+	// ready-f58: pin-board promoted to top-level `rd pin-board`; sync-allowlist moved
+	// under the new `rd relay` namespace. Both `rd nostr` hosts are gone.
+	rootCmd.AddCommand(nostrPinBoardCmd)
+	relayCmd.AddCommand(nostrSyncAllowlistCmd)
 }

@@ -21,6 +21,22 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
 		auditFlag, _ := cmd.Flags().GetBool("audit")
+		reconcileFlag, _ := cmd.Flags().GetBool("reconcile")
+
+		// --reconcile (ready-f58, migrated from the deleted `rd nostr show`):
+		// cache-fill this item from the read relays into the local authoritative log
+		// BEFORE reconstructing it, so a fresh/clean cache can still show the item.
+		// The local log stays authoritative; the relay fetch only adds trust-gated
+		// events that were missing locally.
+		var reconcileNote string
+		if reconcileFlag {
+			note, err := nostrReconcileItemIntoLog(itemID)
+			if err != nil {
+				cmd.SilenceUsage = true
+				return err
+			}
+			reconcileNote = note
+		}
 
 		// The read + audit authority is the nostr projection or local JSONL —
 		// never a campfire store. `rd show` (incl. --audit) provisions NO campfire
@@ -30,6 +46,9 @@ Example:
 		item, err := byIDFromJSONLOrStore(itemID)
 		if err != nil {
 			cmd.SilenceUsage = true
+			if reconcileNote != "" {
+				return fmt.Errorf("%w; %s", err, reconcileNote)
+			}
 			return err
 		}
 
@@ -118,11 +137,15 @@ Example:
 		}
 		fmt.Printf("\nCampfire: %s\n", formatCampfireIDForDisplay(item.CampfireID))
 		fmt.Printf("Msg ID:   %s\n", item.MsgID)
+		if reconcileNote != "" {
+			fmt.Printf("(%s)\n", reconcileNote)
+		}
 		return nil
 	},
 }
 
 func init() {
 	showCmd.Flags().Bool("audit", false, "annotate each history entry with the cf-authority grant scope its actor acted under")
+	showCmd.Flags().Bool("reconcile", false, "cache-fill this item from the read relays into the local log before reconstructing (local log stays authoritative)")
 	rootCmd.AddCommand(showCmd)
 }

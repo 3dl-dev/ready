@@ -27,17 +27,17 @@
 #            relays. Mutations are spaced 2s so each lands in a distinct
 #            created_at SECOND (NIP-01 granularity; back-to-back same-second
 #            status events hit the already-filed ordering edge ready-523).
-#   PHASE 2  machine-2 CLEAN-CACHE reconstruction: `rd nostr sync` pulls the
-#            events via NIP-77 Negentropy, then `rd nostr show` reconstructs A and
+#   PHASE 2  machine-2 CLEAN-CACHE reconstruction: `rd sync` pulls the
+#            events via NIP-77 Negentropy, then `rd show` reconstructs A and
 #            B — status, priority, deps, gate+approve history, close-with-reason —
 #            and MUST match machine-1 byte-for-byte, purely from the relays.
 #   PHASE 3  machine-2 MUTATES (create C, claim C) and syncs back; machine-1
-#            `rd nostr sync` converges on C. The MEASURED negentropy cost is
+#            `rd sync` converges on C. The MEASURED negentropy cost is
 #            reported — bounded by the diff (a converged re-sync moves 0 event
 #            bytes), per ready-797.
-#   PHASE 4  CONVERGENCE ASSERTIONS: `rd nostr show` for EVERY item is
+#   PHASE 4  CONVERGENCE ASSERTIONS: `rd show` for EVERY item is
 #            byte-identical on both machines (full audit replay with reasons), and
-#            `rd nostr ready --json` for views ready/work/gates matches on both.
+#            `rd ready --json` for views ready/work/gates matches on both.
 #
 # Endpoints come from pkg/rdconfig defaults; override via env below. Idempotent:
 # re-runnable (fresh item ids per run). Requires ssh baron@192.168.2.42.
@@ -152,11 +152,11 @@ info "rd dep add A<-B (B blocks A)";         rd1 dep add "$ITEM_A" "$ITEM_B" >/d
 info "rd done B --reason (unblocks A)";      rd1 done "$ITEM_B" --reason "blocker resolved" >/dev/null || fail "done B failed"; sleep "$SPACE"
 info "rd done A --reason";                   rd1 done "$ITEM_A" --reason "capstone lifecycle complete, tests green" >/dev/null || fail "done A failed"; sleep "$SPACE"
 
-info "machine-1 pushes the full event stream to the relays (rd nostr sync):"
-rd1 nostr sync || fail "machine-1 sync failed"
+info "machine-1 pushes the full event stream to the relays (rd sync):"
+rd1 sync || fail "machine-1 sync failed"
 
 echo; info "machine-1 authoritative view of item A (full audit replay):"
-A_SHOW_M1="$(rd1 nostr show "$ITEM_A")"; printf '%s\n' "$A_SHOW_M1" | sed 's/^/    /'
+A_SHOW_M1="$(rd1 show "$ITEM_A")"; printf '%s\n' "$A_SHOW_M1" | sed 's/^/    /'
 grep -q "status:   done"  <<<"$A_SHOW_M1" || fail "A not done on machine-1"
 grep -q "priority: p0"    <<<"$A_SHOW_M1" || fail "A priority update (p0) not reflected on machine-1"
 grep -q "inbox → active by .* — picking up the capstone item" <<<"$A_SHOW_M1" || fail "claim transition missing"
@@ -168,17 +168,17 @@ pass "PHASE 1: machine-1 drove create->claim->progress->update->dep->gate->appro
 # ---- PHASE 2: machine-2 CLEAN-CACHE reconstruction from the relays ----------
 echo; info "PHASE 2: machine-2 — CLEAN-CACHE reconstruction from the relays (no campfire, no shared fs)"
 m2 "test ! -s $M2_WORK/.ready/nostr-log.jsonl" && info "  machine-2 local nostr log starts EMPTY (clean cache)"
-info "machine-2 pulls the event stream (rd nostr sync, MEASURED):"
-rd2 nostr sync || fail "machine-2 sync failed"
+info "machine-2 pulls the event stream (rd sync, MEASURED):"
+rd2 sync || fail "machine-2 sync failed"
 
 echo; info "machine-2 reconstructed view of item A:"
-A_SHOW_M2="$(rd2 nostr show "$ITEM_A")"; printf '%s\n' "$A_SHOW_M2" | sed 's/^/    /'
+A_SHOW_M2="$(rd2 show "$ITEM_A")"; printf '%s\n' "$A_SHOW_M2" | sed 's/^/    /'
 info "machine-2 reconstructed view of item B:"
-B_SHOW_M2="$(rd2 nostr show "$ITEM_B")"; printf '%s\n' "$B_SHOW_M2" | sed 's/^/    /'
+B_SHOW_M2="$(rd2 show "$ITEM_B")"; printf '%s\n' "$B_SHOW_M2" | sed 's/^/    /'
 
 # Byte-for-byte convergence: machine-2's reconstruction must equal machine-1's.
-A_SHOW_M1_NORM="$(rd1 nostr show "$ITEM_A")"
-B_SHOW_M1_NORM="$(rd1 nostr show "$ITEM_B")"
+A_SHOW_M1_NORM="$(rd1 show "$ITEM_A")"
+B_SHOW_M1_NORM="$(rd1 show "$ITEM_B")"
 [ "$A_SHOW_M2" = "$A_SHOW_M1_NORM" ] || fail "item A DIVERGED: machine-2 reconstruction != machine-1"
 [ "$B_SHOW_M2" = "$B_SHOW_M1_NORM" ] || fail "item B DIVERGED: machine-2 reconstruction != machine-1"
 grep -q "status:   done"  <<<"$A_SHOW_M2" || fail "machine-2: A not done"
@@ -193,16 +193,16 @@ ITEM_C="$(rd2 create "capstone: item C (born on machine-2)" --type task --priori
 [ -n "$ITEM_C" ] || fail "machine-2 create C produced no id"
 info "  item C = $ITEM_C"; sleep "$SPACE"
 rd2 claim "$ITEM_C" --reason "machine-2 takes ownership" >/dev/null || fail "machine-2 claim C failed"; sleep "$SPACE"
-info "machine-2 pushes C to the relays (rd nostr sync):"
-rd2 nostr sync || fail "machine-2 push failed"
+info "machine-2 pushes C to the relays (rd sync):"
+rd2 sync || fail "machine-2 push failed"
 
 echo; info "machine-1 converges on C — MEASURED negentropy cost (diff-bounded download):"
-rd1 nostr sync || fail "machine-1 converge sync failed"
+rd1 sync || fail "machine-1 converge sync failed"
 info "machine-1 re-sync AGAIN (converged steady-state — expect 0 event bytes):"
-rd1 nostr sync || fail "machine-1 steady-state sync failed"
+rd1 sync || fail "machine-1 steady-state sync failed"
 
-C_SHOW_M1="$(rd1 nostr show "$ITEM_C")"
-C_SHOW_M2="$(rd2 nostr show "$ITEM_C")"
+C_SHOW_M1="$(rd1 show "$ITEM_C")"
+C_SHOW_M2="$(rd2 show "$ITEM_C")"
 printf '%s\n' "$C_SHOW_M1" | sed 's/^/    /'
 [ "$C_SHOW_M1" = "$C_SHOW_M2" ] || fail "item C DIVERGED after machine-2->machine-1 sync"
 grep -q "status:   active" <<<"$C_SHOW_M1" || fail "machine-1: C not active"
@@ -212,14 +212,14 @@ pass "PHASE 3: machine-1 converged on machine-2's item C; both hold identical pr
 # ---- PHASE 4: full convergence — every item + readiness match ---------------
 echo; info "PHASE 4: FULL CONVERGENCE — every item's audit replay + readiness set match on both machines"
 for ITEM in "$ITEM_A" "$ITEM_B" "$ITEM_C"; do
-  S1="$(rd1 nostr show "$ITEM")"
-  S2="$(rd2 nostr show "$ITEM")"
+  S1="$(rd1 show "$ITEM")"
+  S2="$(rd2 show "$ITEM")"
   [ "$S1" = "$S2" ] || fail "item $ITEM show DIVERGED across machines"
   info "  $ITEM: audit replay byte-identical on both machines"
 done
-pass "every item's full 'rd nostr show' audit replay is byte-identical across both machines"
+pass "every item's full 'rd show' audit replay is byte-identical across both machines"
 
-# NOTE ON SCOPING: `rd nostr sync` pulls EVERY event authored by the shared
+# NOTE ON SCOPING: `rd sync` pulls EVERY event authored by the shared
 # portfolio key (BoardSyncFilter is author-scoped, not board-scoped), so after a
 # clean-cache sync both machines' logs contain the ENTIRE accumulated portfolio
 # history from all prior demo runs — thousands of unrelated items. The two locked
@@ -233,15 +233,15 @@ run_view_ids() {  # run_view_ids "<view --json output>"  -> sorted run-item ids 
   printf '%s' "$1" | grep '"id"' | grep -o "${RUN_PREFIX}-[0-9a-f]*" | sort -u
 }
 for VIEW in ready work gates; do
-  V1="$(rd1 nostr ready --view "$VIEW" --json 2>/dev/null)"
-  V2="$(rd2 nostr ready --view "$VIEW" --json 2>/dev/null)"
+  V1="$(rd1 ready --view "$VIEW" --json 2>/dev/null)"
+  V2="$(rd2 ready --view "$VIEW" --json 2>/dev/null)"
   IDS1="$(run_view_ids "$V1")"
   IDS2="$(run_view_ids "$V2")"
   [ "$IDS1" = "$IDS2" ] || { echo "machine-1 run-items in view $VIEW:"; echo "$IDS1"; echo "machine-2:"; echo "$IDS2"; fail "readiness view '$VIEW' DIVERGED on run items across machines"; }
   N="$(printf '%s' "$IDS1" | grep -c . || true)"
   info "  view=$VIEW: run-item membership identical on both machines ($N run items): $(echo $IDS1)"
 done
-pass "readiness ('rd nostr ready') matches on both machines across views ready/work/gates (run-scoped)"
+pass "readiness ('rd ready') matches on both machines across views ready/work/gates (run-scoped)"
 
 echo
 echo "############################################################"
@@ -267,7 +267,7 @@ WHAT THIS PROVES (epic ready-a14 OUTCOME, capstone ready-c8c):
     re-sync moves 0 event bytes (see the 'downloaded=0 uploaded=0' sync lines),
     NONE of campfire's fs-sync pathologies (ready-797).
   - Both machines replay the full audit history with reasons and compute an
-    identical readiness set ('rd nostr ready') across views.
+    identical readiness set ('rd ready') across views.
 
 NO mocks. Two real hosts. Live relays. Baron never tested.
 output captured to: $LOG_OUT

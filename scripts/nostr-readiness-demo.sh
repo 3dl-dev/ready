@@ -25,12 +25,12 @@
 #   gates view: t03
 #
 # Steps:
-#   1. `rd nostr seed-demo` (RD_NOSTR project) publishes the 5-card graph (deps
+#   1. `rd log seed-demo` (RD_NOSTR project) publishes the 5-card graph (deps
 #      via NIP-100 "i" tags, gate via rd-extension "gate"/"waiting_type"/
 #      "waiting_on" tags) to the LIVE relay + local authoritative log.
-#   2. `rd nostr ready` (LOCAL LOG only, no reconcile) computes readiness/gates
+#   2. `rd ready` (LOCAL LOG only, no reconcile) computes readiness/gates
 #      -> must match the expectation above.
-#   3. WIPE the local log, then `rd nostr ready --reconcile` cache-fills EVERY
+#   3. WIPE the local log, then `rd ready --reconcile` cache-fills EVERY
 #      item's card+status from the LIVE relay into a fresh log and recomputes
 #      -> must STILL match (relay = replaceable cache, not the source of truth).
 #
@@ -94,7 +94,7 @@ check_view() {
 	local ctx="$1" view="$2" extra_flag="${3:-}"
 	local out ids
 	# shellcheck disable=SC2086
-	out="$("$RD" nostr ready --view "$view" $extra_flag --json)"
+	out="$("$RD" ready --view "$view" $extra_flag --json)"
 	ids="$(echo "$out" | jq -r '.[].id' | sed -E 's/^ready-t/t/' | sort | tr '\n' ' ' | sed 's/ $//')"
 	case "$view" in
 	ready) want="$EXPECT_READY"; exclude="$EXCLUDE_READY" ;;
@@ -117,8 +117,8 @@ check_view() {
 }
 
 echo
-info "STEP 1: rd nostr seed-demo -> publish the 5-item dep+gate graph to the LIVE relay + local log"
-SEED_OUT="$("$RD" nostr seed-demo 2>"$WORK/seed.err")"
+info "STEP 1: rd log seed-demo -> publish the 5-item dep+gate graph to the LIVE relay + local log"
+SEED_OUT="$("$RD" log seed-demo 2>"$WORK/seed.err")"
 cat "$WORK/seed.err" >&2 || true
 printf '%s\n' "$SEED_OUT" | sed 's/^/    /'
 LOGLINES="$(wc -l <"$PROJ/.ready/nostr-log.jsonl" | tr -d ' ')"
@@ -133,12 +133,12 @@ else
 fi
 
 echo
-info "STEP 2: rd nostr ready (LOCAL LOG only) — attention engine over the nostr projection"
+info "STEP 2: rd ready (LOCAL LOG only) — attention engine over the nostr projection"
 check_view "local-log" ready
 check_view "local-log" gates
 
 echo
-info "STEP 3: WIPE the local log, then rd nostr ready --reconcile cache-fills from the LIVE relay"
+info "STEP 3: WIPE the local log, then rd ready --reconcile cache-fills from the LIVE relay"
 if relay_reachable; then
   rm -f "$PROJ/.ready/nostr-log.jsonl"
   [ ! -f "$PROJ/.ready/nostr-log.jsonl" ] || fail "log not wiped"

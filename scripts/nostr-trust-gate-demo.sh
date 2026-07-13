@@ -20,7 +20,7 @@
 # the CLIENT-side d53 gate needs the attacker's write to actually LAND on the
 # relay (that is the whole point: Verify+relay-accept is not enough; rd's own
 # trust set is the real authority check). So this demo TEMPORARILY admits the
-# attacker's key to the live relay allowlist via `rd nostr grant` + `sync-
+# attacker's key to the live relay allowlist via `rd grant` + `sync-
 # allowlist --apply` (ready-84e/BP-5 — same mechanism scripts/nostr-grant-revoke-
 # demo.sh already exercises live), proving the relay-level allowlist and rd's
 # client-side trust set are TWO INDEPENDENT gates: the attacker key can be
@@ -31,7 +31,7 @@
 #
 #   1. ATTACKER's own node (which trusts B) reconciles + shows HIJACKED — proving
 #      the forged event is genuinely LIVE on the relay and passes Verify.
-#   2. VICTIM wipes its local log and `rd nostr show --reconcile` — reconciling
+#   2. VICTIM wipes its local log and `rd show --reconcile` — reconciling
 #      BOTH cards from the relay. Its trust set is {A}, so:
 #         * the trusted-key card IS APPLIED  (item = legit/active), and
 #         * the untrusted-key card IS IGNORED (never HIJACKED/done, and it never
@@ -84,8 +84,8 @@ restore_originals() {
 cleanup() {
   info "cleanup: revoking attacker grant (if any) and restoring original relay allowlists"
   if [ -n "${ATTACK_PK:-}" ] && [ -n "${VICTIM_HOME:-}" ]; then
-    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr revoke "$ATTACK_PK" --label "trust-gate demo attacker (ready-d53)" >/dev/null 2>&1 ) || true
-    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr sync-allowlist --file "$WORK/allowlist.json" --apply >/dev/null 2>&1 ) || true
+    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" revoke "$ATTACK_PK" --label "trust-gate demo attacker (ready-d53)" >/dev/null 2>&1 ) || true
+    ( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" relay sync-allowlist --file "$WORK/allowlist.json" --apply >/dev/null 2>&1 ) || true
   fi
   restore_originals
   rm -rf "$WORK"
@@ -157,8 +157,8 @@ info "STEP 0: TEMPORARILY grant the attacker's key onto the live relay allowlist
 # are independent defenses; granting the attacker relay admission lets the forged
 # write actually LAND, so the demo proves the CLIENT gate catches what the relay
 # alone does not (the victim never grants/trusts the attacker).
-( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr grant "$ATTACK_PK" contributor --label "trust-gate demo attacker (ready-d53)" ) || fail "grant attacker failed"
-( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr sync-allowlist --file "$WORK/allowlist.json" --apply ) || fail "sync-allowlist apply (grant) failed"
+( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" grant "$ATTACK_PK" contributor --label "trust-gate demo attacker (ready-d53)" ) || fail "grant attacker failed"
+( cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" relay sync-allowlist --file "$WORK/allowlist.json" --apply ) || fail "sync-allowlist apply (grant) failed"
 sleep 2 # let the strfry plugin observe the mtime change
 pass "attacker key temporarily admitted to both relays (relay-layer gate satisfied for the test)"
 
@@ -175,9 +175,9 @@ pass "victim published its trusted card to the live relay"
 
 echo
 info "STEP 2: ATTACKER (identity B, relay-admitted but victim-UNTRUSTED) forges a LATER card for the SAME id: $ID"
-# Use `rd nostr put` under the attacker's RD_HOME => attacker's portfolio key
+# Use `rd log put` under the attacker's RD_HOME => attacker's portfolio key
 # signs the forged 30302 card. --status done + --priority p0 is the takeover.
-ATTACK_OUT="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" nostr put "$ID" --title "HIJACKED" --status done --priority p0 --context "seized by an untrusted key" 2>&1)"
+ATTACK_OUT="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" log put "$ID" --title "HIJACKED" --status done --priority p0 --context "seized by an untrusted key" 2>&1)"
 printf '%s\n' "$ATTACK_OUT" | sed 's/^/    /'
 ATTACK_PK_LOGGED="$(jq -r '.pubkey' "$ATTACK_PROJ/.ready/nostr-log.jsonl" | head -1)"
 [ "$ATTACK_PK_LOGGED" = "$ATTACK_PK" ] || fail "attacker log pubkey mismatch"
@@ -188,7 +188,7 @@ echo
 info "STEP 3: CONTRAST — the attacker's OWN node (trusts B) reconciles + shows the forged state, proving it is genuinely LIVE on the relay"
 sleep 1 # let the relay index
 rm -f "$ATTACK_PROJ/.ready/nostr-log.jsonl"
-ATTACK_VIEW="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" nostr show "$ID" --reconcile 2>&1)"
+ATTACK_VIEW="$(cd "$ATTACK_PROJ" && RD_HOME="$ATTACK_HOME" "$RD" show "$ID" --reconcile 2>&1)"
 printf '%s\n' "$ATTACK_VIEW" | sed 's/^/    /'
 grep -q "title:    HIJACKED" <<<"$ATTACK_VIEW" || fail "attacker node did not see its own forged event — relay/publish problem, not a gate proof"
 pass "forged event is LIVE on the relay and passes Verify (the attacker's node applies it because B trusts B)"
@@ -198,7 +198,7 @@ info "STEP 4: TRUST GATE — VICTIM wipes its local log and reconciles BOTH card
 rm -f "$VICTIM_PROJ/.ready/nostr-log.jsonl"
 [ ! -f "$VICTIM_PROJ/.ready/nostr-log.jsonl" ] || fail "victim log not wiped"
 sleep 1
-VICTIM_VIEW="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" nostr show "$ID" --reconcile 2>&1)"
+VICTIM_VIEW="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" show "$ID" --reconcile 2>&1)"
 printf '%s\n' "$VICTIM_VIEW" | sed 's/^/    /'
 
 # (a) trusted-key event APPLIED: item reconstructs as the victim's legit card

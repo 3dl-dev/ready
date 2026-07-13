@@ -1,7 +1,7 @@
 # Self-Hosted strfry Relay Runbook (ready-efe)
 
 Reproducible-from-scratch runbook for the two-relay strfry (nostr) topology that
-backs the rd nostr migration.
+backs the rd→nostr migration.
 
 > **Invariant:** The relays are a **CACHE / always-available copy, NEVER the
 > source of truth.** The source of truth is each project's local authoritative
@@ -178,7 +178,7 @@ machine's `$RD_HOME/nostr-identity.json` (materialized by rd,
 ### Admitting / revoking a pubkey — signed source (ready-84e / BP-5)
 
 The hand-edit workflow below is **superseded** by `rd grant` / `rd nostr
-revoke` + `rd nostr sync-allowlist`, which regenerate the allowlist from **one signed
+revoke` + `rd relay sync-allowlist`, which regenerate the allowlist from **one signed
 source** (the kind-39301 role-grants) instead of two hand-kept lists. This ends the
 drift this runbook warns about: the client trust set and the relay file now derive
 from the same signed log (design `docs/design/nostr-identity-model.md` §4/§6, A3).
@@ -186,12 +186,12 @@ from the same signed log (design `docs/design/nostr-identity-model.md` §4/§6, 
 ```bash
 # One signed act admits an actor across BOTH the client trust set and the relay:
 rd grant <pubkeyHex> contributor --label "machine-3 rd-node"   # owner-signed 39301
-rd nostr sync-allowlist                                              # DRY RUN: prints the diff
-rd nostr sync-allowlist --apply                                     # writes the file + scp/ssh to both relays
+rd relay sync-allowlist                                              # DRY RUN: prints the diff
+rd relay sync-allowlist --apply                                     # writes the file + scp/ssh to both relays
 
 # Revoke (prospective by default — past authoritative events stay honored):
 rd revoke <pubkeyHex>
-rd nostr sync-allowlist --apply
+rd relay sync-allowlist --apply
 ```
 
 `sync-allowlist` derives the admitted set = `{ board author } ∪ { non-revoked
@@ -205,7 +205,7 @@ added/removed/preserved diff for review before anyone is removed.
 
 Only the **board author (owner)** may grant `maintainer`/`owner` (the escalation
 cap); a maintainer may grant only `contributor`/`revoked`. The board must be pinned
-first with `rd nostr pin-board` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
+first with `rd pin-board` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
 to `.ready/config.json`).
 
 **Manual fallback** (still valid; `sync-allowlist` produces the same file format):

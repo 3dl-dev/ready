@@ -2,7 +2,7 @@
 # nostr-rd-roundtrip-demo.sh — LIVE ground-source proof for ready-a13.
 #
 # Proves an rd item round-trips through the nostr relay with NO MOCKS, using rd's
-# OWN CLI (`rd create`, `rd nostr show`) against the LIVE self-hosted strfry
+# OWN CLI (`rd create`, `rd show`) against the LIVE self-hosted strfry
 # relays. Establishes the keystone wire mapping the rest of the migration builds
 # on: project=30301 board, item=30302 card, status = s tag + NIP-34 1630 event.
 #
@@ -10,10 +10,10 @@
 #   1. `rd create` an item with -> publishes a 30302 card + 1630 status
 #      event (+ 30301 board) to the LIVE relay AND appends them to the local
 #      append-only SIGNED-EVENT LOG (.ready/nostr-log.jsonl, the source of truth).
-#   2. RELAY-OFFLINE read: point rd at an unreachable relay and `rd nostr show`
+#   2. RELAY-OFFLINE read: point rd at an unreachable relay and `rd show`
 #      the item -> it reconstructs CURRENT state from the LOCAL LOG alone.
 #      (authority = local log; rd works with every relay offline.)
-#   3. CLEAN-CACHE read: WIPE the local log, then `rd nostr show --reconcile`
+#   3. CLEAN-CACHE read: WIPE the local log, then `rd show --reconcile`
 #      -> rd cache-fills the card+status FROM the live relay into a fresh log and
 #      replays it; reconstructed state MATCHES. (relay = replaceable cache.)
 #
@@ -70,7 +70,7 @@ jq -r '.kind' "$PROJ/.ready/nostr-log.jsonl" | sort | uniq -c | sed 's/^/    /'
 
 echo
 info "STEP 2: RELAY-OFFLINE read — reconstruct from the LOCAL LOG with the relay unreachable"
-OFFLINE_OUT="$(RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" nostr show "$ID")"
+OFFLINE_OUT="$(RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" show "$ID")"
 printf '%s\n' "$OFFLINE_OUT" | sed 's/^/    /'
 grep -q "title:    keystone round-trip" <<<"$OFFLINE_OUT" || fail "offline read lost the title"
 grep -q "priority: p1"                  <<<"$OFFLINE_OUT" || fail "offline read lost the priority"
@@ -83,7 +83,7 @@ if relay_reachable; then
   rm -f "$PROJ/.ready/nostr-log.jsonl"
   [ ! -f "$PROJ/.ready/nostr-log.jsonl" ] || fail "log not wiped"
   sleep 1 # let the relay index
-  CLEAN_OUT="$("$RD" nostr show "$ID" --reconcile)"
+  CLEAN_OUT="$("$RD" show "$ID" --reconcile)"
   printf '%s\n' "$CLEAN_OUT" | sed 's/^/    /'
   grep -q "title:    keystone round-trip" <<<"$CLEAN_OUT" || fail "clean-cache reconcile lost the title"
   grep -q "priority: p1"                  <<<"$CLEAN_OUT" || fail "clean-cache reconcile lost the priority"

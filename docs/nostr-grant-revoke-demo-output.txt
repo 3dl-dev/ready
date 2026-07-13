@@ -20,14 +20,14 @@ agent pubkey = 49105af74dcd2bf5e5227d14a591bef2502f5f798dfeec8826bc727354ede2ad
   relay 192.168.2.40: P1 write = ACCEPTED
   relay 192.168.2.41: P1 write = ACCEPTED
 ======================================================================
-(c) rd nostr grant agent contributor + seed P2 maintainer + sync-allowlist --apply
+(c) rd grant agent contributor + seed P2 maintainer + sync-allowlist --apply
 ======================================================================
 published role-grant: grantee=49105af74dcd2bf5e5227d14a591bef2502f5f798dfeec8826bc727354ede2ad role=contributor board=30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:ready
   event id=284e68bafed9c1613cd5fad9a51da97f34d92e45cab703a2de0a0e09f65c2cbb relay-accepted=true
-  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist
+  next: 'rd relay sync-allowlist' to regenerate + push the relay write-allowlist
 published role-grant: grantee=48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497 role=maintainer board=30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:ready
   event id=57b36b98234f8fcf012e05d39bc3737dc39b9be79a1c5e4d49b1a37f027b1aca relay-accepted=true
-  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist
+  next: 'rd relay sync-allowlist' to regenerate + push the relay write-allowlist
 --- dry-run diff ---
 relay write-allowlist regeneration (board author a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25)
   baseline: 3 key(s)  ->  final: 4 key(s)
@@ -57,11 +57,11 @@ relays updated (plugin mtime-reloads; no restart needed)
   relay 192.168.2.41: agent write = ACCEPTED
     P1 admitted=yes  P2 admitted=yes
 ======================================================================
-(e) rd nostr revoke agent + sync-allowlist --apply
+(e) rd revoke agent + sync-allowlist --apply
 ======================================================================
 published role-grant: grantee=49105af74dcd2bf5e5227d14a591bef2502f5f798dfeec8826bc727354ede2ad role=revoked board=30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:ready
   event id=9d5b1485280c5cc1b2683dd5d8e77bb344f8e423d133e9ac6931eb5cb105b26e relay-accepted=true
-  next: 'rd nostr sync-allowlist' to regenerate + push the relay write-allowlist
+  next: 'rd relay sync-allowlist' to regenerate + push the relay write-allowlist
 relay write-allowlist regeneration (board author a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25)
   baseline: 4 key(s)  ->  final: 3 key(s)
   REMOVE (1):

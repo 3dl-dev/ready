@@ -12,7 +12,6 @@ import (
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
-	"github.com/campfire-net/ready/pkg/views"
 	"github.com/spf13/cobra"
 )
 
@@ -347,110 +346,32 @@ func strSliceRemove(s []string, vals ...string) []string {
 	return out
 }
 
-var nostrCmd = &cobra.Command{
-	Use:   "nostr",
-	Short: "rd<->nostr wire-mapping operations (ready-a13)",
-	Long: `Operate on the nostr projection of rd work items.
-
-The local append-only signed-event log (.ready/nostr-log.jsonl) is the source of
-truth; relays are replaceable caches. 'rd nostr show' reconstructs an item's
-CURRENT state by replaying the local log, optionally cache-filling from relays
-first.`,
-}
-
-var nostrShowCmd = &cobra.Command{
-	Use:   "show <item-id>",
-	Short: "Reconstruct an item's current state from the local nostr log",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		itemID := args[0]
-		reconcile, _ := cmd.Flags().GetBool("reconcile")
-
-		dir, ok := readyProjectDir()
-		if !ok {
-			return fmt.Errorf("no .ready project directory found")
+// nostrReconcileItemIntoLog cache-fills a single item from the read relays into the
+// local authoritative log before it is reconstructed, and returns a human-readable
+// note describing what was fetched. It is the substrate behind `rd show --reconcile`
+// (ready-f58: the unique `rd nostr show --reconcile` capability, migrated onto the
+// top-level `rd show`). The local log stays authoritative — the relay fetch only
+// adds trust-gated events that were missing locally.
+func nostrReconcileItemIntoLog(itemID string) (string, error) {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return "", fmt.Errorf("no .ready project directory found")
+	}
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	k, err := nostrKey()
+	if err != nil {
+		return "", err
+	}
+	r, err := rdSync.ReconcileItem(context.Background(), nostrReadRelays(), log, itemID, nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
+	if err != nil {
+		return "", err
+	}
+	if debugOutput {
+		for _, e := range r.RelayErrors {
+			fmt.Fprintf(os.Stderr, "nostr: reconcile relay error: %s\n", e)
 		}
-		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-
-		var reconcileNote string
-		if reconcile {
-			k, err := nostrKey()
-			if err != nil {
-				return err
-			}
-			ctx := context.Background()
-			r, err := rdSync.ReconcileItem(ctx, nostrReadRelays(), log, itemID, nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
-			if err != nil {
-				return err
-			}
-			reconcileNote = fmt.Sprintf("reconciled: fetched=%d added=%d relay_errors=%d", r.Fetched, r.Added, len(r.RelayErrors))
-			if debugOutput {
-				for _, e := range r.RelayErrors {
-					fmt.Fprintf(os.Stderr, "nostr: reconcile relay error: %s\n", e)
-				}
-			}
-		}
-
-		events, err := log.ReadAll()
-		if err != nil {
-			return err
-		}
-		k, err := nostrKey()
-		if err != nil {
-			return err
-		}
-		trusted := nostrTrustSet(dir, k.PubKeyHex())
-		// Status-authority is derived from the board's declared maintainers inside
-		// ProjectItems (ready-b57) — NOT the whole trust set. Read-trust stays the
-		// full set (Trusted); Maintainers is left nil so only item authors and board
-		// maintainers can author authoritative status.
-		items := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Trusted:     trusted,
-			PinnedBoard: nostrPinnedBoard(dir),
-		})
-		item, found := items[itemID]
-		if !found {
-			return fmt.Errorf("item %q not found in local nostr log (events=%d)%s", itemID, len(events),
-				func() string {
-					if reconcileNote != "" {
-						return "; " + reconcileNote
-					}
-					return ""
-				}())
-		}
-
-		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(item)
-		}
-		fmt.Printf("id:       %s\n", item.ID)
-		fmt.Printf("title:    %s\n", item.Title)
-		fmt.Printf("status:   %s\n", item.Status)
-		fmt.Printf("priority: %s\n", item.Priority)
-		fmt.Printf("type:     %s\n", item.Type)
-		if item.By != "" {
-			fmt.Printf("assignee: %s\n", item.By)
-		}
-		if len(item.History) > 0 {
-			// Full audit-trail replay (ready-b5f): every authoritative status
-			// event in the append-only log, NOT just the latest-wins card. Editing
-			// the card never erases these entries — they are derived exclusively
-			// from the NIP-34 status-event chain.
-			fmt.Printf("\nhistory:\n")
-			for _, h := range item.History {
-				note := ""
-				if h.Note != "" {
-					note = " — " + h.Note
-				}
-				fmt.Printf("  [%s] %s → %s by %s%s\n", h.Timestamp, h.FromStatus, h.ToStatus, h.ChangedBy, note)
-			}
-		}
-		if reconcileNote != "" {
-			fmt.Printf("(%s)\n", reconcileNote)
-		}
-		return nil
-	},
+	}
+	return fmt.Sprintf("reconciled: fetched=%d added=%d relay_errors=%d", r.Fetched, r.Added, len(r.RelayErrors)), nil
 }
 
 // nostrPublishCmd re-publishes an existing rd item's CURRENT state (read from the
@@ -536,83 +457,31 @@ func lastStatusReason(item *state.Item) string {
 	return ""
 }
 
-// nostrReadyCmd is the ready-82c proof surface: it computes the SAME named-view
-// readiness set as `rd ready`, but sourced entirely from the nostr projection
-// (ProjectItems over the local authoritative log, optionally cache-filled from
-// relays) instead of the campfire-backed derive path. Filtering, scoping-by-
-// identity, sorting and output formatting are intentionally identical to
-// readyCmd (cmd/rd/ready.go) — this is a substrate swap, not a new feature.
-var nostrReadyCmd = &cobra.Command{
-	Use:   "ready",
-	Short: "Compute the attention-engine readiness set from the nostr projection (ready-82c)",
-	Long: `Like 'rd ready', but the item set is projected from the nostr event log
-instead of the legacy-backed store. Proves the dependency- and gate-aware
-attention engine (pkg/views + pkg/state.Item) computes the same readiness set
-regardless of substrate.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		viewName, _ := cmd.Flags().GetString("view")
-		reconcileFlag, _ := cmd.Flags().GetBool("reconcile")
-
-		dir, ok := readyProjectDir()
-		if !ok {
-			return fmt.Errorf("no .ready project directory found")
-		}
-		k, err := nostrKey()
-		if err != nil {
-			return err
-		}
-		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-
-		if reconcileFlag {
-			ctx := context.Background()
-			// ready-7ec: scope the relay reconcile to the PINNED board when one is
-			// set, so `rd nostr ready` pulls only THIS project's board instead of the
-			// relay's entire portfolio (every project, every board) — the same fix
-			// applied to `rd nostr sync`. Unpinned installs get "" -> ReconcileAll's
-			// unscoped behaviour, unchanged.
-			r, err := rdSync.ReconcileBoard(ctx, nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
-			if err != nil {
-				return err
-			}
-			if debugOutput {
-				fmt.Fprintf(os.Stderr, "nostr: reconcile-all fetched=%d added=%d relay_errors=%d\n", r.Fetched, r.Added, len(r.RelayErrors))
-			}
-		}
-
-		events, err := log.ReadAll()
-		if err != nil {
-			return err
-		}
-		trusted := nostrTrustSet(dir, k.PubKeyHex())
-		// Status-authority = author OR board maintainer (board-derived in ProjectItems,
-		// ready-b57); read-trust = full set. Maintainers left nil.
-		itemsByID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
-			Trusted:     trusted,
-			PinnedBoard: nostrPinnedBoard(dir),
-		})
-		items := make([]*state.Item, 0, len(itemsByID))
-		for _, item := range itemsByID {
-			items = append(items, item)
-		}
-
-		if viewName == "" {
-			viewName = views.ViewReady
-		}
-		filter := views.Named(viewName, k.PubKeyHex())
-		if filter == nil {
-			return fmt.Errorf("unknown view %q: choose from %v", viewName, views.AllNames())
-		}
-		items = views.Apply(items, filter)
-		sortByPriorityETA(items)
-
-		if jsonOutput {
-			return outputItemsJSON(items)
-		}
-		for _, item := range items {
-			fmt.Println(item.ID)
-		}
-		return nil
-	},
+// nostrReconcileBoardIntoLog cache-fills the WHOLE pinned board from the read relays
+// into the local authoritative log before readiness is computed. It is the substrate
+// behind `rd ready --reconcile` (ready-f58: the `rd nostr ready --reconcile`
+// capability, migrated onto the top-level `rd ready`). ready-7ec: the reconcile is
+// scoped to the PINNED board when one is set, so it pulls only THIS project's board
+// rather than the relay's entire portfolio; unpinned installs fall back to the
+// unscoped ReconcileAll behaviour.
+func nostrReconcileBoardIntoLog() error {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return fmt.Errorf("no .ready project directory found")
+	}
+	k, err := nostrKey()
+	if err != nil {
+		return err
+	}
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	r, err := rdSync.ReconcileBoard(context.Background(), nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	if debugOutput {
+		fmt.Fprintf(os.Stderr, "nostr: reconcile-all fetched=%d added=%d relay_errors=%d\n", r.Fetched, r.Added, len(r.RelayErrors))
+	}
+	return nil
 }
 
 // nostrSeedDemoCmd is ground-source proof infrastructure for ready-82c: it
@@ -1163,32 +1032,33 @@ func parityCompareSource(src, projected map[string]*state.Item, sample bool) map
 }
 
 func init() {
-	nostrShowCmd.Flags().Bool("reconcile", false, "cache-fill from read relays before reconstructing (local log stays authoritative)")
-	nostrReadyCmd.Flags().String("view", "ready", "named view: ready, work, pending, overdue, gates")
-	nostrReadyCmd.Flags().Bool("reconcile", false, "cache-fill ALL items from read relays before computing readiness")
 	nostrPutCmd.Flags().String("title", "", "item title")
 	nostrPutCmd.Flags().String("status", "", "rd status (default active)")
 	nostrPutCmd.Flags().String("priority", "", "priority (p0..p3)")
 	nostrPutCmd.Flags().String("type", "task", "item type")
 	nostrPutCmd.Flags().String("context", "", "item description/context (card content)")
 	nostrPutCmd.Flags().String("note", "", "status-change reason (rd close-with-reason); publishes a status change instead of a fresh card")
+	// nostrMigrateCmd / nostrParityCmd keep their own flags: they are the RunE
+	// substrate reused by the top-level `rd migrate` / `rd migrate --parity`
+	// (cmd/rd/migrate.go) and by the migration unit tests, which set these flags on
+	// the command var directly. They are NOT registered under any parent — `rd nostr
+	// migrate`/`parity` are gone (ready-f58); the top-level `rd migrate` is the only
+	// user-facing surface.
 	nostrMigrateCmd.Flags().Bool("local-only", false, "append to the local authoritative log only; skip relay publish")
 	nostrMigrateCmd.Flags().Int("limit", 0, "migrate at most N items (0 = all); deterministic by id — used to seed a live-relay sample")
 	nostrMigrateCmd.Flags().StringSlice("only", nil, "migrate ONLY these item ids (comma-separated) — used to publish a dep-closed live-relay sample")
 	nostrMigrateCmd.Flags().Bool("all", true, "include terminal items (done/cancelled/failed) — default true so history is not lost")
 	nostrParityCmd.Flags().Bool("verbose", false, "print every item (matched and mismatched), not just mismatches")
 	nostrParityCmd.Flags().Bool("sample", false, "the projection is an intentional subset (e.g. from 'migrate --limit'): compare only the projected ids instead of failing on the missing source items. WITHOUT this flag, projected<source is a HARD parity FAILURE (a lost item), never silently narrowed.")
-	nostrCmd.AddCommand(nostrMigrateCmd)
-	nostrCmd.AddCommand(nostrParityCmd)
-	nostrCmd.AddCommand(nostrShowCmd)
-	nostrCmd.AddCommand(nostrPublishCmd)
-	nostrCmd.AddCommand(nostrReadyCmd)
-	nostrCmd.AddCommand(nostrSeedDemoCmd)
-	nostrCmd.AddCommand(nostrPutCmd)
-	// nostrSyncCmd is NOT registered here: `rd nostr sync` was promoted to the
-	// top-level `rd sync` (ready-9ac). The command var stays as the reused
-	// substrate for that top-level surface (cmd/rd/sync.go).
-	nostrCmd.AddCommand(nostrFlushCmd)
-	nostrCmd.AddCommand(nostrMergeCmd)
-	rootCmd.AddCommand(nostrCmd)
+
+	// ready-f58: the `rd nostr` namespace is gone. Local-log operations live under
+	// `rd log`; the relay offline-buffer flush lives under `rd relay`.
+	logCmd.AddCommand(nostrPublishCmd)
+	logCmd.AddCommand(nostrPutCmd)
+	logCmd.AddCommand(nostrMergeCmd)
+	logCmd.AddCommand(nostrSeedDemoCmd)
+	// nostrSyncCmd is NOT registered: `rd nostr sync` was promoted to the top-level
+	// `rd sync` (ready-9ac). The command var stays as the reused substrate for that
+	// top-level surface (cmd/rd/sync.go).
+	relayCmd.AddCommand(nostrFlushCmd)
 }

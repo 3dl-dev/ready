@@ -15,7 +15,7 @@ role="revoked" on the pinned board, then regenerating the relay write-allowlist.
 The revocation is prospective (effective now): the key's past authoritative
 events stay honored (completed items do not reopen).
 
-This is a shorthand for 'rd revoke <pubkey>'. Use 'rd nostr revoke <pubkey> --from
+This is a shorthand for 'rd revoke <pubkey>'. Use 'rd revoke <pubkey> --from
 <unix>' for retroactive (compromise) repudiation.
 
 EXAMPLE

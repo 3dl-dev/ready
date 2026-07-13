@@ -45,6 +45,7 @@ Example:
 		projectFilter, _ := cmd.Flags().GetString("project")
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
+		reconcileFlag, _ := cmd.Flags().GetBool("reconcile")
 
 		// nostr-native default READ path (ready-6ef S-read): on an `rd init` project
 		// the session identity is the secp256k1 signer. The read spine resolves items
@@ -147,6 +148,15 @@ Example:
 			if err != nil {
 				return err
 			}
+			// --reconcile (ready-f58, migrated from the deleted `rd nostr ready`):
+			// cache-fill the whole pinned board from the read relays into the local
+			// authoritative log before computing readiness, so a fresh/clean cache
+			// still yields the full ready set. The local log stays authoritative.
+			if reconcileFlag {
+				if err := nostrReconcileBoardIntoLog(); err != nil {
+					return err
+				}
+			}
 			return runReady(self)
 		}
 
@@ -161,6 +171,7 @@ func init() {
 	readyCmd.Flags().String("project", "", "filter by project")
 	readyCmd.Flags().String("scope", "", "show only items the given grant-holder pubkey is authorized to claim")
 	readyCmd.Flags().StringArray("label", nil, "filter by label atom (repeatable, AND semantics)")
+	readyCmd.Flags().Bool("reconcile", false, "cache-fill the pinned board from the read relays into the local log before computing readiness (local log stays authoritative)")
 	rootCmd.AddCommand(readyCmd)
 }
 

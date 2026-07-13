@@ -14,17 +14,17 @@
 # hosts (rsynced to machine-2 and compiled there).
 #
 # It demonstrates, in order:
-#   PHASE 1  both online: A creates itemA, B creates itemB, each `rd nostr sync`
+#   PHASE 1  both online: A creates itemA, B creates itemB, each `rd sync`
 #            (NIP-77 Negentropy) -> both machines converge on {itemA,itemB}.
 #   PHASE 2  PARTITION machine-2 from the relays (iptables DROP on B). A mutates
 #            itemA online; B mutates itemB offline (buffered in nostr-pending).
-#            Reconnect B -> `rd nostr flush` republishes (idempotent by event id),
-#            both `rd nostr sync` -> converge on the latest state. MEASURED sync
+#            Reconnect B -> `rd relay flush` republishes (idempotent by event id),
+#            both `rd sync` -> converge on the latest state. MEASURED sync
 #            cost is reported (bounded by the diff — none of campfire's fs-sync
 #            pathologies: no 44x re-sync, no multi-GB join, no jail cursor reset).
 #   PHASE 3  DEGRADE FLOOR: with ALL relays unreachable, A creates itemC (durable
 #            in the local log), then the two machines converge by exchanging the
-#            git-committed nostr-log.jsonl and `rd nostr merge-log` — zero relay.
+#            git-committed nostr-log.jsonl and `rd log merge-log` — zero relay.
 #
 # Endpoints come from pkg/rdconfig defaults; override via env below. Idempotent:
 # re-runnable (fresh item ids per run). Requires ssh baron@192.168.2.42 (workshop
@@ -124,47 +124,47 @@ pass "shared ALLOWLISTED portfolio identity provisioned on both machines"
 
 # ---- PHASE 1: both online, converge -----------------------------------------
 echo; info "PHASE 1: both machines ONLINE — create on each, sync, converge"
-rd1 nostr put "$ITEM_A" --title "item A (machine-1)" --status active --priority p1 || fail "A create failed"
-rd2 nostr put "$ITEM_B" --title "item B (machine-2)" --status active --priority p2 || fail "B create failed"
-info "machine-1 sync:"; rd1 nostr sync || fail "machine-1 sync failed"
-info "machine-2 sync:"; rd2 nostr sync || fail "machine-2 sync failed"
+rd1 log put "$ITEM_A" --title "item A (machine-1)" --status active --priority p1 || fail "A create failed"
+rd2 log put "$ITEM_B" --title "item B (machine-2)" --status active --priority p2 || fail "B create failed"
+info "machine-1 sync:"; rd1 sync || fail "machine-1 sync failed"
+info "machine-2 sync:"; rd2 sync || fail "machine-2 sync failed"
 # machine-1 must now see itemB; machine-2 must see itemA.
-rd1 nostr show "$ITEM_B" | grep -q "$ITEM_B" || fail "machine-1 did NOT converge on itemB"
-rd2 nostr show "$ITEM_A" | grep -q "$ITEM_A" || fail "machine-2 did NOT converge on itemA"
+rd1 show "$ITEM_B" | grep -q "$ITEM_B" || fail "machine-1 did NOT converge on itemB"
+rd2 show "$ITEM_A" | grep -q "$ITEM_A" || fail "machine-2 did NOT converge on itemA"
 pass "PHASE 1 converged: machine-1 sees itemB, machine-2 sees itemA"
 
 # ---- PHASE 2: partition machine-2, mutate on both, reconnect ----------------
 echo; info "PHASE 2: PARTITION machine-2 from the relays (iptables DROP)"
 m2 "sudo iptables -A OUTPUT -d ${RELAY_A} -j DROP; sudo iptables -A OUTPUT -d ${RELAY_B} -j DROP" || fail "could not partition machine-2"
 # Confirm the partition: a sync from machine-2 must report relay errors (no converge path).
-if rd2 nostr put "${ITEM_B}-probe" --title probe 2>&1 | grep -q "relay-accepted=true"; then
+if rd2 log put "${ITEM_B}-probe" --title probe 2>&1 | grep -q "relay-accepted=true"; then
   fail "machine-2 still reached a relay after partition — partition invalid"
 fi
 pass "machine-2 partitioned from both relays (relay writes buffer offline)"
 
 info "mutate on BOTH sides while partitioned"
-rd1 nostr put "$ITEM_A" --title "item A" --status done --note "A closed online while B partitioned" || fail "A mutate failed"
-rd2 nostr put "$ITEM_B" --title "item B" --status done --note "B closed OFFLINE (buffered)" || fail "B offline mutate failed"
+rd1 log put "$ITEM_A" --title "item A" --status done --note "A closed online while B partitioned" || fail "A mutate failed"
+rd2 log put "$ITEM_B" --title "item B" --status done --note "B closed OFFLINE (buffered)" || fail "B offline mutate failed"
 # B's mutation must be buffered (durable in local log, queued for relay).
-rd2 nostr flush >/dev/null 2>&1 || true   # nothing should flush yet (still partitioned)
+rd2 relay flush >/dev/null 2>&1 || true   # nothing should flush yet (still partitioned)
 info "machine-2 pending buffer while partitioned:"
 m2 "wc -l < $M2_WORK/.ready/nostr-pending.jsonl 2>/dev/null || echo 0" | sed 's/^/    pending events: /'
 
 echo; info "RECONNECT machine-2 (remove iptables drops) and flush the offline buffer"
 m2 "sudo iptables -D OUTPUT -d ${RELAY_A} -j DROP; sudo iptables -D OUTPUT -d ${RELAY_B} -j DROP" || fail "un-partition failed"
 info "machine-2 flush (republish buffered events; idempotent by event id):"
-rd2 nostr flush || fail "flush failed"
+rd2 relay flush || fail "flush failed"
 info "machine-2 flush AGAIN (must be idempotent — relay dedupes):"
-rd2 nostr flush || fail "second flush failed"
+rd2 relay flush || fail "second flush failed"
 
 info "both machines sync — MEASURED cost:"
-info "machine-1 sync:"; rd1 nostr sync || fail "machine-1 resync failed"
-info "machine-2 sync:"; rd2 nostr sync || fail "machine-2 resync failed"
-info "machine-1 sync again (converged — measure steady-state cost):"; rd1 nostr sync
+info "machine-1 sync:"; rd1 sync || fail "machine-1 resync failed"
+info "machine-2 sync:"; rd2 sync || fail "machine-2 resync failed"
+info "machine-1 sync again (converged — measure steady-state cost):"; rd1 sync
 
 # Convergence on LATEST state: both must show itemA=done and itemB=done.
-A_ON_2="$(rd2 nostr show "$ITEM_A" | awk -F'[[:space:]]+' '/^status:/{print $2}')"
-B_ON_1="$(rd1 nostr show "$ITEM_B" | awk -F'[[:space:]]+' '/^status:/{print $2}')"
+A_ON_2="$(rd2 show "$ITEM_A" | awk -F'[[:space:]]+' '/^status:/{print $2}')"
+B_ON_1="$(rd1 show "$ITEM_B" | awk -F'[[:space:]]+' '/^status:/{print $2}')"
 [ "$A_ON_2" = "done" ] || fail "machine-2 did not converge on itemA=done (got '$A_ON_2')"
 [ "$B_ON_1" = "done" ] || fail "machine-1 did not converge on itemB=done (got '$B_ON_1')"
 pass "PHASE 2 converged after partition+reconnect: itemA=done and itemB=done on BOTH machines"
@@ -172,15 +172,15 @@ pass "PHASE 2 converged after partition+reconnect: itemA=done and itemB=done on 
 # ---- PHASE 3: degrade floor — ALL relays unreachable, git-JSONL sync --------
 echo; info "PHASE 3: DEGRADE FLOOR — ALL relays unreachable, sync via git-committed JSONL"
 info "machine-1 creates itemC pointed at a DEAD relay (durable in local log, no relay):"
-( cd "$WORK" && RD_HOME="$WORK/.rdhome" RD_NOSTR_RELAY_URL="$DEAD_RELAY" "$RD1" nostr put "$ITEM_C" --title "item C (relays down)" --status active --priority p0 ) \
+( cd "$WORK" && RD_HOME="$WORK/.rdhome" RD_NOSTR_RELAY_URL="$DEAD_RELAY" "$RD1" log put "$ITEM_C" --title "item C (relays down)" --status active --priority p0 ) \
   | grep -q "buffered" || info "  (note: itemC buffered / no relay)"
-rd1 nostr show "$ITEM_C" | grep -q "$ITEM_C" || fail "machine-1 local log did not record itemC with relays down"
+rd1 show "$ITEM_C" | grep -q "$ITEM_C" || fail "machine-1 local log did not record itemC with relays down"
 pass "rd fully operational with ALL relays unreachable (local log authoritative)"
 
 info "ship machine-1's committed nostr-log.jsonl to machine-2 (stand-in for a git pull) and merge-log:"
 scp $SSH_OPTS "$WORK/.ready/nostr-log.jsonl" "$M2:$M2_WORK/imported-nostr-log.jsonl" || fail "log ship failed"
-rd2 nostr merge-log "$M2_WORK/imported-nostr-log.jsonl" || fail "merge-log failed"
-rd2 nostr show "$ITEM_C" | grep -q "$ITEM_C" || fail "machine-2 did not converge on itemC via git-JSONL degrade floor"
+rd2 log merge-log "$M2_WORK/imported-nostr-log.jsonl" || fail "merge-log failed"
+rd2 show "$ITEM_C" | grep -q "$ITEM_C" || fail "machine-2 did not converge on itemC via git-JSONL degrade floor"
 pass "PHASE 3: machine-2 converged on itemC with ZERO relay — git-JSONL degrade floor works"
 
 echo

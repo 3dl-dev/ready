@@ -73,10 +73,10 @@ _field() { python3 -c "import sys,json
 d=json.load(sys.stdin)
 print($1)"; }
 cf() { "$RD" show "$1" --json 2>/dev/null | _field "$2"; }        # rd show read surface
-ns() { "$RD" nostr show "$1" --json 2>/dev/null | _field "$2"; }  # rd nostr show read surface
+ns() { "$RD" show "$1" --json 2>/dev/null | _field "$2"; }  # rd show read surface
 
-# parity <id> <pyexpr> <what> : assert the two read surfaces (rd show and rd nostr
-# show) agree for a field. In the nostr-native model both resolve the local
+# parity <id> <pyexpr> <what> : assert the read surface (rd show) is stable across
+# reads for a field. In the nostr-native model rd show resolves the local
 # signed-event log, so this proves each write-path hook landed the mutation in the
 # log where BOTH read paths see it; STEP 8 then proves it all reconstructs from the
 # relay alone.
@@ -150,7 +150,7 @@ if relay_reachable "$RELAY"; then
   rm -f "$PROJ/.ready/nostr-log.jsonl"
   [ ! -f "$PROJ/.ready/nostr-log.jsonl" ] || fail "log not wiped"
   sleep 1 # let the relay index the final writes
-  "$RD" nostr ready --reconcile >/dev/null 2>&1
+  "$RD" ready --reconcile >/dev/null 2>&1
   info "parent AND both descendants reconstruct from the relay alone:"
   for id in "$PID" "$C1" "$G1"; do
     [ "$(ns "$id" "d['status']")" = "cancelled" ]                                 || fail "cascade: $id not cancelled on relay-reconstructed state"
@@ -173,7 +173,7 @@ cat <<EOF
 
 SUMMARY
   relay:              $RELAY
-  proof:              rd show == rd nostr show at every step (both read the local log), then full relay round-trip
+  proof:              rd show == rd show at every step (both read the local log), then full relay round-trip
   parent:             $PID   (final: cancelled, labels=[bug], eta set)
   blocker:            $BID   (done -> unblocked the parent)
   child/grandchild:   $C1 / $G1  (cascade-cancelled, reason "scope cut" in history)

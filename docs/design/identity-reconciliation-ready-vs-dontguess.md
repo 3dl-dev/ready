@@ -87,7 +87,7 @@ dontguess's marketplace needs only admitted/not-admitted for sellers. A work-gra
 | 11 | Relay write-allowlist plugin | **COVERED** | strfry verifies BIP-340 first (`write-allowlist.py:9-17`); fail-closed on empty/malformed `:38-41,80-94`; mtime-reload |
 | 12 | Migration | **COVERED** | Source is campfire/JSONL never nostr (`nostr.go:951`, non-circular); projected-back events pass same gates |
 | 13 | Dual-read (`RD_NOSTR_READ`) | **COVERED** | Routes through `ProjectItems` with Trusted+PinnedBoard (`nostr.go:884`) — identical gate stack |
-| 14 | Readiness — `rd nostr ready` | **COVERED** | `ReconcileBoard` + `ProjectItems` both gated (`nostr.go:579,595-597`) |
+| 14 | Readiness — `rd ready` | **COVERED** | `ReconcileBoard` + `ProjectItems` both gated (`nostr.go:579,595-597`) |
 | 15 | In-memory trust-cache reset (dontguess `NeedsRevalidation` analog) | **CONFIRMED ABSENT — no bug** | `DeriveLevels` pure, re-run per `ProjectItems` (`nostrproject.go:126-130`); config reloaded per command (`config.go:84`). No persisted "validated" flag |
 
 ### Defects (both fail-closed — safe to ship, but they are real design-fidelity deviations)
@@ -123,7 +123,7 @@ Two projects with **divergent trust philosophies** may sit on shared relays. The
 - **The one thing to coordinate is the relay write-allowlist union.** If a single strfry instance serves both, its write-allowlist must contain **both projects' admitted keys** (ready's grant-derived allowlist ∪ dontguess's `FleetAllowlist`). This is a coarse spam gate only; over-admitting there is harmless because both re-verify client-side. Ensure neither project's `sync-allowlist` regeneration **overwrites** the other's keys — the file must be a union, or the two projects must use separate write-allowlist files / separate relays. This is the single operational hazard.
 - **Kind separation is already clean.** ready uses kinds 30301 (board)/card/39301 (grant); dontguess uses its own operator/put/match kinds. No kind collision, so a shared relay's event stream is trivially partitionable by each reader.
 
-**Recommendation for ready-677:** prefer **separate write-allowlist files per project** on a shared relay (simplest, zero cross-contamination risk). If a single union file is unavoidable, add a regeneration guard so `rd nostr sync-allowlist` merges rather than replaces. No trust-model coordination beyond this — the shared spine (client-side re-verification) makes the projects safely co-tenant.
+**Recommendation for ready-677:** prefer **separate write-allowlist files per project** on a shared relay (simplest, zero cross-contamination risk). If a single union file is unavoidable, add a regeneration guard so `rd relay sync-allowlist` merges rather than replaces. No trust-model coordination beyond this — the shared spine (client-side re-verification) makes the projects safely co-tenant.
 
 ---
 
