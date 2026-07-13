@@ -10,14 +10,17 @@ import (
 var joinCmd = &cobra.Command{
 	Use:   "join <rd1_token>",
 	Short: "Join a project via an invite token",
-	Long: `Join a project via a one-use invite token.
+	Long: `Join a project via a one-use invite (claim) token.
 
-'rd join rd1_...' imports the minted secp256k1 identity, pins the board,
-adopts the project's relays, and syncs the project's items. An invite token is
-the only join path.
+'rd join rd1_...' SELF-MINTS a fresh secp256k1 identity, pins the board, adopts the
+project's relays, and syncs the project's items READ-ONLY — 'rd ready' works
+immediately. It writes NOTHING to the relays. It then prints your pubkey and the
+claim-nonce; send those to the owner, who grants write access with
+'rd grant <pubkey> contributor --claim <claim-nonce>'. An invite token is the only
+join path. Re-joining the same token on this machine needs --force.
 
 EXAMPLES
-  rd join rd1_...                     # join via a one-use invite token`,
+  rd join rd1_...                     # join read-only via a one-use invite token`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {

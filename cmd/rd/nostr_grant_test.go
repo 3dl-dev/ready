@@ -120,14 +120,43 @@ func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
 	}
 
 	// A plain contributor attempting to grant a contributor must be rejected client-side.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0)
+	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer grant = %v, want an 'escalation cap' client-side rejection", err)
 	}
 	// And attempting to revoke must be rejected the same way.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0)
+	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer revoke = %v, want an 'escalation cap' client-side rejection", err)
+	}
+	assertNoDotCf(t)
+}
+
+// TestPublishRoleGrant_ClaimSingleUse is the ready-ce0 security-property (c) proof at
+// the CLI seam: the owner binds a first self-minted key to claim-nonce N (ok); a
+// SECOND grant reusing the SAME N for a DIFFERENT key is REFUSED client-side (one
+// claim-nonce admits exactly one pubkey). Re-granting the SAME key under its own N is
+// allowed (e.g. a later role change).
+func TestPublishRoleGrant_ClaimSingleUse(t *testing.T) {
+	setupNostrNativeProject(t)
+	const claim = "cli-claim-01"
+	a, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey a: %v", err)
+	}
+	b, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey b: %v", err)
+	}
+	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a", 0, claim); err != nil {
+		t.Fatalf("first --claim grant should succeed: %v", err)
+	}
+	err = publishRoleGrant(b.PubKeyHex(), rdSync.RoleContributor, "b", 0, claim)
+	if err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("second grant reusing claim = %v, want 'already consumed' refusal", err)
+	}
+	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a2", 0, claim); err != nil {
+		t.Fatalf("same-key re-grant under its own claim should succeed: %v", err)
 	}
 	assertNoDotCf(t)
 }

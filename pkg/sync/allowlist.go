@@ -42,7 +42,7 @@ import (
 // (which has no grant of its own); when a later grant also names boardAuthor, that
 // grant's label wins.
 func DeriveAllowlist(events []*nostr.Event, boardAuthor, boardD, boardAuthorLabel string) map[string]string {
-	_, _, winning := deriveGrants(events, boardAuthor, boardD)
+	_, _, winning, _ := deriveGrants(events, boardAuthor, boardD)
 
 	out := make(map[string]string)
 	if boardAuthor != "" {
@@ -63,7 +63,7 @@ func DeriveAllowlist(events []*nostr.Event, boardAuthor, boardD, boardAuthorLabe
 // explicit, currently-effective revoke — the only condition under which
 // PlanAllowlist permits removing a currently-admitted key.
 func revokedSet(events []*nostr.Event, boardAuthor, boardD string) map[string]bool {
-	_, _, winning := deriveGrants(events, boardAuthor, boardD)
+	_, _, winning, _ := deriveGrants(events, boardAuthor, boardD)
 	out := make(map[string]bool)
 	for grantee, g := range winning {
 		if g.Role == RoleRevoked {

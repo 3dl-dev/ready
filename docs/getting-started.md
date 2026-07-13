@@ -128,33 +128,59 @@ rd cancel <id> --reason "..."        # cancel with reason
 
 ---
 
-## Part 2: Team (invite tokens)
+## Part 2: Team (invite tokens — the self-mint claim model)
 
-Teammates join via single-use `rd1_` invite tokens. No separate pubkey exchange
-— the token mints a fresh secp256k1 identity, publishes an owner-signed
-contributor grant for it, and bundles the board coordinate, relay set, TTL,
-a one-use nonce, and the minted secret. Tokens are single-use: the first
-redeemer publishes a signed consumed marker.
+Teammates join via single-use `rd1_` **claim** tokens. The token carries **no
+secret key** — only the board coordinate, the relay set, a TTL, and a one-use
+claim-nonce. The joiner **self-mints** its own key locally and joins **read-only**;
+the owner then grants it write access, binding the claim-nonce to the joiner's
+pubkey. The lifecycle is four steps:
 
-### Owner: generate an invite token
+1. **Owner mints a claim** — `rd invite` → a `rd1_` token (no key, no grant).
+2. **Recipient joins read-only** — `rd join <token>` self-mints a key, pins the
+   board, adopts the relays, and syncs. `rd ready` works immediately. The joiner
+   **writes nothing to the relays** yet. It prints its `pubkey` and the `claim`.
+3. **Recipient sends the owner `pubkey` + `claim`**.
+4. **Owner grants + admits** — `rd grant <pubkey> contributor --claim <claim>`
+   (then `rd relay sync-allowlist --apply` on locked relays).
+
+**Security model.** The token is a **TTL-bounded claim, not a bearer secret**: a
+leaked token yields only the right to self-mint and *request* a grant the owner may
+deny — there is no importable key and no live grant in it. **Single-use is real and
+owner-enforced**: one claim-nonce binds to exactly one pubkey (enforced at grant
+derivation), so a leaked claim admitted to a second self-minted key is refused.
+
+### Owner: mint a claim token
 
 ```bash
 cd ~/projects/myproject
 rd invite
-# rd1_...  (invite token — contains a private key, treat as secret, share out of band)
+# rd1_...  (claim token — NO private key; TTL-bounded; share it with the joiner)
 
-rd invite --ttl 30m   # shorter exposure window (default 2h)
+rd invite --ttl 30m   # shorter window (default 2h)
 ```
 
-### Teammate: join
+### Teammate: join read-only, then send pubkey + claim
 
 ```bash
-# Join the project using the token — imports the minted identity, pins the
-# board, adopts the relays, and syncs. No separate identity bootstrap step.
+# Self-mints a key, pins the board, adopts relays, syncs READ-ONLY.
 rd join rd1_...
+# Joined board <owner>... READ-ONLY (invite expires in ...).
+#   run 'rd ready' to see the project's items now.
+#
+# To get WRITE access, send the owner this:
+#   pubkey=<hex>
+#   claim=<nonce>
 
-# Items are already synced — no rd sync needed
-rd ready
+rd ready   # already synced — items are visible read-only
+```
+
+### Owner: grant write access (consumes the claim, single-use)
+
+```bash
+rd grant <joiner-pubkey> contributor --claim <claim-nonce>
+# On locked relays, push the updated allowlist:
+rd relay sync-allowlist --apply
 ```
 
 ### Delegate work to a teammate
@@ -205,8 +231,9 @@ git commit -m "chore: add work project"
 git worktree add worktree-a
 git worktree add worktree-b
 
-# Each agent joins with its own $RD_HOME — the token mints and ships a fresh
-# identity, so no separate bootstrap step is needed.
+# Each agent joins with its own $RD_HOME — join self-mints a fresh key into that
+# $RD_HOME (read-only), so no separate bootstrap step is needed. The owner then
+# grants each agent's printed pubkey: rd grant <pubkey> contributor --claim <claim>.
 cd ~/projects/myproject && RD_HOME=worktree-a/.rd rd join rd1_<token-for-agent-a>
 cd ~/projects/myproject && RD_HOME=worktree-b/.rd rd join rd1_<token-for-agent-b>
 ```

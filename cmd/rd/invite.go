@@ -9,35 +9,41 @@ import (
 
 var inviteCmd = &cobra.Command{
 	Use:   "invite",
-	Short: "Generate a one-use invite token for this project",
-	Long: `Generate a one-use invite token that lets a worker join this project
-with a single 'rd join <token>' command.
+	Short: "Mint a one-use claim token that lets a worker join this project",
+	Long: `Mint a one-use CLAIM token for this project (the self-mint invite model).
 
-The token MINTS a fresh secp256k1 contributor identity, publishes an owner-signed
-contributor grant for it, and bundles the board coordinate, relay set, TTL, a
-one-use nonce, and the minted secret into the rd1_ token. The joiner imports the
-key, pins the board, adopts the relays, and syncs — no separate key exchange.
+The token carries ONLY the board coordinate, the relay set, a TTL, and a one-use
+claim-nonce. It ships NO secret key and NO grant. The joiner runs 'rd join <token>',
+which SELF-MINTS its own key, syncs the board READ-ONLY, and prints its pubkey plus
+the claim-nonce. You then grant write access:
+
+  rd grant <joiner-pubkey> contributor --claim <claim-nonce>
+
+Single-use is REAL and owner-enforced: a claim-nonce binds to exactly one pubkey, so
+a leaked token yields only a TTL-bounded request the owner may deny — never a key.
 
 SECURITY
-  The token contains a private key — treat it as a secret.
-  Use --ttl to limit the exposure window (default 2h).
-  The token is single-use: the first redeemer publishes a signed consumed marker.
+  The token contains NO private key. A leak is a TTL-bounded claim, not a compromise.
+  Use --ttl to limit the window (default 2h).
 
 EXAMPLES
-  rd invite                  # default: 2h TTL, contributor role
+  rd invite                  # default: 2h TTL
   rd invite --ttl 30m        # shorter TTL`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ttl, _ := cmd.Flags().GetDuration("ttl")
 
-		// The rd1_ nostr mint-and-ship token is the SOLE invite path (ready-a49):
-		// a fresh secp256k1 key, an owner-signed contributor grant, and the board
-		// coord + relays + TTL + one-use nonce + secret bundled in the token.
+		// The rd1_ v3 claim token is the SOLE invite path (ready-ce0): a one-use
+		// claim-nonce + board coord + relays + TTL. No key, no grant at mint time.
 		token, err := runNostrInvite(ttl)
 		if err != nil {
 			return err
 		}
 		fmt.Println(token)
+		fmt.Fprintln(cmd.ErrOrStderr(), "\nShare this token with the joiner. They run `rd join <token>` (self-mints, read-only)")
+		fmt.Fprintln(cmd.ErrOrStderr(), "and send back a pubkey + claim-nonce; grant write with:")
+		fmt.Fprintln(cmd.ErrOrStderr(), "  rd grant <pubkey> contributor --claim <claim-nonce>")
+		fmt.Fprintln(cmd.ErrOrStderr(), "On locked relays, then run `rd relay sync-allowlist --apply`. Token is TTL-bounded.")
 		return nil
 	},
 }

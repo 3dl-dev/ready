@@ -39,8 +39,8 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // log, surfacing the add/remove/preserve diff. A regeneration failure WARNS but never
 // fails the command — the grant is already durable in the log; the allowlist is a
 // derived artifact the operator can re-emit with `rd relay sync-allowlist`.
-func runNostrGrantRevoke(dir, grantee, role, label string, from int64) error {
-	if err := publishRoleGrant(grantee, role, label, from); err != nil {
+func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
+	if err := publishRoleGrant(grantee, role, label, from, claim); err != nil {
 		return err
 	}
 	surfaceAllowlistRegen(dir)
@@ -201,12 +201,14 @@ This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
 		}
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
-		return runNostrGrantRevoke(dir, grantee, role, label, from)
+		claim, _ := cmd.Flags().GetString("claim")
+		return runNostrGrantRevoke(dir, grantee, role, label, from, claim)
 	},
 }
 
 func init() {
 	grantCmd.Flags().String("label", "", "human label carried in the grant content (used as the relay allowlist label)")
 	grantCmd.Flags().Int64("from", 0, "effective-from unix seconds (0 = prospective / effective now)")
+	grantCmd.Flags().String("claim", "", "one-use invite claim-nonce this grant consumes (from the joiner's `rd join` output); binds the nonce to this pubkey (single-use)")
 	rootCmd.AddCommand(grantCmd)
 }
