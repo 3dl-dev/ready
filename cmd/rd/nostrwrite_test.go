@@ -592,9 +592,10 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 	assertNoDotCf(t)
 }
 
-// NOTE (ready-cb6 I7): the campfire-backed playbook/engage surface was removed
-// (nostr-native rebuild tracked as ready-a4a). The engage-publish test that
-// exercised publishEngagedItemsNostr is deleted with that code.
+// NOTE (ready-a4a): the campfire-backed playbook/engage surface (removed in
+// ready-cb6 I7) was rebuilt store-free on the nostr-native path. The playbook
+// create->list round-trip and the engage instantiate-with-dep-edges proofs
+// (which exercise publishEngagedItemsNostr) now live in engage_test.go.
 
 // TestNostrNative_LabelPropose_CreatesDecisionItem proves `rd label propose` on a
 // nostr-native project creates a p3 decision item via the secp256k1 path with no
