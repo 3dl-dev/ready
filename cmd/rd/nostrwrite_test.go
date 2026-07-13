@@ -446,6 +446,12 @@ func TestNostrNative_ShowAudit_NoDotCf(t *testing.T) {
 	if !strings.Contains(out, "authority: owner (root principal)") {
 		t.Fatalf("show --audit did not annotate the owner's authority from the nostr projection:\n%s", out)
 	}
+	// ready-c64: `rd show` must not leak the word "campfire" on a nostr-native
+	// item (the old unconditional "Campfire:" label rendered empty and violated
+	// the zero-campfire invariant).
+	if strings.Contains(strings.ToLower(out), "campfire") {
+		t.Fatalf("rd show output leaked 'campfire' on a nostr-native item:\n%s", out)
+	}
 }
 
 // TestNostrBoardAuthor_MalformedPinHardErrors is the HIGH-2 fail-open proof: when
