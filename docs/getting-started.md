@@ -42,7 +42,7 @@ curl -fsSL https://ready.3dl.dev/install.sh | sh
 Verify it's on your PATH:
 
 ```bash
-rd version
+rd --version
 ```
 
 ---
@@ -405,7 +405,7 @@ rd gate <item-id> \
   --description "Two approaches: option A saves 2ms but breaks caching, option B is safe. Need direction."
 ```
 
-Gate types: `design`, `scope`, `risk`, `legal`, `other`.
+Gate types: `budget`, `design`, `scope`, `review`, `human`, `stall`, `periodic`.
 
 ### Human reviews and approves
 
