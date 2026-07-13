@@ -135,7 +135,13 @@ Example:
 				fmt.Printf("  [%s] %s → %s by %s%s%s\n", ts, h.FromStatus, h.ToStatus, actor, note, authNote)
 			}
 		}
-		fmt.Printf("\nCampfire: %s\n", formatCampfireIDForDisplay(item.CampfireID))
+		fmt.Println()
+		// Campfire is fully removed (I7); a nostr-native item never carries a
+		// CampfireID. Only print the label for a legacy item that still has one,
+		// so `rd show` never emits an empty "Campfire:" on the happy path.
+		if item.CampfireID != "" {
+			fmt.Printf("Campfire: %s\n", formatCampfireIDForDisplay(item.CampfireID))
+		}
 		fmt.Printf("Msg ID:   %s\n", item.MsgID)
 		if reconcileNote != "" {
 			fmt.Printf("(%s)\n", reconcileNote)
