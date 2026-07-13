@@ -466,19 +466,12 @@ var nostrPublishCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("no .ready project directory found")
 		}
-		// Load current item state from the JSONL projection.
-		path := jsonlPath()
-		if path == "" {
-			return fmt.Errorf("no mutations.jsonl found")
-		}
-		campfireID, _, _ := projectRoot()
-		items, err := state.DeriveFromJSONLWithCampfire(path, campfireID)
+		// Load current item state from the nostr projection (the resolver every
+		// other nostr-native command uses) — NOT the legacy JSONL projection,
+		// which does not exist on a nostr-native project (ready-50a).
+		item, err := nostrResolveItem(itemID)
 		if err != nil {
 			return err
-		}
-		item, found := items[itemID]
-		if !found {
-			return fmt.Errorf("item %q not found in rd state", itemID)
 		}
 		pub, ok, err := nostrPublisher()
 		if err != nil {
