@@ -1073,6 +1073,36 @@ modified. Idempotent by event id (safe to re-run).`,
 		if err != nil {
 			return err
 		}
+
+		// ready-14b — PIN THE SIGNER TO THE BOARD OWNER before re-emitting anything.
+		// migrate re-authors the 30301 board (the trust ROOT) signed by k, the ACTIVE
+		// $RD_ACTOR key, and stamps every card's board-membership under k's pubkey. If
+		// k is NOT the board owner, the whole projection is rooted on the wrong key: the
+		// board author (implicit level-2 trust anchor, checker.go bootstrap) becomes an
+		// agent, every migrated card is attributed to the wrong owner, and authz breaks
+		// portfolio-wide — silently. Two ways k can be wrong, both refused here BEFORE
+		// any event is built/published (fail-closed, nothing half-migrated):
+		//  1. A named agent actor ($RD_ACTOR != "owner") signs with an agent key that is
+		//     definitionally not the owner — refused even on a fresh (unpinned) bootstrap
+		//     migration where nostrBoardAuthor would otherwise fall back to the signer.
+		//  2. Even as the owner actor, if the board is already PINNED to a specific owner
+		//     pubkey and this machine's owner key is not that pubkey (wrong machine / a
+		//     regenerated key), nostrBoardAuthor resolves the pinned owner and the signer
+		//     mismatch is caught.
+		signer := k.PubKeyHex()
+		if a := rdActor(); a != nostr.OwnerActor {
+			return fmt.Errorf("rd migrate: refusing to migrate as actor %q — the migration re-authors the 30301 board (the trust root) and only the OWNER may sign it; "+
+				"a non-owner key would mis-bind the trust root and attribute every migrated item to the wrong owner. Re-run as the owner (unset $RD_ACTOR, or set RD_ACTOR=owner on the owner's machine)", a)
+		}
+		boardAuthor, err := nostrBoardAuthor(dir, signer)
+		if err != nil {
+			return err
+		}
+		if signer != boardAuthor {
+			return fmt.Errorf("rd migrate: refusing to migrate — the active owner signing key (pubkey %s) is NOT the owner of the pinned target board (owner pubkey %s); "+
+				"migrating under it would re-author the 30301 board and mis-bind the trust root. Run migrate on the machine holding the pinned board owner's key", signer, boardAuthor)
+		}
+
 		log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
 		boardD := projectPrefix(dir)
 

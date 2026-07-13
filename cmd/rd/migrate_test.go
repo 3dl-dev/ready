@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
@@ -234,6 +236,71 @@ func TestTopLevelMigrateParity_GreenOnSeededBoard(t *testing.T) {
 		if !ip.Match() {
 			t.Fatalf("item %s mismatched on a green parity run: %v", ip.ItemID, ip.Diffs)
 		}
+	}
+}
+
+// TestTopLevelMigrate_RefusedUnderNonOwnerActor is the ready-14b security gate:
+// `rd migrate` re-emits the 30301 board — the trust ROOT — signed by the ACTIVE
+// $RD_ACTOR key. If that key is a NAMED AGENT (not the owner), the migration would
+// author the board under the agent's key, mis-binding the trust root so every
+// migrated card is attributed to the wrong owner and authz breaks portfolio-wide.
+// A migrate run under a non-owner $RD_ACTOR must therefore be REFUSED with a clear
+// error BEFORE any event is written, not silently mis-bound.
+func TestTopLevelMigrate_RefusedUnderNonOwnerActor(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	seedCampfireBoard(t, dir)
+
+	// Sign as a named durable agent instead of the owner — a DISTINCT key
+	// (nostrKey generates a fresh one at $RD_HOME/keys/agent-pm.json).
+	t.Setenv("RD_ACTOR", "agent:pm")
+
+	_, err := runTopMigrate(t)
+	if err == nil {
+		t.Fatalf("rd migrate under RD_ACTOR=agent:pm returned nil error; expected a REFUSAL " +
+			"(a non-owner migrate re-authors the 30301 board and mis-binds the trust root)")
+	}
+	if !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("refusal error must explain the owner requirement, got: %v", err)
+	}
+
+	// The migration must be FULLY refused — zero events written to the local log.
+	// (The guard fires before PublishEventsUnique, so nothing is appended.)
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	if events, rerr := log.ReadAll(); rerr == nil && len(events) != 0 {
+		t.Fatalf("a refused migrate must write zero events; found %d in the local log", len(events))
+	}
+}
+
+// TestTopLevelMigrate_RefusedWhenSignerIsNotPinnedBoardOwner is the defense-in-depth
+// companion: even under the OWNER actor, if the board is already PINNED to a specific
+// owner pubkey (.ready/config.json) and this machine's owner key is NOT that pubkey
+// (wrong machine, or a regenerated key), migrating would re-author the board under a
+// key that is not the pinned owner — again mis-binding the trust root. The signing
+// key must equal the target board owner, or migrate REFUSES.
+func TestTopLevelMigrate_RefusedWhenSignerIsNotPinnedBoardOwner(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	seedCampfireBoard(t, dir)
+
+	// Pin the board to a FOREIGN owner; the local (owner-actor) key is not it.
+	foreign, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey (foreign owner): %v", err)
+	}
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	cfg.Board = rdSync.BoardCoord(foreign.PubKeyHex(), projectPrefix(dir))
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	_, err = runTopMigrate(t)
+	if err == nil {
+		t.Fatalf("rd migrate returned nil error when the signing key is not the pinned board owner; expected a REFUSAL")
+	}
+	if !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("refusal error must name the owner mismatch, got: %v", err)
 	}
 }
 
