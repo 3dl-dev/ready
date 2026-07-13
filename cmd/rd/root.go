@@ -251,16 +251,6 @@ func jsonlPath() string {
 	return filepath.Join(dir, ".ready", "mutations.jsonl")
 }
 
-// pendingPath returns the path to .ready/pending.jsonl for the current project.
-// Returns an empty string if no project root is found.
-func pendingPath() string {
-	dir, ok := readyProjectDir()
-	if !ok {
-		return ""
-	}
-	return filepath.Join(dir, ".ready", "pending.jsonl")
-}
-
 // allItemsFromJSONLOrStore returns all items from the nostr projection (default
 // on a nostr-native project, or when RD_NOSTR_READ=1) or the local JSONL log.
 //
@@ -294,17 +284,6 @@ func byIDFromJSONLOrStore(itemID string) (*state.Item, error) {
 		// campfireID may be empty for JSONL-only projects.
 		campfireID, _, _ := projectRoot()
 		return resolve.ByIDFromJSONL(path, campfireID, itemID)
-	}
-	return nil, resolve.ErrNotFound{ID: itemID}
-}
-
-// byIDFromJSONLOrStoreExact resolves an item by exact ID only — no prefix
-// expansion. Use for security-sensitive operations (e.g. admit) where a prefix
-// collision could allow an attacker to substitute a crafted item.
-func byIDFromJSONLOrStoreExact(itemID string) (*state.Item, error) {
-	if path := jsonlPath(); path != "" {
-		campfireID, _, _ := projectRoot()
-		return resolve.ByIDFromJSONLExact(path, campfireID, itemID)
 	}
 	return nil, resolve.ErrNotFound{ID: itemID}
 }

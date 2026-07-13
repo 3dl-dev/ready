@@ -282,6 +282,26 @@ func TestNostrNative_DelegateGateApprove(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_ImplicitUnblock_UnresolvableIDWarnsInsteadOfSwallowing proves
+// publishImplicitUnblockNostrNative surfaces a resolve failure via
+// warnNostrPublishFailure instead of a bare `continue` (ready-c00 fix): a
+// blocked-item ID that no longer resolves in the nostr projection (e.g. dropped
+// between derive and republish) must be diagnosable on stderr, not silently
+// dropped.
+func TestNostrNative_ImplicitUnblock_UnresolvableIDWarnsInsteadOfSwallowing(t *testing.T) {
+	setupNostrNativeProject(t)
+
+	stderrOut := captureStderrPipe(t, func() {
+		publishImplicitUnblockNostrNative([]string{"ready-does-not-exist"})
+	})
+	if !strings.Contains(stderrOut, "implicit-unblock ready-does-not-exist") {
+		t.Fatalf("expected a warnNostrPublishFailure diagnostic naming the unresolved id, got: %q", stderrOut)
+	}
+	if !strings.Contains(stderrOut, "warning: nostr publish failed") {
+		t.Fatalf("expected the standard warnNostrPublishFailure prefix, got: %q", stderrOut)
+	}
+}
+
 // TestNostrNative_DepAndLabel covers the dep + label publisher gaps as card-only
 // edits that the projection reads back.
 func TestNostrNative_DepAndLabel(t *testing.T) {
@@ -452,9 +472,11 @@ func TestNostrBoardAuthor_MalformedPinHardErrors(t *testing.T) {
 	}
 
 	// And a real create refuses rather than publishing under the signer's authority.
-	err = publishItemCreateNostr("ready-zzz", "should not publish", "task", "p1", state.StatusInbox, "", "")
+	_, err = runCreateNostr(dir, nostrCreateSpec{
+		title: "should not publish", itemType: "task", priority: "p1",
+	})
 	if err == nil || !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("publishItemCreateNostr on malformed pin = %v, want a 'malformed' hard error", err)
+		t.Fatalf("runCreateNostr on malformed pin = %v, want a 'malformed' hard error", err)
 	}
 
 	// Nothing landed in the log under the signer's own authority.

@@ -231,69 +231,6 @@ func nostrBoardAuthor(dir, signerPubkey string) (string, error) {
 	return signerPubkey, nil
 }
 
-// publishItemCreateNostr is the create-time hook: when nostr is enabled it
-// publishes the board + card + status events for a freshly created item and
-// appends them to the local authoritative log. It is best-effort — a relay
-// failure never fails `rd create` (the event is durable in the log; the campfire
-// / JSONL write already succeeded). Returns nil when nostr is disabled.
-func publishItemCreateNostr(itemID, title, itemType, priority, status, itemContext, forParty string) error {
-	if !nostrWriteActive() {
-		return nil
-	}
-	pub, ok, err := nostrPublisher()
-	if err != nil || !ok {
-		return err
-	}
-	dir, _ := readyProjectDir()
-	signer := pub.Key.PubKeyHex()
-	boardAuthor, err := nostrBoardAuthor(dir, signer)
-	if err != nil {
-		return err
-	}
-	board := boardSpecForProject(dir, boardAuthor)
-	if status == "" {
-		status = state.StatusInbox
-	}
-	card := rdSync.CardSpec{
-		ItemID:   itemID,
-		Title:    title,
-		Status:   status,
-		Priority: priority,
-		Type:     itemType,
-		Context:  itemContext,
-		BoardD:   board.BoardD,
-		// Board MEMBERSHIP points at the OWNER's board coordinate (BP-4), so an
-		// agent-signed card is accepted by the owner's pinned board. Owner-signed
-		// cards resolve boardAuthor==signer, unchanged.
-		BoardAuthor: boardAuthor,
-		// Carry the assignment scope at create time (ready-187) — forParty is the
-		// only extra field available here. Other card-only fields (labels/eta/due/
-		// level/parent) are materialized by the first full-item republish through
-		// rdSync.CardSpecFromItem (any subsequent mutation), which supersedes this
-		// create card latest-wins.
-		For: forParty,
-	}
-	// Only the board AUTHOR (owner) can sign the owner's 30301 board. An agent must
-	// not fork its OWN board (a parallel-board self-escalation BP-3 pins against), so
-	// skip the board event when signing as a non-owner actor — its card still joins
-	// the owner's board via BoardAuthor above.
-	var boardArg *rdSync.BoardSpec
-	if signer == boardAuthor {
-		boardArg = &board
-	}
-	ctx := context.Background()
-	res, err := pub.PublishItem(ctx, boardArg, card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(itemID)))
-	if err != nil {
-		return err
-	}
-	if debugOutput {
-		for _, ev := range res.Events {
-			fmt.Fprintf(os.Stderr, "nostr: published kind %d id %s (relay-accepted=%v)\n", ev.Kind, ev.EventID, ev.AnyRelay)
-		}
-	}
-	return nil
-}
-
 // warnNostrPublishFailure prints the standard best-effort nostr-publish-failure
 // warning to stderr: action names WHAT was already durably committed elsewhere
 // (campfire/JSONL, or the local log/campfire for create), so every call site
@@ -322,7 +259,7 @@ func closeResolutionToStatus(resolution string) string {
 // (current field state) PLUS a NIP-34 status event carrying the optional
 // close/change reason. This is what makes `rd show`'s history replay see every
 // transition, with close-with-reason preserved exactly (ready-b5f). Best-effort:
-// mirrors publishItemCreateNostr — a relay failure never fails the caller's
+// mirrors publishItemFullCreateNostr — a relay failure never fails the caller's
 // mutation, since the campfire/JSONL write already succeeded and the nostr event
 // is durable in the local authoritative log regardless of relay reachability.
 func publishItemStatusChangeNostr(item *state.Item, reason string) error {
@@ -408,31 +345,6 @@ func strSliceRemove(s []string, vals ...string) []string {
 		}
 	}
 	return out
-}
-
-// publishImplicitUnblockNostr mirrors pkg/state's implicit-unblock-on-close
-// (handleWorkClose): when an item reaches a terminal status, campfire removes the
-// dependency edge from EVERY item that item was blocking, so those items no longer
-// list it in blocked_by. The nostr card of a blocked item still carries the "i"
-// dep tag, so without this the projection would keep the stale edge and diverge.
-// For each item the just-closed item was blocking (blockedIDs, captured from its
-// pre-close Blocks list), re-derive the now-current item from campfire (the edge
-// is already gone there) and re-publish its card so the nostr projection drops the
-// edge too — deps parity across every close path (close/done/fail/cancel/complete
-// and cascade). Best-effort; nostr-gated; a relay failure never fails the close.
-func publishImplicitUnblockNostr(blockedIDs []string) {
-	if !nostrEnabled() || len(blockedIDs) == 0 {
-		return
-	}
-	for _, id := range blockedIDs {
-		it, err := byIDFromJSONLOrStore(id)
-		if err != nil {
-			continue
-		}
-		if nostrErr := publishItemCardEditNostr(it); nostrErr != nil {
-			warnNostrPublishFailure(fmt.Sprintf("implicit-unblock %s; campfire durable", id), nostrErr)
-		}
-	}
 }
 
 var nostrCmd = &cobra.Command{

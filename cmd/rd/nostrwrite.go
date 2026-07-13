@@ -632,6 +632,7 @@ func publishImplicitUnblockNostrNative(blockedIDs []string) {
 	for _, id := range blockedIDs {
 		it, err := nostrResolveItem(id)
 		if err != nil {
+			warnNostrPublishFailure(fmt.Sprintf("implicit-unblock %s (resolve)", id), err)
 			continue
 		}
 		if err := publishItemCardEditNostr(it); err != nil {

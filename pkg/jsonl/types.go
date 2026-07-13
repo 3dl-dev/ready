@@ -8,8 +8,6 @@ package jsonl
 
 import (
 	"encoding/json"
-	"strings"
-	"time"
 
 	"github.com/campfire-net/ready/pkg/msgrec"
 )
@@ -40,23 +38,6 @@ type MutationRecord struct {
 	Antecedents []string `json:"antecedents,omitempty"`
 }
 
-// FromMessageRecord converts a msgrec.MessageRecord to a MutationRecord.
-// operation is the primary work: tag (e.g. "work:create") extracted from tags.
-// If operation is empty, it is derived from tags automatically.
-func FromMessageRecord(m msgrec.MessageRecord) MutationRecord {
-	op := extractOperation(m.Tags)
-	return MutationRecord{
-		MsgID:       m.ID,
-		CampfireID:  m.CampfireID,
-		Timestamp:   m.Timestamp,
-		Operation:   op,
-		Payload:     json.RawMessage(m.Payload),
-		Tags:        m.Tags,
-		Sender:      m.Sender,
-		Antecedents: m.Antecedents,
-	}
-}
-
 // ToMessageRecord converts a MutationRecord back to a msgrec.MessageRecord.
 // The Signature, Provenance, and ReceivedAt fields are not stored in the
 // MutationRecord and will be zero-valued in the result.
@@ -71,20 +52,4 @@ func (r MutationRecord) ToMessageRecord() msgrec.MessageRecord {
 		Antecedents: r.Antecedents,
 		ReceivedAt:  r.Timestamp, // best effort
 	}
-}
-
-// TimestampTime returns the record's timestamp as a time.Time.
-func (r MutationRecord) TimestampTime() time.Time {
-	return time.Unix(0, r.Timestamp)
-}
-
-// extractOperation returns the first work: tag from the tags list.
-// Returns empty string if no work: tag is found.
-func extractOperation(tags []string) string {
-	for _, t := range tags {
-		if strings.HasPrefix(t, WorkTagPrefix) && len(t) > len(WorkTagPrefix) {
-			return t
-		}
-	}
-	return ""
 }

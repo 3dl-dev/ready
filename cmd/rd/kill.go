@@ -9,14 +9,14 @@ import (
 
 var killCmd = &cobra.Command{
 	Use:   "kill <pubkey>",
-	Short: "Revoke a grant-holder's delegation grant",
-	Long: `Revoke the cf-authority delegation grant held by <pubkey> by posting an
-identity:revoked message at the project. The in-process convention
-server's gate denies the revoked key's operations within one sync cycle.
+	Short: "Revoke a grant-holder's role (nostr-native alias for 'rd revoke')",
+	Long: `Revoke <pubkey>'s trust by publishing an owner-signed kind-39301 grant with
+role="revoked" on the pinned board, then regenerating the relay write-allowlist.
+The revocation is prospective (effective now): the key's past authoritative
+events stay honored (completed items do not reopen).
 
-Use 'rd sessions' to list active grant-holders. This is the cf-authority
-counterpart to the legacy 'rd revoke' (which posts work:role-grant role=revoked);
-both are honored during the authority-model migration.
+This is a shorthand for 'rd revoke <pubkey>'. Use 'rd nostr revoke <pubkey> --from
+<unix>' for retroactive (compromise) repudiation.
 
 EXAMPLE
   rd kill abcdef0123...   # revoke this identity's grant`,
@@ -30,16 +30,13 @@ EXAMPLE
 		// NOSTR-NATIVE default path (ready-477): actor-key revocation = publish an
 		// owner-signed kind-39301 role=revoked grant + regenerate the relay
 		// write-allowlist (the same primitive as 'rd revoke' under the unified model:
-		// there is no un-grant, only revoke). Runs BEFORE any projectRoot()/
-		// requireClient(), so the cf-authority delegation path is never invoked and no
-		// .cf is provisioned.
+		// there is no un-grant, only revoke).
 		if dir, native := nostrNativeProject(); native {
 			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0)
 		}
 
-		// nostr-native only (ready-cb6): the campfire cf-authority delegation-revoke
-		// path has been removed. A directory with no pinned nostr board is not a valid
-		// rd project.
+		// nostr-native only (ready-cb6): a directory with no pinned nostr board is
+		// not a valid rd project.
 		return errNotNostrProject()
 	},
 }

@@ -267,29 +267,6 @@ type gateResolvePayload struct {
 	Reason     string `json:"reason,omitempty"`
 }
 
-// serverBindingPayload mirrors the fields in a convention:server-binding message payload.
-// ValidFrom and ValidUntil are Unix timestamps in seconds (int64), matching the
-// JSON numbers written by conventionserver/server.go.
-type serverBindingPayload struct {
-	Convention   string `json:"convention"`
-	Operation    string `json:"operation"`
-	ServerPubkey string `json:"server_pubkey"`
-	ValidFrom    int64  `json:"valid_from"`
-	ValidUntil   int64  `json:"valid_until,omitempty"`
-}
-
-// capabilityTokenPayload represents an offline capability token embedded in an operation.
-type capabilityTokenPayload struct {
-	Subject      string   `json:"subject"`
-	Campfire     string   `json:"campfire"`
-	Role         string   `json:"role"`
-	Operations   []string `json:"operations"`
-	IssuedAt     int64    `json:"issued_at"`
-	ExpiresAt    int64    `json:"expires_at"`
-	BindingMsgID string   `json:"binding_msg_id,omitempty"`
-	Signature    string   `json:"signature"`
-}
-
 // hasTag reports whether tags contains the given tag.
 func hasTag(tags []string, tag string) bool {
 	for _, t := range tags {
@@ -333,14 +310,6 @@ func resolveItemID(msgIndex map[string]string, target string, antecedents []stri
 	return ""
 }
 
-// serverBinding represents an active server-binding declaration for a (convention, operation) pair.
-type serverBinding struct {
-	serverPubkey string
-	validFrom    int64 // nanoseconds (unix timestamp converted)
-	validUntil   int64 // nanoseconds, 0 means no expiration
-	msgID        string
-}
-
 // roleInfo represents a member's role state from work:role-grant messages.
 type roleInfo struct {
 	role      string
@@ -381,161 +350,6 @@ func parseTimestampValue(v interface{}) int64 {
 	default:
 		return 0
 	}
-}
-
-// findActiveServerBinding finds the most recent server-binding declaration
-// that is valid at the given timestamp for the specified convention and operation.
-func findActiveServerBinding(msgs []msgrec.MessageRecord, convention, operation string, atTime int64) *serverBinding {
-	var active *serverBinding
-	for _, m := range msgs {
-		if !hasTag(m.Tags, "convention:server-binding") {
-			continue
-		}
-		var p serverBindingPayload
-		if err := json.Unmarshal(m.Payload, &p); err != nil {
-			continue
-		}
-		if p.Convention != convention || p.Operation != operation {
-			continue
-		}
-		validFrom := p.ValidFrom * int64(time.Second)
-		if validFrom == 0 || validFrom > atTime {
-			// Binding not yet valid at this message's timestamp
-			continue
-		}
-		validUntil := p.ValidUntil * int64(time.Second)
-		if validUntil != 0 && validUntil < atTime {
-			// Binding has expired
-			continue
-		}
-		// Keep the most recent valid binding
-		if active == nil || validFrom > active.validFrom {
-			active = &serverBinding{
-				serverPubkey: p.ServerPubkey,
-				validFrom:    validFrom,
-				validUntil:   validUntil,
-				msgID:        m.ID,
-			}
-		}
-	}
-	return active
-}
-
-// findFirstServerBinding finds the earliest server-binding declaration for the
-// specified convention and operation, without filtering by timestamp. Returns the
-// binding with the smallest non-zero validFrom, or nil if none exists.
-func findFirstServerBinding(msgs []msgrec.MessageRecord, convention, operation string) *serverBinding {
-	var first *serverBinding
-	for _, m := range msgs {
-		if !hasTag(m.Tags, "convention:server-binding") {
-			continue
-		}
-		var p serverBindingPayload
-		if err := json.Unmarshal(m.Payload, &p); err != nil {
-			continue
-		}
-		if p.Convention != convention || p.Operation != operation {
-			continue
-		}
-		validFrom := p.ValidFrom * int64(time.Second)
-		if validFrom == 0 {
-			// No valid_from — skip; can't determine pre-binding boundary.
-			continue
-		}
-		if first == nil || validFrom < first.validFrom {
-			validUntil := p.ValidUntil * int64(time.Second)
-			first = &serverBinding{
-				serverPubkey: p.ServerPubkey,
-				validFrom:    validFrom,
-				validUntil:   validUntil,
-				msgID:        m.ID,
-			}
-		}
-	}
-	return first
-}
-
-// findFulfillmentForOperation finds a fulfillment message that matches the given
-// target message, sent by the specified sender pubkey.
-func findFulfillmentForOperation(msgs []msgrec.MessageRecord, targetMsgID string, senderPubkey string) *msgrec.MessageRecord {
-	for i, m := range msgs {
-		if hasTag(m.Tags, "fulfills") && m.Sender == senderPubkey {
-			// Check if this fulfillment targets the operation
-			// Fulfillment messages have the target in their Antecedents
-			for _, ant := range m.Antecedents {
-				if ant == targetMsgID {
-					return &msgs[i]
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// isOperationAuthorized checks if a consequential operation is authorized under
-// the server-binding gating rules.
-//
-// Rules:
-// - If no server-binding exists (bypass mode): accept all (Wave 1 behavior)
-// - If binding exists and operation has a valid fulfillment from the bound server: accept
-// - If binding exists and operation has a valid capability token: accept
-// - If binding exists and operation was issued before the binding's valid_from: accept (pre-binding)
-// - Otherwise: reject (drop from derived state)
-//
-// roleMap is reserved for Wave 3+ role-based authorization (currently unused here).
-func isOperationAuthorized(msgs []msgrec.MessageRecord, op msgrec.MessageRecord, convention, operation string, _ map[string]roleInfo) bool {
-	// Find the earliest server-binding ever declared for this operation.
-	firstBinding := findFirstServerBinding(msgs, convention, operation)
-
-	// Bypass mode: no binding has ever been declared for this operation (Wave 1 behavior).
-	if firstBinding == nil {
-		return true
-	}
-
-	// 1. Pre-binding: operation was issued before the first binding became valid.
-	// These operations were submitted when no authorization requirement existed yet.
-	if op.Timestamp < firstBinding.validFrom {
-		return true
-	}
-
-	// Find the active server-binding at the time of this operation.
-	binding := findActiveServerBinding(msgs, convention, operation, op.Timestamp)
-	if binding == nil {
-		// A binding has been declared but is not active at this timestamp
-		// (e.g. op falls in a gap or after expiry). Reject.
-		return false
-	}
-
-	// 2. Check for a fulfillment message from the bound server.
-	if findFulfillmentForOperation(msgs, op.ID, binding.serverPubkey) != nil {
-		return true
-	}
-
-	// 3. Check for a valid capability token in the operation payload.
-	if hasValidCapabilityToken(&op, binding.serverPubkey) {
-		return true
-	}
-
-	// No authorization path succeeded.
-	return false
-}
-
-// hasValidCapabilityToken checks if an operation message contains a valid
-// capability token signed by the specified server pubkey.
-//
-// For now, this is a stub that returns false. Full implementation requires
-// cryptographic signature verification (Ed25519), which is deferred to Wave 2+
-// as part of the capability token verification framework.
-func hasValidCapabilityToken(op *msgrec.MessageRecord, serverPubkey string) bool {
-	// Stub implementation. Full token verification requires:
-	// 1. Extract token from operation payload
-	// 2. Verify signature against serverPubkey
-	// 3. Check expires_at > now
-	// 4. Check operation in token's operations list
-	// 5. Check subject matches sender
-	//
-	// For now, always return false to avoid false positives.
-	return false
 }
 
 // replayState holds mutable intermediate state used during Pass 2 of Derive.
@@ -607,9 +421,9 @@ func DeriveAll(campfireID string, msgs []msgrec.MessageRecord) *DeriveResult {
 		case hasTag(m.Tags, "work:claim"):
 			handleWorkClaim(m, rs)
 		case hasTag(m.Tags, "work:delegate"):
-			handleWorkDelegate(msgs, m, rs, roleMap)
+			handleWorkDelegate(m, rs)
 		case hasTag(m.Tags, "work:close"):
-			handleWorkClose(msgs, m, rs, roleMap)
+			handleWorkClose(m, rs)
 		case hasTag(m.Tags, "work:update"):
 			handleWorkUpdate(m, rs)
 		case hasTag(m.Tags, "work:block"):
@@ -619,7 +433,7 @@ func DeriveAll(campfireID string, msgs []msgrec.MessageRecord) *DeriveResult {
 		case hasTag(m.Tags, "work:gate"):
 			handleWorkGate(m, rs)
 		case hasTag(m.Tags, "work:gate-resolve"):
-			handleWorkGateResolve(msgs, m, rs, roleMap)
+			handleWorkGateResolve(m, rs)
 		case hasTag(m.Tags, "work:label-add"):
 			handleWorkLabelAdd(m, rs, registry)
 		case hasTag(m.Tags, "work:label-remove"):
@@ -928,11 +742,8 @@ func handleWorkClaim(m msgrec.MessageRecord, rs *replayState) {
 	})
 }
 
-// handleWorkDelegate processes a work:delegate message (fulfillment-gated).
-func handleWorkDelegate(msgs []msgrec.MessageRecord, m msgrec.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "delegate", roleMap) {
-		return
-	}
+// handleWorkDelegate processes a work:delegate message.
+func handleWorkDelegate(m msgrec.MessageRecord, rs *replayState) {
 	var p delegatePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -946,12 +757,9 @@ func handleWorkDelegate(msgs []msgrec.MessageRecord, m msgrec.MessageRecord, rs 
 	item.UpdatedAt = m.Timestamp
 }
 
-// handleWorkClose processes a work:close message (fulfillment-gated), transitioning to a
+// handleWorkClose processes a work:close message, transitioning to a
 // terminal status and implicitly unblocking any items this item was blocking.
-func handleWorkClose(msgs []msgrec.MessageRecord, m msgrec.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "close", roleMap) {
-		return
-	}
+func handleWorkClose(m msgrec.MessageRecord, rs *replayState) {
 	var p closePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return
@@ -1127,12 +935,9 @@ func handleWorkGate(m msgrec.MessageRecord, rs *replayState) {
 	rs.gateMsgIndex[m.ID] = itemID
 }
 
-// handleWorkGateResolve processes a work:gate-resolve message (fulfillment-gated).
+// handleWorkGateResolve processes a work:gate-resolve message.
 // approved → transitions to active; rejected → item remains waiting.
-func handleWorkGateResolve(msgs []msgrec.MessageRecord, m msgrec.MessageRecord, rs *replayState, roleMap map[string]roleInfo) {
-	if !isOperationAuthorized(msgs, m, "work", "gate-resolve", roleMap) {
-		return
-	}
+func handleWorkGateResolve(m msgrec.MessageRecord, rs *replayState) {
 	var p gateResolvePayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return

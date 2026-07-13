@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/campfire-net/ready/pkg/declarations"
-	"github.com/campfire-net/ready/pkg/state"
 )
 
 // ---------------------------------------------------------------------------
@@ -217,86 +216,6 @@ func TestCreate_UnknownLabel_DemandSignal(t *testing.T) {
 	}
 }
 
-// TestCreate_UnknownLabel_ErrorSuggestsPropose verifies that the error message
-// from validateLabelsAgainstRegistry suggests "rd label propose <name>".
-func TestCreate_UnknownLabel_ErrorSuggestsPropose(t *testing.T) {
-	projectDir := isolateTempDir(t)
-	readyDir := filepath.Join(projectDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0755); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-
-	stateRegistry := buildTestLabelRegistry(t)
-
-	labelErr := validateLabelsAgainstRegistry([]string{"notinregistry"}, stateRegistry, "test-key")
-	if labelErr == nil {
-		t.Fatal("expected error for unknown label 'notinregistry', got nil")
-	}
-
-	errMsg := labelErr.Error()
-	if !strings.Contains(errMsg, "notinregistry") {
-		t.Errorf("error should name the unknown label, got: %q", errMsg)
-	}
-	if !strings.Contains(errMsg, "rd label propose notinregistry") {
-		t.Errorf("error should suggest 'rd label propose notinregistry', got: %q", errMsg)
-	}
-}
-
-// TestCreate_UnknownLabel_DemandAppendedOnValidationFail verifies that
-// validateLabelsAgainstRegistry appends a demand record when it rejects a label.
-func TestCreate_UnknownLabel_DemandAppendedOnValidationFail(t *testing.T) {
-	projectDir := isolateTempDir(t)
-	readyDir := filepath.Join(projectDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0755); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	demandFile := filepath.Join(readyDir, "label-demand.jsonl")
-
-	stateRegistry := buildTestLabelRegistry(t)
-
-	// Validate a label that's not in the registry.
-	_ = validateLabelsAgainstRegistry([]string{"unknownlabel"}, stateRegistry, "agent-key-abc")
-
-	// Demand record must have been appended.
-	if _, statErr := os.Stat(demandFile); statErr != nil {
-		t.Fatalf("label-demand.jsonl should exist after validation failure, got: %v", statErr)
-	}
-	count := countLabelDemand("unknownlabel")
-	if count != 1 {
-		t.Errorf("demand count for 'unknownlabel' = %d, want 1", count)
-	}
-}
-
-// TestValidateLabels_KnownLabel_NoError verifies that known labels pass validation
-// without error and do not append to the demand log.
-func TestValidateLabels_KnownLabel_NoError(t *testing.T) {
-	projectDir := isolateTempDir(t)
-	readyDir := filepath.Join(projectDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0755); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	demandFile := filepath.Join(readyDir, "label-demand.jsonl")
-
-	stateRegistry := buildTestLabelRegistry(t)
-
-	// "bug" is a seed label — should pass.
-	if labelErr := validateLabelsAgainstRegistry([]string{"bug"}, stateRegistry, "agent-key"); labelErr != nil {
-		t.Errorf("known label 'bug' should not be rejected, got: %v", labelErr)
-	}
-	// No demand record should be written.
-	if _, statErr := os.Stat(demandFile); statErr == nil {
-		t.Error("label-demand.jsonl should NOT be created for known labels")
-	}
-}
-
-// TestValidateLabels_NilRegistry_NoError verifies that nil registry skips validation
-// (graceful fallback for fresh checkout / offline).
-func TestValidateLabels_NilRegistry_NoError(t *testing.T) {
-	if err := validateLabelsAgainstRegistry([]string{"anything"}, nil, "key"); err != nil {
-		t.Errorf("nil registry should skip validation (fallback), got: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Test 5: rd label propose creates decision item with demand count in context
 // ---------------------------------------------------------------------------
@@ -394,25 +313,3 @@ func TestValidateEnumFlags_Priority_NoAliasNote(t *testing.T) {
 	}
 }
 
-
-// ---------------------------------------------------------------------------
-// Helper: build a state.LabelDef registry from seed labels for test use
-// ---------------------------------------------------------------------------
-
-// buildTestLabelRegistry creates a state.LabelDef registry from the embedded seed labels.
-func buildTestLabelRegistry(t *testing.T) map[string]state.LabelDef {
-	t.Helper()
-	seedLabels, err := declarations.LoadSeedLabels()
-	if err != nil {
-		t.Fatalf("LoadSeedLabels: %v", err)
-	}
-	registry := make(map[string]state.LabelDef, len(seedLabels))
-	for _, sl := range seedLabels {
-		registry[sl.Name] = state.LabelDef{
-			Name:        sl.Name,
-			Description: sl.Description,
-			DefinedBy:   "seed",
-		}
-	}
-	return registry
-}
