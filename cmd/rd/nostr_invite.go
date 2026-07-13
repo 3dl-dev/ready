@@ -163,6 +163,25 @@ type relayInviteMedium struct {
 	relays  []string
 	board   string
 	timeout time.Duration
+	// publishFn / fetchFn are seams the deterministic HIGH-3 test injects. Nil
+	// means "use the real nostr client" (the production path).
+	publishFn func(ctx context.Context, relay string, e *nostr.Event) (accepted bool, err error)
+	fetchFn   func(ctx context.Context, relay string, filter map[string]any) ([]*nostr.Event, error)
+}
+
+func (m *relayInviteMedium) publish1(ctx context.Context, relay string, e *nostr.Event) (bool, error) {
+	if m.publishFn != nil {
+		return m.publishFn(ctx, relay, e)
+	}
+	accepted, _, err := nostr.Publish(ctx, relay, e)
+	return accepted, err
+}
+
+func (m *relayInviteMedium) fetch1(ctx context.Context, relay string, filter map[string]any) ([]*nostr.Event, error) {
+	if m.fetchFn != nil {
+		return m.fetchFn(ctx, relay, filter)
+	}
+	return nostr.FetchMany(ctx, relay, filter)
 }
 
 func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
@@ -174,7 +193,7 @@ func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
 	for _, relay := range m.relays {
 		for _, f := range filters {
 			ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
-			evs, err := nostr.FetchMany(ctx, relay, f)
+			evs, err := m.fetch1(ctx, relay, f)
 			cancel()
 			if err != nil {
 				continue // best-effort: a down relay must not fail the join
@@ -193,15 +212,64 @@ func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
 	return out, nil
 }
 
+// Publish ships the invite-consumed marker to the token's relays FAIL-CLOSED
+// (HIGH-3 / ready-e03). The old body discarded nostr.Publish's (accepted, err) and
+// returned nil unconditionally, so if the kind-39303 marker never landed on the
+// token's relays the join still succeeded while cross-machine single-use was
+// silently bypassed (a leaked token stayed reusable for its full TTL). Now: for
+// each event, publish to the relays AND READ IT BACK; the marker must be OBSERVABLE
+// on at least one relay before the join is allowed to finalize. If it cannot be
+// confirmed anywhere, return an error so redeemNostrInviteToken rolls back and the
+// token is NOT treated as consumed.
 func (m *relayInviteMedium) Publish(events []*nostr.Event) error {
 	for _, e := range events {
+		confirmed := false
+		var lastErr error
 		for _, relay := range m.relays {
 			ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
-			_, _, _ = nostr.Publish(ctx, relay, e) // best-effort
+			accepted, err := m.publish1(ctx, relay, e)
+			if err != nil {
+				lastErr = err
+				cancel()
+				continue
+			}
+			if !accepted {
+				cancel()
+				continue
+			}
+			// Read-back: the relay claimed acceptance — confirm the marker is actually
+			// observable before trusting single-use to it.
+			if m.markerObservable(ctx, relay, e) {
+				confirmed = true
+				cancel()
+				break
+			}
 			cancel()
+		}
+		if !confirmed {
+			if lastErr != nil {
+				return fmt.Errorf("invite consumed-marker did not land on any relay (single-use would be bypassed): %w", lastErr)
+			}
+			return fmt.Errorf("invite consumed-marker could not be confirmed on any relay (single-use would be bypassed)")
 		}
 	}
 	return nil
+}
+
+// markerObservable re-fetches the invite-consumed markers for the board from relay
+// and reports whether e is present — the read-back that makes Publish fail-closed.
+func (m *relayInviteMedium) markerObservable(ctx context.Context, relay string, e *nostr.Event) bool {
+	filter := map[string]any{"kinds": []int{rdSync.KindInviteConsumed}, "#a": []string{m.board}}
+	evs, err := m.fetch1(ctx, relay, filter)
+	if err != nil {
+		return false
+	}
+	for _, got := range evs {
+		if got != nil && got.ID == e.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // redeemNostrInviteToken is the JOIN core: single-use + grant checks first (a
@@ -248,15 +316,35 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 	if hadKey && !force {
 		return fmt.Errorf("identity already exists at %s — use --force to overwrite", keyPath)
 	}
-	oldKey, _ := os.ReadFile(keyPath)
 
-	// restore rolls back the identity on any post-write failure, so a failed join
-	// never leaves a half-adopted identity (parity with the rdx1_ path).
+	// MED-7: snapshot EVERY file a post-write step mutates, so restore() reverts a
+	// half-adopted project on ANY late failure — not just the identity key. The old
+	// restore only reverted $RD_HOME's identity; if SaveSyncConfig / adoptInviteRelays
+	// / AppendUnique / marker steps failed after the board-pin / relay-adopt / log-import
+	// already wrote, those stayed, leaving a partially-joined project. The snapshot is
+	// taken BEFORE any write below.
+	type fileSnap struct {
+		path    string
+		data    []byte
+		existed bool
+	}
+	snap := func(path string) fileSnap {
+		b, statErr := os.ReadFile(path)
+		return fileSnap{path: path, data: b, existed: statErr == nil}
+	}
+	snaps := []fileSnap{
+		snap(keyPath),
+		snap(rdconfig.SyncConfigPath(projectDir)),
+		snap(rdconfig.Path(rdHome)),
+		snap(rdSync.NostrLogPath(projectDir)),
+	}
 	restore := func() {
-		if hadKey {
-			_ = os.WriteFile(keyPath, oldKey, 0o600)
-		} else {
-			_ = os.Remove(keyPath)
+		for _, s := range snaps {
+			if s.existed {
+				_ = os.WriteFile(s.path, s.data, 0o600)
+			} else {
+				_ = os.Remove(s.path)
+			}
 		}
 	}
 
@@ -284,15 +372,27 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 		}
 	}
 
-	// (6) Import the medium's events into the joiner's authoritative log
-	// (signature-gated at ingestion; the projection re-applies the trust gate). Now
-	// `rd ready` projects the owner's items immediately.
+	// (6) Import the medium's events into the joiner's authoritative log, gated
+	// through the SAME web-of-trust set every other inbound seam uses (MED-5). Prior
+	// to this the import admitted any schnorr-valid event with Verify() ALONE — unlike
+	// reconcile / admitDownloaded / MergeFrom, which gate on the board owner's derived
+	// grant set. A hostile relay could therefore inject validly-signed FOREIGN-key
+	// events into the local authoritative log; the projection re-gates so they never
+	// project, but they would re-propagate on later sync (log poisoning), breaking the
+	// single-admission-choke invariant. Gate on DeriveReadTrust(owner) — { board owner }
+	// ∪ { cap-valid grantees, incl. the token's minted key } — before AppendUnique, so
+	// an ungranted foreign key is dropped at ingestion, fail-closed.
 	localLog := rdSync.NewNostrLog(rdSync.NostrLogPath(projectDir))
+	importTrust := rdSync.DeriveReadTrust(events, owner, boardD)
 	verified := make([]*nostr.Event, 0, len(events))
 	for _, e := range events {
-		if e != nil && e.Verify() == nil {
-			verified = append(verified, e)
+		if e == nil || e.Verify() != nil {
+			continue
 		}
+		if !importTrust[e.PubKey] {
+			continue // foreign-key event served by the relay — not owner-trusted, dropped
+		}
+		verified = append(verified, e)
 	}
 	if _, err := localLog.AppendUnique(verified); err != nil {
 		restore()

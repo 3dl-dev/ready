@@ -385,7 +385,7 @@ func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map
 	// process ascending and overwrite, so the last valid grant applied wins.
 	winning = make(map[string]roleGrant)
 	for _, g := range grants {
-		if !signerMayGrant(levels, boardAuthor, g.Signer, g.Role) {
+		if !signerMayGrant(levels, boardAuthor, g.Signer, g.Grantee, g.Role) {
 			continue // escalation-cap violation — ignored.
 		}
 		levels[g.Grantee] = roleToLevel(g.Role)
@@ -409,24 +409,64 @@ func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map
 }
 
 // signerMayGrant applies the escalation cap. levels reflects state replayed so
-// far; boardAuthor is the trust root.
+// far; boardAuthor is the trust root; grantee is the subject of the grant.
 //
 //   - Granting maintainer/owner: only boardAuthor may.
-//   - Granting contributor/revoked: boardAuthor or a level-2 maintainer may.
+//   - Granting contributor/revoked: boardAuthor or a level-2 maintainer may,
+//     SUBJECT to the owner-lockout / peer-maintainer protections below.
 //   - Any lower signer: may grant nothing.
-func signerMayGrant(levels map[string]int, boardAuthor, signer, role string) bool {
+//
+// OWNER-LOCKOUT (HIGH-1, the serious privilege-escalation): a non-owner signer
+// may NEVER revoke or downgrade the board author. Without this, any level-2
+// maintainer the owner appointed could publish role=revoked (or role=contributor)
+// TARGETING the boardAuthor; deriveGrants would drop the owner to level 0/1 and
+// the projection seam (nostrproject.go until-gate) would then discard the owner's
+// own events — the self-certifying trust anchor becomes revocable by a key it
+// appointed. The owner is IRREVOCABLE: its level is fixed by the bootstrap and no
+// grant targeting it from any non-owner signer takes effect.
+//
+// PEER-MAINTAINER PROTECTION (HIGH-1): only the owner may revoke or demote a
+// MAINTAINER. A non-owner signer's contributor/revoked grant targeting a key that
+// is CURRENTLY a maintainer (level >= 2) is ignored, so one maintainer cannot
+// unseat a peer (or itself) — the maintainer set changes only by the owner's hand.
+func signerMayGrant(levels map[string]int, boardAuthor, signer, grantee, role string) bool {
 	isBoardAuthor := signer != "" && signer == boardAuthor
 	switch role {
 	case RoleMaintainer, RoleOwner:
 		return isBoardAuthor
 	case RoleContributor, RoleRevoked:
 		if isBoardAuthor {
-			return true
+			return true // the owner may revoke/demote anyone (including a maintainer).
 		}
-		return levels[signer] >= LevelMaintainer
+		if levels[signer] < LevelMaintainer {
+			return false // only a maintainer may grant contributor/revoked at all.
+		}
+		// The board author (owner) is irrevocable by any non-owner signer.
+		if grantee == boardAuthor {
+			return false
+		}
+		// Only the owner may revoke/demote a current maintainer (peer protection).
+		if levels[grantee] >= LevelMaintainer {
+			return false
+		}
+		return true
 	default:
 		return false
 	}
+}
+
+// MayGrant is the exported, client-side mirror of the read-side escalation cap
+// (signerMayGrant): it derives the operator levels for the authority chain rooted
+// at 30301:<boardAuthor>:<boardD> from the signed events, then reports whether
+// signer may publish a grant of role to grantee under that state. `rd nostr
+// grant/revoke` calls it to FAIL FAST with the SAME rule DeriveLevels enforces at
+// the projection seam, so a cap-violating grant (a contributor delegating, a
+// maintainer revoking the owner or a peer maintainer) is rejected client-side as a
+// clear early error rather than being silently ignored only at derive (MED-6,
+// defense in depth). It is a pure function of the events — no I/O, no clock.
+func MayGrant(events []*nostr.Event, boardAuthor, boardD, signer, grantee, role string) bool {
+	levels, _, _ := deriveGrants(events, boardAuthor, boardD)
+	return signerMayGrant(levels, boardAuthor, signer, grantee, role)
 }
 
 // newerGrant reports whether grant a should REPLACE grant b under the deterministic

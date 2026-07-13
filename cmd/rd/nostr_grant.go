@@ -74,14 +74,22 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 	if err != nil {
 		return err
 	}
-	// Escalation cap (design §3): only the board author (owner) may mint a maintainer
-	// or owner grant. A non-author signer can grant only contributor/revoked.
-	switch role {
-	case rdSync.RoleMaintainer, rdSync.RoleOwner:
-		if signer != boardAuthor {
-			return fmt.Errorf("escalation cap: only the board author (owner %s) may grant %q; you are %s",
-				boardAuthor, role, signer)
-		}
+	// Escalation cap (design §3), enforced client-side as a FAIL-FAST mirror of the
+	// read-side rule (MED-6): rd.MayGrant derives the operator levels from the local
+	// log and applies the SAME check DeriveLevels/signerMayGrant enforce at the
+	// projection seam — only the board author may mint maintainer/owner; a maintainer
+	// may grant contributor/revoked but NOT revoke/downgrade the owner (irrevocable)
+	// or a peer maintainer; a contributor may grant nothing. DeriveLevels also ignores
+	// a cap-violating grant, but refusing to PUBLISH it keeps the log clean and gives
+	// the operator a clear error instead of a silently-dropped grant.
+	events, err := pub.Log.ReadAll()
+	if err != nil {
+		return fmt.Errorf("reading local log for escalation-cap check: %w", err)
+	}
+	if !rdSync.MayGrant(events, boardAuthor, boardD, signer, grantee, role) {
+		return fmt.Errorf("escalation cap: signer %s may not grant role %q to %s on board %s "+
+			"(only the owner may mint maintainer/owner or revoke the owner/a maintainer; "+
+			"a contributor may grant nothing)", signer, role, grantee, rdSync.BoardCoord(boardAuthor, boardD))
 	}
 	spec := rdSync.RoleGrantSpec{
 		BoardD:      boardD,

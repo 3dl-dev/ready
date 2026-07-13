@@ -132,8 +132,8 @@ func TestDeriveLevels_LatestWinsTieBreakLowestID(t *testing.T) {
 func TestDeriveLevels_EscalationCap_MaintainerCannotMintMaintainer(t *testing.T) {
 	owner := testKey(t)
 	ba := owner.PubKeyHex()
-	maint := testKey(t)   // becomes a maintainer via an owner grant
-	target := testKey(t)  // maint tries to mint this one as maintainer
+	maint := testKey(t)    // becomes a maintainer via an owner grant
+	target := testKey(t)   // maint tries to mint this one as maintainer
 	promoted := testKey(t) // maint validly makes this one a contributor
 	revokee := testKey(t)  // maint validly revokes this one
 
@@ -158,6 +158,111 @@ func TestDeriveLevels_EscalationCap_MaintainerCannotMintMaintainer(t *testing.T)
 	}
 	if got := levels[revokee.PubKeyHex()]; got != LevelRevoked {
 		t.Errorf("maintainer-signed revoke should be honored: level = %d, want %d", got, LevelRevoked)
+	}
+}
+
+// TestDeriveLevels_OwnerIrrevocable is the HIGH-1 privilege-escalation proof: a
+// level-2 MAINTAINER (not the board author) cannot revoke — or downgrade — the
+// board author. Before the fix the escalation cap checked only the minted role and
+// the signer level, never the GRANTEE identity, so a maintainer-signed role=revoked
+// TARGETING the owner was applied, dropping the owner to level 0 (its own events
+// then discarded at the projection until-gate). The owner is irrevocable: it keeps
+// level 2 and +infinity authoritative-until no matter what a maintainer publishes.
+func TestDeriveLevels_OwnerIrrevocable(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	maint := testKey(t) // an owner-appointed maintainer, the attacker
+
+	events := []*nostr.Event{
+		// Owner appoints maint as a level-2 maintainer.
+		grant(t, owner, ba, maint.PubKeyHex(), RoleMaintainer, 0, 1000),
+		// maint (a maintainer, not the owner) tries to REVOKE the owner — MUST be ignored.
+		grant(t, maint, ba, ba, RoleRevoked, 0, 2000),
+		// maint also tries to DOWNGRADE the owner to contributor — MUST be ignored.
+		grant(t, maint, ba, ba, RoleContributor, 0, 2001),
+	}
+	levels, until := DeriveLevels(events, ba, testBoardD)
+
+	if got := levels[ba]; got != LevelMaintainer {
+		t.Errorf("owner-lockout breach: board author level = %d, want %d (owner is irrevocable)", got, LevelMaintainer)
+	}
+	if got := until[ba]; got != authoritativeForever {
+		t.Errorf("owner-lockout breach: board author authoritative-until = %d, want +inf (its events must never be gated)", got)
+	}
+}
+
+// TestDeriveLevels_PeerMaintainerCannotBeRevokedByPeer proves the peer-maintainer
+// protection: only the owner may revoke a maintainer. A maintainer-signed revoke of
+// a PEER maintainer is ignored (the peer keeps level 2), while the SAME owner-signed
+// revoke still takes effect.
+func TestDeriveLevels_PeerMaintainerCannotBeRevokedByPeer(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	m1 := testKey(t) // attacker maintainer
+	m2 := testKey(t) // victim peer maintainer
+
+	events := []*nostr.Event{
+		grant(t, owner, ba, m1.PubKeyHex(), RoleMaintainer, 0, 1000),
+		grant(t, owner, ba, m2.PubKeyHex(), RoleMaintainer, 0, 1001),
+		// m1 tries to revoke the peer maintainer m2 — MUST be ignored.
+		grant(t, m1, ba, m2.PubKeyHex(), RoleRevoked, 0, 2000),
+	}
+	levels, _ := DeriveLevels(events, ba, testBoardD)
+	if got := levels[m2.PubKeyHex()]; got != LevelMaintainer {
+		t.Errorf("peer-maintainer breach: m2 level = %d, want %d (a maintainer cannot revoke a peer)", got, LevelMaintainer)
+	}
+
+	// CONTROL: the OWNER revoking a maintainer still works.
+	events2 := []*nostr.Event{
+		grant(t, owner, ba, m1.PubKeyHex(), RoleMaintainer, 0, 1000),
+		grant(t, owner, ba, m1.PubKeyHex(), RoleRevoked, 0, 3000),
+	}
+	levels2, _ := DeriveLevels(events2, ba, testBoardD)
+	if got := levels2[m1.PubKeyHex()]; got != LevelRevoked {
+		t.Errorf("owner revoking a maintainer must work: m1 level = %d, want %d", got, LevelRevoked)
+	}
+}
+
+// TestMayGrant_ClientMirror proves the exported client-side cap mirrors the
+// read-side rule (MED-6): a plain contributor may grant nothing; a maintainer may
+// grant a contributor but NOT revoke the owner or a peer maintainer; the owner may
+// do everything.
+func TestMayGrant_ClientMirror(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	maint := testKey(t)
+	contrib := testKey(t)
+	peer := testKey(t)
+	fresh := testKey(t)
+
+	events := []*nostr.Event{
+		grant(t, owner, ba, maint.PubKeyHex(), RoleMaintainer, 0, 1000),
+		grant(t, owner, ba, contrib.PubKeyHex(), RoleContributor, 0, 1001),
+		grant(t, owner, ba, peer.PubKeyHex(), RoleMaintainer, 0, 1002),
+	}
+
+	// Contributor may grant nothing.
+	if MayGrant(events, ba, testBoardD, contrib.PubKeyHex(), fresh.PubKeyHex(), RoleContributor) {
+		t.Error("contributor must not be able to grant contributor")
+	}
+	// Maintainer may grant a fresh contributor...
+	if !MayGrant(events, ba, testBoardD, maint.PubKeyHex(), fresh.PubKeyHex(), RoleContributor) {
+		t.Error("maintainer must be able to grant a fresh contributor")
+	}
+	// ...but not revoke the owner...
+	if MayGrant(events, ba, testBoardD, maint.PubKeyHex(), ba, RoleRevoked) {
+		t.Error("maintainer must NOT be able to revoke the owner")
+	}
+	// ...nor revoke a peer maintainer.
+	if MayGrant(events, ba, testBoardD, maint.PubKeyHex(), peer.PubKeyHex(), RoleRevoked) {
+		t.Error("maintainer must NOT be able to revoke a peer maintainer")
+	}
+	// Owner may mint a maintainer and revoke anyone.
+	if !MayGrant(events, ba, testBoardD, ba, fresh.PubKeyHex(), RoleMaintainer) {
+		t.Error("owner must be able to grant maintainer")
+	}
+	if !MayGrant(events, ba, testBoardD, ba, peer.PubKeyHex(), RoleRevoked) {
+		t.Error("owner must be able to revoke a maintainer")
 	}
 }
 
@@ -210,7 +315,7 @@ func TestDeriveLevels_EscalationCap_MaintainerAuthorityMustPrecedeGrant(t *testi
 func TestDeriveLevels_ProspectiveRevocation(t *testing.T) {
 	owner := testKey(t)
 	ba := owner.PubKeyHex()
-	clean := testKey(t)      // revoked prospectively (no from)
+	clean := testKey(t)       // revoked prospectively (no from)
 	compromised := testKey(t) // revoked with from=T (retroactive)
 
 	events := []*nostr.Event{

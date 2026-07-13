@@ -157,7 +157,10 @@ func publishItemFullCreateNostr(dir, signer string, item *state.Item) error {
 	if !ok {
 		return fmt.Errorf("no .ready project directory for nostr publisher")
 	}
-	boardAuthor := nostrBoardAuthor(dir, signer)
+	boardAuthor, err := nostrBoardAuthor(dir, signer)
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor

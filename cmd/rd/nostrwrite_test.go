@@ -427,6 +427,102 @@ func TestNostrNative_ShowAudit_NoDotCf(t *testing.T) {
 	}
 }
 
+// TestNostrBoardAuthor_MalformedPinHardErrors is the HIGH-2 fail-open proof: when
+// the pinned board coordinate in .ready/config.json is present but unparseable,
+// nostrBoardAuthor MUST hard-error (matching resolveBoardAuthorD) instead of
+// silently falling back to the signer's own pubkey — which would publish items
+// under the WRONG authority. A create against a malformed pin errors and publishes
+// nothing.
+func TestNostrBoardAuthor_MalformedPinHardErrors(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
+
+	// Corrupt the pin to a present-but-unparseable coordinate.
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	cfg.Board = "not-a-valid-board-coord"
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	// The direct resolver hard-errors.
+	if _, err := nostrBoardAuthor(dir, "deadbeef"); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("nostrBoardAuthor on malformed pin = %v, want a 'malformed' hard error", err)
+	}
+
+	// And a real create refuses rather than publishing under the signer's authority.
+	err = publishItemCreateNostr("ready-zzz", "should not publish", "task", "p1", state.StatusInbox, "", "")
+	if err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("publishItemCreateNostr on malformed pin = %v, want a 'malformed' hard error", err)
+	}
+
+	// Nothing landed in the log under the signer's own authority.
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	events, err := log.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	for _, e := range events {
+		if v, ok := tagVal(e.Tags, "d"); ok && v == "ready-zzz" {
+			t.Fatalf("a card for ready-zzz was published despite the malformed pin (fail-open)")
+		}
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_RejectGate is the coverage-sweep security-path unit for
+// runRejectNostr: a gated item that is REJECTED stays StatusWaiting and records the
+// rejection reason in the audit-history replay (a status event re-affirming waiting),
+// while rejecting a non-waiting / non-gated item errors. Before the reject publisher
+// existed, reject emitted NO nostr event; this proves the ruling is now preserved
+// without transitioning the item out of the gate.
+func TestNostrNative_RejectGate(t *testing.T) {
+	setupNostrNativeProject(t)
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "Gated", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Rejecting a non-gated item (still inbox, no gate) must ERROR.
+	if err := runRejectNostr(id, "no gate yet"); err == nil {
+		t.Fatalf("reject of a non-gated item must error, got nil")
+	}
+
+	// Gate the item → waiting.
+	if err := runGateNostr(id, "design", "confirm approach"); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	it, _ := nostrResolveItem(id)
+	if it.Status != state.StatusWaiting {
+		t.Fatalf("after gate status = %q; want waiting", it.Status)
+	}
+
+	// Reject the gate: item STAYS waiting, and the reason lands in history.
+	const rejectReason = "scope too broad — split it"
+	if err := runRejectNostr(id, rejectReason); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	it, err = nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve after reject: %v", err)
+	}
+	if it.Status != state.StatusWaiting {
+		t.Fatalf("after reject status = %q; want STILL waiting (reject does not transition out of the gate)", it.Status)
+	}
+	foundReason := false
+	for _, h := range it.History {
+		if h.ToStatus == state.StatusWaiting && h.Note == rejectReason {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("reject reason %q not preserved in history: %+v", rejectReason, it.History)
+	}
+	assertNoDotCf(t)
+}
+
 func mustDir(t *testing.T) string {
 	t.Helper()
 	dir, ok := readyProjectDir()

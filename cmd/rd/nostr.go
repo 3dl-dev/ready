@@ -215,13 +215,20 @@ func boardSpecForProject(dir, pubkey string) rdSync.BoardSpec {
 // .ready/config.json (30301:<owner>:<boardD>) is authoritative when set; otherwise
 // fall back to the signer's own pubkey — the owner signing their own board, which
 // reproduces the pre-pin behaviour exactly (zero migration for existing installs).
-func nostrBoardAuthor(dir, signerPubkey string) string {
+func nostrBoardAuthor(dir, signerPubkey string) (string, error) {
 	if pin := nostrPinnedBoard(dir); pin != "" {
-		if owner, _, ok := rdSync.ParseBoardCoord(pin); ok {
-			return owner
+		owner, _, ok := rdSync.ParseBoardCoord(pin)
+		if !ok {
+			// HIGH-2 (fail-open fix): a present-but-unparseable pin must HARD-ERROR,
+			// matching resolveBoardAuthorD. Silently falling back to signerPubkey here
+			// published items under the WRONG authority (the signer's own key instead
+			// of the intended board owner), diverging the item onto a foreign board.
+			return "", fmt.Errorf("pinned board coordinate %q is malformed (want 30301:<owner>:<boardD>); "+
+				"refusing to publish under the signer's own authority — fix .ready/config.json", pin)
 		}
+		return owner, nil
 	}
-	return signerPubkey
+	return signerPubkey, nil
 }
 
 // publishItemCreateNostr is the create-time hook: when nostr is enabled it
@@ -239,7 +246,10 @@ func publishItemCreateNostr(itemID, title, itemType, priority, status, itemConte
 	}
 	dir, _ := readyProjectDir()
 	signer := pub.Key.PubKeyHex()
-	boardAuthor := nostrBoardAuthor(dir, signer)
+	boardAuthor, err := nostrBoardAuthor(dir, signer)
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	if status == "" {
 		status = state.StatusInbox
@@ -324,7 +334,10 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	boardAuthor, err := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
@@ -353,7 +366,10 @@ func publishItemCardEditNostr(item *state.Item) error {
 		return err
 	}
 	dir, _ := readyProjectDir()
-	boardAuthor := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	boardAuthor, err := nostrBoardAuthor(dir, pub.Key.PubKeyHex())
+	if err != nil {
+		return err
+	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
@@ -560,7 +576,10 @@ var nostrPublishCmd = &cobra.Command{
 			return fmt.Errorf("no project dir for publisher")
 		}
 		signer := pub.Key.PubKeyHex()
-		boardAuthor := nostrBoardAuthor(dir, signer)
+		boardAuthor, err := nostrBoardAuthor(dir, signer)
+		if err != nil {
+			return err
+		}
 		board := boardSpecForProject(dir, boardAuthor)
 		// Route through the SINGLE shared helper (ready-187). The old inline literal
 		// omitted Labels/ETA/Assignee (and would never have carried Level/For/Parent/

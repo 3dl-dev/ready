@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -233,5 +234,231 @@ func TestNostrInvite_Redeem_UngrantedTokenRefused(t *testing.T) {
 	}
 	if fileExists(nostr.DefaultKeyPath(home)) {
 		t.Error("an unauthorized redemption must not write an identity")
+	}
+}
+
+// --- ready-cc5 security hardening: HIGH-3, MED-5, MED-7 ---
+
+// TestRelayInviteMedium_Publish_FailClosed is the HIGH-3 / ready-e03 proof: the
+// production relay medium's Publish must FAIL (return an error) whenever the
+// kind-39303 consumed marker cannot be confirmed landed+observable on any relay —
+// so redeemNostrInviteToken rolls back instead of finalizing a join with single-use
+// silently bypassed. The old body discarded nostr.Publish's (accepted, err) and
+// always returned nil. The publish/fetch seams are injected so no live relay is
+// needed and the test is deterministic.
+func TestRelayInviteMedium_Publish_FailClosed(t *testing.T) {
+	minted, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	board := rdSync.BoardCoord(minted.PubKeyHex(), "ready")
+	marker, err := rdSync.BuildInviteConsumedEvent(minted, "nonce-h3", board, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildInviteConsumedEvent: %v", err)
+	}
+
+	// Case 1: the relay REJECTS the publish (accepted=false) -> Publish errors.
+	rejecting := &relayInviteMedium{
+		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
+		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return false, nil },
+		fetchFn:   func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
+	}
+	if err := rejecting.Publish([]*nostr.Event{marker}); err == nil {
+		t.Error("Publish must FAIL when no relay accepts the marker (fail-closed)")
+	}
+
+	// Case 2: the relay reports an ERROR -> Publish errors (surfaces it).
+	erroring := &relayInviteMedium{
+		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
+		publishFn: func(context.Context, string, *nostr.Event) (bool, error) {
+			return false, fmt.Errorf("dial refused")
+		},
+		fetchFn: func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
+	}
+	if err := erroring.Publish([]*nostr.Event{marker}); err == nil || !strings.Contains(err.Error(), "dial refused") {
+		t.Errorf("Publish must surface the publish error, got %v", err)
+	}
+
+	// Case 3: the relay ACCEPTS but the marker is NOT observable on read-back ->
+	// Publish still errors (a claimed-but-absent write must not consume the token).
+	lying := &relayInviteMedium{
+		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
+		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return true, nil },
+		fetchFn:   func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
+	}
+	if err := lying.Publish([]*nostr.Event{marker}); err == nil {
+		t.Error("Publish must FAIL when the marker is accepted but not observable on read-back")
+	}
+
+	// Case 4: accepted AND observable on read-back -> Publish SUCCEEDS.
+	good := &relayInviteMedium{
+		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
+		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return true, nil },
+		fetchFn: func(context.Context, string, map[string]any) ([]*nostr.Event, error) {
+			return []*nostr.Event{marker}, nil
+		},
+	}
+	if err := good.Publish([]*nostr.Event{marker}); err != nil {
+		t.Errorf("Publish must succeed when the marker lands and reads back: %v", err)
+	}
+}
+
+// TestNostrInvite_ImportGatedByTrust is the MED-5 proof: a FOREIGN-key event served
+// by the medium is NOT admitted to the joiner's local authoritative log on join. Only
+// events from the board owner's derived trust set (owner + cap-valid grantees, incl.
+// the token's minted key) enter the log; a validly-signed foreign event a hostile
+// relay injects is dropped at ingestion (single-admission-choke preserved).
+func TestNostrInvite_ImportGatedByTrust(t *testing.T) {
+	ctx := context.Background()
+	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
+	medium := &logInviteMedium{log: sharedLog}
+
+	ownerKey, _ := nostr.GenerateKey()
+	owner := ownerKey.PubKeyHex()
+	const boardD = "ready"
+	board := rdSync.BoardCoord(owner, boardD)
+
+	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog}
+	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{owner}}
+	now := time.Now().Unix()
+	if _, err := ownerPub.PublishItem(ctx, &boardSpec, rdSync.CardSpec{
+		ItemID: "ready-001", Title: "owner item", Status: state.StatusActive,
+		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: owner,
+	}, now); err != nil {
+		t.Fatalf("owner PublishItem: %v", err)
+	}
+
+	// A HOSTILE, ungranted foreign key injects a validly-signed card onto the medium.
+	foreignKey, _ := nostr.GenerateKey()
+	foreignPub := &rdSync.Publisher{Key: foreignKey, Log: sharedLog}
+	if _, err := foreignPub.PublishItem(ctx, nil, rdSync.CardSpec{
+		ItemID: "ready-666", Title: "poison", Status: state.StatusActive,
+		Priority: "p0", Type: "task", BoardD: boardD, BoardAuthor: owner,
+	}, now+1); err != nil {
+		t.Fatalf("foreign PublishItem: %v", err)
+	}
+
+	// Mint + publish the owner-signed contributor grant.
+	minted, _ := nostr.GenerateKey()
+	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, nil, "nonce-med5", now, now+7200, now+2)
+	if err != nil {
+		t.Fatalf("buildNostrInviteToken: %v", err)
+	}
+	if err := medium.Publish([]*nostr.Event{grant}); err != nil {
+		t.Fatalf("publish grant: %v", err)
+	}
+
+	p, err := decodeNostrInviteToken(token)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	home := t.TempDir()
+	dir := t.TempDir()
+	if err := redeemNostrInviteToken(p, home, dir, medium, false); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+
+	// The joiner's local log must NOT contain any event signed by the foreign key.
+	localEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("read local log: %v", err)
+	}
+	for _, e := range localEvents {
+		if e.PubKey == foreignKey.PubKeyHex() {
+			t.Fatalf("foreign-key event admitted to the local log on join (log poisoning): %s", e.ID)
+		}
+	}
+	// Sanity: the owner's own item DID import (the gate is not over-broad).
+	foundOwner := false
+	for _, e := range localEvents {
+		if e.PubKey == owner {
+			foundOwner = true
+			break
+		}
+	}
+	if !foundOwner {
+		t.Fatal("owner-signed events must still import (trust gate must not drop the owner)")
+	}
+}
+
+// failPublishMedium models a medium whose Events() serves the owner's snapshot but
+// whose Publish (the LATE consumed-marker step) fails — the MED-7 forced-failure
+// injection point.
+type failPublishMedium struct{ src *rdSync.NostrLog }
+
+func (m *failPublishMedium) Events() ([]*nostr.Event, error) { return m.src.ReadAll() }
+func (m *failPublishMedium) Publish([]*nostr.Event) error {
+	return fmt.Errorf("forced marker-publish failure")
+}
+
+// TestNostrInvite_LateFailure_FullRollback is the MED-7 proof: when a post-write
+// step fails (here the consumed-marker publish, the last step), redeem must leave NO
+// partial project state — not just the identity, but the board pin, the adopted relay
+// config, and the imported log entries are ALL reverted.
+func TestNostrInvite_LateFailure_FullRollback(t *testing.T) {
+	ctx := context.Background()
+	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
+
+	ownerKey, _ := nostr.GenerateKey()
+	owner := ownerKey.PubKeyHex()
+	const boardD = "ready"
+	board := rdSync.BoardCoord(owner, boardD)
+
+	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog}
+	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{owner}}
+	now := time.Now().Unix()
+	if _, err := ownerPub.PublishItem(ctx, &boardSpec, rdSync.CardSpec{
+		ItemID: "ready-001", Title: "owner item", Status: state.StatusActive,
+		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: owner,
+	}, now); err != nil {
+		t.Fatalf("owner PublishItem: %v", err)
+	}
+
+	minted, _ := nostr.GenerateKey()
+	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, []string{"ws://127.0.0.1:1"}, "nonce-med7", now, now+7200, now+2)
+	if err != nil {
+		t.Fatalf("buildNostrInviteToken: %v", err)
+	}
+	if _, err := sharedLog.AppendUnique([]*nostr.Event{grant}); err != nil {
+		t.Fatalf("append grant: %v", err)
+	}
+
+	p, err := decodeNostrInviteToken(token)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	home := t.TempDir()
+	dir := t.TempDir()
+	medium := &failPublishMedium{src: sharedLog}
+
+	err = redeemNostrInviteToken(p, home, dir, medium, false)
+	if err == nil || !strings.Contains(err.Error(), "forced marker-publish failure") {
+		t.Fatalf("redeem = %v, want the forced late failure surfaced", err)
+	}
+
+	// FULL rollback: identity, board pin, relay config, and imported log all reverted.
+	if fileExists(nostr.DefaultKeyPath(home)) {
+		t.Error("late failure left an identity (identity not rolled back)")
+	}
+	syncCfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if syncCfg.Board != "" {
+		t.Errorf("late failure left a pinned board %q (board pin not rolled back)", syncCfg.Board)
+	}
+	relayCfg, err := rdconfig.Load(home)
+	if err != nil {
+		t.Fatalf("rdconfig.Load: %v", err)
+	}
+	if len(relayCfg.RelayEndpoints) != 0 {
+		t.Errorf("late failure left adopted relays %+v (relay config not rolled back)", relayCfg.RelayEndpoints)
+	}
+	localEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("read local log: %v", err)
+	}
+	if len(localEvents) != 0 {
+		t.Errorf("late failure left %d imported log event(s) (log import not rolled back)", len(localEvents))
 	}
 }

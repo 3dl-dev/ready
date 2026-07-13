@@ -6,16 +6,24 @@ package main
 // polling, TOFU beacon-root pinning via the campfire client, and the campfire
 // transport-dir resolver) was retired with the campfire backend. The only join
 // path is the nostr rd1_ invite token (covered by nostr_invite_test.go). What
-// remains here is the shared isHex helper and the config-only beacon-root reset.
+// remains here is the shared isHex helper.
 //
-// Done conditions tested:
-//   - isHex rejects non-hex strings and accepts valid hex
-//   - resetBeaconRoot clears a pinned root and is idempotent when none is pinned
+// HIGH-4 (ready-cc5): the --reset-beacon-root flag, resetBeaconRoot, and the
+// BeaconRoot/PinBeaconRoot config plumbing were removed entirely. They were the
+// last code that touched CFH()ome/.cf on the join path — resetBeaconRoot called
+// CFHome() and os.OpenFile(O_CREATE) on <CFHome>/rd.json.lock even when nothing was
+// pinned, writing ~/.cf and violating the "no .cf on any path" invariant. The
+// no-.cf join test below is the regression guard.
 
 import (
+	"io/fs"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/campfire-net/ready/pkg/rdconfig"
+	"github.com/campfire-net/ready/pkg/nostr"
+	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
 
 // TestIsHex verifies isHex correctly identifies hex strings.
@@ -40,56 +48,73 @@ func TestIsHex(t *testing.T) {
 	}
 }
 
-// cfHomeTempDir creates a temp dir and sets rdHome so CFHome() returns it.
-// Cleans up on test completion.
-func cfHomeTempDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	origRDHome := rdHome
-	rdHome = dir
-	t.Cleanup(func() { rdHome = origRDHome })
-	return dir
-}
+// TestJoin_NoDotCfNoLock is the HIGH-4 regression guard: a full invite redemption
+// (the join core) must create NO campfire state (.cf/ or identity.json) and NO
+// rd.json.lock ANYWHERE. Before the fix, `rd join`'s --reset-beacon-root path wrote
+// <CFHome>/rd.json.lock via os.OpenFile(O_CREATE) even with nothing pinned; that
+// flag and its plumbing are now gone. This walks the whole temp base after a
+// successful join and fails on any .cf artifact or *.lock file.
+func TestJoin_NoDotCfNoLock(t *testing.T) {
+	base := t.TempDir()
+	sharedLog := rdSync.NewNostrLog(filepath.Join(base, "relay-log.jsonl"))
+	medium := &logInviteMedium{log: sharedLog}
 
-// sampleRoot is a 64-char hex string used as a fake beacon root.
-const sampleRoot = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
-
-// TestBeaconRoot_Reset verifies --reset-beacon-root clears the pin from config
-// and returns the previous value.
-func TestBeaconRoot_Reset(t *testing.T) {
-	cfHome := cfHomeTempDir(t)
-
-	if err := rdconfig.Save(cfHome, &rdconfig.Config{BeaconRoot: sampleRoot}); err != nil {
-		t.Fatalf("setup Save: %v", err)
-	}
-
-	prev, err := resetBeaconRoot(cfHome)
+	ownerKey, err := nostr.GenerateKey()
 	if err != nil {
-		t.Fatalf("resetBeaconRoot: unexpected error: %v", err)
+		t.Fatalf("owner GenerateKey: %v", err)
 	}
-	if prev != sampleRoot {
-		t.Errorf("resetBeaconRoot prev = %q, want %q", prev, sampleRoot)
+	owner := ownerKey.PubKeyHex()
+	const boardD = "ready"
+	board := rdSync.BoardCoord(owner, boardD)
+
+	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog}
+	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{owner}}
+	now := time.Now().Unix()
+	if _, err := ownerPub.PublishItem(nil, &boardSpec, rdSync.CardSpec{
+		ItemID: "ready-001", Title: "first", Status: "active",
+		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: owner,
+	}, now); err != nil {
+		t.Fatalf("owner PublishItem: %v", err)
 	}
 
-	saved, err := rdconfig.Load(cfHome)
+	minted, err := nostr.GenerateKey()
 	if err != nil {
-		t.Fatalf("rdconfig.Load after reset: %v", err)
+		t.Fatalf("minted GenerateKey: %v", err)
 	}
-	if saved.BeaconRoot != "" {
-		t.Errorf("BeaconRoot after reset = %q, want empty", saved.BeaconRoot)
-	}
-}
-
-// TestBeaconRoot_Reset_NoPinned verifies resetBeaconRoot returns empty string
-// when no root is pinned (idempotent).
-func TestBeaconRoot_Reset_NoPinned(t *testing.T) {
-	cfHome := cfHomeTempDir(t)
-
-	prev, err := resetBeaconRoot(cfHome)
+	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, []string{"ws://127.0.0.1:1"}, "nonce-nocf", now, now+7200, now+2)
 	if err != nil {
-		t.Fatalf("resetBeaconRoot on empty config: unexpected error: %v", err)
+		t.Fatalf("buildNostrInviteToken: %v", err)
 	}
-	if prev != "" {
-		t.Errorf("expected empty prev, got %q", prev)
+	if err := medium.Publish([]*nostr.Event{grant}); err != nil {
+		t.Fatalf("publishing grant: %v", err)
 	}
+
+	p, err := decodeNostrInviteToken(token)
+	if err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	joinHome := filepath.Join(base, "joiner-home")
+	joinDir := filepath.Join(base, "joiner-project")
+	if err := redeemNostrInviteToken(p, joinHome, joinDir, medium, false); err != nil {
+		t.Fatalf("redeem (join): %v", err)
+	}
+
+	// Whole-tree walk: no .cf, no identity.json, no *.lock created by the join.
+	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".cf" {
+			t.Fatalf("join created a .cf directory at %s — the nostr-native join must never write .cf", path)
+		}
+		if !d.IsDir() {
+			if d.Name() == "identity.json" {
+				t.Fatalf("join created a campfire identity at %s", path)
+			}
+			if strings.HasSuffix(d.Name(), ".lock") {
+				t.Fatalf("join created a lock file at %s — the removed beacon-root plumbing wrote <CFHome>/rd.json.lock", path)
+			}
+		}
+		return nil
+	})
 }

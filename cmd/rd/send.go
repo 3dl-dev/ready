@@ -47,11 +47,3 @@ func projectRoot() (campfireID string, projectDir string, ok bool) {
 func formatCampfireIDForDisplay(hexID string) string {
 	return hexID
 }
-
-// minInt returns the smaller of two ints.
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
