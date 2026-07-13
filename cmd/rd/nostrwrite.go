@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/playbook"
 	"github.com/campfire-net/ready/pkg/state"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
@@ -36,12 +35,19 @@ import (
 // JSONL-only projects keep their existing code paths untouched.
 // ============================================================================
 
+// errNotNostrProject is returned by every write command when the current directory
+// is not a nostr-native ready project. After the campfire cutover (ready-cb6) the
+// nostr-native local signed-event log is the ONLY write path — there is no campfire
+// executor and no --offline JSONL writer to fall back to.
+func errNotNostrProject() error {
+	return fmt.Errorf("not a ready project: run 'rd init --name <project>' to create one")
+}
+
 // nostrNativeProject reports whether the current project uses the nostr-native
 // default write path. It returns (projectDir, true) exactly when a .ready/ project
 // exists AND a board coordinate is pinned in its config.json — the on-disk
-// signature the default `rd init` (initNostr) leaves. Campfire-backed projects
-// (a .campfire/root exists → projectRoot() true, no pin) and --offline JSONL-only
-// projects (a .ready/ but no pin) both return false and keep their existing paths.
+// signature the default `rd init` (initNostr) leaves. A directory with no pinned
+// board returns ("", false) and every write command errors via errNotNostrProject.
 func nostrNativeProject() (string, bool) {
 	dir, ok := readyProjectDir()
 	if !ok {
@@ -531,91 +537,6 @@ func runCreateNostr(dir string, c nostrCreateSpec) (string, error) {
 		return "", fmt.Errorf("nostr publish (create): %w", err)
 	}
 	return id, nil
-}
-
-// runEngageNostr instantiates a playbook template into concrete nostr-native
-// items (ready-6ef). It sources the campfire-vestigial template via openStore()
-// (a read-only store open that NEVER calls identity.Load, so no .cf is provisioned),
-// expands it, then publishes every item — with its dependency edges — through the
-// secp256k1 nostr-native publish path. The work:engage bookkeeping record is a
-// campfire-only construct with no nostr projection, so it is intentionally not
-// re-emitted; the durable outcome is the created item set, which round-trips
-// through the nostr projection.
-func runEngageNostr(dir, playbookID, project, forParty string, variables map[string]string) error {
-	s, err := openStore()
-	if err != nil {
-		return fmt.Errorf("opening store to source playbook template: %w", err)
-	}
-	defer s.Close()
-
-	pb, err := findPlaybook(s, playbookID)
-	if err != nil {
-		return err
-	}
-
-	items, err := playbook.Expand(pb.PlaybookTemplate, project, variables)
-	if err != nil {
-		return fmt.Errorf("expanding playbook: %w", err)
-	}
-
-	createdIDs, err := publishEngagedItemsNostr(dir, forParty, items)
-	if err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		return emitMutationResult("", map[string]any{
-			"playbook_id": playbookID,
-			"project":     project,
-			"for":         forParty,
-			"created_ids": createdIDs,
-		})
-	}
-
-	fmt.Printf("engaged playbook %s → %d items\n\n", playbookID, len(items))
-	for _, item := range items {
-		depStr := ""
-		if len(item.Deps) > 0 {
-			depStr = fmt.Sprintf("  (blocked by: %s)", strings.Join(item.Deps, ", "))
-		}
-		fmt.Printf("  %-16s  %-6s  %s%s\n", item.ID, item.Priority, item.Title, depStr)
-	}
-	return nil
-}
-
-// publishEngagedItemsNostr publishes each expanded playbook item as a nostr-native
-// item (board+card+status(inbox)), carrying its dependency edges as card "i" tags
-// (BlockedBy). Signs with the secp256k1 owner key; a log-append failure is fatal.
-// Deps reference sibling item ids in the SAME batch — projection reads the whole
-// log, so an edge to a sibling published later still resolves. Returns the created
-// item ids in template order. Factored out of runEngageNostr so the publish path is
-// unit-testable without a campfire store.
-func publishEngagedItemsNostr(dir, forParty string, items []*playbook.ExpandedItem) ([]string, error) {
-	self, err := nostrSelfPubkey()
-	if err != nil {
-		return nil, err
-	}
-	createdIDs := make([]string, 0, len(items))
-	for _, ei := range items {
-		item := &state.Item{
-			ID:        ei.ID,
-			Title:     ei.Title,
-			Context:   ei.Context,
-			Type:      ei.Type,
-			Level:     ei.Level,
-			Project:   projectPrefix(dir),
-			For:       forParty,
-			Priority:  ei.Priority,
-			Status:    state.StatusInbox,
-			Labels:    ei.Labels,
-			BlockedBy: ei.Deps,
-		}
-		if err := publishItemFullCreateNostr(dir, self, item); err != nil {
-			return nil, fmt.Errorf("nostr publish (engage item %s): %w", ei.ID, err)
-		}
-		createdIDs = append(createdIDs, ei.ID)
-	}
-	return createdIDs, nil
 }
 
 // publishImplicitUnblockNostrNative re-publishes the card of every item the

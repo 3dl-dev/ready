@@ -6,22 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/campfire/cf-protocol/message"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/ready/pkg/jsonl"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 
-// blockPayload is the JSON payload for a work:block message.
-// Retained for scanning existing block messages in findBlockMessage.
-type blockPayload struct {
-	BlockerID  string `json:"blocker_id"`
-	BlockedID  string `json:"blocked_id"`
-	BlockerMsg string `json:"blocker_msg"`
-	BlockedMsg string `json:"blocked_msg"`
-}
 
 // depCmd is the parent command for dep subcommands.
 var depCmd = &cobra.Command{
@@ -55,99 +43,7 @@ var depAddCmd = &cobra.Command{
 			return runDepAddNostr(blockedArg, blockerArg)
 		}
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			// Resolve blocked item (must be local).
-			blocked, err := byIDFromJSONLOrStore(s, blockedArg)
-			if err != nil {
-				return fmt.Errorf("resolving blocked item %q: %w", blockedArg, err)
-			}
-
-			// Resolve blocker: try local first, then cross-campfire.
-			// If the user passes a dotted cross-campfire ref, search all campfires directly.
-			// If they pass a plain ID, try local first, then all campfires in the store.
-			var blocker *state.Item
-			isCrossRef := state.IsCrossCampfireRef(blockerArg)
-
-			if !isCrossRef {
-				// Plain ID -- try local resolution first.
-				blocker, err = byIDFromJSONLOrStore(s, blockerArg)
-			}
-
-			if isCrossRef || (err != nil && blocker == nil) {
-				// Not found locally (or explicit cross-ref) -- search all campfires.
-				blocker, err = resolveAcrossCampfires(s, blockerArg)
-				if err != nil {
-					if isCrossRef {
-						return fmt.Errorf("resolving cross-campfire blocker %q: %w (are you a member of that campfire?)", blockerArg, err)
-					}
-					return fmt.Errorf("resolving blocker item %q: %w", blockerArg, err)
-				}
-			}
-
-			// Determine if this is a cross-campfire dep by comparing campfire IDs.
-			blockerID := blocker.ID
-			isCrossDep := blocked.CampfireID != "" && blocker.CampfireID != "" &&
-				blocked.CampfireID != blocker.CampfireID
-
-			if isCrossDep {
-				// Use cross-campfire ref format: <campfireID>.<itemID>
-				// This is recognized by IsCrossCampfireRef and parsed by ParseCrossCampfireRef.
-				blockerID = blocker.CampfireID + "." + blocker.ID
-			}
-
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("block")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"blocker_id":  blockerID,
-				"blocked_id":  blocked.ID,
-				"blocker_msg": blocker.MsgID,
-				"blocked_msg": blocked.MsgID,
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-2cf): a dep add mutates the blocked
-			// item's dependency set. Re-publish the blocked item's card with the
-			// updated deps ("i" tags) so a nostr reader recomputes the same
-			// blocked/ready state. Card-only edit (no status event): blocked-status
-			// is a projection of the dep tags, not an authoritative transition.
-			// Best-effort, AFTER enforcement succeeded — a relay failure never
-			// fails the mutation (campfire write already durable).
-			blocked.BlockedBy = strSliceAppendUnique(blocked.BlockedBy, blockerID)
-			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
-				warnNostrPublishFailure("dep added; campfire durable", nostrErr)
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-					"blocker_id":  blockerID,
-					"blocked_id":  blocked.ID,
-					"cross":       isCrossDep,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			if isCrossDep {
-				fmt.Printf("blocked: %s is now blocked by %s [cross]\n", blocked.ID, blockerID)
-			} else {
-				fmt.Printf("blocked: %s is now blocked by %s\n", blocked.ID, blocker.ID)
-			}
-			return nil
-		})
+		return errNotNostrProject()
 	},
 }
 
@@ -168,99 +64,7 @@ var depRemoveCmd = &cobra.Command{
 			return runDepRemoveNostr(blockedArg, blockerArg)
 		}
 
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			// Resolve both items to get their canonical IDs.
-			blocked, err := byIDFromJSONLOrStore(s, blockedArg)
-			if err != nil {
-				return fmt.Errorf("resolving blocked item %q: %w", blockedArg, err)
-			}
-			blocker, err := byIDFromJSONLOrStore(s, blockerArg)
-			if err != nil {
-				return fmt.Errorf("resolving blocker item %q: %w", blockerArg, err)
-			}
-
-			// Find the work:block message linking these two items. In pure
-			// --offline (JSONL-only) mode there is no campfire to scan — the
-			// project campfire is empty/absent — so the block message must be
-			// found by scanning the local mutations.jsonl instead (ready-b41).
-			_, _, hasCampfire := projectRoot()
-
-			var blockMsgID, campfireID string
-			if !hasCampfire {
-				path := jsonlPath()
-				if path == "" {
-					return fmt.Errorf("no ready project found (JSONL-only mode requires a .ready/ directory)")
-				}
-				blockMsgID, err = findBlockMessageJSONL(path, blocker.ID, blocked.ID)
-				if err != nil {
-					return err
-				}
-			} else {
-				blockMsgID, campfireID, err = findBlockMessage(s, blocker.ID, blocked.ID)
-				if err != nil {
-					return err
-				}
-			}
-
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("unblock")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"target": blockMsgID,
-			}
-			if reason != "" {
-				argsMap["reason"] = reason
-			}
-
-			// Send the unblock op. In JSONL-only mode there is no campfire to
-			// send to at all — executeConventionOp() writes the tombstone
-			// directly to mutations.jsonl (the same path dep add already uses
-			// offline). Otherwise, send directly to the campfire that contains
-			// the block message via executeConventionOpToCampfire, bypassing
-			// the project campfire lookup.
-			var msg *message.Message
-			var newCampfireID string
-			if !hasCampfire {
-				msg, newCampfireID, err = executeConventionOp(agentID, s, exec, decl, argsMap)
-			} else {
-				msg, newCampfireID, err = executeConventionOpToCampfire(agentID, s, exec, decl, campfireID, argsMap)
-			}
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-2cf): dep remove drops the edge from
-			// the blocked item's dep set — re-publish its card so the nostr reader
-			// recomputes readiness (the item may now be unblocked). Local deps are
-			// stored as the plain blocker ID; a cross-campfire edge is stored as
-			// "<campfireID>.<itemID>" — strip both forms. Card-only edit.
-			blocked.BlockedBy = strSliceRemove(blocked.BlockedBy, blocker.ID, blocker.CampfireID+"."+blocker.ID)
-			if nostrErr := publishItemCardEditNostr(blocked); nostrErr != nil {
-				warnNostrPublishFailure("dep removed; campfire durable", nostrErr)
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"msg_id":       msg.ID,
-					"campfire_id":  newCampfireID,
-					"block_msg_id": blockMsgID,
-					"blocker_id":   blocker.ID,
-					"blocked_id":   blocked.ID,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			fmt.Printf("unblocked: %s is no longer blocked by %s\n", blocked.ID, blocker.ID)
-			return nil
-		})
+		return errNotNostrProject()
 	},
 }
 
@@ -272,33 +76,20 @@ var depTreeCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
 		// Resolve root item.
-		root, err := byIDFromJSONLOrStore(s, itemID)
+		root, err := byIDFromJSONLOrStore(itemID)
 		if err != nil {
 			return err
 		}
 
-		// Load all items from the same campfire for tree walking.
-		memberships, err := s.ListMemberships()
+		// Load all items from the nostr projection / local JSONL log for tree walking.
+		items, err := allItemsFromJSONLOrStore()
 		if err != nil {
-			return fmt.Errorf("listing memberships: %w", err)
+			return fmt.Errorf("loading items: %w", err)
 		}
-
-		allItems := make(map[string]*state.Item)
-		for _, m := range memberships {
-			items, err := state.DeriveFromStore(s, m.CampfireID)
-			if err != nil {
-				continue
-			}
-			for id, item := range items {
-				allItems[id] = item
-			}
+		allItems := make(map[string]*state.Item, len(items))
+		for _, item := range items {
+			allItems[item.ID] = item
 		}
 
 		if jsonOutput {
@@ -413,124 +204,6 @@ func printDepTree(item *state.Item, items map[string]*state.Item, prefix string,
 	}
 
 	delete(visited, item.ID)
-}
-
-// resolveAcrossCampfires resolves an item ID by searching all campfires the
-// user is a member of. This supports cross-campfire dep add when the blocker
-// is in a different project campfire.
-func resolveAcrossCampfires(s store.Store, itemID string) (*state.Item, error) {
-	memberships, err := s.ListMemberships()
-	if err != nil {
-		return nil, fmt.Errorf("listing memberships: %w", err)
-	}
-
-	// First pass: exact match across all campfires.
-	for _, m := range memberships {
-		items, err := state.DeriveFromStore(s, m.CampfireID)
-		if err != nil {
-			continue
-		}
-		if item, ok := items[itemID]; ok {
-			return item, nil
-		}
-	}
-
-	// Second pass: prefix match.
-	var matches []*state.Item
-	for _, m := range memberships {
-		items, err := state.DeriveFromStore(s, m.CampfireID)
-		if err != nil {
-			continue
-		}
-		for id, item := range items {
-			if strings.HasPrefix(id, itemID) {
-				matches = append(matches, item)
-			}
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("item %q not found in any campfire", itemID)
-	case 1:
-		return matches[0], nil
-	default:
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.ID
-		}
-		return nil, fmt.Errorf("prefix %q is ambiguous: matches %s", itemID, strings.Join(ids, ", "))
-	}
-}
-
-// findBlockMessage scans all campfire messages for a work:block message
-// with the given blocker and blocked item IDs. Returns the block message ID
-// and its campfire ID.
-func findBlockMessage(s store.Store, blockerID, blockedID string) (string, string, error) {
-	memberships, err := s.ListMemberships()
-	if err != nil {
-		return "", "", fmt.Errorf("listing memberships: %w", err)
-	}
-
-	for _, m := range memberships {
-		msgs, err := s.ListMessages(m.CampfireID, 0, store.MessageFilter{})
-		if err != nil {
-			continue
-		}
-		for _, msg := range msgs {
-			if !hasTagStr(msg.Tags, "work:block") {
-				continue
-			}
-			var p blockPayload
-			if err := json.Unmarshal(msg.Payload, &p); err != nil {
-				continue
-			}
-			if p.BlockerID == blockerID && p.BlockedID == blockedID {
-				return msg.ID, m.CampfireID, nil
-			}
-		}
-	}
-
-	return "", "", fmt.Errorf("no work:block message found for %s → %s", blockerID, blockedID)
-}
-
-// findBlockMessageJSONL scans the local mutations.jsonl file for a work:block
-// record with the given blocker and blocked item IDs. This mirrors
-// findBlockMessage but reads the local JSONL log instead of the campfire
-// store — required in pure --offline (JSONL-only) mode, where no campfire is
-// configured and ListMemberships()/ListMessages() have nothing to scan
-// (ready-b41). Returns the message ID of the matching work:block record.
-func findBlockMessageJSONL(path, blockerID, blockedID string) (string, error) {
-	reader := jsonl.NewReader(path)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return "", fmt.Errorf("reading local mutations log: %w", err)
-	}
-
-	blockTag := jsonl.WorkTagPrefix + "block"
-	for _, rec := range records {
-		if !hasTagStr(rec.Tags, blockTag) {
-			continue
-		}
-		var p blockPayload
-		if err := json.Unmarshal(rec.Payload, &p); err != nil {
-			continue
-		}
-		if p.BlockerID == blockerID && p.BlockedID == blockedID {
-			return rec.MsgID, nil
-		}
-	}
-
-	return "", fmt.Errorf("no work:block message found for %s → %s", blockerID, blockedID)
-}
-
-// hasTagStr reports whether tags contains the given tag string.
-func hasTagStr(tags []string, tag string) bool {
-	for _, t := range tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
 }
 
 func init() {

@@ -11,9 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -135,18 +132,14 @@ Note: use --context for descriptions, not --description.`,
 		// Alias rewrite: runs BEFORE enum validation so aliased types (e.g. "bug")
 		// are rewritten to canonical values (e.g. "task" + label "bug") before the
 		// declaration enum check sees them.
-		// Call sequence: parse flags → [alias rewrite] → ValidateEnumFlags → withAgentAndStore.
+		// Call sequence: parse flags → [alias rewrite] → ValidateEnumFlags → nostr write.
 		if _, err := rewriteTypeAlias(&itemType, &labelSlice); err != nil {
 			return err
 		}
 
-		// Declaration-derived enum validation — runs BEFORE any store open or
-		// JSONL write. Alias rewrite has already normalized the type above.
+		// Declaration-derived enum validation — runs BEFORE the nostr-native write.
+		// Alias rewrite has already normalized the type above.
 		{
-			decl, err := loadDeclaration("create")
-			if err != nil {
-				return fmt.Errorf("loading create declaration for validation: %w", err)
-			}
 			enumFlags := map[string]string{
 				"type":     itemType,
 				"priority": priority,
@@ -154,7 +147,7 @@ Note: use --context for descriptions, not --description.`,
 			if level != "" {
 				enumFlags["level"] = level
 			}
-			if err := ValidateEnumFlags(decl, enumFlags); err != nil {
+			if err := ValidateEnumFlags("create", enumFlags); err != nil {
 				return err
 			}
 		}
@@ -176,168 +169,36 @@ Note: use --context for descriptions, not --description.`,
 			due = normalized
 		}
 
-		// nostr-native default write path (ready-6ef): no .cf, secp256k1 signer.
+		// nostr-native write path (ready-cb6): no .cf, secp256k1 signer. Only path.
 		// The item is materialized as board+card+status(inbox) events; --for
 		// defaults to the signing pubkey.
-		if dir, native := nostrNativeProject(); native {
-			id, err := runCreateNostr(dir, nostrCreateSpec{
-				id: id, title: title, context: context, itemType: itemType,
-				level: level, project: project, forParty: forParty, by: by,
-				priority: priority, parentID: parentID, eta: eta, due: due,
-				labels: labelSlice, forChanged: cmd.Flags().Changed("for"),
-			})
-			if err != nil {
-				return err
-			}
-			if jsonOutput {
-				out := map[string]interface{}{
-					"id": id, "title": title, "type": itemType, "priority": priority,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
-				fmt.Printf("created %s\n", id)
-			} else {
-				fmt.Println(id)
-			}
-			return nil
+		dir, native := nostrNativeProject()
+		if !native {
+			return errNotNostrProject()
 		}
-
-		return withAgentAndStore(func(agentID *identity.Identity, s store.Store) error {
-			// Default --for to the current session identity when not explicitly set.
-			if !cmd.Flags().Changed("for") {
-				forParty = agentID.PublicKeyHex()
-			} else if forParty == "" {
-				return fmt.Errorf("--for: value cannot be empty")
-			}
-
-			// Client-side label validation against the registry (when labels are provided).
-			// Registry is derived from the campfire store or JSONL; falls back gracefully
-			// when unavailable (fresh checkout, offline) per spec: never hard-fail on missing registry.
-			if len(labelSlice) > 0 {
-				var registry map[string]state.LabelDef
-				campfireID, _, hasCampfire := projectRoot()
-				if hasCampfire && campfireID != "" {
-					if result, err := state.DeriveAllFromStore(s, campfireID); err == nil {
-						registry = result.LabelRegistry()
-					}
-				} else if path := jsonlPath(); path != "" {
-					// JSONL-only mode: load registry from mutations file.
-					campfireID, _, _ := projectRoot()
-					if result, err := state.DeriveAllFromJSONL(path, campfireID); err == nil {
-						registry = result.LabelRegistry()
-					}
-				}
-				if err := validateLabelsAgainstRegistry(labelSlice, registry, agentID.PublicKeyHex()); err != nil {
-					return err
-				}
-			}
-
-			// Load existing IDs for collision detection.
-			existingIDs := map[string]struct{}{}
-			existingItems, _ := allItemsFromJSONLOrStore(s)
-			for _, it := range existingItems {
-				existingIDs[it.ID] = struct{}{}
-			}
-
-			// Determine ID prefix from project directory.
-			_, projectDir, hasCampfire := projectRoot()
-			if id == "" {
-				prefix := ""
-				if hasCampfire {
-					prefix = projectPrefix(projectDir)
-				} else if dir, ok := readyProjectDir(); ok {
-					prefix = projectPrefix(dir)
-				}
-				generated, err := generateID(prefix, existingIDs)
-				if err != nil {
-					return err
-				}
-				id = generated
-			} else if _, collision := existingIDs[id]; collision {
-				return fmt.Errorf("item %q already exists", id)
-			}
-
-			exec, _, err := requireExecutor()
-			if err != nil {
-				return err
-			}
-			decl, err := loadDeclaration("create")
-			if err != nil {
-				return err
-			}
-
-			argsMap := map[string]any{
-				"id":       id,
-				"title":    title,
-				"type":     itemType,
-				"for":      forParty,
-				"priority": priority,
-			}
-			if context != "" {
-				argsMap["context"] = context
-			}
-			if level != "" {
-				argsMap["level"] = level
-			}
-			if project != "" {
-				argsMap["project"] = project
-			}
-			if by != "" {
-				argsMap["by"] = by
-			}
-			if parentID != "" {
-				argsMap["parent_id"] = parentID
-			}
-			if eta != "" {
-				argsMap["eta"] = eta
-			}
-			if due != "" {
-				argsMap["due"] = due
-			}
-			if len(labelSlice) > 0 {
-				// Join multiple --label flags into the comma-scalar format expected by the declaration.
-				argsMap["labels"] = strings.Join(labelSlice, ",")
-			}
-
-			msg, campfireID, err := executeConventionOp(agentID, s, exec, decl, argsMap)
-			if err != nil {
-				return err
-			}
-
-			// rd->nostr hybrid publish (ready-a13). Gated by RD_NOSTR=1 so the
-			// campfire baseline is unaffected. Best-effort: a relay failure never
-			// fails create — the events are durable in the local authoritative log.
-			if nostrErr := publishItemCreateNostr(id, title, itemType, priority, "", context, forParty); nostrErr != nil {
-				warnNostrPublishFailure("item created; local log/campfire durable", nostrErr)
-			}
-
-			if jsonOutput {
-				out := map[string]interface{}{
-					"id":          id,
-					"msg_id":      msg.ID,
-					"campfire_id": campfireID,
-					"title":       title,
-					"type":        itemType,
-					"priority":    priority,
-					"for":         forParty,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-
-			// Pipe-friendly output: print bare ID when stdout is not a TTY so
-			// scripts can do: ITEM=$(rd create 'Title' --type task --priority p1)
-			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
-				fmt.Printf("created %s (msg: %s)\n", id, msg.ID)
-			} else {
-				fmt.Println(id)
-			}
-			return nil
+		id, err := runCreateNostr(dir, nostrCreateSpec{
+			id: id, title: title, context: context, itemType: itemType,
+			level: level, project: project, forParty: forParty, by: by,
+			priority: priority, parentID: parentID, eta: eta, due: due,
+			labels: labelSlice, forChanged: cmd.Flags().Changed("for"),
 		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			out := map[string]interface{}{
+				"id": id, "title": title, "type": itemType, "priority": priority,
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(out)
+		}
+		if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+			fmt.Printf("created %s\n", id)
+		} else {
+			fmt.Println(id)
+		}
+		return nil
 	},
 }
 

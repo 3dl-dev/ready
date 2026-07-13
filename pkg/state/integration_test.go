@@ -13,15 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/views"
 )
 
 // makeMsgFrom is like makeMsg but allows specifying sender.
-func makeMsgFrom(id, sender string, tags []string, payload interface{}, antecedents []string, ts int64) store.MessageRecord {
+func makeMsgFrom(id, sender string, tags []string, payload interface{}, antecedents []string, ts int64) msgrec.MessageRecord {
 	p, _ := json.Marshal(payload)
-	return store.MessageRecord{
+	return msgrec.MessageRecord{
 		ID:          id,
 		CampfireID:  testCampfire,
 		Sender:      sender,
@@ -50,7 +50,7 @@ func TestIntegration_AgentClaimViaStatusAndClaim(t *testing.T) {
 	ts := now()
 	agentKey := "agent-pubkey-abc123"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Human creates item
 		makeMsgFrom("msg-create", "human-pubkey", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-001", "title": "Fix the widget", "type": "task",
@@ -118,7 +118,7 @@ func TestIntegration_AgentCompletesWork(t *testing.T) {
 	ts := now()
 	agentKey := "agent-impl-001"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsgFrom("msg-create", "human-pubkey", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-002", "title": "Implement feature", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -167,7 +167,7 @@ func TestIntegration_AgentCompletesWork(t *testing.T) {
 func TestIntegration_MultiStatusListFilter(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Item 1: stays inbox
 		makeMsg("msg-c1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-101", "title": "Inbox item", "type": "task",
@@ -238,7 +238,7 @@ func TestIntegration_MultiStatusListFilter(t *testing.T) {
 func TestIntegration_DescriptionAliasSurvivesUpdate(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-201", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p2",
@@ -287,7 +287,7 @@ func TestIntegration_DescriptionAliasSurvivesUpdate(t *testing.T) {
 func TestIntegration_CloseUnblocksDependents(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-cA", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-301", "title": "Blocker", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -344,7 +344,7 @@ func TestIntegration_FullAgentLifecycle(t *testing.T) {
 	managerKey := "manager-pubkey"
 	agentKey := "agent-impl-pubkey"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Manager creates item for baron
 		makeMsgFrom("msg-create", managerKey, []string{"work:create"}, map[string]interface{}{
 			"id": "ready-401", "title": "Build the parser", "type": "task",
@@ -424,7 +424,7 @@ func TestIntegration_LifecycleIntermediateStates(t *testing.T) {
 	ts := now()
 	agentKey := "agent-impl"
 
-	allMsgs := []store.MessageRecord{
+	allMsgs := []msgrec.MessageRecord{
 		makeMsgFrom("msg-c", "manager", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-501", "title": "Task", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p0",
@@ -510,7 +510,7 @@ func TestIntegration_LifecycleIntermediateStates(t *testing.T) {
 func TestIntegration_GateLifecycle(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-c", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-601", "title": "Gated task", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -590,7 +590,7 @@ func TestIntegration_GateLifecycle(t *testing.T) {
 func TestIntegration_DependencyChain(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-cA", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-701", "title": "A", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -673,7 +673,7 @@ func TestIntegration_DependencyChain(t *testing.T) {
 func TestIntegration_DescriptionMirrorsContextThroughLifecycle(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-c", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-801", "title": "Evolving", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p2",
@@ -723,7 +723,7 @@ func TestIntegration_DescriptionMirrorsContextThroughLifecycle(t *testing.T) {
 func TestIntegration_ClearSentinelClearsDescription(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-c", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-901", "title": "Clear test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p2",
@@ -752,7 +752,7 @@ func TestIntegration_ClearSentinelClearsDescription(t *testing.T) {
 func TestIntegration_PriorityETAReadyVisibility(t *testing.T) {
 	ts := now()
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// P0: eta = now + 1h → within 4h → ready
 		makeMsg("msg-c0", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-a01", "title": "P0 urgent", "type": "task",
@@ -795,7 +795,7 @@ func TestIntegration_ETAOverrideAffectsReadyView(t *testing.T) {
 	farFuture := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
 	nearFuture := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-c", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-b01", "title": "ETA test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -831,7 +831,7 @@ func TestIntegration_DelegatedViewFiltering(t *testing.T) {
 	agent1 := "agent-1"
 	agent2 := "agent-2"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Item for baron, delegated to agent1, agent claims (active)
 		makeMsgFrom("msg-c1", baron, []string{"work:create"}, map[string]interface{}{
 			"id": "ready-d01", "title": "Delegated active", "type": "task",
@@ -897,7 +897,7 @@ func TestIntegration_CompletePayloadDerives(t *testing.T) {
 	ts := now()
 	agentKey := "agent-impl-complete"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsgFrom("msg-cpc-create", "human-pubkey", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-cpc01", "title": "Implement feature X", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -953,7 +953,7 @@ func TestIntegration_CompleteWithoutBranch(t *testing.T) {
 	ts := now()
 	agentKey := "agent-impl-nobranch"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsgFrom("msg-cwb-create", "human-pubkey", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-cwb01", "title": "Quick fix", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p2",
@@ -1002,7 +1002,7 @@ func TestIntegration_StatusAliasEndToEnd(t *testing.T) {
 	ts := now()
 	agentKey := "agent-key-alias-test"
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsgFrom("msg-create-alias", "human-pubkey", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-alias-001", "title": "Alias test item", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -1044,7 +1044,7 @@ func TestIntegration_AllAliasesProduceCanonicalState(t *testing.T) {
 	ts := now()
 
 	// active (from in_progress alias)
-	activeMsgs := []store.MessageRecord{
+	activeMsgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-a1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-alias-a1", "title": "in_progress alias", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -1069,7 +1069,7 @@ func TestIntegration_AllAliasesProduceCanonicalState(t *testing.T) {
 	}
 
 	// inbox (from open alias)
-	inboxMsgs := []store.MessageRecord{
+	inboxMsgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-b1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-alias-b1", "title": "open alias", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -1094,7 +1094,7 @@ func TestIntegration_AllAliasesProduceCanonicalState(t *testing.T) {
 	}
 
 	// done (from closed/completed alias, via work:close)
-	doneMsgs := []store.MessageRecord{
+	doneMsgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-c1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-alias-c1", "title": "closed alias", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

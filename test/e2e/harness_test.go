@@ -1,8 +1,14 @@
-// Package e2e_test tests the rd CLI binary end-to-end against a real campfire.
-// It builds the binary via TestMain and exercises commands via exec.Command.
+// Package e2e_test tests the rd CLI binary end-to-end against a nostr-native
+// project. It builds the binary via TestMain and exercises commands via
+// exec.Command.
+//
+// CUTOVER (ready-cb6 I7): the campfire backend is gone. NewEnv provisions a
+// project with the nostr-native default `rd init --name ...` (secp256k1 signer,
+// local signed-event log, no campfire, no .cf identity/store). Every rd command
+// runs against that substrate with a fully hermetic env (isolated HOME / RD_HOME
+// / CF_HOME and an unreachable relay so writes stay local and fast).
 //
 // Use this layer to test: CLI flags, command behaviour, JSON output contracts, error messages.
-// Use test/integration/ to test: the Go API, state derivation, view predicates.
 //
 // Run with:
 //
@@ -16,9 +22,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
+	"strings"
 	"testing"
 )
+
+// unreachableRelay keeps nostr writes local (no reachable relay) so the e2e
+// suite is hermetic and fast. The nostr write path treats the local signed-event
+// log as the primary durable write, so create/claim/close all succeed offline.
+const unreachableRelay = "ws://127.0.0.1:1"
 
 // rdBinary is the path to the built rd binary, set once in TestMain.
 var rdBinary string
@@ -69,154 +80,84 @@ func findModuleRoot() (string, error) {
 	}
 }
 
-// Env holds a fully isolated e2e environment per test.
+// Env holds a fully isolated, nostr-native e2e environment per test.
 type Env struct {
-	CFHome       string // campfire home dir (identity + store)
-	CampfireID   string // the project campfire ID
-	TransportDir string // filesystem transport directory for the campfire (from cf create --json)
-	ProjectDir   string // temp dir with .campfire/root
-	t            *testing.T
+	Home       string // isolated HOME
+	RDHome     string // isolated RD_HOME (nostr signing identity + rd config)
+	CFHome     string // isolated CF_HOME (legacy; the default nostr path never provisions it)
+	Board      string // pinned board coordinate 30301:<owner>:<boardD>
+	Owner      string // board owner pubkey (secp256k1 self) — the default --for party
+	ProjectDir string // temp dir initialised with a nostr-native `rd init`
+	t          *testing.T
 }
 
-var (
-	cfOnce sync.Once
-	cfErr  error
-)
-
-// NewEnv creates a fresh cf environment for one test.
-// Uses cf init + cf create to create a real campfire.
+// NewEnv creates a fresh nostr-native environment for one test: it runs the
+// default `rd init --name ...` in an isolated project dir with hermetic HOME /
+// RD_HOME / CF_HOME and an unreachable relay, then records the pinned board
+// coordinate and owner pubkey for assertions.
 func NewEnv(t *testing.T) *Env {
 	t.Helper()
 
-	cfHome := t.TempDir()
-
-	// cf init — create identity in cfHome
-	initCmd := exec.Command("cf", "init", "--cf-home", cfHome)
-	initCmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-	}
-	if out, err := initCmd.CombinedOutput(); err != nil {
-		t.Fatalf("cf init failed: %v\n%s", err, out)
+	e := &Env{
+		Home:       t.TempDir(),
+		RDHome:     t.TempDir(),
+		CFHome:     t.TempDir(),
+		ProjectDir: t.TempDir(),
+		t:          t,
 	}
 
-	// cf create — create real campfire
-	createCmd := exec.Command("cf", "create", "--cf-home", cfHome,
-		"--description", fmt.Sprintf("e2e-test-%s", t.Name()),
-		"--json")
-	createCmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
+	// Sanitise the test name into a valid project name (alnum/./-/_).
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, t.Name())
+
+	stdout, stderr, code := e.Rd("init", "--name", name)
+	if code != 0 {
+		t.Fatalf("rd init failed (exit %d):\nstderr: %s\nstdout: %s", code, stderr, stdout)
 	}
-	out, err := createCmd.Output()
+
+	// Read the pinned board coordinate + owner from .ready/config.json.
+	cfgData, err := os.ReadFile(filepath.Join(e.ProjectDir, ".ready", "config.json"))
 	if err != nil {
-		t.Fatalf("cf create failed: %v\n%s", err, out)
+		t.Fatalf("reading .ready/config.json after init: %v", err)
 	}
-
-	// cf 0.16+ prints "Wrote <path>" before the JSON object; find the first '{'.
-	jsonStart := bytes.IndexByte(out, '{')
-	if jsonStart < 0 {
-		t.Fatalf("cf create: no JSON object in output: %s", out)
+	var cfg struct {
+		Board string `json:"board"`
 	}
-	var result struct {
-		CampfireID   string `json:"campfire_id"`
-		TransportDir string `json:"transport_dir"`
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parsing .ready/config.json: %v\n%s", err, cfgData)
 	}
-	if err := json.Unmarshal(out[jsonStart:], &result); err != nil {
-		t.Fatalf("cf create JSON parse failed: %v\noutput: %s", err, out)
+	parts := strings.Split(cfg.Board, ":")
+	if len(parts) != 3 || parts[0] != "30301" || len(parts[1]) != 64 {
+		t.Fatalf("init did not pin a well-formed board coordinate: %q", cfg.Board)
 	}
-	if result.CampfireID == "" {
-		t.Fatalf("cf create returned empty campfire_id; output: %s", out)
-	}
-
-	// Create project dir with .campfire/root
-	projectDir := t.TempDir()
-	campfireDir := filepath.Join(projectDir, ".campfire")
-	if err := os.MkdirAll(campfireDir, 0700); err != nil {
-		t.Fatalf("mkdir .campfire: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(result.CampfireID), 0600); err != nil {
-		t.Fatalf("write .campfire/root: %v", err)
-	}
-
-	return &Env{
-		CFHome:       cfHome,
-		CampfireID:   result.CampfireID,
-		TransportDir: result.TransportDir,
-		ProjectDir:   projectDir,
-		t:            t,
-	}
+	e.Board = cfg.Board
+	e.Owner = parts[1]
+	return e
 }
 
-// newCampfireProjectDir creates an ADDITIONAL campfire-backed project directory
-// sharing this env's CF_HOME identity: it runs `cf create` and writes
-// .campfire/root, exactly as NewEnv does for e.ProjectDir. Post-cutover the default
-// `rd init` is nostr-native and provisions NO campfire, so campfire-vestigial
-// commands (register, join, admit — the campfire-org topology surface that I5/I7
-// deletes) can no longer be set up via `rd init`. Tests that exercise those
-// campfire features build their substrate directly through this helper instead.
-// Returns the new project dir and its campfire ID.
-func (e *Env) newCampfireProjectDir(t *testing.T) (projectDir, campfireID string) {
-	t.Helper()
-	createCmd := exec.Command("cf", "create", "--cf-home", e.CFHome,
-		"--description", fmt.Sprintf("e2e-extra-%s", t.Name()),
-		"--json")
-	createCmd.Env = []string{
+// hermeticEnv builds the env slice every rd invocation runs under: isolated
+// HOME / RD_HOME / CF_HOME plus an unreachable relay so writes stay local.
+func (e *Env) hermeticEnv() []string {
+	return []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
+		"HOME=" + e.Home,
+		"RD_HOME=" + e.RDHome,
+		"CF_HOME=" + e.CFHome,
+		"RD_NOSTR_RELAY_URL=" + unreachableRelay,
 	}
-	out, err := createCmd.Output()
-	if err != nil {
-		t.Fatalf("cf create (extra) failed: %v\n%s", err, out)
-	}
-	jsonStart := bytes.IndexByte(out, '{')
-	if jsonStart < 0 {
-		t.Fatalf("cf create (extra): no JSON object in output: %s", out)
-	}
-	var result struct {
-		CampfireID string `json:"campfire_id"`
-	}
-	if err := json.Unmarshal(out[jsonStart:], &result); err != nil {
-		t.Fatalf("cf create (extra) JSON parse failed: %v\noutput: %s", err, out)
-	}
-	if result.CampfireID == "" {
-		t.Fatalf("cf create (extra) returned empty campfire_id; output: %s", out)
-	}
-	projectDir = t.TempDir()
-	campfireDir := filepath.Join(projectDir, ".campfire")
-	if err := os.MkdirAll(campfireDir, 0700); err != nil {
-		t.Fatalf("mkdir .campfire (extra): %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(result.CampfireID), 0600); err != nil {
-		t.Fatalf("write .campfire/root (extra): %v", err)
-	}
-	return projectDir, result.CampfireID
 }
 
 // Rd runs rd with the given args in the project dir.
 // Returns stdout, stderr, and exit code.
 func (e *Env) Rd(args ...string) (stdout, stderr string, exitCode int) {
 	e.t.Helper()
-	cmd := exec.Command(rdBinary, args...)
-	cmd.Dir = e.ProjectDir
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"CF_HOME=" + e.CFHome,
-	}
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err := cmd.Run()
-	exitCode = 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-	return outBuf.String(), errBuf.String(), exitCode
+	return e.RdInDir(e.ProjectDir, args...)
 }
 
 // RdInDir runs rd in a specified directory (instead of e.ProjectDir).
@@ -224,11 +165,7 @@ func (e *Env) RdInDir(dir string, args ...string) (stdout, stderr string, exitCo
 	e.t.Helper()
 	cmd := exec.Command(rdBinary, args...)
 	cmd.Dir = dir
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"CF_HOME=" + e.CFHome,
-	}
+	cmd.Env = e.hermeticEnv()
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -334,44 +271,12 @@ func (e *Env) ShowItem(id string) Item {
 	return item
 }
 
-// IdentityPubKeyHex returns the hex-encoded public key of the test environment's identity.
-// This matches the value that rd uses as the default --for party.
+// IdentityPubKeyHex returns the hex-encoded public key of the test environment's
+// nostr signing identity — the board owner (secp256k1 self). This matches the
+// value rd uses as the default --for party.
 func (e *Env) IdentityPubKeyHex() string {
 	e.t.Helper()
-	data, err := os.ReadFile(filepath.Join(e.CFHome, "identity.json"))
-	if err != nil {
-		e.t.Fatalf("reading identity.json: %v", err)
-	}
-	var id struct {
-		PublicKey []byte `json:"public_key"` // JSON: base64-encoded bytes
-	}
-	if err := json.Unmarshal(data, &id); err != nil {
-		e.t.Fatalf("parsing identity.json: %v", err)
-	}
-	return fmt.Sprintf("%x", id.PublicKey)
-}
-
-// memberPubKeyHex reads the public key from a cf identity.json file at the given
-// CF_HOME and returns the hex-encoded public key. Used by multi-identity e2e
-// tests to obtain a second identity's pubkey for campfire-org setup (e.g. `cf
-// admit`) that isn't the test's own Env identity.
-func memberPubKeyHex(t *testing.T, cfHome string) string {
-	t.Helper()
-
-	identityPath := filepath.Join(cfHome, "identity.json")
-	data, err := os.ReadFile(identityPath)
-	if err != nil {
-		t.Fatalf("reading member identity.json at %s: %v", identityPath, err)
-	}
-
-	var id struct {
-		PublicKey []byte `json:"public_key"`
-	}
-	if err := json.Unmarshal(data, &id); err != nil {
-		t.Fatalf("parsing member identity.json: %v", err)
-	}
-
-	return fmt.Sprintf("%x", id.PublicKey)
+	return e.Owner
 }
 
 // findItem returns the first item with the given ID from a slice, or zero value.
@@ -394,23 +299,19 @@ func containsItem(items []Item, id string) bool {
 
 func TestHarness_EnvCreates(t *testing.T) {
 	e := NewEnv(t)
-	if e.CFHome == "" {
-		t.Fatal("CFHome is empty")
+	if e.ProjectDir == "" {
+		t.Fatal("ProjectDir is empty")
 	}
-	if len(e.CampfireID) != 64 {
-		t.Fatalf("CampfireID has wrong length %d: %q", len(e.CampfireID), e.CampfireID)
+	if len(e.Owner) != 64 {
+		t.Fatalf("Owner pubkey has wrong length %d: %q", len(e.Owner), e.Owner)
 	}
-	rootFile := filepath.Join(e.ProjectDir, ".campfire", "root")
-	data, err := os.ReadFile(rootFile)
-	if err != nil {
-		t.Fatalf("reading .campfire/root: %v", err)
+	// The nostr-native init writes a signed-event log and pins a board — and
+	// provisions NO campfire artifacts anywhere.
+	if _, err := os.Stat(filepath.Join(e.ProjectDir, ".ready", "nostr-log.jsonl")); err != nil {
+		t.Fatalf(".ready/nostr-log.jsonl not written by NewEnv: %v", err)
 	}
-	got := string(data)
-	for len(got) > 0 && (got[len(got)-1] == '\n' || got[len(got)-1] == '\r') {
-		got = got[:len(got)-1]
-	}
-	if got != e.CampfireID {
-		t.Fatalf(".campfire/root content mismatch: got %q, want %q", got, e.CampfireID)
+	if _, err := os.Stat(filepath.Join(e.ProjectDir, ".campfire")); err == nil {
+		t.Fatal("nostr-native NewEnv must NOT create .campfire/ in the project dir")
 	}
 }
 

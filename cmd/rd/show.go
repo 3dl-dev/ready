@@ -6,9 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/ready/pkg/crossdep"
 	"github.com/spf13/cobra"
 )
 
@@ -25,80 +22,25 @@ Example:
 		itemID := args[0]
 		auditFlag, _ := cmd.Flags().GetBool("audit")
 
-		autoSyncPull()
-
-		// On a nostr-native project the read + audit authority is the nostr
-		// projection, never a campfire store. Skip openStore() entirely so
-		// `rd show` (incl. --audit) provisions NO campfire store.db under CFHome
-		// and takes the no-.cf audit path below (ready-6ef veracity fix).
-		// byIDFromJSONLOrStore short-circuits to the projection when reads are
-		// nostr-native, so the nil store is never dereferenced.
-		_, native := nostrNativeProject()
-
-		var s store.Store
-		if !native {
-			var err error
-			s, err = openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
-		}
-
-		item, err := byIDFromJSONLOrStore(s, itemID)
+		// The read + audit authority is the nostr projection or local JSONL —
+		// never a campfire store. `rd show` (incl. --audit) provisions NO campfire
+		// store.db (ready-cb6 I7): byIDFromJSONLOrStore resolves from the nostr
+		// projection (nostr-native) or mutations.jsonl, and the audit path below
+		// resolves authority from the same signed sources.
+		item, err := byIDFromJSONLOrStore(itemID)
 		if err != nil {
 			cmd.SilenceUsage = true
 			return err
 		}
 
-		// Cross-campfire dep resolution is a campfire-federation concern requiring a
-		// campfire store; it does not apply on the nostr-native path.
-		var crossDeps []crossdep.ResolvedDep
-		if !native {
-			aliases := naming.NewAliasStore(CFHome())
-			crossDeps = crossdep.ResolveDeps(item, s, aliases)
-		}
-
+		// CUTOVER (ready-cb6 I7): cross-campfire dep resolution was a
+		// campfire-federation concern requiring a multi-campfire store. A nostr
+		// board is a single project, so there is no cross-store topology to
+		// resolve; the display has been removed with pkg/crossdep.
 		if jsonOutput {
-			// Augment item with resolved cross-campfire dep info.
-			type crossDepJSON struct {
-				Ref          string `json:"ref"`
-				CampfireName string `json:"campfire_name,omitempty"`
-				ItemID       string `json:"item_id,omitempty"`
-				Status       string `json:"status,omitempty"`
-				Warning      string `json:"warning,omitempty"`
-			}
-			var crossDepsOut []crossDepJSON
-			for _, cd := range crossDeps {
-				cdj := crossDepJSON{
-					Ref:          cd.Ref,
-					CampfireName: cd.CampfireName,
-					ItemID:       cd.ItemID,
-				}
-				if cd.Item != nil {
-					cdj.Status = cd.Item.Status
-				}
-				if cd.Warning != "" {
-					cdj.Warning = cd.Warning
-				}
-				crossDepsOut = append(crossDepsOut, cdj)
-			}
-			// Build augmented output map.
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			// Encode item first, then add cross_campfire_deps.
-			itemBytes, err2 := json.Marshal(item)
-			if err2 != nil {
-				return enc.Encode(item)
-			}
-			var itemMap map[string]interface{}
-			if err2 = json.Unmarshal(itemBytes, &itemMap); err2 != nil {
-				return enc.Encode(item)
-			}
-			if len(crossDepsOut) > 0 {
-				itemMap["cross_campfire_deps"] = crossDepsOut
-			}
-			return enc.Encode(itemMap)
+			return enc.Encode(item)
 		}
 
 		// Human-readable output.
@@ -138,14 +80,6 @@ Example:
 		if len(item.Labels) > 0 {
 			fmt.Printf("Labels:   %s\n", strings.Join(item.Labels, ", "))
 		}
-		// Cross-campfire dep display: resolved and unresolved.
-		for _, cd := range crossDeps {
-			if cd.Item != nil {
-				fmt.Printf("Cross-dep: %s → %s [%s]\n", cd.Ref, cd.ItemID, cd.Item.Status)
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: %s\n", cd.Warning)
-			}
-		}
 		if item.Context != "" {
 			fmt.Printf("\nContext:\n%s\n", item.Context)
 		}
@@ -155,19 +89,14 @@ Example:
 			// items whose actors carry no delegation grant.
 			var auth auditLabeler
 			if auditFlag {
-				if native {
-					// Nostr-native: resolve authority from the signed nostr
-					// projection. NEVER requireClient()/protocol.Init here — that
-					// provisions .cf/identity.json, the exact artifact the cutover
-					// eliminates (ready-6ef veracity fix). Assign only a non-nil
-					// concrete resolver so the interface nil-check below is sound.
-					if r := loadNostrAuthorityResolver(); r != nil {
-						auth = r
-					}
-				} else if client, cErr := requireClient(); cErr == nil {
-					if r := loadAuthorityResolver(client, item.CampfireID); r != nil {
-						auth = r
-					}
+				// Nostr-native: resolve authority from the signed nostr projection
+				// (the signed kind-39301 role-grants). NEVER requireClient()/
+				// protocol.Init here — that provisioned .cf/identity.json, the exact
+				// artifact the cutover eliminates (ready-6ef veracity fix). Assign
+				// only a non-nil concrete resolver so the interface nil-check below
+				// is sound.
+				if r := loadNostrAuthorityResolver(); r != nil {
+					auth = r
 				}
 			}
 			fmt.Printf("\nHistory:\n")

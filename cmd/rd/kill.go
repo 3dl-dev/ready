@@ -1,13 +1,8 @@
 package main
 
 import (
-	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"fmt"
-	"os"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
@@ -42,37 +37,10 @@ EXAMPLE
 			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0)
 		}
 
-		campfireID, _, ok := projectRoot()
-		if !ok {
-			return fmt.Errorf("no campfire project found — run 'rd init' first")
-		}
-
-		client, err := requireClient()
-		if err != nil {
-			return err
-		}
-
-		childKey, err := hex.DecodeString(pubKeyHex)
-		if err != nil || len(childKey) != ed25519.PublicKeySize {
-			return fmt.Errorf("pubkey is not a valid 32-byte hex key")
-		}
-		campfireIDBytes, err := hex.DecodeString(campfireID)
-		if err != nil {
-			return fmt.Errorf("decoding campfire id: %w", err)
-		}
-
-		msg, err := delegation.PostRevoke(context.Background(), client, campfireIDBytes, ed25519.PublicKey(childKey))
-		if err != nil {
-			return fmt.Errorf("revoking grant: %w", err)
-		}
-
-		displayKey := pubKeyHex
-		if len(displayKey) > 12 {
-			displayKey = displayKey[:12] + "..."
-		}
-		fmt.Fprintf(os.Stdout, "revoked %s (identity:revoked %s)\n", displayKey, truncateID(msg.ID, 12))
-		fmt.Fprintln(os.Stdout, "  the revoked identity's operations are denied within one sync cycle")
-		return nil
+		// nostr-native only (ready-cb6): the campfire cf-authority delegation-revoke
+		// path has been removed. A directory with no pinned nostr board is not a valid
+		// rd project.
+		return errNotNostrProject()
 	},
 }
 

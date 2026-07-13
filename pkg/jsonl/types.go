@@ -2,7 +2,7 @@
 // Every rd command that sends a convention message appends a MutationRecord to
 // <project-root>/.ready/mutations.jsonl.
 //
-// The record format mirrors store.MessageRecord fields but is self-contained —
+// The record format mirrors msgrec.MessageRecord fields but is self-contained —
 // no campfire dependency — making the file portable and human-readable.
 package jsonl
 
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/ready/pkg/msgrec"
 )
 
 // WorkTagPrefix is the tag namespace for all work management convention operations.
@@ -20,13 +20,13 @@ import (
 const WorkTagPrefix = "work:"
 
 // MutationRecord is a single operation appended to mutations.jsonl.
-// Fields mirror store.MessageRecord to allow direct conversion for migration.
+// Fields mirror msgrec.MessageRecord to allow direct conversion for migration.
 type MutationRecord struct {
 	// MsgID is the campfire message ID (from the sent message).
 	MsgID string `json:"msg_id"`
 	// CampfireID is the project campfire this message was sent to.
 	CampfireID string `json:"campfire_id"`
-	// Timestamp is nanoseconds since Unix epoch (matches store.MessageRecord.Timestamp).
+	// Timestamp is nanoseconds since Unix epoch (matches msgrec.MessageRecord.Timestamp).
 	Timestamp int64 `json:"timestamp"`
 	// Operation is the work convention tag (e.g. "work:create", "work:close").
 	Operation string `json:"operation"`
@@ -40,10 +40,10 @@ type MutationRecord struct {
 	Antecedents []string `json:"antecedents,omitempty"`
 }
 
-// FromMessageRecord converts a store.MessageRecord to a MutationRecord.
+// FromMessageRecord converts a msgrec.MessageRecord to a MutationRecord.
 // operation is the primary work: tag (e.g. "work:create") extracted from tags.
 // If operation is empty, it is derived from tags automatically.
-func FromMessageRecord(m store.MessageRecord) MutationRecord {
+func FromMessageRecord(m msgrec.MessageRecord) MutationRecord {
 	op := extractOperation(m.Tags)
 	return MutationRecord{
 		MsgID:       m.ID,
@@ -57,11 +57,11 @@ func FromMessageRecord(m store.MessageRecord) MutationRecord {
 	}
 }
 
-// ToMessageRecord converts a MutationRecord back to a store.MessageRecord.
+// ToMessageRecord converts a MutationRecord back to a msgrec.MessageRecord.
 // The Signature, Provenance, and ReceivedAt fields are not stored in the
 // MutationRecord and will be zero-valued in the result.
-func (r MutationRecord) ToMessageRecord() store.MessageRecord {
-	return store.MessageRecord{
+func (r MutationRecord) ToMessageRecord() msgrec.MessageRecord {
+	return msgrec.MessageRecord{
 		ID:          r.MsgID,
 		CampfireID:  r.CampfireID,
 		Timestamp:   r.Timestamp,

@@ -89,15 +89,6 @@ func setupNostrCmdTest(t *testing.T) string {
 	}
 	t.Setenv("RD_HOME", rdHomeDir)
 
-	origClient := protocolClient
-	protocolClient = nil
-	t.Cleanup(func() {
-		if protocolClient != nil {
-			protocolClient.Close()
-		}
-		protocolClient = origClient
-	})
-
 	origJSON := jsonOutput
 	jsonOutput = false
 	t.Cleanup(func() { jsonOutput = origJSON })
@@ -466,7 +457,7 @@ func TestNostrHooks_ImplicitUnblock_RepublishesBlockedItemCard(t *testing.T) {
 
 	// byIDFromJSONLOrStore resolves entirely from JSONL in this project (no
 	// campfire), so the store argument is never dereferenced -- nil is safe.
-	publishImplicitUnblockNostr(nil, []string{"ready-wasblocked"})
+	publishImplicitUnblockNostr([]string{"ready-wasblocked"})
 
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
@@ -481,137 +472,6 @@ func TestNostrHooks_ImplicitUnblock_RepublishesBlockedItemCard(t *testing.T) {
 	}
 	if deps := tagVals(card.Tags, "i"); len(deps) != 0 {
 		t.Errorf("republished card still carries dep tags %v; current JSONL state has no BlockedBy", deps)
-	}
-}
-
-// ===========================================================================
-// Group B -- RD_NOSTR_READ=1 dual-read parity: list/ready/show
-// ===========================================================================
-
-type flagSet struct{ name, value string }
-
-// runJSONItems sets --json, applies flags, runs cmd.RunE, and unmarshals the
-// captured stdout into a slice of items (list/ready's --json shape).
-func runJSONItems(t *testing.T, cmd *cobra.Command, flags []flagSet) []*state.Item {
-	t.Helper()
-	origJSON := jsonOutput
-	jsonOutput = true
-	defer func() { jsonOutput = origJSON }()
-	for _, f := range flags {
-		if err := cmd.Flags().Set(f.name, f.value); err != nil {
-			t.Fatalf("%s: set --%s=%s: %v", cmd.Name(), f.name, f.value, err)
-		}
-	}
-	out := captureStdoutPipe(t, func() {
-		if err := cmd.RunE(cmd, nil); err != nil {
-			t.Fatalf("%s RunE: %v", cmd.Name(), err)
-		}
-	})
-	var items []*state.Item
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &items); err != nil {
-		t.Fatalf("unmarshal %s --json output: %v\noutput:\n%s", cmd.Name(), err, out)
-	}
-	return items
-}
-
-// runJSONShow sets --json, runs showCmd.RunE for id, and unmarshals the item.
-func runJSONShow(t *testing.T, id string) *state.Item {
-	t.Helper()
-	origJSON := jsonOutput
-	jsonOutput = true
-	defer func() { jsonOutput = origJSON }()
-	out := captureStdoutPipe(t, func() {
-		if err := showCmd.RunE(showCmd, []string{id}); err != nil {
-			t.Fatalf("show RunE: %v", err)
-		}
-	})
-	var item state.Item
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &item); err != nil {
-		t.Fatalf("unmarshal show --json output: %v\noutput:\n%s", err, out)
-	}
-	return &item
-}
-
-// assertItemSetsMatch fails the test with the concrete field-level diffs when
-// two item sets do not project identically, via the SAME field-for-field
-// comparator (rdSync.CompareItemSets) the ready-187 parity gate uses.
-func assertItemSetsMatch(t *testing.T, label string, defaultRead, dualRead []*state.Item) {
-	t.Helper()
-	if len(defaultRead) == 0 {
-		t.Fatalf("%s: default (campfire/JSONL) read returned 0 items -- fixture broken", label)
-	}
-	dm := make(map[string]*state.Item, len(defaultRead))
-	for _, it := range defaultRead {
-		dm[it.ID] = it
-	}
-	nm := make(map[string]*state.Item, len(dualRead))
-	for _, it := range dualRead {
-		nm[it.ID] = it
-	}
-	rep := rdSync.CompareItemSets(dm, nm)
-	if !rep.AllMatch() {
-		t.Errorf("%s: RD_NOSTR_READ=1 dual-read does NOT match the default read: source=%d projected=%d matched=%d mismatched=%d",
-			label, rep.SourceCount, rep.ProjectedCount, rep.Matched, rep.Mismatched)
-		for _, ip := range rep.Items {
-			if !ip.Match() {
-				t.Errorf("  %s: %v", ip.ItemID, ip.Diffs)
-			}
-		}
-	}
-}
-
-// TestNostrDualRead_ListReadyShow_MatchDefault populates a JSONL project (the
-// default campfire-backed read surface, minus an actual campfire), migrates the
-// SAME item set into the nostr log via the real `rd nostr migrate --local-only`
-// command, then asserts rd list / rd ready / rd show produce THE SAME items on
-// every parity-checked field whether RD_NOSTR_READ is unset (default) or =1
-// (nostr projection) -- the ready-d65 dual-read contract.
-func TestNostrDualRead_ListReadyShow_MatchDefault(t *testing.T) {
-	dir := setupNostrCmdTest(t)
-
-	writeCreateMutations(t, dir, []mutationFixture{
-		{id: "ready-dr01", title: "First dual-read item", forParty: "agent@test.dev", priority: "p1", context: "ctx one"},
-		{id: "ready-dr02", title: "Second dual-read item", forParty: "agent@test.dev", priority: "p2"},
-		{id: "ready-dr03", title: "Third dual-read item", forParty: "someone-else@test.dev", priority: "p0"},
-	})
-
-	if _, err := requireClient(); err != nil {
-		t.Fatalf("requireClient: %v", err)
-	}
-
-	resetMigrateFlags(t)
-	if err := nostrMigrateCmd.Flags().Set("local-only", "true"); err != nil {
-		t.Fatal(err)
-	}
-	var migrateErr error
-	captureStdoutPipe(t, func() {
-		migrateErr = nostrMigrateCmd.RunE(nostrMigrateCmd, nil)
-	})
-	if migrateErr != nil {
-		t.Fatalf("nostr migrate --local-only: %v", migrateErr)
-	}
-	resetMigrateFlags(t)
-
-	// --- default (campfire/JSONL) read ---
-	defaultList := runJSONItems(t, listCmd, nil)
-	defaultReady := runJSONItems(t, readyCmd, []flagSet{{"for", ""}})
-	defaultShow := runJSONShow(t, "ready-dr01")
-
-	// --- dual-read (nostr projection) ---
-	t.Setenv("RD_NOSTR_READ", "1")
-	nostrList := runJSONItems(t, listCmd, nil)
-	nostrReady := runJSONItems(t, readyCmd, []flagSet{{"for", ""}})
-	nostrShow := runJSONShow(t, "ready-dr01")
-
-	assertItemSetsMatch(t, "list", defaultList, nostrList)
-	assertItemSetsMatch(t, "ready", defaultReady, nostrReady)
-	assertItemSetsMatch(t, "show", []*state.Item{defaultShow}, []*state.Item{nostrShow})
-
-	if len(defaultList) != 3 {
-		t.Fatalf("expected 3 items in the default list read, got %d", len(defaultList))
-	}
-	if len(nostrList) != 3 {
-		t.Fatalf("expected 3 items in the dual-read list, got %d", len(nostrList))
 	}
 }
 
@@ -721,10 +581,6 @@ func TestNostrMigrateAndParity_CLI_PassAndFail(t *testing.T) {
 		{id: "ready-mp02", title: "Migrate item two", forParty: "agent@test", priority: "p2"},
 		{id: "ready-mp03", title: "Migrate item three", forParty: "agent@test", priority: "p0"},
 	})
-
-	if _, err := requireClient(); err != nil {
-		t.Fatalf("requireClient: %v", err)
-	}
 
 	// --- 1. partial migration: only 2 of 3 items (forces an undercount) ---
 	resetMigrateFlags(t)

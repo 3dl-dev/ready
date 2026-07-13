@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
@@ -25,7 +25,7 @@ func TestDerive_FulfillmentWithValidServerBinding(t *testing.T) {
 	fulfillmentTime := ts + 3000       // Fulfillment posted 1us after close
 	boundServerPubkey := serverPubKeyHex
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// Create the item
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
@@ -81,7 +81,7 @@ func TestDerive_FulfillmentRejectedWrongSender(t *testing.T) {
 	boundServerPubkey := serverPubKeyHex
 	wrongServerPubkey := hex.EncodeToString(wrongPubKey)
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -121,7 +121,7 @@ func TestDerive_BypassModeNoServerBinding(t *testing.T) {
 	ts := now()
 	closeTime := ts + 1000
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -162,7 +162,7 @@ func TestDerive_PreBindingItemsAccepted(t *testing.T) {
 	// valid_from is T2 = base+10s in Unix seconds — after closeTime but before bindingTime post
 	bindingValidFrom := (baseNs + 10*int64(time.Second)) / int64(time.Second) // Unix seconds
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -207,7 +207,7 @@ func TestDerive_DelegateWithServerBinding(t *testing.T) {
 	fulfillmentTime := ts + 3000
 	boundServerPubkey := serverPubKeyHex
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -255,7 +255,7 @@ func TestDerive_GateResolveWithServerBinding(t *testing.T) {
 	fulfillmentTime := ts + 4000
 	boundServerPubkey := serverPubKeyHex
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-t01", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

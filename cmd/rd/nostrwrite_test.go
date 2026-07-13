@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/playbook"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
 	rdSync "github.com/campfire-net/ready/pkg/sync"
@@ -60,13 +59,10 @@ func setupNostrNativeProject(t *testing.T) (string, string) {
 // under CFHome, its parent tmp base, or the project dir — so this class of breach
 // is enforced by CI, not spot-checked.
 //
-// store.db is deliberately NOT asserted here: the campfire-store touch on the
-// list/ready native READ path (openStore -> store.Open MkdirAll+store.db) is a
-// benign transitional artifact — it holds no identity and is never consulted on
-// the native path (dual-read short-circuits to the nostr projection) — and its
-// full elimination across every read command is deferred (I7/ready-cb6). The
-// `rd show` path's store.db touch IS eliminated in this item and asserted absent
-// point-blank by assertNoCampfireStore in the show-audit test below.
+// store.db is now asserted absent GLOBALLY too (ready-cb6 I7): the campfire SDK
+// and every openStore/store.Open call site have been deleted, so NO rd command —
+// read or write — provisions a campfire store.db anywhere. The whole-tree walk
+// fails on a store.db just as it does on a campfire identity.json.
 func assertNoDotCf(t *testing.T) {
 	t.Helper()
 	roots := map[string]bool{}
@@ -100,6 +96,9 @@ func walkAssertNoCampfireIdentity(t *testing.T, root string) {
 		}
 		if d.Name() == "identity.json" {
 			t.Fatalf("FAIL: a .cf identity was provisioned at %s — the nostr-native path must never write .cf", path)
+		}
+		if d.Name() == "store.db" {
+			t.Fatalf("FAIL: a campfire store.db was provisioned at %s — the campfire SDK is gone; no rd command may open a store", path)
 		}
 		return nil
 	})
@@ -467,13 +466,7 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 		t.Fatalf("runCreateNostr: %v", err)
 	}
 
-	s, err := openStore()
-	if err != nil {
-		t.Fatalf("openStore: %v", err)
-	}
-	defer s.Close()
-
-	items, err := allItemsFromJSONLOrStore(s)
+	items, err := allItemsFromJSONLOrStore()
 	if err != nil {
 		t.Fatalf("allItemsFromJSONLOrStore: %v", err)
 	}
@@ -492,7 +485,7 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 	}
 
 	// byIDFromJSONLOrStore (the `rd show` path) must resolve from nostr too.
-	byID, err := byIDFromJSONLOrStore(s, id)
+	byID, err := byIDFromJSONLOrStore(id)
 	if err != nil {
 		t.Fatalf("byIDFromJSONLOrStore: %v", err)
 	}
@@ -503,53 +496,9 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 	assertNoDotCf(t)
 }
 
-// TestNostrNative_Engage_PublishesItemsAndDeps proves the engage re-head: expanded
-// playbook items are published to the nostr projection as first-class items with
-// their dependency edges, signed by the secp256k1 key, and NO .cf is provisioned
-// (the template-sourcing store open never calls identity.Load). Exercises the
-// publish half directly (publishEngagedItemsNostr) so the test needs no campfire
-// store to hold the template — the sourcing half is a plain openStore()+findPlaybook.
-func TestNostrNative_Engage_PublishesItemsAndDeps(t *testing.T) {
-	dir, _ := setupNostrNativeProject(t)
-
-	// Two items: root, then a dependent blocked by root.
-	root := &playbook.ExpandedItem{
-		ID: "project-aaa", Title: "Set up", Type: "task", Priority: "p1", TemplateIndex: 0,
-	}
-	dependent := &playbook.ExpandedItem{
-		ID: "project-bbb", Title: "Do work", Type: "task", Priority: "p2", TemplateIndex: 1,
-		Deps: []string{"project-aaa"},
-	}
-
-	ids, err := publishEngagedItemsNostr(dir, "somebody@example.com", []*playbook.ExpandedItem{root, dependent})
-	if err != nil {
-		t.Fatalf("publishEngagedItemsNostr: %v", err)
-	}
-	if len(ids) != 2 || ids[0] != "project-aaa" || ids[1] != "project-bbb" {
-		t.Fatalf("created ids = %v; want [project-aaa project-bbb]", ids)
-	}
-
-	rootItem, err := nostrResolveItem("project-aaa")
-	if err != nil {
-		t.Fatalf("resolve root: %v", err)
-	}
-	if rootItem.Title != "Set up" || rootItem.Status != state.StatusInbox {
-		t.Fatalf("root = %+v; want title 'Set up' status inbox", rootItem)
-	}
-	if rootItem.For != "somebody@example.com" {
-		t.Fatalf("root For = %q; want somebody@example.com", rootItem.For)
-	}
-
-	depItem, err := nostrResolveItem("project-bbb")
-	if err != nil {
-		t.Fatalf("resolve dependent: %v", err)
-	}
-	if !sliceContains(depItem.BlockedBy, "project-aaa") {
-		t.Fatalf("dependent BlockedBy = %v; want to contain project-aaa (dep edge lost)", depItem.BlockedBy)
-	}
-
-	assertNoDotCf(t)
-}
+// NOTE (ready-cb6 I7): the campfire-backed playbook/engage surface was removed
+// (nostr-native rebuild tracked as ready-a4a). The engage-publish test that
+// exercised publishEngagedItemsNostr is deleted with that code.
 
 // TestNostrNative_LabelPropose_CreatesDecisionItem proves `rd label propose` on a
 // nostr-native project creates a p3 decision item via the secp256k1 path with no

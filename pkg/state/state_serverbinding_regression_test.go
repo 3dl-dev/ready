@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
@@ -44,7 +44,7 @@ func TestRegression_ServerBindingNumericTimestamps(t *testing.T) {
 	// causing the binding to be skipped and the close to be rejected as unauthorized.
 	validFromUnixSec := ts / int64(time.Second)
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-reg-t01", "title": "Regression Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -101,7 +101,7 @@ func TestRegression_ServerBindingNumericTimestamps_WithExpiry(t *testing.T) {
 	closeTime := baseNs + 2*int64(time.Second)
 	fulfillmentTime := baseNs + 3*int64(time.Second)
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-reg-t02", "title": "Expiry Regression Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -149,7 +149,7 @@ func TestRegression_ServerBindingRejectsWithoutFulfillment(t *testing.T) {
 	bindingTime := ts + 1000
 	closeTime := ts + 2000
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-create-1", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-reg-t03", "title": "Rejection Regression Test", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",

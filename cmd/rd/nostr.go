@@ -8,7 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/ready/pkg/nostr"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/state"
@@ -405,12 +404,12 @@ func strSliceRemove(s []string, vals ...string) []string {
 // is already gone there) and re-publish its card so the nostr projection drops the
 // edge too — deps parity across every close path (close/done/fail/cancel/complete
 // and cascade). Best-effort; nostr-gated; a relay failure never fails the close.
-func publishImplicitUnblockNostr(s store.Store, blockedIDs []string) {
+func publishImplicitUnblockNostr(blockedIDs []string) {
 	if !nostrEnabled() || len(blockedIDs) == 0 {
 		return
 	}
 	for _, id := range blockedIDs {
-		it, err := byIDFromJSONLOrStore(s, id)
+		it, err := byIDFromJSONLOrStore(id)
 		if err != nil {
 			continue
 		}
@@ -1013,14 +1012,8 @@ modified. Idempotent by event id (safe to re-run).`,
 		includeTerminal, _ := cmd.Flags().GetBool("all")
 		only, _ := cmd.Flags().GetStringSlice("only")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
 		// SOURCE = campfire/JSONL (the default backend), NEVER the nostr projection.
-		src, err := allItemsFromJSONLOrStore(s)
+		src, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading campfire source items: %w", err)
 		}
@@ -1148,13 +1141,7 @@ var nostrParityCmd = &cobra.Command{
 		showAll, _ := cmd.Flags().GetBool("verbose")
 		sample, _ := cmd.Flags().GetBool("sample")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		srcSlice, err := allItemsFromJSONLOrStore(s)
+		srcSlice, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading campfire source items: %w", err)
 		}

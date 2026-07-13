@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	msgrec "github.com/campfire-net/ready/pkg/msgrec"
 	"github.com/campfire-net/ready/pkg/state"
 )
 
 // makeMsgRaw constructs a MessageRecord with a raw byte payload (no json.Marshal).
-func makeMsgRaw(id string, tags []string, payload []byte, antecedents []string, ts int64) store.MessageRecord {
-	return store.MessageRecord{
+func makeMsgRaw(id string, tags []string, payload []byte, antecedents []string, ts int64) msgrec.MessageRecord {
+	return msgrec.MessageRecord{
 		ID:          id,
 		CampfireID:  testCampfire,
 		Sender:      "testsender",
@@ -22,7 +22,7 @@ func makeMsgRaw(id string, tags []string, payload []byte, antecedents []string, 
 }
 
 // validCreate returns a well-formed work:create MessageRecord.
-func validCreate(msgID, itemID string, ts int64) store.MessageRecord {
+func validCreate(msgID, itemID string, ts int64) msgrec.MessageRecord {
 	return makeMsg(msgID, []string{"work:create"}, map[string]interface{}{
 		"id": itemID, "title": "Valid item", "type": "task",
 		"for": "baron@3dl.dev", "priority": "p1",
@@ -33,7 +33,7 @@ func validCreate(msgID, itemID string, ts int64) store.MessageRecord {
 // A valid item in the same batch is unaffected.
 func TestDerive_MalformedCreatePayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsgRaw("msg-bad", []string{"work:create"}, []byte("not json"), nil, ts),
 		validCreate("msg-good", "ready-good-1", ts+100),
 	}
@@ -50,7 +50,7 @@ func TestDerive_MalformedCreatePayload(t *testing.T) {
 // TestDerive_CreateEmptyID: work:create with empty id is silently skipped.
 func TestDerive_CreateEmptyID(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-empty-id", []string{"work:create"}, map[string]interface{}{
 			"id": "", "title": "No ID", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -72,7 +72,7 @@ func TestDerive_CreateEmptyID(t *testing.T) {
 // documents it.
 func TestDerive_CloseUnknownResolution(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-c", "ready-close-3", ts),
 		makeMsg("msg-close", []string{"work:close"}, map[string]interface{}{
 			"target":     "msg-c",
@@ -95,7 +95,7 @@ func TestDerive_CloseUnknownResolution(t *testing.T) {
 // appear in msgIndex and has no matching antecedents is silently skipped.
 func TestDerive_StatusOrphanedTarget(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-good", "ready-good-4", ts),
 		makeMsg("msg-status-orphan", []string{"work:status"}, map[string]interface{}{
 			"target": "msg-does-not-exist",
@@ -118,7 +118,7 @@ func TestDerive_StatusOrphanedTarget(t *testing.T) {
 // silently skipped — no block edge is registered.
 func TestDerive_BlockEmptyIDs(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-a", "ready-blk-a", ts),
 		validCreate("msg-b", "ready-blk-b", ts+100),
 		// blocker_id is empty
@@ -154,7 +154,7 @@ func TestDerive_BlockEmptyIDs(t *testing.T) {
 // ID not in gateMsgIndex is silently skipped; item state is unchanged.
 func TestDerive_GateResolveUnknownGate(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-item", "ready-gate-5", ts),
 		// Send a gate so the item enters waiting state.
 		makeMsg("msg-gate", []string{"work:gate"}, map[string]interface{}{
@@ -202,7 +202,7 @@ func TestDerive_MixedValidAndInvalid(t *testing.T) {
 	})
 	_ = p // used below
 
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		// 1. Valid create
 		validCreate("msg-mix-create", "ready-mix-a", ts),
 		// 2. Malformed create
@@ -240,7 +240,7 @@ func TestDerive_MixedValidAndInvalid(t *testing.T) {
 // TestDerive_MalformedStatusPayload: work:status with bad JSON is silently skipped.
 func TestDerive_MalformedStatusPayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-s", "ready-status-bad", ts),
 		makeMsgRaw("msg-status-bad", []string{"work:status"}, []byte("not json"), []string{"msg-s"}, ts+100),
 	}
@@ -258,7 +258,7 @@ func TestDerive_MalformedStatusPayload(t *testing.T) {
 // TestDerive_MalformedClaimPayload: work:claim with bad JSON is silently skipped.
 func TestDerive_MalformedClaimPayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-cl", "ready-claim-bad", ts),
 		makeMsgRaw("msg-claim-bad", []string{"work:claim"}, []byte("{bad"), []string{"msg-cl"}, ts+100),
 	}
@@ -279,7 +279,7 @@ func TestDerive_MalformedClaimPayload(t *testing.T) {
 // TestDerive_MalformedDelegatePayload: work:delegate with bad JSON is silently skipped.
 func TestDerive_MalformedDelegatePayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-del-create", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-delegate-bad", "title": "Test", "type": "task",
 			"for": "baron@3dl.dev", "by": "original-agent", "priority": "p1",
@@ -300,7 +300,7 @@ func TestDerive_MalformedDelegatePayload(t *testing.T) {
 // TestDerive_MalformedUpdatePayload: work:update with bad JSON is silently skipped.
 func TestDerive_MalformedUpdatePayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		makeMsg("msg-upd-create", []string{"work:create"}, map[string]interface{}{
 			"id": "ready-update-bad", "title": "Original title", "type": "task",
 			"for": "baron@3dl.dev", "priority": "p1",
@@ -321,7 +321,7 @@ func TestDerive_MalformedUpdatePayload(t *testing.T) {
 // TestDerive_MalformedBlockPayload: work:block with bad JSON is silently skipped.
 func TestDerive_MalformedBlockPayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-blk-a", "ready-blk-bad-a", ts),
 		validCreate("msg-blk-b", "ready-blk-bad-b", ts+100),
 		makeMsgRaw("msg-block-bad", []string{"work:block"}, []byte("!!!"), nil, ts+200),
@@ -341,7 +341,7 @@ func TestDerive_MalformedBlockPayload(t *testing.T) {
 // The block edge remains in place.
 func TestDerive_MalformedUnblockPayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-ub-a", "ready-unblk-a", ts),
 		validCreate("msg-ub-b", "ready-unblk-b", ts+100),
 		makeMsg("msg-block-ok", []string{"work:block"}, map[string]interface{}{
@@ -368,7 +368,7 @@ func TestDerive_MalformedUnblockPayload(t *testing.T) {
 // TestDerive_MalformedGatePayload: work:gate with bad JSON is silently skipped.
 func TestDerive_MalformedGatePayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-gate-item", "ready-gate-bad", ts),
 		makeMsgRaw("msg-gate-bad", []string{"work:gate"}, []byte("{malformed"), []string{"msg-gate-item"}, ts+100),
 	}
@@ -391,7 +391,7 @@ func TestDerive_MalformedGatePayload(t *testing.T) {
 // silently skipped; gate state is unchanged.
 func TestDerive_MalformedGateResolvePayload(t *testing.T) {
 	ts := now()
-	msgs := []store.MessageRecord{
+	msgs := []msgrec.MessageRecord{
 		validCreate("msg-gr-item", "ready-gr-bad", ts),
 		makeMsg("msg-gr-gate", []string{"work:gate"}, map[string]interface{}{
 			"target":      "msg-gr-item",
@@ -434,7 +434,7 @@ func TestDerive_NonStandardStatusValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			msgID := "msg-ns-" + tc.status
 			itemID := "ready-ns-" + tc.status
-			msgs := []store.MessageRecord{
+			msgs := []msgrec.MessageRecord{
 				makeMsg(msgID, []string{"work:create"}, map[string]interface{}{
 					"id": itemID, "title": "NS test", "type": "task",
 					"for": "baron@3dl.dev", "priority": "p2",

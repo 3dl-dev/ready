@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/ready/pkg/rdconfig"
 )
 
@@ -516,37 +515,6 @@ func TestDC1_SyncConfig_DiskPersistenceViaLoadSyncConfig(t *testing.T) {
 	if loadedCfg.Durability.MeetsMinimum != originalCfg.Durability.MeetsMinimum {
 		t.Errorf("Durability.MeetsMinimum: got %v, want %v",
 			loadedCfg.Durability.MeetsMinimum, originalCfg.Durability.MeetsMinimum)
-	}
-}
-
-// --- DC2: Naming Alias Verification Test ---
-
-// TestDC2_NamingAliasStoreRoundTrip verifies that the naming alias store can
-// persist and retrieve project name aliases. DC2 requirement: aliases.Get(name)
-// must equal the campfireID that was stored.
-func TestDC2_NamingAliasStoreRoundTrip(t *testing.T) {
-	// Use a temp directory as the CF_HOME where aliases are stored.
-	cfHome := t.TempDir()
-
-	projectName := "test-project-dc2"
-	campfireID := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-	// Create the naming alias store in cfHome.
-	aliasStore := naming.NewAliasStore(cfHome)
-
-	// Store the alias (simulating what registerProjectName would do in init.go).
-	if err := aliasStore.Set(projectName, campfireID); err != nil {
-		t.Fatalf("AliasStore.Set: %v", err)
-	}
-
-	// Retrieve it (DC2 requirement: verify it's actually in the store).
-	retrieved, err := aliasStore.Get(projectName)
-	if err != nil {
-		t.Fatalf("AliasStore.Get: %v", err)
-	}
-	if retrieved != campfireID {
-		t.Errorf("AliasStore.Get(%q): got %q, want %q (DC2: alias must be stored and retrievable)",
-			projectName, retrieved, campfireID)
 	}
 }
 

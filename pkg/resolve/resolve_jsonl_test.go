@@ -246,87 +246,9 @@ func TestJSONLFallback_JSONLWhenFileExists(t *testing.T) {
 	}
 }
 
-// TestJSONLFallback_StoreWhenNoJSONLFile verifies that when no JSONL file exists
-// (the project has no .ready/mutations.jsonl), AllItems falls back to the campfire
-// store. This covers the store-fallback branch of allItemsFromJSONLOrStore.
-//
-// The trigger condition is jsonlPath() returning "" (no project root found).
-// We simulate this by calling AllItems on a store that has items — if the fallback
-// to store works, we get those items; if something always returns empty, we fail.
-func TestJSONLFallback_StoreWhenNoJSONLFile(t *testing.T) {
-	s := openTempStore(t)
-	addMembership(t, s, jsonlResolveCampfire)
-	addTestItem(t, s, jsonlResolveCampfire, "msg-sf1", "ready-sf1", "Store Fallback Item 1")
-	addTestItem(t, s, jsonlResolveCampfire, "msg-sf2", "ready-sf2", "Store Fallback Item 2")
-
-	// Call AllItems (the store path — used when no JSONL file exists / no project root).
-	items, err := resolve.AllItems(s)
-	if err != nil {
-		t.Fatalf("AllItems (store fallback) error: %v", err)
-	}
-	if len(items) != 2 {
-		t.Errorf("expected 2 items from store fallback, got %d — store path not working", len(items))
-	}
-	ids := make(map[string]bool)
-	for _, item := range items {
-		ids[item.ID] = true
-	}
-	if !ids["ready-sf1"] {
-		t.Error("expected ready-sf1 in store-derived items")
-	}
-	if !ids["ready-sf2"] {
-		t.Error("expected ready-sf2 in store-derived items")
-	}
-}
-
-// TestJSONLFallback_JSONLTakesPrecedenceOverStore verifies the routing invariant:
-// when a JSONL file exists, its state is used — even if the store also has items.
-// A regression that always returned "" from jsonlPath() would cause JSONL-only items
-// to disappear (they'd be absent from the store) and this test would catch it.
-func TestJSONLFallback_JSONLTakesPrecedenceOverStore(t *testing.T) {
-	ts := time.Now().UnixNano()
-	// Write one item to JSONL.
-	path := writeJSONL(t, []mutJSON{
-		createMut("msg-pri1", "ready-pri-jsonl", "JSONL-only Item", ts),
-	})
-
-	// The store has a different item — only present in store, not in JSONL.
-	s := openTempStore(t)
-	addMembership(t, s, jsonlResolveCampfire)
-	addTestItem(t, s, jsonlResolveCampfire, "msg-pri2", "ready-pri-store", "Store-only Item")
-
-	// JSONL read: must return the JSONL item, not the store item.
-	jsonlItems, err := resolve.AllItemsFromJSONL(path, jsonlResolveCampfire)
-	if err != nil {
-		t.Fatalf("AllItemsFromJSONL error: %v", err)
-	}
-
-	// Store read: must return the store item, not the JSONL item.
-	storeItems, err := resolve.AllItems(s)
-	if err != nil {
-		t.Fatalf("AllItems error: %v", err)
-	}
-
-	// Verify the two paths return different data — proving they are independent.
-	jsonlIDs := make(map[string]bool)
-	for _, item := range jsonlItems {
-		jsonlIDs[item.ID] = true
-	}
-	storeIDs := make(map[string]bool)
-	for _, item := range storeItems {
-		storeIDs[item.ID] = true
-	}
-
-	if !jsonlIDs["ready-pri-jsonl"] {
-		t.Error("JSONL path must return ready-pri-jsonl (JSONL-only item)")
-	}
-	if jsonlIDs["ready-pri-store"] {
-		t.Error("JSONL path must NOT return ready-pri-store (store-only item) — that would mean JSONL is reading from the store")
-	}
-	if !storeIDs["ready-pri-store"] {
-		t.Error("store path must return ready-pri-store (store-only item)")
-	}
-	if storeIDs["ready-pri-jsonl"] {
-		t.Error("store path must NOT return ready-pri-jsonl (JSONL-only item) — that would mean store is reading from JSONL")
-	}
-}
+// NOTE (ready-cb6 I7): the former TestJSONLFallback_StoreWhenNoJSONLFile and
+// TestJSONLFallback_JSONLTakesPrecedenceOverStore tests were deleted with the
+// campfire store read fallback in the nostr-native cutover. The surviving read
+// spine resolves from the JSONL / nostr projection only; JSONL resolution is
+// covered by TestJSONLFallback_JSONLWhenFileExists and the ByIDFromJSONL tests
+// above.

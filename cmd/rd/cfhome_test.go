@@ -147,21 +147,6 @@ func TestCFHome_NewPathTakesPreferenceOverLegacy(t *testing.T) {
 	}
 }
 
-// TestCFHome_IdentityPath verifies that IdentityPath() correctly uses the
-// resolved CFHome().
-func TestCFHome_IdentityPath(t *testing.T) {
-	oldHome := rdHome
-	defer func() { rdHome = oldHome }()
-
-	rdHome = "/tmp/test-cf-home"
-
-	result := IdentityPath()
-	expected := "/tmp/test-cf-home/identity.json"
-	if result != expected {
-		t.Errorf("expected %q, got %q", expected, result)
-	}
-}
-
 // --- Walk-up identity resolution tests ---
 
 // TestCFHome_WalkUpFindsIdentity verifies that CFHome() walks up from cwd

@@ -176,11 +176,7 @@ func TestTopLevelMigrateParity_GreenOnSeededBoard(t *testing.T) {
 	dir := setupNostrCmdTest(t)
 	seedCampfireBoard(t, dir)
 
-	if _, err := requireClient(); err != nil {
-		t.Fatalf("requireClient: %v", err)
-	}
-
-	// Confirm the campfire-backed source really is multi-field / multi-history
+	// Confirm the legacy JSONL source really is multi-field / multi-history
 	// BEFORE migrating, so a green parity cannot be an artefact of trivial items.
 	src, err := readSeededSource(t)
 	if err != nil {
@@ -222,12 +218,7 @@ func TestTopLevelMigrateParity_GreenOnSeededBoard(t *testing.T) {
 // migrate/parity commands do, for the pre-flight shape assertion.
 func readSeededSource(t *testing.T) ([]*state.Item, error) {
 	t.Helper()
-	s, err := openStore()
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	return allItemsFromJSONLOrStore(s)
+	return allItemsFromJSONLOrStore()
 }
 
 // assertSeededSourceShape proves the seeded board is genuinely multi-field /

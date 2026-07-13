@@ -1,28 +1,12 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
-	cfauthprov "github.com/campfire-net/campfire/cf-conventions/cf-authority/provenance"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	"github.com/campfire-net/campfire/cf-protocol/protocol"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/naming"
-	cfprov "github.com/campfire-net/campfire/pkg/provenance"
-	"github.com/campfire-net/ready/pkg/conventionserver"
-	"github.com/campfire-net/ready/pkg/crossdep"
-	"github.com/campfire-net/ready/pkg/declarations"
-	"github.com/campfire-net/ready/pkg/provenance"
-	"github.com/campfire-net/ready/pkg/rdconfig"
 	"github.com/campfire-net/ready/pkg/resolve"
 	"github.com/campfire-net/ready/pkg/state"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -30,11 +14,10 @@ import (
 var Version = "dev"
 
 var (
-	jsonOutput     bool
-	debugOutput    bool
-	rdHome         string
-	rdHomeFlag     string
-	protocolClient *protocol.Client
+	jsonOutput  bool
+	debugOutput bool
+	rdHome      string
+	rdHomeFlag  string
 )
 
 var rootCmd = &cobra.Command{
@@ -86,81 +69,16 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&rdHome, "cf-home", "", "legacy .cf home directory (default: ~/.cf)")
 	rootCmd.PersistentFlags().StringVar(&rdHomeFlag, "rd-home", "", "rd home directory for the nostr identity + config (default: ~/.config/rd)")
 
-	// Wire in the in-process convention server for solo mode.
-	// PersistentPreRunE runs before every subcommand; if the client initializes
-	// successfully and we're in solo mode, the server starts as a background goroutine
-	// tied to the command's context (cancelled when the command exits).
+	// CUTOVER (ready-cb6 I7): the default path is nostr-native and provisions NO
+	// campfire client, NO .cf identity, and NO in-process convention server. The
+	// former campfire solo-mode server has been removed entirely — work operations
+	// are self-signed secp256k1 nostr events, not convention-server-authorized
+	// campfire messages. PersistentPreRunE therefore only guards the nostr join
+	// token path (so protocol.Init never auto-generates a throwaway .cf identity)
+	// and otherwise does nothing.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		// Skip protocol.Init (and its auto-identity generation) when the user is
-		// joining via a nostr mint-and-ship token. The token carries a minted
-		// identity; joinViaNostrInviteToken writes it to $RD_HOME itself. If we let
-		// protocol.Init run here first it would auto-generate a throwaway .cf
-		// identity for a join that never touches campfire.
-		if cmd.Name() == "join" && len(args) > 0 &&
-			strings.HasPrefix(args[0], nostrInviteTokenPrefix) {
-			return nil
-		}
-
-		// CUTOVER (ready-6ef): the default path is nostr-native and provisions NO
-		// campfire client and NO .cf identity. Only campfire-BACKED projects (a
-		// .campfire/root exists) still start the in-process convention server here.
-		// A nostr-native or JSONL-only project has no campfire root, so PreRunE does
-		// nothing — protocol.Init (which auto-generates a throwaway .cf identity) is
-		// never called on the default path. The remaining campfire-vestigial commands
-		// (admit/playbook) lazy-init their client only when explicitly invoked.
-		if _, _, ok := projectRoot(); !ok {
-			return nil
-		}
-		client, err := requireClient()
-		if err != nil {
-			// Client init failure is non-fatal here — individual commands report it.
-			return nil
-		}
-		requireConventionServer(cmd.Context(), client)
+		_ = args
 		return nil
-	}
-}
-
-// requireConventionServer starts the in-process convention server in solo mode.
-// Solo mode is detected via conventionserver.IsSoloMode: if no convention:server-binding
-// exists other than our own, we start the in-process server so work operations are
-// self-authorized. Loads InboxCampfireID from sync config to activate the inbox watcher.
-func requireConventionServer(ctx context.Context, client *protocol.Client) {
-	campfireID, projectDir, hasCampfire := projectRoot()
-	if !hasCampfire || campfireID == "" {
-		// JSONL-only mode — no campfire, no server needed.
-		return
-	}
-
-	var opts []conventionserver.ServerOption
-	if syncCfg, err := rdconfig.LoadSyncConfig(projectDir); err == nil && syncCfg != nil {
-		if syncCfg.InboxCampfireID != "" {
-			// Only enable inbox watcher if we're a member of the inbox campfire.
-			// Non-owner joiners are not members of the owner's inbox campfire, and
-			// attempting to validate membership would produce a confusing warning.
-			if m, err := client.GetMembership(syncCfg.InboxCampfireID); err == nil && m != nil {
-				opts = append(opts, conventionserver.WithInboxCampfireID(syncCfg.InboxCampfireID))
-			}
-		}
-		if syncCfg.SummaryCampfireID != "" {
-			opts = append(opts, conventionserver.WithSummaryCampfireID(syncCfg.SummaryCampfireID))
-		}
-	}
-
-	srv, err := conventionserver.New(client, campfireID, opts...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not start in-process convention server: %v\n", err)
-		return
-	}
-
-	if !conventionserver.IsSoloMode(client, campfireID, srv.PubKeyHex()) {
-		// A remote convention server is present — don't start a local one.
-		return
-	}
-
-	if err := srv.Start(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not start in-process convention server: %v\n", err)
-		return
 	}
 }
 
@@ -291,147 +209,6 @@ func rdHomeWalkUp() string {
 	return ""
 }
 
-// IdentityPath returns the path to the identity file.
-func IdentityPath() string {
-	return filepath.Join(CFHome(), "identity.json")
-}
-
-// openStore opens the campfire store at the default path.
-func openStore() (store.Store, error) {
-	s, err := store.Open(store.StorePath(CFHome()))
-	if err != nil {
-		return nil, fmt.Errorf("opening store: %w", err)
-	}
-	return s, nil
-}
-
-// requireAgentAndStore loads the agent identity and opens the store.
-func requireAgentAndStore() (*identity.Identity, store.Store, error) {
-	agentID, err := identity.Load(IdentityPath())
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading identity (run 'cf init' first): %w", err)
-	}
-	s, err := store.Open(store.StorePath(CFHome()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("opening store: %w", err)
-	}
-	return agentID, s, nil
-}
-
-// withAgentAndStore loads the agent identity and opens the store, then calls fn
-// with both. The store is automatically closed when fn returns, even if fn returns
-// an error. This helper reduces boilerplate for the common pattern:
-//
-//	agentID, s, err := requireAgentAndStore()
-//	if err != nil {
-//		return err
-//	}
-//	defer s.Close()
-func withAgentAndStore(fn func(*identity.Identity, store.Store) error) error {
-	agentID, s, err := requireAgentAndStore()
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	return fn(agentID, s)
-}
-
-// requireExecutor returns a convention.Executor backed by the protocol client,
-// with a ProvenanceChecker wired in so that min_operator_level gates are
-// enforced correctly.
-//
-// The checker reads work:role-grant messages from the local store. The campfire
-// creator (from Membership.CreatorPubkey) is bootstrapped as maintainer (level 2).
-// All others default to contributor (level 1) until an explicit role-grant
-// message says otherwise.
-func requireExecutor() (*convention.Executor, *protocol.Client, error) {
-	client, err := requireClient()
-	if err != nil {
-		return nil, nil, err
-	}
-	exec := convention.NewExecutor(client)
-
-	// Wire in provenance checking so that min_operator_level gates work.
-	// Best-effort: if we can't open the store or find the campfire, fall back to
-	// no provenance checker rather than blocking all operations.
-	if campfireID, _, ok := projectRoot(); ok && campfireID != "" {
-		s, storeErr := openStore()
-		if storeErr == nil {
-			defer s.Close()
-			var creatorKey string
-			if m, memErr := s.GetMembership(campfireID); memErr == nil && m != nil {
-				creatorKey = m.CreatorPubkey
-			}
-			checker, checkerErr := provenance.NewStoreChecker(s, campfireID, creatorKey)
-			if checkerErr == nil {
-				// Wire cf-authority's production ProvenanceCheckerV2 (ready-cd9),
-				// backed by rd's role-based level source. Numeric levels are
-				// preserved, so min_operator_level gating is unchanged.
-				exec = exec.WithProvenanceV2(cfauthprov.NewChecker(rdLevelSource{checker}))
-			}
-		}
-	}
-
-	return exec, client, nil
-}
-
-// rdLevelSource adapts rd's role-based StoreChecker (Level → int) to the
-// cf-authority provenance.LevelSource interface (Level → cfprov.Level). The
-// numeric level is preserved, so min_operator_level comparisons are unchanged.
-type rdLevelSource struct {
-	inner *provenance.StoreChecker
-}
-
-func (s rdLevelSource) Level(keyHex string) cfprov.Level {
-	return cfprov.Level(s.inner.Level(keyHex))
-}
-
-// loadDeclaration loads a convention declaration by operation name from the
-// embedded declarations package and parses it for use with convention.Executor.
-// The name corresponds to the operation name (e.g. "create", "claim", "gate-resolve").
-func loadDeclaration(name string) (*convention.Declaration, error) {
-	data, err := declarations.Load(name)
-	if err != nil {
-		return nil, err
-	}
-	decl, _, err := convention.Parse([]string{"convention:operation"}, data, "", "", convention.DefaultDeniedTagPrefixes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing declaration %q: %w", name, err)
-	}
-	return decl, nil
-}
-
-// requireClient returns a *protocol.Client backed by the campfire home directory.
-// The client is cached after first initialization (CLI is single-threaded).
-// Walk-up is enabled by default; WithAuthorizeFunc wires the center-campfire
-// authorization flow.
-func requireClient() (*protocol.Client, error) {
-	if protocolClient != nil {
-		return protocolClient, nil
-	}
-	c, _, err := protocol.Init(CFHome(), protocol.WithAuthorizeFunc(centerAuthorize))
-	if err != nil {
-		return nil, fmt.Errorf("initializing campfire client: %w", err)
-	}
-	protocolClient = c
-	return c, nil
-}
-
-// centerAuthorize is the recentering authorize hook. It prompts the user once
-// when Init() detects an unlinked center campfire. In non-interactive contexts
-// (pipes, agents) it returns false to skip silently.
-func centerAuthorize(description string) (bool, error) {
-	if !isatty.IsTerminal(os.Stdin.Fd()) {
-		return false, nil
-	}
-	fmt.Fprintf(os.Stderr, "rd: %s [y/N] ", description)
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return false, nil
-	}
-	return strings.EqualFold(strings.TrimSpace(scanner.Text()), "y"), nil
-}
-
 // readyProjectDir walks up from cwd looking for a .ready/ directory.
 // Returns (projectDir, true) if found. This covers both campfire-backed
 // projects (which have .campfire/root AND .ready/) and JSONL-only projects
@@ -484,60 +261,32 @@ func pendingPath() string {
 	return filepath.Join(dir, ".ready", "pending.jsonl")
 }
 
-// allItemsFromJSONLOrStore returns all items, preferring JSONL when a project
-// root exists, falling back to the campfire store when it does not.
-func allItemsFromJSONLOrStore(s store.Store) ([]*state.Item, error) {
-	// DUAL-READ (ready-d65): when RD_NOSTR_READ=1 this SINGLE process resolves the
-	// item set from the nostr projection instead of campfire/JSONL. Additive and
-	// off by default — campfire stays the authoritative default backend, so the
-	// live campfire-backed rd is never disturbed. This is the controlled nostr-only
-	// verification context: rd's whole read surface (list/ready/show) runs against
-	// nostr without flipping the live default.
+// allItemsFromJSONLOrStore returns all items from the nostr projection (default
+// on a nostr-native project, or when RD_NOSTR_READ=1) or the local JSONL log.
+//
+// CUTOVER (ready-cb6 I7): the campfire store read fallback and cross-campfire
+// blocking (a campfire-topology-only feature) have been deleted — a nostr board
+// is a single project, so there is no cross-store topology to resolve. The store
+// parameter is retained only so the write-path call sites (which still open a
+// store for the executor) need not change ahead of the write-path cutover; it is
+// unused for resolution.
+func allItemsFromJSONLOrStore() ([]*state.Item, error) {
+	// DUAL-READ (ready-d65): when RD_NOSTR_READ=1, or on a nostr-native project,
+	// resolve the item set from the nostr projection.
 	if items, ok, err := nostrDualReadAll(); ok {
-		if err != nil {
-			return items, err
-		}
-		// Apply cross-campfire blocking on the nostr dual-read set too (ready-187):
-		// the JSONL and campfire paths both run crossdep.ApplyBlocking, so without
-		// this the nostr-backed read surface computed a DIFFERENT blocked set for any
-		// cross-project dep — an item blocked by an out-of-project blocker would show
-		// actionable on nostr but blocked on campfire. ApplyBlocking short-circuits
-		// when no item carries a cross-campfire warning, so this is a no-op for
-		// single-project reads.
-		aliases := naming.NewAliasStore(CFHome())
-		crossdep.ApplyBlocking(items, s, aliases)
-		return items, nil
+		return items, err
 	}
 	if path := jsonlPath(); path != "" {
 		// campfireID may be empty for JSONL-only projects; DeriveFromJSONL handles that.
 		campfireID, _, _ := projectRoot()
-		items, err := resolve.AllItemsFromJSONL(path, campfireID)
-		if err != nil {
-			return nil, err
-		}
-		// Apply cross-campfire blocking even in JSONL mode: the store holds
-		// memberships and messages for all campfires, so cross-project deps
-		// can be resolved and applied as blocking status.
-		aliases := naming.NewAliasStore(CFHome())
-		crossdep.ApplyBlocking(items, s, aliases)
-		return items, nil
+		return resolve.AllItemsFromJSONL(path, campfireID)
 	}
-	items, err := resolve.AllItems(s)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply cross-campfire blocking: resolve cross-campfire deps and
-	// mark items as blocked when the blocker is non-terminal.
-	aliases := naming.NewAliasStore(CFHome())
-	crossdep.ApplyBlocking(items, s, aliases)
-
-	return items, nil
+	return nil, nil
 }
 
-// byIDFromJSONLOrStore resolves an item by ID, preferring JSONL when available.
-func byIDFromJSONLOrStore(s store.Store, itemID string) (*state.Item, error) {
-	// DUAL-READ (ready-d65): resolve from the nostr projection when RD_NOSTR_READ=1.
+// byIDFromJSONLOrStore resolves an item by ID from the nostr projection or JSONL.
+func byIDFromJSONLOrStore(itemID string) (*state.Item, error) {
+	// DUAL-READ (ready-d65): resolve from the nostr projection when active.
 	if it, ok, err := nostrDualReadByID(itemID); ok {
 		return it, err
 	}
@@ -546,16 +295,16 @@ func byIDFromJSONLOrStore(s store.Store, itemID string) (*state.Item, error) {
 		campfireID, _, _ := projectRoot()
 		return resolve.ByIDFromJSONL(path, campfireID, itemID)
 	}
-	return resolve.ByID(s, itemID)
+	return nil, resolve.ErrNotFound{ID: itemID}
 }
 
 // byIDFromJSONLOrStoreExact resolves an item by exact ID only — no prefix
 // expansion. Use for security-sensitive operations (e.g. admit) where a prefix
 // collision could allow an attacker to substitute a crafted item.
-func byIDFromJSONLOrStoreExact(s store.Store, itemID string) (*state.Item, error) {
+func byIDFromJSONLOrStoreExact(itemID string) (*state.Item, error) {
 	if path := jsonlPath(); path != "" {
 		campfireID, _, _ := projectRoot()
 		return resolve.ByIDFromJSONLExact(path, campfireID, itemID)
 	}
-	return resolve.ByIDExact(s, itemID)
+	return nil, resolve.ErrNotFound{ID: itemID}
 }

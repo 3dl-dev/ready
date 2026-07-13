@@ -17,13 +17,7 @@ Items appear in the pending view when status is one of: waiting, scheduled, bloc
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectFilter, _ := cmd.Flags().GetString("project")
 
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		items, err := allItemsFromJSONLOrStore(s)
+		items, err := allItemsFromJSONLOrStore()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}
