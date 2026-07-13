@@ -96,6 +96,29 @@ func seedCampfireBoard(t *testing.T, dir string) {
 	}
 }
 
+// appendSeedRecord APPENDS one more mutation record to the already-seeded
+// <dir>/.ready/mutations.jsonl, simulating a real post-migration SOURCE
+// mutation (a campfire-side edit/unblock landing AFTER `rd migrate` already
+// re-emitted the nostr projection). This is how a genuine divergence arises in
+// production: the campfire source keeps moving, the nostr projection is a
+// point-in-time snapshot, and `rd migrate --parity` must catch the drift.
+func appendSeedRecord(t *testing.T, dir string, r seedRec) {
+	t.Helper()
+	line, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal appended seed record: %v", err)
+	}
+	path := filepath.Join(dir, ".ready", "mutations.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("open mutations.jsonl for append: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		t.Fatalf("append mutations.jsonl: %v", err)
+	}
+}
+
 // resetTopMigrateFlags returns the top-level `rd migrate` command flags to their
 // declared defaults between sub-runs (cobra flags are process-global mutable
 // state shared across table cases in the same binary).
@@ -258,4 +281,84 @@ func assertSeededSourceShape(t *testing.T, src []*state.Item) {
 		t.Fatalf("ready-mig03 close reason not present in history: %+v", i3.History)
 	}
 	fmt.Fprintf(os.Stderr, "seeded shape ok: mig01.history=%d mig02.deps=%v\n", len(i1.History), i2.BlockedBy)
+}
+
+// TestTopLevelMigrateParity_NonZeroOnSeededTitleDivergence is the NEGATIVE-path
+// companion to TestTopLevelMigrateParity_GreenOnSeededBoard (ready-cf9). It
+// proves `rd migrate --parity` actually has teeth on a COMMITTED test, not just
+// via throwaway probes: seed the board, migrate it (projection now matches),
+// confirm parity is green, then land ONE more campfire-source mutation AFTER
+// the migration — a work:update that changes ready-mig01's title — so the
+// nostr projection is now stale on that single field. `rd migrate --parity`
+// must exit non-zero (RunE returns a non-nil error, the CLI's exit-code-1
+// contract) and the report must name the SPECIFIC item and field that diverged
+// (not just a bare mismatch count), leaving every other seeded item matched.
+func TestTopLevelMigrateParity_NonZeroOnSeededTitleDivergence(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	seedCampfireBoard(t, dir)
+
+	if _, err := runTopMigrate(t); err != nil {
+		t.Fatalf("rd migrate: %v", err)
+	}
+
+	// Baseline: parity is green immediately after migration, so the failure we
+	// assert below is caused by the divergence we introduce next, not a
+	// pre-existing bug in the harness.
+	if rep, err := runTopParity(t); err != nil || !rep.AllMatch() {
+		t.Fatalf("expected green parity immediately after migration, got err=%v rep=%+v", err, rep)
+	}
+
+	const corruptedTitle = "CORRUPTED: post-migration source drift"
+	appendSeedRecord(t, dir, seedRec{
+		MsgID: "msg-mig01-update-drift", CampfireID: strings.Repeat("ab", 32),
+		Timestamp: int64(1700000000000000000) + 8*1_000_000_000,
+		Operation: "work:update", Sender: "human",
+		Payload:     json.RawMessage(`{"target":"msg-mig01-create","title":"` + corruptedTitle + `"}`),
+		Tags:        []string{"work:update"},
+		Antecedents: []string{"msg-mig01-create"},
+	})
+
+	// The campfire SOURCE now diverges from the nostr PROJECTION on
+	// ready-mig01's title (the projection was never re-migrated). Parity must
+	// catch it: non-zero exit (non-nil RunE error) reporting the mismatch.
+	rep, err := runTopParity(t)
+	if err == nil {
+		t.Fatalf("rd migrate --parity returned nil error (exit 0) on a seeded title divergence; report=%+v", rep)
+	}
+	if rep.AllMatch() {
+		t.Fatalf("parity report claims AllMatch() true despite seeded divergence: %+v", rep)
+	}
+	if rep.Mismatched != 1 {
+		t.Fatalf("expected exactly 1 mismatched item, got %d (report=%+v)", rep.Mismatched, rep)
+	}
+
+	var got *rdSync.ItemParity
+	for i := range rep.Items {
+		if rep.Items[i].ItemID == "ready-mig01" {
+			got = &rep.Items[i]
+		} else if !rep.Items[i].Match() {
+			t.Fatalf("unexpected mismatch on untouched item %s: %v", rep.Items[i].ItemID, rep.Items[i].Diffs)
+		}
+	}
+	if got == nil {
+		t.Fatalf("ready-mig01 missing from parity report entirely: %+v", rep)
+	}
+	if got.Match() {
+		t.Fatalf("ready-mig01 reported as matched despite seeded title divergence")
+	}
+	foundTitleDiff := false
+	for _, d := range got.Diffs {
+		if strings.HasPrefix(d, "title:") {
+			foundTitleDiff = true
+			if !strings.Contains(d, corruptedTitle) {
+				t.Fatalf("title diff does not name the corrupted value: %q", d)
+			}
+			if !strings.Contains(d, "First migrated item") {
+				t.Fatalf("title diff does not name the original projected value: %q", d)
+			}
+		}
+	}
+	if !foundTitleDiff {
+		t.Fatalf("expected a specific 'title:' diff for ready-mig01, got: %v", got.Diffs)
+	}
 }
