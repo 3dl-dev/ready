@@ -37,12 +37,17 @@ byte-for-byte for the same input.
 
 ## Key storage
 
-The portfolio secp256k1 key is a **distinct file** (`nostr-identity.json`) in the
-same `.cf` home as the campfire `identity.json` — it composes with existing
-identity resolution (`cmd/rd` `CFHome`) instead of overloading it, and does not
-touch the campfire ed25519 identity. `.cf/` is gitignored, so the secret is never
-committed. Real cross-machine provisioning of this key is a follow-up; for this
-item a generated/dev key is sufficient for the proof.
+The secp256k1 signing key (`nostr-identity.json`) lives under `$RD_HOME`
+(default `~/.config/rd`) — the sole identity home post-cutover; there is no
+`.cf` and no separate campfire identity to compose with. `$RD_HOME` is
+git-ignored, so the secret is never committed. See
+[docs/design/nostr-identity-model.md](design/nostr-identity-model.md) for the
+full `$RD_HOME` resolution cascade and per-actor key layout.
+
+*(Historical note: this doc was written for ready-41d, before the `$RD_HOME`
+cutover, when the key lived in `.cf` alongside the campfire identity. The
+signing/serialization mechanics below are unchanged; the storage location
+described above is current.)*
 
 ## Ground-source proof (live, no mocks)
 

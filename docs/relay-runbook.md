@@ -4,10 +4,11 @@ Reproducible-from-scratch runbook for the two-relay strfry (nostr) topology that
 backs the rd nostr migration.
 
 > **Invariant:** The relays are a **CACHE / always-available copy, NEVER the
-> source of truth.** The source of truth is the campfire log. The relays exist so
-> other machines can read/write events without a hardcoded hub, and so events
-> survive a single relay going offline. Treat relay data as reconstructible at
-> any time from the authoritative source.
+> source of truth.** The source of truth is each project's local authoritative
+> log (`.ready/nostr-log.jsonl`). The relays exist so other machines can
+> read/write events without a hardcoded hub, and so events survive a single
+> relay going offline. Treat relay data as reconstructible at any time from the
+> authoritative source.
 
 ## Topology
 
@@ -149,9 +150,9 @@ lowercase-hex x-only pubkey to a human label:
 
 ```json
 {
-  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, ~/.cf/nostr-identity.json)",
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, $RD_HOME/nostr-identity.json)",
   "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (192.168.2.42 ~/.dontguess/nostr-operator.key)",
-  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, ~/.cf/nostr-identity.json)"
+  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, $RD_HOME/nostr-identity.json)"
 }
 ```
 
@@ -168,15 +169,15 @@ file and on both live relays; `sync-allowlist` preserves it and never locks it o
 This is the SAME trust set as rd's **client-side** gate: `rdconfig.Config`
 `TrustedPubkeys` + the self portfolio pubkey (`TrustSet`, ready-d53). Keep them
 consistent — *an identity that may write to the relay is exactly an identity whose
-events rd will ingest*. On each machine, `~/.cf/rd.json` `trusted_pubkeys` lists
+events rd will ingest*. On each machine, `$RD_HOME/rd.json` `trusted_pubkeys` lists
 the OTHER admitted machines (self is implicit); the relay allowlist lists them ALL
 (there is no implicit self on a relay). The pubkeys are the `pubkey_hex` in each
-machine's `~/.cf/nostr-identity.json` (materialized by rd,
+machine's `$RD_HOME/nostr-identity.json` (materialized by rd,
 `LoadOrCreatePortfolioKey`).
 
 ### Admitting / revoking a pubkey — signed source (ready-84e / BP-5)
 
-The hand-edit workflow below is **superseded** by `rd nostr grant` / `rd nostr
+The hand-edit workflow below is **superseded** by `rd grant` / `rd nostr
 revoke` + `rd nostr sync-allowlist`, which regenerate the allowlist from **one signed
 source** (the kind-39301 role-grants) instead of two hand-kept lists. This ends the
 drift this runbook warns about: the client trust set and the relay file now derive
@@ -184,12 +185,12 @@ from the same signed log (design `docs/design/nostr-identity-model.md` §4/§6, 
 
 ```bash
 # One signed act admits an actor across BOTH the client trust set and the relay:
-rd nostr grant <pubkeyHex> contributor --label "machine-3 rd-node"   # owner-signed 39301
+rd grant <pubkeyHex> contributor --label "machine-3 rd-node"   # owner-signed 39301
 rd nostr sync-allowlist                                              # DRY RUN: prints the diff
 rd nostr sync-allowlist --apply                                     # writes the file + scp/ssh to both relays
 
 # Revoke (prospective by default — past authoritative events stay honored):
-rd nostr revoke <pubkeyHex>
+rd revoke <pubkeyHex>
 rd nostr sync-allowlist --apply
 ```
 
@@ -210,7 +211,7 @@ to `.ready/config.json`).
 **Manual fallback** (still valid; `sync-allowlist` produces the same file format):
 
 1. Add `"pubkey": "label"` to `scripts/relay-policy/write-allowlist.json`.
-2. Add the pubkey to every *other* machine's `~/.cf/rd.json` `trusted_pubkeys`
+2. Add the pubkey to every *other* machine's `$RD_HOME/rd.json` `trusted_pubkeys`
    (client-side ingestion gate).
 3. Re-run `scripts/lock-relays.sh` (idempotent) to push the updated allowlist to
    both relays. No strfry restart is needed for an allowlist-only change — the
@@ -236,8 +237,8 @@ REJECTED with the relay's own block reason, and (c) reads stay open. Captured
 output: `docs/relay-writepolicy-demo-output.txt`.
 
 `scripts/nostr-grant-revoke-demo.sh` proves the full BP-5 loop against the live
-locked relays: a fresh agent key is (b) REJECTED, then `rd nostr grant` +
-`sync-allowlist --apply` makes its write (d) LAND, then `rd nostr revoke` +
+locked relays: a fresh agent key is (b) REJECTED, then `rd grant` +
+`sync-allowlist --apply` makes its write (d) LAND, then `rd revoke` +
 `sync-allowlist --apply` makes it (f) REJECTED again — while the owner (P1),
 machine-2 (P2), and the unmanaged `dontguess` tenant key stay admitted throughout.
 The script captures the original allowlists and restores them on exit. Captured
@@ -245,7 +246,7 @@ output: `docs/nostr-grant-revoke-demo-output.txt`.
 
 The Go live tests (`RD_NOSTR_LIVE_RELAY=1 go test ./pkg/sync/ ./pkg/nostr/`) sign
 with the allowlisted key (`liveRelayKey`, resolved from
-`~/.cf/nostr-identity.json` or `RD_NOSTR_TEST_SECRET_HEX`) and include
+`$RD_HOME/nostr-identity.json` or `RD_NOSTR_TEST_SECRET_HEX`) and include
 `TestLiveRelay_WriteAllowlistTrustGate`, which proves both the relay-side rejection
 (ready-266) and the client-side drop (ready-d53) on both relays.
 
