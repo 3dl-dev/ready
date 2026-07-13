@@ -9,7 +9,7 @@
 #      as nostr events into the local append-only signed-event log (the epic's
 #      source of truth), project it back, and assert item-for-item parity on count,
 #      status, priority, type, deps, gates, history length + close-reasons, and
-#      provenance. NO item lost or silently altered. (`rd nostr parity`)
+#      provenance. NO item lost or silently altered. (`rd migrate --parity`)
 #   2. LIVE relay round-trip — publish a dep-CLOSED sample to the LOCKED strfry
 #      relays with the allowlisted portfolio key (write-allowlist, ready-266), WIPE
 #      the local log, reconstruct PURELY from the relays via per-item reconcile, and
@@ -79,7 +79,7 @@ info "building rd"
 "$GO" build -o "$WORK/rd" ./cmd/rd
 RD="$WORK/rd"
 # RD_HOME is the nostr signing-identity home; materialize it with the machine's
-# ALLOWLISTED portfolio key (ready-266) BEFORE any `rd nostr migrate`/`parity`
+# ALLOWLISTED portfolio key (ready-266) BEFORE any `rd migrate`/`parity`
 # call signs an event, so both the local-only migration and the live-relay
 # round trip (STEP 2) sign with a key the locked relays accept instead of `rd`
 # generating a fresh, non-admitted one on first use.
@@ -93,15 +93,15 @@ info "live campfire item set: $SRC_COUNT items (including terminal)"
 
 echo
 info "STEP 1: FULL migration -> local authoritative nostr log, then item-for-item parity"
-"$RD" nostr migrate --local-only >/dev/null
-"$RD" nostr parity >/dev/null || fail "STEP 1: item-for-item parity FAILED (some item lost or silently altered)"
-PARITY_LINE=$("$RD" nostr parity --json 2>/dev/null | python3 -c "import sys,json;r=json.load(sys.stdin);print('source=%d projected=%d matched=%d mismatched=%d'%(r['source_count'],r['projected_count'],r['matched'],r['mismatched']))")
+"$RD" migrate --local-only >/dev/null
+"$RD" migrate --parity >/dev/null || fail "STEP 1: item-for-item parity FAILED (some item lost or silently altered)"
+PARITY_LINE=$("$RD" migrate --parity --json 2>/dev/null | python3 -c "import sys,json;r=json.load(sys.stdin);print('source=%d projected=%d matched=%d mismatched=%d'%(r['source_count'],r['projected_count'],r['matched'],r['mismatched']))")
 pass "FULL local-authoritative parity: $PARITY_LINE"
 
 echo
 info "STEP 1b: re-run migration is IDEMPOTENT (event-id dedup; log does not grow)"
 L1=$(wc -l < .ready/nostr-log.jsonl)
-ADDED=$("$RD" nostr migrate --local-only --json 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['appended'])")
+ADDED=$("$RD" migrate --local-only --json 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['appended'])")
 L2=$(wc -l < .ready/nostr-log.jsonl)
 [ "$ADDED" = "0" ] && [ "$L1" = "$L2" ] || fail "STEP 1b: re-run not idempotent (appended=$ADDED, $L1->$L2)"
 pass "re-run appended 0 events; log stayed at $L1 lines"
@@ -143,14 +143,14 @@ info "dep-closed sample: $NSAMPLE items"
 # one status event per audit-trail entry, provenance preserved). buffered=false
 # proves the allowlisted portfolio key (materialized into $RD_HOME above) passed
 # the relay write-allowlist (ready-266).
-BUF=$("$RD" nostr migrate --only "$(echo $SAMPLE | tr ' ' ',')" --json 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print('buffered' if d['buffered'] else 'accepted', d['appended'])")
+BUF=$("$RD" migrate --only "$(echo $SAMPLE | tr ' ' ',')" --json 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print('buffered' if d['buffered'] else 'accepted', d['appended'])")
 info "sample published to locked relays: $BUF events"
 
 info "WIPE the local log; reconstruct the sample PURELY from the relays (per-item reconcile)"
 rm -f .ready/nostr-log.jsonl
 sleep 1
 for id in $SAMPLE; do
-  "$RD" nostr show "$id" --reconcile >/dev/null 2>&1 || true
+  "$RD" show "$id" --reconcile >/dev/null 2>&1 || true
 done
 RECON=$(wc -l < .ready/nostr-log.jsonl)
 [ "$RECON" -gt 0 ] || fail "STEP 2: nothing reconstructed from the relays"
@@ -166,7 +166,7 @@ info "reconstructed $RECON events from the relays alone"
 # fresh per-run key would be relay-rejected), an EARLIER run of this exact demo
 # against these exact real portfolio item ids can already hold the coordinate,
 # so this run's freshly-rebuilt card is correctly super-seded ("have newer
-# event") rather than republished — `nostr migrate` reports buffered=true for
+# event") rather than republished — `migrate` reports buffered=true for
 # it. The RECONSTRUCTED item is then the EARLIER run's valid card, which can
 # carry different per-entry "changed_by" provenance than a byte-fresh rebuild
 # (a different historical migration pass can attribute audit actors
@@ -185,7 +185,7 @@ def show(cmd):
 fails=[]
 tolerated=[]
 for i in ids:
-    cf=show(['show',i,'--json']); ns=show(['nostr','show',i,'--json'])
+    cf=show(['show',i,'--json']); ns=show(['show',i,'--json'])
     if ns is None: fails.append(i+':LOST'); continue
     d=[]
     for f in ('status','priority','type'):

@@ -23,7 +23,7 @@ closed proj-3e0 (done)
           5 30302
 PASS published 9 signed events across 5 mutations to the LIVE relay + local log
 
-==> STEP A: rd nostr show — replay FULL history from the local log
+==> STEP A: rd show — replay FULL history from the local log
     id:       proj-3e0
     title:    b5f history replay demo (edited)
     status:   done

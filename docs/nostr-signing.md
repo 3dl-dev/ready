@@ -1,4 +1,4 @@
-# rd nostr signing (ready-41d)
+# rd nostr-native signing (ready-41d)
 
 Generic nostr NIP-01 event pipeline used by rd to publish work-management state
 to the self-hosted strfry relays. This item proves the generic

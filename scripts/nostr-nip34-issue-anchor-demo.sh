@@ -11,7 +11,7 @@
 #       its issue via the standard "e"/root-marker pattern. This is additive:
 #       rd's own card anchor is unchanged (checked below).
 #
-#   (2) `rd nostr publish` (the manual/migration republish path) now carries an
+#   (2) `rd log publish` (the manual/migration republish path) now carries an
 #       item's already-recorded close/change reason through to the published
 #       status event, instead of hand-carrying an empty one. Demonstrated by
 #       closing an item with a reason WHILE NOSTR IS DISABLED (so nothing is
@@ -19,10 +19,10 @@
 #       reason survived.
 #
 # Steps:
-#   1. rd init --offline; rd create (RD_NOSTR unset -- no nostr publish at all).
+#   1. rd init --offline; rd create (RD_NOSTR unset -- no log publish at all).
 #   2. rd done --reason "..." (still no nostr -- the close-with-reason lives
 #      ONLY in the local JSONL/campfire history so far).
-#   3. rd nostr publish <id>  -- the FIRST-EVER nostr publish for this item, via
+#   3. rd log publish <id>  -- the FIRST-EVER log publish for this item, via
 #      the manual command. Publishes board+card+ISSUE+status to the live relay.
 #   4. Inspect the raw local log (jq): the status event's SECOND "e" tag must be
 #      "root"-marked and point at the kind:1621 issue id; its content must be
@@ -31,7 +31,7 @@
 #      for kind 1630-1632 events whose "#e" matches the issue id, and confirm
 #      the same status event comes back -- proving a generic NIP-34 client can
 #      make the association purely from the wire.
-#   6. Confirm rd's OWN read (`rd nostr show`) still reconstructs status+reason
+#   6. Confirm rd's OWN read (`rd show`) still reconstructs status+reason
 #      correctly -- the additive anchor changed nothing about rd's own path.
 #
 # Endpoints come from pkg/rdconfig defaults; override with RD_NOSTR_RELAY_URL.
@@ -86,8 +86,8 @@ info "STEP 3: confirm the nostr-native create/close path published board+card+IS
 export RD_NOSTR_RELAY_URL="$RELAY"
 # In the nostr-native model create/close write the log directly (nostroutbound.go's
 # PublishItemWithReason already emits the kind:1621 issue root + issue-anchored
-# 1631 status via BuildStatusEventWithIssueRoot) — no separate `rd nostr publish`
-# step is needed. (`rd nostr publish` is a legacy-JSONL migration path and does
+# 1631 status via BuildStatusEventWithIssueRoot) — no separate `rd log publish`
+# step is needed. (`rd log publish` is a legacy-JSONL migration path and does
 # NOT resolve nostr-native items — see the ready-6cf finding.)
 [ -f "$LOG" ] || fail "nostr-native create/close should have written the local nostr log"
 [ "$(jq -c 'select(.kind==1621)' "$LOG" | wc -l)" -ge 1 ] || fail "no kind:1621 issue-root event in the local log"
@@ -150,15 +150,15 @@ esac
 fi
 
 echo
-info "STEP 6: rd's OWN read is unaffected -- rd nostr show still reconstructs status+reason"
-"$RD" nostr show "$ID" --json > "$WORK/show.json"
+info "STEP 6: rd's OWN read is unaffected -- rd show still reconstructs status+reason"
+"$RD" show "$ID" --json > "$WORK/show.json"
 python3 -c "
 import json
 d = json.load(open('$WORK/show.json'))
 assert d['status'] == 'done', d
 hist = d.get('history') or []
 assert hist and hist[-1]['note'] == 'shipped the issue-anchor refinement', hist
-print('rd nostr show: status=%s last-reason=%r' % (d['status'], hist[-1]['note']))
+print('rd show: status=%s last-reason=%r' % (d['status'], hist[-1]['note']))
 "
 pass "rd's own projection round-trips status+reason unchanged"
 

@@ -5,7 +5,7 @@
 > since happened**: nostr is now the sole, default backend for every project
 > (no `RD_NOSTR`/`RD_NOSTR_READ` opt-in needed), and there is no `.cf` —
 > identity lives under `$RD_HOME`. The migration mechanics below
-> (`rd nostr migrate` / `rd nostr parity`) are unchanged and are exactly what
+> (`rd migrate` / `rd migrate --parity`) are unchanged and are exactly what
 > the top-level operator commands wrap: run **`rd migrate`** to re-emit a
 > legacy campfire project's item set as nostr events, and
 > **`rd migrate --parity`** to verify the projection before deleting
@@ -27,7 +27,7 @@ relays): `rd show ready-a14`.
 
 ## What the migration does
 
-`rd nostr migrate` reads the **current campfire/JSONL item set** (the default
+`rd migrate` reads the **current campfire/JSONL item set** (the default
 backend — never the nostr projection, which would be circular) and re-emits every
 item as nostr events, preserving the full item:
 
@@ -76,11 +76,11 @@ item's second) rather than `time.Now()` so it, too, dedups on re-run.
 projection instead of campfire/JSONL — it is the controlled, nostr-only
 verification context. It is **off by default** and additive: rd's whole read surface
 (`list` / `ready` / `show`) runs against nostr without changing the live default, so
-the campfire-backed rd everyone else runs is never disturbed. `rd nostr show`,
-`rd nostr ready`, and `rd nostr parity` are always nostr-sourced regardless of the
+the campfire-backed rd everyone else runs is never disturbed. `rd show`,
+`rd ready`, and `rd migrate --parity` are always nostr-sourced regardless of the
 flag.
 
-## Parity proof (`rd nostr parity`)
+## Parity proof (`rd migrate --parity`)
 
 Derives the source from campfire/JSONL, projects the nostr log, and asserts
 item-for-item parity on: count, status, priority, type, deps, gate, history length,

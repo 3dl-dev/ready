@@ -422,7 +422,7 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 }
 
 // adoptInviteRelays rewrites the local rd.json relay endpoints to the token's
-// relay set (each read+write), so the joiner's subsequent `rd nostr sync` reaches
+// relay set (each read+write), so the joiner's subsequent `rd sync` reaches
 // the same relays the owner published to. Load-modify-save preserves other config.
 func adoptInviteRelays(rdHome string, relays []string) error {
 	cfg, err := rdconfig.Load(rdHome)
@@ -448,7 +448,7 @@ func adoptInviteRelays(rdHome string, relays []string) error {
 func runNostrInvite(ttl time.Duration) (string, error) {
 	dir, native := nostrNativeProject()
 	if !native {
-		return "", fmt.Errorf("rd invite --nostr requires a nostr-native project (a pinned board); run 'rd nostr pin-board' first")
+		return "", fmt.Errorf("rd invite --nostr requires a nostr-native project (a pinned board); run 'rd pin-board' first")
 	}
 	board := nostrPinnedBoard(dir)
 	_, boardD, okBoard := rdSync.ParseBoardCoord(board)

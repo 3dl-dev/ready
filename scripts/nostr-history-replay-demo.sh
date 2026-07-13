@@ -16,7 +16,7 @@
 #                              the close-with-reason
 #
 # Then:
-#   A. `rd nostr show` reads the LOCAL LOG (relay untouched) and must print all 3
+#   A. `rd show` reads the LOCAL LOG (relay untouched) and must print all 3
 #      authoritative status transitions (create, claim, done), each with its
 #      reason, plus the fields from the LATEST card (post-edit title/context).
 #   B. Same read with the relay pointed at an unreachable address — history must
@@ -101,8 +101,8 @@ LOGLINES="$(wc -l < "$PROJ/.ready/nostr-log.jsonl" | tr -d ' ')"
 pass "published $LOGLINES signed events across 5 mutations to the LIVE relay + local log"
 
 echo
-info "STEP A: rd nostr show — replay FULL history from the local log"
-SHOW_OUT="$("$RD" nostr show "$ID")"
+info "STEP A: rd show — replay FULL history from the local log"
+SHOW_OUT="$("$RD" show "$ID")"
 printf '%s\n' "$SHOW_OUT" | sed 's/^/    /'
 grep -q "title:    b5f history replay demo (edited)" <<<"$SHOW_OUT" || fail "latest card edit not reflected in current state"
 grep -q "status:   done"                             <<<"$SHOW_OUT" || fail "current status is not done"
@@ -115,7 +115,7 @@ pass "FULL history replayed: create -> claim -> done, all 3 transitions with rea
 
 echo
 info "STEP B: same read, relay UNREACHABLE — proves the local log alone is authoritative"
-OFFLINE_OUT="$(RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" nostr show "$ID")"
+OFFLINE_OUT="$(RD_NOSTR_RELAY_URL="$OFFLINE_RELAY" "$RD" show "$ID")"
 [ "$OFFLINE_OUT" = "$SHOW_OUT" ] || fail "relay-offline read differs from the relay-reachable read"
 pass "relay-offline read is IDENTICAL: history survives with every relay unreachable"
 

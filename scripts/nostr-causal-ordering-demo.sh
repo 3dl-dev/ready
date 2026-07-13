@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # nostr-causal-ordering-demo.sh — LIVE ground-source proof for ready-f92
-# (rd nostr ingestion: replay + causal-ordering protection).
+# (nostr-log ingestion: replay + causal-ordering protection).
 #
 # Proves, with NO MOCKS against the LIVE self-hosted strfry relays, the four
 # ingestion/ordering guarantees f92 adds on top of the d53 trust gate:
@@ -20,7 +20,7 @@
 # The demo has two layers, both ground-source:
 #   LAYER A (CLI, live relay): build rd, create+mutate an item through RD_NOSTR=1,
 #     then reconcile the SAME relay state into TWO independent fresh project dirs
-#     and assert `rd nostr show` is byte-identical (cross-source convergence), and
+#     and assert `rd show` is byte-identical (cross-source convergence), and
 #     that a second reconcile adds ZERO events (dedup).
 #   LAYER B (Go, live relay): the env-gated live convergence test publishes TWO
 #     competing SAME-SECOND cards to strfry, observes strfry's own NIP-01 tie-break,
@@ -120,8 +120,8 @@ mkdir -p "$P1/.ready" "$P2/.ready"
 # ignore PROJ's cards — that is a different project, not a second machine.)
 cp "$PROJ/.ready/config.json" "$P1/.ready/config.json"
 cp "$PROJ/.ready/config.json" "$P2/.ready/config.json"
-V1="$(cd "$P1" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" nostr show "$ID" --reconcile 2>>"$WORK/a.err")"
-V2="$(cd "$P2" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" nostr show "$ID" --reconcile 2>>"$WORK/a.err")"
+V1="$(cd "$P1" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" show "$ID" --reconcile 2>>"$WORK/a.err")"
+V2="$(cd "$P2" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" show "$ID" --reconcile 2>>"$WORK/a.err")"
 printf '%s\n' "$V1" | sed 's/^/    [log1] /'
 if [ "$V1" != "$V2" ]; then
   printf '%s\n' "$V2" | sed 's/^/    [log2] /'
@@ -132,7 +132,7 @@ pass "two independent relay reconciles converge to byte-identical projected stat
 
 info "STEP 3: DEDUP — a SECOND reconcile into log1 must add ZERO events"
 BEFORE=$(wc -l < "$P1/.ready/nostr-log.jsonl" 2>/dev/null || echo 0)
-( cd "$P1" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" nostr show "$ID" --reconcile >/dev/null 2>>"$WORK/a.err" ) || true
+( cd "$P1" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" show "$ID" --reconcile >/dev/null 2>>"$WORK/a.err" ) || true
 AFTER=$(wc -l < "$P1/.ready/nostr-log.jsonl" 2>/dev/null || echo 0)
 info "log1 line count: before=$BEFORE after=$AFTER"
 [ "$BEFORE" = "$AFTER" ] || fail "DEDUP FAILED: re-reconcile grew the authoritative log ($BEFORE -> $AFTER)"

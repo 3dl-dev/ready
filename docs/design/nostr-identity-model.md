@@ -41,7 +41,7 @@ This is the one-liner both ready and dontguess independently arrived at. See `do
 
 **Why not one-key-per-host (the ADVERSARY's counter-proposal):** correct that it bounds the allowlist, but it makes `ChangedBy = card.PubKey` (`nostrproject.go:178,253`) identical for every agent on the box — the owner/agent question the epic exists to answer is then structurally unanswerable. We take the bound-the-allowlist win a different way: keys are per *durable* actor (small, bounded like hosts) **and** both allowlists are *derived* from grants (§4), so sprawl cannot accrue by hand.
 
-**Provisioning — generate-then-authorize.** An agent key is generated locally on first `rd` use (same bootstrap as today) but is **inert**: it can sign, but nothing it signs is honored until (a) the owner publishes a role-grant naming its pubkey and (b) `rd nostr sync-allowlist` (§4) adds it to the relay write-allowlist. Two admission steps collapse into one signed act plus one mechanical regeneration.
+**Provisioning — generate-then-authorize.** An agent key is generated locally on first `rd` use (same bootstrap as today) but is **inert**: it can sign, but nothing it signs is honored until (a) the owner publishes a role-grant naming its pubkey and (b) `rd relay sync-allowlist` (§4) adds it to the relay write-allowlist. Two admission steps collapse into one signed act plus one mechanical regeneration.
 
 **Rotation.** No special rotation event: publish `role=revoked` for the old pubkey (prospective — its past work stays valid), generate a new key, grant it the same role. Same primitive as revocation.
 
@@ -101,7 +101,7 @@ Trust stops being a stored list and becomes a **pure function of signed events**
 
 **Gate C — humanness level (ready-187): unchanged, annotate-only.** The `level` card tag (`nostrwire.go:245`, `itemFromCard` `:428`) stays item provenance. Do not conflate with operator level — different tag, different axis.
 
-**Relay write-allowlist (ready-266) stays binary/coarse, but its FEED is derived.** `write-allowlist.py`'s contract (JSON `{pubkey:label}`, mtime-reload, fail-closed) needs **zero code change** — it is levels-agnostic and is the coarse spam/DoS gate ("may this key write at all"). A new **`rd nostr sync-allowlist`** command regenerates `write-allowlist.json` from `{ pubkeys with level ≥ 1 (non-revoked) }` (label from the grant's `content`) and prunes revoked keys. `rd.json` (as the derived trust cache) and the relay file now share **one source** — the drift the runbook warns about (`write-allowlist.py:33-36`, `relay-runbook.md:157-162`) is closed structurally, not by discipline.
+**Relay write-allowlist (ready-266) stays binary/coarse, but its FEED is derived.** `write-allowlist.py`'s contract (JSON `{pubkey:label}`, mtime-reload, fail-closed) needs **zero code change** — it is levels-agnostic and is the coarse spam/DoS gate ("may this key write at all"). A new **`rd relay sync-allowlist`** command regenerates `write-allowlist.json` from `{ pubkeys with level ≥ 1 (non-revoked) }` (label from the grant's `content`) and prunes revoked keys. `rd.json` (as the derived trust cache) and the relay file now share **one source** — the drift the runbook warns about (`write-allowlist.py:33-36`, `relay-runbook.md:157-162`) is closed structurally, not by discipline.
 
 **Board pinning.** The authoritative board coordinate is pinned in `.ready/config.json` (`SyncConfig`). Projection rejects any card whose `a` coordinate ≠ the pinned board — killing the parallel-board self-grant path.
 
@@ -120,7 +120,7 @@ Trust stops being a stored list and becomes a **pure function of signed events**
 11. Relay write-allowlist plugin (signature-verify first, fail-closed)
 12. Migration (source is campfire/JSONL, never nostr — non-circular; projected-back events pass the same gates)
 13. Dual-read (`RD_NOSTR_READ`) — same gate stack as primary read path
-14. Readiness (`rd nostr ready`) — both `ReconcileBoard` and `ProjectItems` gated
+14. Readiness (`rd ready`) — both `ReconcileBoard` and `ProjectItems` gated
 
 **Read-trust is now grant-derived.** Gate A above (ready-434 / GAP-1) closes the fidelity gap the reconciliation found: `Trusted` was fed only by hand-maintained `Config.TrustedPubkeys`, not by `DeriveLevels`. It is now wired as `DeriveLevels(level ≥ 1) ∪ self`, so a freshly-granted contributor's events are admitted at ingestion without a manual `rd.json` edit. Any change to a seam in the list above must preserve this: read admission is always grant-derived, never hand-maintained-only.
 
@@ -148,7 +148,7 @@ Repointed call sites (both already take a home-dir string — low blast radius):
 
 | Built piece | Before | After |
 |---|---|---|
-| **ready-266** relay write-allowlist (`write-allowlist.py`) | hand-edited `{pubkey:label}`, kept consistent with `rd.json` **by hand** | **plugin unchanged**; file **regenerated** by `rd nostr sync-allowlist` from `{level ≥ 1, non-revoked}`. Stays binary/coarse (spam gate), fail-closed intact. |
+| **ready-266** relay write-allowlist (`write-allowlist.py`) | hand-edited `{pubkey:label}`, kept consistent with `rd.json` **by hand** | **plugin unchanged**; file **regenerated** by `rd relay sync-allowlist` from `{level ≥ 1, non-revoked}`. Stays binary/coarse (spam gate), fail-closed intact. |
 | **ready-b57** board maintainers / status-authority (`nostrproject.go:151-196`) | monotonic union of **all historical** board `p`-tags — **never revocable** (the live bug); per-coordinate binding correct | maintainer set = **latest-grant-per-(board,pubkey) at level 2**; per-coordinate binding **kept**; board `p`-tags demoted to bootstrap seed. Revocation now works. |
 | **ready-d53** `TrustSet` (`config.go:65-76`) | flat binary union of `TrustedPubkeys` + self | **derived** = `{level ≥ 1}` ∪ self, with point-in-time `authoritative-until`. `TrustedPubkeys` demoted to bootstrap cache (still parses). |
 | **ready-187** `level` tag (`nostrwire.go:245`, `itemFromCard:428`) | per-item humanness annotation | **unchanged.** Explicitly kept separate from operator level. |
@@ -164,7 +164,7 @@ Repointed call sites (both already take a home-dir string — low blast radius):
 |---|---|---|
 | A1 | **Retroactive-revocation erases past authoritative events** → completed items reopen (`opts.trusts` is a snapshot, `:144`) | **RESOLVED** — revocation ruled **point-in-time/prospective** (§3): event honored iff `created_at < authoritative-until`; past work preserved. Compromise handled by owner-signed `from=T` repudiation. |
 | A2 | **Silent migration key-regeneration** breaks relay allowlist + self-authorship, portfolio-wide, no error | **RESOLVED** — migration is identity-preserving **copy**, never `GenerateKey`; originals kept for rollback; startup assertion that loaded pubkey ∈ trust set (§5). |
-| A3 | **Two-allowlist drift** (`rd.json` vs `write-allowlist.json`) kept consistent by hand | **RESOLVED** — both derived from one signed source; `rd nostr sync-allowlist` regenerates the relay file (§4). |
+| A3 | **Two-allowlist drift** (`rd.json` vs `write-allowlist.json`) kept consistent by hand | **RESOLVED** — both derived from one signed source; `rd relay sync-allowlist` regenerates the relay file (§4). |
 | A4 | **Board-maintainer union never revokes** (`:151-159`) — maintainer listed once is maintainer forever | **RESOLVED** — replaced by latest-grant-per-(board,pubkey); board `p`-tags become bootstrap seed only (§4, §6). |
 | A5 | **Unpinned board self-escalation** — any relay-admitted key forks its own 30301, self-grants maintainer, publishes cards under its own `a` | **RESOLVED** — board coordinate **pinned** in `.ready/config.json`; projection rejects foreign-`a` cards (§4). |
 | A6 | **Lexical `.cf`-name guard is false safety** — a `.cf` dir in a repo that doesn't ignore it commits the secret; symlink-name TOCTOU | **RESOLVED** — guard replaced by resolved-path-under-`$RD_HOME` + `git check-ignore` (§5). |
@@ -201,7 +201,7 @@ Five outcome-scoped items, all landing **before ready-f94**. Minimum viable: por
 *Deps:* BP-1.
 
 **BP-5 — One signed act admits/revokes an actor across BOTH the client trust set and the relay allowlist.**
-*Done:* `rd grant <pubkey> <role>` / `rd revoke <pubkey>` publishes a 39301 grant; `rd nostr sync-allowlist` regenerates `write-allowlist.json` from `{level ≥ 1, non-revoked}` (pruning revoked keys), and the derived `TrustSet` matches — verified by a demo that grants an agent, watches its first write land, revokes it, and watches the next write get rejected at the relay. Foreign-board cards are rejected (from BP-3).
+*Done:* `rd grant <pubkey> <role>` / `rd revoke <pubkey>` publishes a 39301 grant; `rd relay sync-allowlist` regenerates `write-allowlist.json` from `{level ≥ 1, non-revoked}` (pruning revoked keys), and the derived `TrustSet` matches — verified by a demo that grants an agent, watches its first write land, revokes it, and watches the next write get rejected at the relay. Foreign-board cards are rejected (from BP-3).
 *Touches:* new `cmd/rd` grant/revoke/sync-allowlist commands, `scripts/relay-policy/` regeneration hook, `docs/relay-runbook.md` (replace the manual-sync section).
 *Deps:* BP-2, BP-3, BP-4.
 

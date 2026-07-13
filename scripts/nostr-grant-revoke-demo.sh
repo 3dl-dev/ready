@@ -7,9 +7,9 @@
 #
 #   (a) create a fresh agent key
 #   (b) its write is REJECTED at the relay (not yet granted)
-#   (c) rd nostr grant <agent> contributor + rd nostr sync-allowlist --apply
+#   (c) rd grant <agent> contributor + rd relay sync-allowlist --apply
 #   (d) the agent's write now LANDS at the relay
-#   (e) rd nostr revoke <agent> + rd nostr sync-allowlist --apply
+#   (e) rd revoke <agent> + rd relay sync-allowlist --apply
 #   (f) the agent's next write is REJECTED again
 #   (g) throughout, the OWNER (P1) and machine-2 (P2) stay admitted (P1 write lands)
 #
@@ -98,7 +98,7 @@ capture_originals
 echo "original relay allowlists captured (will be restored on exit)"
 
 cd "$PROJ"
-"$RD" nostr pin-board --owner "$P1" --board-d ready || fail "pin-board"
+"$RD" pin-board --owner "$P1" --board-d ready || fail "pin-board"
 
 hr; echo "(a) fresh agent key"; hr
 AGENT_SEC="$("$NAK" key generate)"
@@ -119,13 +119,13 @@ for R in "${RELAYS[@]}"; do
   [ "$V" = "ACCEPTED" ] || fail "P1 write should be ACCEPTED on $R (got $V)"
 done
 
-hr; echo "(c) rd nostr grant agent contributor + seed P2 maintainer + sync-allowlist --apply"; hr
-"$RD" nostr grant "$AGENT_PUB" contributor --label "demo agent (ready-84e)" || fail "grant agent"
-"$RD" nostr grant "$P2" maintainer --label "machine-2 rd-node portfolio key" || fail "grant P2"
+hr; echo "(c) rd grant agent contributor + seed P2 maintainer + sync-allowlist --apply"; hr
+"$RD" grant "$AGENT_PUB" contributor --label "demo agent (ready-84e)" || fail "grant agent"
+"$RD" grant "$P2" maintainer --label "machine-2 rd-node portfolio key" || fail "grant P2"
 echo "--- dry-run diff ---"
-"$RD" nostr sync-allowlist --file "$ALLOWFILE" || fail "sync-allowlist dry-run"
+"$RD" relay sync-allowlist --file "$ALLOWFILE" || fail "sync-allowlist dry-run"
 echo "--- apply ---"
-"$RD" nostr sync-allowlist --file "$ALLOWFILE" --apply || fail "sync-allowlist apply"
+"$RD" relay sync-allowlist --file "$ALLOWFILE" --apply || fail "sync-allowlist apply"
 sleep 2   # let the strfry plugin observe the mtime change
 
 hr; echo "(d) agent write AFTER grant -> expect ACCEPTED on both relays"; hr
@@ -138,9 +138,9 @@ for R in "${RELAYS[@]}"; do
   [ "$(admitted "$R" "$P2")" = yes ] || fail "P2 dropped on $R after grant apply"
 done
 
-hr; echo "(e) rd nostr revoke agent + sync-allowlist --apply"; hr
-"$RD" nostr revoke "$AGENT_PUB" --label "demo agent (ready-84e)" || fail "revoke agent"
-"$RD" nostr sync-allowlist --file "$ALLOWFILE" --apply || fail "sync-allowlist apply (revoke)"
+hr; echo "(e) rd revoke agent + sync-allowlist --apply"; hr
+"$RD" revoke "$AGENT_PUB" --label "demo agent (ready-84e)" || fail "revoke agent"
+"$RD" relay sync-allowlist --file "$ALLOWFILE" --apply || fail "sync-allowlist apply (revoke)"
 sleep 2
 
 hr; echo "(f) agent write AFTER revoke -> expect REJECTED; P1/P2 still ACCEPTED"; hr

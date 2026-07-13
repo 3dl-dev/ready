@@ -25,7 +25,7 @@
 [36m==>[0m rd dep add A<-B (B blocks A)
 [36m==>[0m rd done B --reason (unblocks A)
 [36m==>[0m rd done A --reason
-[36m==>[0m machine-1 pushes the full event stream to the relays (rd nostr sync):
+[36m==>[0m machine-1 pushes the full event stream to the relays (rd sync):
 sync ws://192.168.2.40:7777: local_before=20 need=9672 have=10 downloaded=9672 uploaded=0 neg_bytes(sent=645 recv=309830 rounds=0) event_bytes(down=6533874 up=0)
 sync ws://192.168.2.41:7777: local_before=9692 need=0 have=10 downloaded=0 uploaded=0 neg_bytes(sent=653 recv=628 rounds=1) event_bytes(down=0 up=0)
 
@@ -47,7 +47,7 @@ sync ws://192.168.2.41:7777: local_before=9692 need=0 have=10 downloaded=0 uploa
 
 [36m==>[0m PHASE 2: machine-2 — CLEAN-CACHE reconstruction from the relays (no campfire, no shared fs)
 [36m==>[0m   machine-2 local nostr log starts EMPTY (clean cache)
-[36m==>[0m machine-2 pulls the event stream (rd nostr sync, MEASURED):
+[36m==>[0m machine-2 pulls the event stream (rd sync, MEASURED):
 sync ws://192.168.2.40:7777: local_before=0 need=9682 have=0 downloaded=9682 uploaded=0 neg_bytes(sent=5 recv=309830 rounds=0) event_bytes(down=6539951 up=0)
 sync ws://192.168.2.41:7777: local_before=9682 need=0 have=0 downloaded=0 uploaded=0 neg_bytes(sent=337 recv=1 rounds=0) event_bytes(down=0 up=0)
 
@@ -79,7 +79,7 @@ sync ws://192.168.2.41:7777: local_before=9682 need=0 have=0 downloaded=0 upload
 
 [36m==>[0m PHASE 3: machine-2 MUTATES (create C, claim C); machine-1 converges
 [36m==>[0m   item C = rdcapstone1783626097-d35
-[36m==>[0m machine-2 pushes C to the relays (rd nostr sync):
+[36m==>[0m machine-2 pushes C to the relays (rd sync):
 sync ws://192.168.2.40:7777: local_before=9687 need=0 have=2 downloaded=0 uploaded=0 neg_bytes(sent=657 recv=426 rounds=1) event_bytes(down=0 up=0)
 sync ws://192.168.2.41:7777: local_before=9687 need=0 have=2 downloaded=0 uploaded=0 neg_bytes(sent=657 recv=426 rounds=1) event_bytes(down=0 up=0)
 
@@ -105,11 +105,11 @@ sync ws://192.168.2.41:7777: local_before=9696 need=0 have=11 downloaded=0 uploa
 [36m==>[0m   rdcapstone1783626097-a7e: audit replay byte-identical on both machines
 [36m==>[0m   rdcapstone1783626097-0c9: audit replay byte-identical on both machines
 [36m==>[0m   rdcapstone1783626097-d35: audit replay byte-identical on both machines
-[32mPASS[0m every item's full 'rd nostr show' audit replay is byte-identical across both machines
+[32mPASS[0m every item's full 'rd show' audit replay is byte-identical across both machines
 [36m==>[0m   view=ready: run-item membership identical on both machines (1 run items): rdcapstone1783626097-d35
 [36m==>[0m   view=work: run-item membership identical on both machines (1 run items): rdcapstone1783626097-d35
 [36m==>[0m   view=gates: run-item membership identical on both machines (0 run items): 
-[32mPASS[0m readiness ('rd nostr ready') matches on both machines across views ready/work/gates (run-scoped)
+[32mPASS[0m readiness ('rd ready') matches on both machines across views ready/work/gates (run-scoped)
 
 ############################################################
 [32mPASS[0m ALL PHASES PASSED — full rd lifecycle proven end-to-end across two machines on live relays
@@ -133,7 +133,7 @@ WHAT THIS PROVES (epic ready-a14 OUTCOME, capstone ready-c8c):
     re-sync moves 0 event bytes (see the 'downloaded=0 uploaded=0' sync lines),
     NONE of campfire's fs-sync pathologies (ready-797).
   - Both machines replay the full audit history with reasons and compute an
-    identical readiness set ('rd nostr ready') across views.
+    identical readiness set ('rd ready') across views.
 
 NO mocks. Two real hosts. Live relays. Baron never tested.
 output captured to: /home/baron/projects/ready/.claude/worktrees/wf_23d45be5-2f2-1/docs/full-lifecycle-capstone-demo-output.txt

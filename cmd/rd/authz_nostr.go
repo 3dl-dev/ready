@@ -38,7 +38,7 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // authoritative act) and then regenerates the relay write-allowlist from the signed
 // log, surfacing the add/remove/preserve diff. A regeneration failure WARNS but never
 // fails the command — the grant is already durable in the log; the allowlist is a
-// derived artifact the operator can re-emit with `rd nostr sync-allowlist`.
+// derived artifact the operator can re-emit with `rd relay sync-allowlist`.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64) error {
 	if err := publishRoleGrant(grantee, role, label, from); err != nil {
 		return err
@@ -59,14 +59,14 @@ func surfaceAllowlistRegen(dir string) {
 	plan, err := regenerateAllowlistLocal(dir, file, baseline)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: relay write-allowlist NOT regenerated: %v\n", err)
-		fmt.Fprintln(os.Stderr, "  run 'rd nostr sync-allowlist' once resolved")
+		fmt.Fprintln(os.Stderr, "  run 'rd relay sync-allowlist' once resolved")
 		return
 	}
 	fmt.Printf("regenerated relay write-allowlist %s (%d key(s) admitted)\n", file, len(plan.Final))
 	printKeyList("ADD", plan.Added, plan.Final)
 	printKeyList("REMOVE", plan.Removed, baseline)
 	printKeyList("PRESERVE (admitted, no rd grant — kept)", plan.Preserved, baseline)
-	fmt.Println("  next: 'rd nostr sync-allowlist --apply' to push the update to the relays")
+	fmt.Println("  next: 'rd relay sync-allowlist --apply' to push the update to the relays")
 }
 
 // regenerateAllowlistLocal derives the relay write-allowlist from the signed grants
@@ -147,7 +147,7 @@ func roleForLevel(pubkey, owner string, level int) string {
 func runSessionsNostr(dir string, jsonOut bool) error {
 	owner, boardD, ok := rdSync.ParseBoardCoord(nostrPinnedBoard(dir))
 	if !ok {
-		return fmt.Errorf("no pinned board coordinate in .ready/config.json; pin one with 'rd nostr pin-board'")
+		return fmt.Errorf("no pinned board coordinate in .ready/config.json; pin one with 'rd pin-board'")
 	}
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
@@ -197,7 +197,7 @@ This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
 		}
 		dir, native := nostrNativeProject()
 		if !native {
-			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants); pin a board with 'rd nostr pin-board' first")
+			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants); pin a board with 'rd pin-board' first")
 		}
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
