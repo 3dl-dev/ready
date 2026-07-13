@@ -39,8 +39,8 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "rd",
-	Short: "Ready — work management on campfire",
-	Long: `Ready — work management as a campfire convention.
+	Short: "Ready — nostr-native work management",
+	Long: `Ready — nostr-native work management for humans and agents.
 
 LIFECYCLE
   The work item lifecycle is: create → claim → close.
@@ -71,18 +71,19 @@ RESUMING WORK (for agents and humans returning to a project)
   The item description is self-contained — it has everything you need.
 
 SETUP
-  rd init --name myproject        create a work campfire (one-time)
-  rd register --org <name>        add to an org for multi-project (optional)
+  rd init --name myproject        create a project (one-time)
+  rd invite                       mint a one-use token for a teammate to join
 
-Work items live in your project's campfire. No database, no server.
-https://ready.getcampfire.dev`,
+Work items live in your project's local signed-event log, synced over nostr
+relays. No database, no server.
+https://ready.3dl.dev`,
 	Version: Version,
 }
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&debugOutput, "debug", false, "show hex IDs for diagnostics")
-	rootCmd.PersistentFlags().StringVar(&rdHome, "cf-home", "", "campfire home directory (default: ~/.cf)")
+	rootCmd.PersistentFlags().StringVar(&rdHome, "cf-home", "", "legacy .cf home directory (default: ~/.cf)")
 	rootCmd.PersistentFlags().StringVar(&rdHomeFlag, "rd-home", "", "rd home directory for the nostr identity + config (default: ~/.config/rd)")
 
 	// Wire in the in-process convention server for solo mode.
@@ -91,13 +92,12 @@ func init() {
 	// tied to the command's context (cancelled when the command exits).
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// Skip protocol.Init (and its auto-identity generation) when the user is
-		// joining via an invite token. The token carries a pre-provisioned identity;
-		// joinViaInviteToken writes it to disk and then calls requireClient() itself.
-		// If we let protocol.Init run here first, it auto-generates a throwaway
-		// identity, causing joinViaInviteToken to see an "existing" identity and
-		// refuse without --force. (ready-167)
+		// joining via a nostr mint-and-ship token. The token carries a minted
+		// identity; joinViaNostrInviteToken writes it to $RD_HOME itself. If we let
+		// protocol.Init run here first it would auto-generate a throwaway .cf
+		// identity for a join that never touches campfire.
 		if cmd.Name() == "join" && len(args) > 0 &&
-			(strings.HasPrefix(args[0], inviteTokenPrefix) || strings.HasPrefix(args[0], nostrInviteTokenPrefix)) {
+			strings.HasPrefix(args[0], nostrInviteTokenPrefix) {
 			return nil
 		}
 

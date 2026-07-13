@@ -489,7 +489,7 @@ func init() {
 	nostrRevokeCmd.Flags().Int64("from", 0, "retroactive repudiation from this unix time (0 = prospective / effective now)")
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
-	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though .campfire/root exists (orphans existing campfire history — prefer 'rd migrate')")
+	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists (orphans existing legacy history — prefer 'rd migrate')")
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")

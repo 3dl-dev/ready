@@ -62,11 +62,11 @@ Example:
 		if jsonOutput {
 			// Augment item with resolved cross-campfire dep info.
 			type crossDepJSON struct {
-				Ref          string      `json:"ref"`
-				CampfireName string      `json:"campfire_name,omitempty"`
-				ItemID       string      `json:"item_id,omitempty"`
-				Status       string      `json:"status,omitempty"`
-				Warning      string      `json:"warning,omitempty"`
+				Ref          string `json:"ref"`
+				CampfireName string `json:"campfire_name,omitempty"`
+				ItemID       string `json:"item_id,omitempty"`
+				Status       string `json:"status,omitempty"`
+				Warning      string `json:"warning,omitempty"`
 			}
 			var crossDepsOut []crossDepJSON
 			for _, cd := range crossDeps {

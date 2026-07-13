@@ -8,8 +8,8 @@ import (
 
 	cfauthprov "github.com/campfire-net/campfire/cf-conventions/cf-authority/provenance"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	cfprov "github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfprov "github.com/campfire-net/campfire/pkg/provenance"
 
 	"github.com/campfire-net/ready/pkg/declarations"
 	"github.com/campfire-net/ready/pkg/provenance"

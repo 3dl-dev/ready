@@ -14,16 +14,16 @@ import (
 
 var revokeCmd = &cobra.Command{
 	Use:   "revoke <pubkey>",
-	Short: "Revoke a member's role in the project campfire",
+	Short: "Revoke a member's role in the project",
 	Long: `Revoke a member's role by posting a work:role-grant with role="revoked".
 
 The target must be identified by their 64-character hex public key.
 Name-based revocation is not supported because name resolution produces
-campfire IDs, not member pubkeys — using one in place of the other is a
+project IDs, not member pubkeys — using one in place of the other is a
 semantic type error (ready-34d).
 
 Use --retroactive to also post retroactive revocation records for every member
-that the revoked key previously admitted (reads audit trail from campfire message log).
+that the revoked key previously admitted (reads audit trail from the message log).
 
 EXAMPLES
   rd revoke abcdef1234...

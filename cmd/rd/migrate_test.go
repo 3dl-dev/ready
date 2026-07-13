@@ -56,30 +56,30 @@ func seedCampfireBoard(t *testing.T, dir string) {
 		Payload: payload(map[string]any{"id": "ready-mig01", "title": "First migrated item", "type": "task", "for": "alice@test.dev", "priority": "p1", "context": "primary work item"}),
 		Tags:    []string{"work:create"}})
 	add(seedRec{MsgID: "msg-mig01-status", CampfireID: cf, Timestamp: nextTS(1), Operation: "work:status", Sender: "human",
-		Payload:     payload(map[string]any{"target": "msg-mig01-create", "to": "active"}),
-		Tags:        []string{"work:status"}, Antecedents: []string{"msg-mig01-create"}})
+		Payload: payload(map[string]any{"target": "msg-mig01-create", "to": "active"}),
+		Tags:    []string{"work:status"}, Antecedents: []string{"msg-mig01-create"}})
 	add(seedRec{MsgID: "msg-mig01-claim", CampfireID: cf, Timestamp: nextTS(2), Operation: "work:claim", Sender: "agent-x@test.dev",
-		Payload:     payload(map[string]any{"target": "msg-mig01-create"}),
-		Tags:        []string{"work:claim"}, Antecedents: []string{"msg-mig01-create"}})
+		Payload: payload(map[string]any{"target": "msg-mig01-create"}),
+		Tags:    []string{"work:claim"}, Antecedents: []string{"msg-mig01-create"}})
 
 	// --- ready-mig02: bug, p0, blocked by ready-mig01 (deps) ---
 	add(seedRec{MsgID: "msg-mig02-create", CampfireID: cf, Timestamp: nextTS(3), Operation: "work:create", Sender: "human",
 		Payload: payload(map[string]any{"id": "ready-mig02", "title": "Second migrated item", "type": "bug", "for": "bob@test.dev", "priority": "p0"}),
 		Tags:    []string{"work:create"}})
 	add(seedRec{MsgID: "msg-mig02-block", CampfireID: cf, Timestamp: nextTS(4), Operation: "work:block", Sender: "human",
-		Payload:     payload(map[string]any{"blocker_id": "ready-mig01", "blocked_id": "ready-mig02", "blocker_msg": "msg-mig01-create", "blocked_msg": "msg-mig02-create"}),
-		Tags:        []string{"work:block"}, Antecedents: []string{"msg-mig02-create"}})
+		Payload: payload(map[string]any{"blocker_id": "ready-mig01", "blocked_id": "ready-mig02", "blocker_msg": "msg-mig01-create", "blocked_msg": "msg-mig02-create"}),
+		Tags:    []string{"work:block"}, Antecedents: []string{"msg-mig02-create"}})
 
 	// --- ready-mig03: task, p2, closed done (terminal, close reason in history) ---
 	add(seedRec{MsgID: "msg-mig03-create", CampfireID: cf, Timestamp: nextTS(5), Operation: "work:create", Sender: "human",
 		Payload: payload(map[string]any{"id": "ready-mig03", "title": "Third migrated item", "type": "task", "for": "carol@test.dev", "priority": "p2"}),
 		Tags:    []string{"work:create"}})
 	add(seedRec{MsgID: "msg-mig03-status", CampfireID: cf, Timestamp: nextTS(6), Operation: "work:status", Sender: "human",
-		Payload:     payload(map[string]any{"target": "msg-mig03-create", "to": "active"}),
-		Tags:        []string{"work:status"}, Antecedents: []string{"msg-mig03-create"}})
+		Payload: payload(map[string]any{"target": "msg-mig03-create", "to": "active"}),
+		Tags:    []string{"work:status"}, Antecedents: []string{"msg-mig03-create"}})
 	add(seedRec{MsgID: "msg-mig03-close", CampfireID: cf, Timestamp: nextTS(7), Operation: "work:close", Sender: "human",
-		Payload:     payload(map[string]any{"target": "msg-mig03-create", "resolution": "done", "reason": "shipped and verified"}),
-		Tags:        []string{"work:close", "work:resolution:done"}, Antecedents: []string{"msg-mig03-create"}})
+		Payload: payload(map[string]any{"target": "msg-mig03-create", "resolution": "done", "reason": "shipped and verified"}),
+		Tags:    []string{"work:close", "work:resolution:done"}, Antecedents: []string{"msg-mig03-create"}})
 
 	var buf strings.Builder
 	for _, r := range recs {

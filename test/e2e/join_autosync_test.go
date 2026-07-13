@@ -114,12 +114,12 @@ func TestE2E_JoinAutoSyncPull(t *testing.T) {
 		t.Fatalf("parse item 2 JSON: %v\noutput: %s", err, item2Out)
 	}
 
-	// Owner: admit member so they can join.
+	// Owner: admit member so they can join. `rd admit` is deleted (ready-9ac,
+	// nostr-native cutover uses kind-39301 grants); admission for this
+	// still-present campfire-org auto-sync-pull code path is done directly via
+	// the campfire SDK's own `cf admit` command (not the deleted rd verb).
 	memberPubKey := memberPubKeyHex(t, memberCFHome)
-	_, admitStderr, admitCode := rdInDir(ownerProjectDir, ownerEnv, "admit", memberPubKey)
-	if admitCode != 0 {
-		t.Fatalf("rd admit (owner) failed (exit %d): %s", admitCode, admitStderr)
-	}
+	runCmd(t, ownerEnv, "cf admit (owner)", "cf", "admit", campfireID, memberPubKey)
 
 	// Member: rd join — auto-sync pull should fetch the 2 pre-existing items.
 	memberEnv := envFor(memberCFHome)

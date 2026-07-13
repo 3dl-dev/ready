@@ -54,7 +54,7 @@ func TestEvaluateDurability_DurableCampfireProceedsWithoutWarning(t *testing.T) 
 // provenance gives "high" weight and meets minimum.
 func TestEvaluateDurability_DurableCampfireHostedProvenance(t *testing.T) {
 	t.Setenv("RD_CAMPFIRE_TAGS", "durability:max-ttl:0,durability:lifecycle:persistent")
-	t.Setenv("RD_PROVENANCE", "getcampfire.dev")
+	t.Setenv("RD_PROVENANCE", "ready.3dl.dev")
 
 	syncCfg, warnings, err := evaluateCampfireDurability(fakeCampfireID, false)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestEvaluateDurability_DurableCampfireHostedProvenance(t *testing.T) {
 		t.Error("MeetsMinimum = false, want true")
 	}
 	if syncCfg.Durability.Weight != "high" {
-		t.Errorf("Weight = %q, want 'high' for getcampfire.dev provenance", syncCfg.Durability.Weight)
+		t.Errorf("Weight = %q, want 'high' for ready.3dl.dev provenance", syncCfg.Durability.Weight)
 	}
 }
 
@@ -271,7 +271,7 @@ func TestSyncConfigRoundTrip(t *testing.T) {
 			Weight:          "high",
 			MaxTTL:          "0",
 			LifecycleType:   "persistent",
-			ProvenanceLevel: "getcampfire.dev",
+			ProvenanceLevel: "ready.3dl.dev",
 			Warnings:        nil,
 		},
 	}

@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	campfirepkg "github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	campfirepkg "github.com/campfire-net/campfire/cf-protocol/campfire"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
-	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/naming"
 
 	"github.com/campfire-net/ready/pkg/jsonl"
 )

@@ -369,18 +369,11 @@ func TestE2E_Topology3_GitBacked_FsTransport(t *testing.T) {
 		t.Logf("NOTE: center file not found in any candidate location under %s — cf 0.14 center layout may differ from expectations", cfHome)
 	}
 
-	// rd sync status must report campfire as configured.
-	stdout, stderr, code = e.Rd("sync", "status", "--json")
-	if code != 0 {
-		t.Fatalf("rd sync status failed (exit %d): %s", code, stderr)
-	}
-	var syncStatus map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &syncStatus); err != nil {
-		t.Fatalf("sync status JSON parse: %v\noutput: %s", err, stdout)
-	}
-	if configured, ok := syncStatus["campfire_configured"].(bool); !ok || !configured {
-		t.Errorf("campfire_configured: got %v, want true", syncStatus["campfire_configured"])
-	}
+	// NOTE: the old `rd sync status` campfire-shape assertion (campfire_configured,
+	// pending_count) was removed here — `rd sync` is now nostr negentropy sync
+	// (ready-9ac) with a different output shape; the campfire-status-shape
+	// contract this asserted no longer exists. See test/e2e/sync_test.go removal
+	// in the same change for the full disposition.
 }
 
 // --------------------------------------------------------------------------
@@ -442,21 +435,9 @@ func TestE2E_Topology4_Hosted_HTTPTransport(t *testing.T) {
 		t.Fatalf("item %s not found in rd ready (hosted)", item.ID)
 	}
 
-	// rd sync status — campfire configured, 0 pending (send succeeded).
-	stdout, stderr, code = e.Rd("sync", "status", "--json")
-	if code != 0 {
-		t.Fatalf("rd sync status (hosted) failed (exit %d): %s", code, stderr)
-	}
-	var syncStatus map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &syncStatus); err != nil {
-		t.Fatalf("sync status JSON parse: %v\noutput: %s", err, stdout)
-	}
-	if configured, ok := syncStatus["campfire_configured"].(bool); !ok || !configured {
-		t.Errorf("campfire_configured: got %v, want true", syncStatus["campfire_configured"])
-	}
-	if pending, ok := syncStatus["pending_count"].(float64); ok && pending > 0 {
-		t.Errorf("pending_count: got %v, want 0 (all sends should succeed against hosted)", pending)
-	}
+	// NOTE: the old `rd sync status` campfire-shape assertion (campfire_configured,
+	// pending_count) was removed here — see TestE2E_Topology3_GitBacked_FsTransport
+	// for the full disposition (ready-9ac).
 
 	// Close the item cleanly.
 	_, stderr, code = e.Rd("done", item.ID, "--reason", "hosted topology test complete")

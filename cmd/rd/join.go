@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/beacon"
 	discovery "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
-	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/spf13/cobra"
 
 	"github.com/campfire-net/ready/pkg/rdconfig"
@@ -28,15 +25,15 @@ import (
 const defaultBeaconRoot = ""
 
 var joinCmd = &cobra.Command{
-	Use:   "join <name-or-campfire-id>",
-	Short: "Join a project campfire by name or ID",
-	Long: `Join a campfire by name (cf:// URI or short name) or by campfire ID.
+	Use:   "join <rd1_token | name-or-id>",
+	Short: "Join a project via an invite token, name, or ID",
+	Long: `Join a project.
 
-For open campfires, joins immediately.
+The primary path is an invite token: 'rd join rd1_...' imports the minted
+identity, pins the board, adopts the relays, and syncs the project's items.
 
-For invite-only campfires, exits with an error and prints your public key.
-Ask an existing member to run 'cf admit <your-pubkey>' or 'rd admit', then
-run 'rd join' again.
+A name (cf:// URI or short name) or raw project ID joins an open legacy project
+directly; an invite-only project exits with an error and prints your public key.
 
 TOFU PINNING
   The first time you join using a non-default beacon root (--root), rd warns
@@ -47,9 +44,9 @@ TOFU PINNING
     rd join --reset-beacon-root
 
 EXAMPLES
+  rd join rd1_...                     # join via a one-use invite token
   rd join myorg.ready/myproject
-  rd join cf://myorg.ready/myproject
-  rd join abcdef1234...               # join by campfire ID directly
+  rd join abcdef1234...               # join by project ID directly
   rd join <id> --root <beacon-root>   # join with explicit beacon root (TOFU)
   rd join --reset-beacon-root         # clear the pinned beacon root`,
 	Args: cobra.MaximumNArgs(1),
@@ -89,15 +86,10 @@ EXAMPLES
 		force, _ := cmd.Flags().GetBool("force")
 
 		// Detect a nostr mint-and-ship token (rd1_ prefix) — imports the minted
-		// secp256k1 key, pins the board, adopts relays, and syncs (ready-a49).
+		// secp256k1 key, pins the board, adopts relays, and syncs (ready-a49). This
+		// is the SOLE invite-token join path; the campfire rdx1_ path is retired.
 		if strings.HasPrefix(nameOrID, nostrInviteTokenPrefix) {
 			return joinViaNostrInviteToken(nameOrID, force)
-		}
-
-		// Detect a campfire invite token (rdx1_ prefix) — takes a completely
-		// different path (campfire admit + ed25519 seed).
-		if strings.HasPrefix(nameOrID, inviteTokenPrefix) {
-			return joinViaInviteToken(nameOrID, force)
 		}
 
 		// TOFU pinning: validate beacon root before resolving, but do not save yet.
@@ -595,210 +587,10 @@ func bootstrapJoinedProject(projectDir, campfireID string, client *protocol.Clie
 	return nil
 }
 
-// joinViaInviteToken handles the invite-token join path. It decodes the token,
-// writes the pre-provisioned identity to CF_HOME/identity.json, then performs
-// the normal join + bootstrap flow using that identity.
-func joinViaInviteToken(token string, force bool) error {
-	payload, err := decodeInviteToken(token)
-	if err != nil {
-		return fmt.Errorf("invalid invite token: %w", err)
-	}
-
-	// Reconstruct the ed25519 private key from the seed.
-	seed, err := hex.DecodeString(payload.PrivateKey)
-	if err != nil {
-		return fmt.Errorf("decoding private key from token: %w", err)
-	}
-	privKey := ed25519.NewKeyFromSeed(seed)
-	pubKey := privKey.Public().(ed25519.PublicKey)
-	pubKeyHex := hex.EncodeToString(pubKey)
-
-	// Write the pre-provisioned identity to CF_HOME.
-	cfHome := CFHome()
-	idPath := filepath.Join(cfHome, "identity.json")
-
-	if identity.Exists(idPath) && !force {
-		return fmt.Errorf("identity already exists at %s — use --force to overwrite", idPath)
-	}
-
-	// Snapshot the pre-token identity so we can restore it if the join or
-	// redemption check fails.
-	oldIdentity, readErr := os.ReadFile(idPath)
-	hasOldIdentity := readErr == nil
-
-	id := &identity.Identity{
-		PublicKey:  pubKey,
-		PrivateKey: privKey,
-		CreatedAt:  time.Now().UnixNano(),
-	}
-	if err := id.Save(idPath); err != nil {
-		return fmt.Errorf("writing invite identity: %w", err)
-	}
-
-	// Reset the cached protocol client so it picks up the new identity.
-	protocolClient = nil
-
-	// restoreIdentity rolls back to the pre-join identity on failure.
-	restoreIdentity := func() {
-		if hasOldIdentity {
-			_ = os.WriteFile(idPath, oldIdentity, 0600)
-		} else {
-			_ = os.Remove(idPath)
-		}
-		protocolClient = nil
-	}
-
-	client, err := requireClient()
-	if err != nil {
-		restoreIdentity()
-		return fmt.Errorf("join failed, identity restored: %w", err)
-	}
-
-	campfireID := payload.CampfireID
-
-	// Server-side TTL check: verify the campfire role-grant for this pubkey has
-	// not expired. An attacker who extracts the seed from an expired token and
-	// bypasses the client-side CLI check is rejected here because the role-grant
-	// message records expires_at server-side (posted by rd invite via postInviteGrant).
-	if ttlErr := checkServerSideInviteTTL(client, campfireID, pubKeyHex, payload.ExpiresAt); ttlErr != nil {
-		restoreIdentity()
-		return ttlErr
-	}
-
-	// Attempt to join the campfire.
-	_, err = client.Join(protocol.JoinRequest{
-		CampfireID: campfireID,
-		Transport:  protocol.FilesystemTransport{Dir: resolveTransportDir(campfireID)},
-	})
-	if err != nil {
-		restoreIdentity()
-		return fmt.Errorf("join failed, identity restored: %w", err)
-	}
-
-	// Bootstrap local project state and auto-sync items (syncs messages so we
-	// can check for prior redemption records).
-	cwd, cwdErr := os.Getwd()
-	if cwdErr == nil {
-		if bootstrapErr := bootstrapJoinedProject(cwd, campfireID, client); bootstrapErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not bootstrap project state: %v\n", bootstrapErr)
-		}
-	}
-
-	// Single-use check: now that we've joined and synced, check for an existing
-	// redemption record posted by a prior joiner with the same token.
-	if redeemed, checkErr := isInviteTokenRedeemed(client, campfireID, pubKeyHex); checkErr == nil && redeemed {
-		restoreIdentity()
-		return fmt.Errorf("invite token already redeemed — each token may only be used once")
-	}
-
-	// Post our redemption record so subsequent join attempts are detected.
-	if postErr := postInviteRedemption(client, campfireID, pubKeyHex); postErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not record invite token redemption: %v\n", postErr)
-	}
-
-	// Calculate remaining TTL for display.
-	remaining := time.Until(time.Unix(payload.ExpiresAt, 0))
-	remainingStr := remaining.Truncate(time.Minute).String()
-
-	displayID := campfireID
-	if len(displayID) > 12 {
-		displayID = displayID[:12] + "..."
-	}
-	fmt.Fprintf(os.Stdout, "joined %s via invite token (expires in %s)\n", displayID, remainingStr)
-	return nil
-}
-
-// inviteRedeemedTag is the campfire message tag used to record invite token redemptions.
-// Format: "work:invite-redeemed:<pubkey-hex>"
-const inviteRedeemedTag = "work:invite-redeemed"
-
-// checkServerSideInviteTTL reads the campfire for role-grant messages targeting
-// pubKeyHex and enforces server-side TTL. Returns an error if a revocation
-// exists or if a role-grant with expires_at in the past is found (server-side
-// enforcement for attackers who bypass the client-side CLI check).
-//
-// Best-effort: campfire read errors allow the join to proceed (the client-side
-// TTL check in decodeInviteToken already ran).
-func checkServerSideInviteTTL(client campfireReader, campfireID, pubKeyHex string, _ int64) error {
-	result, err := client.Read(protocol.ReadRequest{
-		CampfireID: campfireID,
-		Tags:       []string{"work:role-grant"},
-	})
-	if err != nil {
-		return nil // best-effort: allow join if campfire is unreadable
-	}
-
-	now := time.Now().Unix()
-
-	for _, msg := range result.Messages {
-		var grantPayload struct {
-			Pubkey    string `json:"pubkey"`
-			Role      string `json:"role"`
-			ExpiresAt string `json:"expires_at"`
-		}
-		if err := json.Unmarshal(msg.Payload, &grantPayload); err != nil {
-			continue
-		}
-		if grantPayload.Pubkey != pubKeyHex {
-			continue
-		}
-		if grantPayload.Role == "revoked" {
-			return fmt.Errorf("invite token has been revoked")
-		}
-		if grantPayload.ExpiresAt != "" {
-			t, parseErr := time.Parse(time.RFC3339, grantPayload.ExpiresAt)
-			if parseErr == nil && now > t.Unix() {
-				return fmt.Errorf("invite token expired at %s (server-side TTL)", grantPayload.ExpiresAt)
-			}
-		}
-	}
-
-	return nil
-}
-
-// isInviteTokenRedeemed checks whether the campfire contains a work:invite-redeemed
-// message for the given pubkey. Returns (true, nil) if redeemed, (false, nil) if not,
-// or (false, err) if the check could not be performed (caller treats errors as not
-// redeemed to avoid blocking legitimate first-use joins when the transport is
-// temporarily unreadable).
-func isInviteTokenRedeemed(client campfireReader, campfireID, pubKeyHex string) (bool, error) {
-	redemptionTag := inviteRedeemedTag + ":" + pubKeyHex
-	result, err := client.Read(protocol.ReadRequest{
-		CampfireID: campfireID,
-		Tags:       []string{redemptionTag},
-	})
-	if err != nil {
-		return false, err
-	}
-	return len(result.Messages) > 0, nil
-}
-
-// postInviteRedemption posts a work:invite-redeemed message to the campfire,
-// recording that this token (identified by pubKeyHex) has been consumed.
-// Subsequent join attempts that call isInviteTokenRedeemed will detect this record.
-func postInviteRedemption(client *protocol.Client, campfireID, pubKeyHex string) error {
-	redemptionPayload := map[string]string{
-		"pubkey":      pubKeyHex,
-		"redeemed_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	payloadJSON, err := json.Marshal(redemptionPayload)
-	if err != nil {
-		return fmt.Errorf("encoding redemption payload: %w", err)
-	}
-
-	redemptionTag := inviteRedeemedTag + ":" + pubKeyHex
-	_, err = client.Send(protocol.SendRequest{
-		CampfireID: campfireID,
-		Payload:    payloadJSON,
-		Tags:       []string{inviteRedeemedTag, redemptionTag},
-	})
-	return err
-}
-
 func init() {
 	joinCmd.Flags().Duration("timeout", 5*time.Minute, "how long to wait for admission grant")
 	joinCmd.Flags().String("role", "member", "role to request: member or agent")
-	joinCmd.Flags().String("root", "", "beacon root campfire ID to use for TOFU pinning")
+	joinCmd.Flags().String("root", "", "beacon root ID to use for TOFU pinning")
 	joinCmd.Flags().Bool("reset-beacon-root", false, "clear the pinned beacon root")
 	joinCmd.Flags().Bool("confirm", false, "confirm beacon root deviation without prompting")
 	joinCmd.Flags().Bool("force", false, "overwrite existing identity when joining via invite token")

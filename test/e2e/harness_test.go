@@ -351,6 +351,29 @@ func (e *Env) IdentityPubKeyHex() string {
 	return fmt.Sprintf("%x", id.PublicKey)
 }
 
+// memberPubKeyHex reads the public key from a cf identity.json file at the given
+// CF_HOME and returns the hex-encoded public key. Used by multi-identity e2e
+// tests to obtain a second identity's pubkey for campfire-org setup (e.g. `cf
+// admit`) that isn't the test's own Env identity.
+func memberPubKeyHex(t *testing.T, cfHome string) string {
+	t.Helper()
+
+	identityPath := filepath.Join(cfHome, "identity.json")
+	data, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatalf("reading member identity.json at %s: %v", identityPath, err)
+	}
+
+	var id struct {
+		PublicKey []byte `json:"public_key"`
+	}
+	if err := json.Unmarshal(data, &id); err != nil {
+		t.Fatalf("parsing member identity.json: %v", err)
+	}
+
+	return fmt.Sprintf("%x", id.PublicKey)
+}
+
 // findItem returns the first item with the given ID from a slice, or zero value.
 func findItem(items []Item, id string) (Item, bool) {
 	for _, it := range items {

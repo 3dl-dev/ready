@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/campfire-net/ready/pkg/timeparse"
+	"github.com/spf13/cobra"
 )
 
 // --- done / fail / cancel resolution tests ---
@@ -80,8 +80,8 @@ func TestCancelResolution(t *testing.T) {
 // Tags: work:close + work:resolution:<resolution>
 func TestCloseAliasTags(t *testing.T) {
 	tests := []struct {
-		resolution  string
-		wantTag     string
+		resolution string
+		wantTag    string
 	}{
 		{"done", "work:resolution:done"},
 		{"failed", "work:resolution:failed"},
@@ -605,9 +605,9 @@ func TestCloseAliasItemIDRequired(t *testing.T) {
 	// This test documents that contract.
 
 	tests := []struct {
-		name     string
-		numArgs  int
-		wantErr  bool
+		name    string
+		numArgs int
+		wantErr bool
 	}{
 		{"zero args", 0, true},
 		{"one arg (valid)", 1, false},

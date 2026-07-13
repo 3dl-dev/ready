@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +23,7 @@ Use 'rd approve <item-id>' or 'rd reject <item-id>' to resolve.
 
 Note: In a full implementation this would be sent as --future so the agent can
 block on 'cf await' until the human resolves it. This requires futures transport
-support (TODO: add --future flag when campfire transport supports cf await).
+support (TODO: add --future flag when the transport supports cf await).
 
 Example:
   rd gate ready-a1b --gate-type design --description "Confirm approach before implementing"

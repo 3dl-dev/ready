@@ -22,8 +22,8 @@ type grantHolder struct {
 	Pubkey       string `json:"pubkey"`
 	Convention   string `json:"convention"`
 	OpPattern    string `json:"op_pattern"`
-	ExpiresAt    int64  `json:"expires_at"`     // nanoseconds since epoch
-	TTLRemaining string `json:"ttl_remaining"`  // human-readable
+	ExpiresAt    int64  `json:"expires_at"`    // nanoseconds since epoch
+	TTLRemaining string `json:"ttl_remaining"` // human-readable
 	GrantMsgID   string `json:"grant_msg_id"`
 }
 
@@ -78,8 +78,8 @@ func activeGrantHolders(grants, revokes []protocol.Message, now time.Time) []gra
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
 	Short: "List active delegation grant-holders",
-	Long: `List the active cf-authority delegation grant-holders for this project's
-campfire — the identities admit has granted work capabilities to, minus any
+	Long: `List the active cf-authority delegation grant-holders for this project
+— the identities that have been granted work capabilities, minus any
 revoked (rd kill) or expired grants. Shows each holder's scope and TTL.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

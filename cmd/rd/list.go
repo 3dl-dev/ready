@@ -15,7 +15,7 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List work items",
-	Long: `List work items across all campfires.
+	Long: `List work items across all projects.
 
 Filters (all optional, combinable):
   --status    filter by status (repeatable, OR semantics)

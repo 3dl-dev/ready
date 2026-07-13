@@ -166,10 +166,10 @@ func TestBuildUnblockArgsMap_ReasonOmittedWhenEmpty(t *testing.T) {
 
 // TestBuildDepTree_CyclicDependencies verifies that buildDepTree handles cyclic
 // dependencies correctly without infinite recursion. The bug occurred when:
-// 1. A blocks B, B blocks A (simple cycle)
-// 2. A third item or reference path leads to a node in the cycle
-// 3. After processing a child and deleting from visited, the same node could be
-//    revisited on another path, causing infinite recursion.
+//  1. A blocks B, B blocks A (simple cycle)
+//  2. A third item or reference path leads to a node in the cycle
+//  3. After processing a child and deleting from visited, the same node could be
+//     revisited on another path, causing infinite recursion.
 //
 // Fix: Keep cycle detection state persistent across all branches, not just the
 // current recursion path. Use a separate inPath map for the current recursion path.
@@ -318,11 +318,14 @@ func containsString(s, substring string) bool {
 // TestBuildDepTree_DiamondDependency verifies that buildDepTree correctly handles
 // diamond dependency patterns without duplicating nodes.
 // Pattern: A blocks both B and C, both B and C block D
-//   A
-//  / \
+//
+//	 A
+//	/ \
+//
 // B   C
-//  \ /
-//   D
+//
+//	\ /
+//	 D
 func TestBuildDepTree_DiamondDependency(t *testing.T) {
 	itemA := &state.Item{
 		ID:     "ready-a",

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/state"
+	"github.com/spf13/cobra"
 )
 
 // completePayload is the JSON payload for a work:close message sent by rd complete.

@@ -18,7 +18,7 @@ type TrustAssessment struct {
 
 // Provenance level constants (Operator Provenance Convention v0.1).
 const (
-	ProvenanceHosted   = "getcampfire.dev" // hosted metered platform
+	ProvenanceHosted   = "ready.3dl.dev" // hosted metered platform
 	ProvenanceVerified = "operator-verified"
 	ProvenanceBasic    = "basic"
 	ProvenanceNone     = "unverified"
@@ -28,7 +28,7 @@ const (
 // persisting state, given an operator provenance level.
 //
 // provenanceLevel should be one of:
-//   - "getcampfire.dev" — hosted, metered (highest trust)
+//   - "ready.3dl.dev" — hosted, metered (highest trust)
 //   - "operator-verified" — domain-verified operator
 //   - "basic" — email-verified
 //   - "unverified" — no verification

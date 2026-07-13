@@ -115,8 +115,8 @@ func TestRevoke_PubkeyDetection(t *testing.T) {
 		isPubkeyArg bool // true = arg should be treated as raw pubkey
 	}{
 		{validPubkey, true},
-		{shortHex, false},  // too short — not a 64-char pubkey
-		{name, false},      // contains non-hex chars — resolve via naming
+		{shortHex, false}, // too short — not a 64-char pubkey
+		{name, false},     // contains non-hex chars — resolve via naming
 	}
 
 	for _, tc := range cases {
@@ -219,7 +219,7 @@ func TestFindMembersAdmittedBy_RealFunctionCallsClient(t *testing.T) {
 		messages: []protocol.Message{
 			makeGrantMsg("msg-member", memberKey, "member"),
 			makeGrantMsg("msg-agent", agentKey, "agent"),
-			makeGrantMsg("msg-revoked", revokedKey, "revoked"), // should be excluded
+			makeGrantMsg("msg-revoked", revokedKey, "revoked"),                                            // should be excluded
 			{ID: "msg-nopubkey", Payload: []byte(`{"role":"member"}`), Tags: []string{"work:role-grant"}}, // excluded
 		},
 	}

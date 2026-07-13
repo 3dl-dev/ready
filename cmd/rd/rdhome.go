@@ -162,7 +162,7 @@ var migrateHomeCmd = &cobra.Command{
 	Use:   "migrate-home",
 	Short: "Migrate the nostr identity + rd.json from the legacy .cf home into $RD_HOME (identity-preserving)",
 	Long: `Copy this machine's nostr signing identity (nostr-identity.json) and rd.json
-FORWARD from the legacy campfire home (.cf / ~/.campfire) into the rd home
+FORWARD from the legacy home (the resolved .cf directory) into the rd home
 ($RD_HOME, default ~/.config/rd). The copy is identity-preserving: the pubkey is
 NEVER regenerated (a regen would break the relay allowlist, peer trust, and
 self-authorship). The legacy originals are left in place for rollback.

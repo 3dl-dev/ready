@@ -21,8 +21,8 @@ import (
 
 var labelCmd = &cobra.Command{
 	Use:   "label",
-	Short: "Manage labels in the campfire label registry",
-	Long: `Manage labels in the per-campfire label registry.
+	Short: "Manage labels in the project label registry",
+	Long: `Manage labels in the per-project label registry.
 
 Labels are named atoms used to categorize and filter work items.
 The registry is seeded with built-in labels (bug, feature, question,
@@ -38,8 +38,8 @@ Commands:
 
 var labelDefineCmd = &cobra.Command{
 	Use:   "define <name>",
-	Short: "Define a label in the campfire registry",
-	Long: `Define a label in the per-campfire label registry.
+	Short: "Define a label in the project registry",
+	Long: `Define a label in the per-project label registry.
 
 Only grant-holders (operator level >= 2) can define labels.
 The label name must match: ^[a-z0-9][a-z0-9-]{0,31}$
@@ -108,8 +108,8 @@ Example:
 
 var labelListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List labels in the campfire registry",
-	Long: `List all labels in the per-campfire label registry.
+	Short: "List labels in the project registry",
+	Long: `List all labels in the per-project label registry.
 
 Includes seed atoms (always present) and user-defined atoms.
 The defined-by column shows "seed" for built-in labels or a truncated
@@ -259,7 +259,7 @@ func sanitizeLabelText(s string) string {
 var labelProposeCmd = &cobra.Command{
 	Use:   "propose <name>",
 	Short: "Propose a new label for the registry",
-	Long: `Propose a new label for promotion into the campfire label registry.
+	Long: `Propose a new label for promotion into the project label registry.
 
 Creates a p3 decision item titled "Label proposal: <name>" with context
 that includes the demand count from .ready/label-demand.jsonl (how many
@@ -426,7 +426,7 @@ var labelAddCmd = &cobra.Command{
 	Short: "Add a label to an existing item",
 	Long: `Add a label to an existing work item.
 
-The label must be registered in the campfire label registry (see rd label list).
+The label must be registered in the project label registry (see rd label list).
 Any member can add labels to items — only DEFINING new label atoms is grant-gated.
 
 Example:

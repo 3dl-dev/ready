@@ -36,46 +36,21 @@ var initCmd = &cobra.Command{
 	Short: "Initialize a ready work project",
 	Long: `Initialize a ready work project in the current directory.
 
-By default, creates a campfire and links it to the current directory.
-Pass --offline to initialize in JSONL-only mode with no campfire required.
-Pass --join <beacon> to join an existing project campfire from another machine.
+By default, initializes a nostr-native project: work items are stored in a
+local append-only signed-event log and synced over nostr relays. No server and
+no separate identity ceremony — the portfolio signing key is created on first
+use.
 
-CAMPFIRE MODE (default):
-  1. Creates a campfire with reception_requirements: ["work:create"]
-  2. Writes .campfire/root (linking this directory to the campfire)
-  3. Posts all convention:operation declarations (making the campfire self-describing)
-  4. Publishes a beacon for local discovery
-  5. Evaluates campfire durability and stores sync config in .ready/config.json
-  6. Checks for a home campfire and reports what it finds
-
-  If transport.relay is set in .cf/config.toml (global or project), campfires
-  are created on the hosted relay instead of the local filesystem. This enables
-  multi-machine portability — the same project campfire is reachable from any
-  machine that can reach the relay.
-
-JOIN MODE (--join <beacon>):
-  Joins an existing project campfire on this machine. Use the beacon string
-  from the machine that ran rd init originally.
+  1. Creates the .ready/ directory and config.json
+  2. Establishes the local nostr signing identity (if not already present)
+  3. Leaves the project ready for 'rd create' immediately
 
 OFFLINE MODE (--offline):
-  1. Creates .ready/ directory for local JSONL storage
-  2. Writes .ready/project.json with project metadata
-  No campfire, no network, no identity required.
-  Use 'rd sync' later to connect to a campfire.
+  Initializes in JSONL-only mode — no nostr log and no network. All mutations
+  are stored locally in .ready/mutations.jsonl. Everything works standalone.
 
-The project campfire works standalone — no home campfire or naming required.
-Use 'rd register' later to add naming when you're ready.
-
-DURABILITY
-  rd init evaluates durability tags before configuring sync. If the campfire
-  does not meet the minimum requirements (max-ttl:0 + lifecycle:persistent +
-  provenance:basic), a warning is printed and you are prompted to confirm.
-
-  Configure via environment:
-    RD_CAMPFIRE_TAGS   comma-separated beacon tags (e.g. "durability:max-ttl:0,durability:lifecycle:persistent")
-    RD_PROVENANCE      operator provenance level ("getcampfire.dev", "operator-verified", "basic", "unverified")
-
-  Pass --confirm to skip the interactive prompt and proceed regardless.`,
+To let a teammate join, run 'rd invite' to mint a one-use token, then they run
+'rd join <token>'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		description, _ := cmd.Flags().GetString("description")
@@ -551,7 +526,7 @@ func campfireTagsFromEnv() []string {
 // isRemoteTransport reports whether the campfire home directory is configured
 // for a remote (hosted) transport. A remote transport is detected by the
 // presence of a remote.json file in the CF_HOME directory, which is written
-// by cf init when connecting to a hosted campfire server (e.g. getcampfire.dev).
+// by cf init when connecting to a hosted relay server (e.g. ready.3dl.dev).
 //
 // When no remote.json exists, the transport is local filesystem — messages are
 // stored as files and never expire, so durability evaluation is unnecessary.
@@ -1071,7 +1046,7 @@ func writeJoinedProjectFiles(cwd, name, campfireID, relayEndpoint, beaconStr str
 func init() {
 	initCmd.Flags().String("name", "", "project name (default: current directory name)")
 	initCmd.Flags().String("description", "", "project description")
-	initCmd.Flags().Bool("offline", false, "initialize in JSONL-only mode (no nostr log, no campfire)")
+	initCmd.Flags().Bool("offline", false, "initialize in JSONL-only mode (no nostr log, no network)")
 	// Hidden, explicit-only escape hatch to the LEGACY campfire-creating init
 	// (ready-6ef). The default path is nostr-native; this exists only to keep the
 	// vestigial campfire-org code test-covered until I7/ready-cb6 removes it. Not a

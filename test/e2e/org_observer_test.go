@@ -187,10 +187,17 @@ func TestE2E_OrgObserver_ListSeesOnlySummaryCampfire(t *testing.T) {
 	// Get observer's public key.
 	observerPubKey := memberPubKeyHex(t, observerCFHome)
 
-	// Owner: admit observer to summary campfire only (--role org-observer).
-	_, admitErr, admitCode := rdExec(ownerEnv, ownerProjectDir, "admit", observerPubKey, "--role", "org-observer")
-	if admitCode != 0 {
-		t.Fatalf("rd admit --role org-observer failed (exit %d): %s", admitCode, admitErr)
+	// Owner: admit observer to summary campfire only. `rd admit --role
+	// org-observer` is deleted (ready-9ac, nostr-native cutover uses kind-39301
+	// grants); `rd admit --role org-observer` was itself just a plain member
+	// admission (no cf role) scoped to the summary campfire rather than the main
+	// one, so the still-present campfire-org isolation code this test exercises
+	// is set up directly via the campfire SDK's `cf admit` against
+	// summaryCampfireID (not the deleted rd verb).
+	admitCmd := exec.Command("cf", "admit", summaryCampfireID, observerPubKey)
+	admitCmd.Env = ownerEnv
+	if out, err := admitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("cf admit (owner -> summary campfire) failed: %v\n%s", err, out)
 	}
 
 	// Observer: rd join <summary-campfire-id> — joins the summary campfire, not main.

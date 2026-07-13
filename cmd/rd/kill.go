@@ -16,7 +16,7 @@ var killCmd = &cobra.Command{
 	Use:   "kill <pubkey>",
 	Short: "Revoke a grant-holder's delegation grant",
 	Long: `Revoke the cf-authority delegation grant held by <pubkey> by posting an
-identity:revoked message at the project campfire. The in-process convention
+identity:revoked message at the project. The in-process convention
 server's gate denies the revoked key's operations within one sync cycle.
 
 Use 'rd sessions' to list active grant-holders. This is the cf-authority

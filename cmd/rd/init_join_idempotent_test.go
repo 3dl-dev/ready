@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/beacon"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/beacon"
 
 	"github.com/campfire-net/ready/pkg/rdconfig"
 )

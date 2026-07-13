@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/campfire-net/ready/pkg/state"
+	"github.com/spf13/cobra"
 )
 
 var closeCmd = &cobra.Command{

@@ -183,7 +183,7 @@ signed grants so the grantee is admitted in ONE act. role is one of
 owner|maintainer|contributor. Only the board author (owner) may grant maintainer or
 owner (the escalation cap).
 
-This is the nostr-native authz path: it provisions no campfire .cf. Revoke with
+This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
 'rd revoke <pubkeyHex>'.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {

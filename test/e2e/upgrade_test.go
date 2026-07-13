@@ -83,11 +83,12 @@ func TestE2E_Upgrade_ReadsLegacyFlatLayoutStore(t *testing.T) {
 		t.Fatalf("flattenMessageStore moved 0 files — expected bucketed messages to flatten")
 	}
 
-	// Owner admits the member.
+	// Owner admits the member. `rd admit` is deleted (ready-9ac, nostr-native
+	// cutover uses kind-39301 grants); admission for this still-present
+	// flat-layout dual-read code path is done directly via the campfire SDK's
+	// own `cf admit` command (not the deleted rd verb).
 	memberPubKey := memberPubKeyHex(t, memberCFHome)
-	if _, stderr, code := rdInDir(t, ownerProjectDir, ownerEnv, "admit", memberPubKey); code != 0 {
-		t.Fatalf("rd admit (owner) failed (exit %d): %s", code, stderr)
-	}
+	runCmd(t, ownerEnv, "cf admit (owner)", "cf", "admit", campfireID, memberPubKey)
 
 	// Member joins and lists — a fresh store reading the owner's FLAT-layout
 	// transport. The items must come through (dual-read).

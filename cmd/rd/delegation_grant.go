@@ -7,8 +7,22 @@ import (
 	"time"
 
 	trust "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
+
+// campfireAdmitter is the subset of protocol.Client used by postDelegationGrant
+// (and the vestigial campfire admit helpers' tests). Defined here so tests can
+// inject a fake. Send + PublicKeyHex support the cf-authority delegation:grant
+// dual-write (ready-02b); GetMembership + Admit remain for the campfire-backed
+// membership path that the campfire SDK (deleted in a later item) still serves.
+type campfireAdmitter interface {
+	GetMembership(campfireID string) (*store.Membership, error)
+	Admit(req protocol.AdmitRequest) error
+	Send(req protocol.SendRequest) (*message.Message, error)
+	PublicKeyHex() string
+}
 
 // delegationGrantTag is the message tag carrying a cf-authority delegation grant
 // (a CBOR-encoded trust.GrantPayload). The in-process convention server's gate

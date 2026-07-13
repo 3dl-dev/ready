@@ -66,9 +66,9 @@ func TestEvaluateTrustMinimumRequirements(t *testing.T) {
 		{
 			name: "missing persistent lifecycle",
 			durability: &DurabilityResult{
-				Valid:         true,
-				MaxTTL:        "0",
-				LifecycleType: "ephemeral",
+				Valid:          true,
+				MaxTTL:         "0",
+				LifecycleType:  "ephemeral",
 				LifecycleValue: "10m",
 			},
 			provenance:  ProvenanceBasic,
@@ -93,8 +93,8 @@ func TestEvaluateTrustMinimumRequirements(t *testing.T) {
 		{
 			name: "invalid durability result",
 			durability: &DurabilityResult{
-				Valid:  false,
-				Error:  "malformed tag",
+				Valid: false,
+				Error: "malformed tag",
 			},
 			provenance:  ProvenanceHosted,
 			wantMinimum: false,

@@ -78,7 +78,7 @@ type createPayload struct {
 var createCmd = &cobra.Command{
 	Use:   "create [title]",
 	Short: "Create a new work item",
-	Long: `Create a new work item in the project campfire.
+	Long: `Create a new work item in the project.
 
 Title can be a positional argument or --title flag.
 Required: title, --type, --priority

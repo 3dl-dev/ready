@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/ready/pkg/playbook"
 	"github.com/campfire-net/ready/pkg/state"
 	"github.com/spf13/cobra"

@@ -623,7 +623,7 @@ var nostrReadyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Compute the attention-engine readiness set from the nostr projection (ready-82c)",
 	Long: `Like 'rd ready', but the item set is projected from the nostr event log
-instead of the campfire-backed store. Proves the dependency- and gate-aware
+instead of the legacy-backed store. Proves the dependency- and gate-aware
 attention engine (pkg/views + pkg/state.Item) computes the same readiness set
 regardless of substrate.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1001,12 +1001,12 @@ func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
 // id: re-running adds nothing. Campfire is untouched and stays authoritative.
 var nostrMigrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Re-emit the current campfire item set as nostr events (ready-d65 cutover, non-destructive)",
-	Long: `Read the current campfire/JSONL rd item set and re-emit every item as nostr
+	Short: "Re-emit the current legacy item set as nostr events (ready-d65 cutover, non-destructive)",
+	Long: `Read the current legacy (JSONL) rd item set and re-emit every item as nostr
 events (30301 board, 30302 card, NIP-34 status log) into the local authoritative
 log and the locked write relays, preserving id, status, priority, type, deps,
-gates, full history + close-reasons, and provenance. Campfire is NOT modified and
-remains the default backend. Idempotent by event id (safe to re-run).`,
+gates, full history + close-reasons, and provenance. The legacy source is NOT
+modified. Idempotent by event id (safe to re-run).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		localOnly, _ := cmd.Flags().GetBool("local-only")
 		limit, _ := cmd.Flags().GetInt("limit")
@@ -1143,7 +1143,7 @@ remains the default backend. Idempotent by event id (safe to re-run).`,
 // gate: NEVER fabricated — it reads the real 174/1565 live items.
 var nostrParityCmd = &cobra.Command{
 	Use:   "parity",
-	Short: "Assert item-for-item parity: campfire source == nostr projection (ready-d65)",
+	Short: "Assert item-for-item parity: legacy source == nostr projection (ready-d65)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("verbose")
 		sample, _ := cmd.Flags().GetBool("sample")
@@ -1244,7 +1244,9 @@ func init() {
 	nostrCmd.AddCommand(nostrReadyCmd)
 	nostrCmd.AddCommand(nostrSeedDemoCmd)
 	nostrCmd.AddCommand(nostrPutCmd)
-	nostrCmd.AddCommand(nostrSyncCmd)
+	// nostrSyncCmd is NOT registered here: `rd nostr sync` was promoted to the
+	// top-level `rd sync` (ready-9ac). The command var stays as the reused
+	// substrate for that top-level surface (cmd/rd/sync.go).
 	nostrCmd.AddCommand(nostrFlushCmd)
 	nostrCmd.AddCommand(nostrMergeCmd)
 	rootCmd.AddCommand(nostrCmd)
