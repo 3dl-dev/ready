@@ -1,7 +1,7 @@
-// Deterministic unit tests for the mint-and-ship invite substrate (ready-a49):
-// the one-use kind-39303 nonce marker (BuildInviteConsumedEvent /
-// InviteNonceConsumed) and the grant-presence gate (InviteGrantValid). Every event
-// is REAL (schnorr-signed + re-verified); no network, no clock.
+// Deterministic unit tests for the self-mint invite substrate (ready-ce0):
+// the grant-presence liveness gate (InviteGrantValid) and the single-use
+// claim-nonce binding enforced at grant derivation (ClaimGrantee / deriveGrants).
+// Every event is REAL (schnorr-signed + re-verified); no network, no clock.
 package sync
 
 import (
@@ -10,57 +10,25 @@ import (
 	"github.com/campfire-net/ready/pkg/nostr"
 )
 
-// TestInviteConsumed_RoundTrip: a built marker consumes exactly its own nonce.
-func TestInviteConsumed_RoundTrip(t *testing.T) {
-	minted := testKey(t)
-	owner := testKey(t)
-	board := BoardCoord(owner.PubKeyHex(), testBoardD)
-
-	ev, err := BuildInviteConsumedEvent(minted, "nonce-abc", board, 5000)
+// claimGrant builds+signs a 39301 grant that consumes an invite claim-nonce.
+func claimGrant(t *testing.T, signer *nostr.Key, boardAuthor, grantee, role, claim string, createdAt int64) *nostr.Event {
+	t.Helper()
+	e, err := BuildRoleGrantEvent(signer, RoleGrantSpec{
+		BoardD:      testBoardD,
+		BoardAuthor: boardAuthor,
+		Grantee:     grantee,
+		Role:        role,
+		Claim:       claim,
+	}, createdAt)
 	if err != nil {
-		t.Fatalf("BuildInviteConsumedEvent: %v", err)
+		t.Fatalf("BuildRoleGrantEvent(claim): %v", err)
 	}
-	if err := ev.Verify(); err != nil {
-		t.Fatalf("marker does not verify: %v", err)
-	}
-	if ev.Kind != KindInviteConsumed {
-		t.Errorf("marker kind = %d, want %d", ev.Kind, KindInviteConsumed)
-	}
-
-	if !InviteNonceConsumed([]*nostr.Event{ev}, "nonce-abc") {
-		t.Error("InviteNonceConsumed should report the nonce consumed")
-	}
-	if InviteNonceConsumed([]*nostr.Event{ev}, "different-nonce") {
-		t.Error("a marker for one nonce must NOT consume a different nonce")
-	}
-	if InviteNonceConsumed(nil, "nonce-abc") {
-		t.Error("empty medium must report not-consumed")
-	}
-	if InviteNonceConsumed([]*nostr.Event{ev}, "") {
-		t.Error("empty nonce must never match")
-	}
-}
-
-// TestInviteConsumed_TamperedMarkerIgnored: a marker whose signed fields were
-// altered after signing fails Verify and must NOT consume the nonce.
-func TestInviteConsumed_TamperedMarkerIgnored(t *testing.T) {
-	minted := testKey(t)
-	board := BoardCoord(minted.PubKeyHex(), testBoardD)
-	ev, err := BuildInviteConsumedEvent(minted, "nonce-xyz", board, 5000)
-	if err != nil {
-		t.Fatalf("BuildInviteConsumedEvent: %v", err)
-	}
-	// Tamper: rewrite the nonce tag WITHOUT re-signing. Verify must reject it, so
-	// it cannot consume the (now-mismatched) id, nor the original nonce.
-	ev.Tags[0][1] = "nonce-forged"
-	if InviteNonceConsumed([]*nostr.Event{ev}, "nonce-forged") {
-		t.Error("a tampered (unsigned) marker must not consume a nonce")
-	}
+	return e
 }
 
 // TestInviteGrantValid_OwnerRootedContributor: a real owner-signed contributor
-// grant makes the minted key valid; an ungranted key and a foreign-board grant do
-// not.
+// grant makes the self-minted key valid; an ungranted key and a foreign-board grant
+// do not.
 func TestInviteGrantValid_OwnerRootedContributor(t *testing.T) {
 	owner := testKey(t)
 	ba := owner.PubKeyHex()
@@ -87,19 +55,71 @@ func TestInviteGrantValid_OwnerRootedContributor(t *testing.T) {
 	}
 }
 
-// TestInviteGrantValid_ForgedGrantIgnored: a grant "signed" by a non-owner for a
-// maintainer/owner escalation is capped out; here we prove a self-signed grant by
-// the minted key itself (not owner-rooted) does not validate it.
+// TestInviteGrantValid_SelfGrantIgnored proves a self-signed grant by the minted key
+// itself (not owner-rooted) does not validate it — the escalation cap ignores it.
 func TestInviteGrantValid_SelfGrantIgnored(t *testing.T) {
 	owner := testKey(t)
 	ba := owner.PubKeyHex()
 	minted := testKey(t)
 
-	// Minted key tries to grant ITSELF contributor — not owner-rooted, so
-	// DeriveLevels' escalation cap ignores it (a non-author, non-maintainer signer
-	// may grant nothing).
 	selfGrant := grant(t, minted, ba, minted.PubKeyHex(), RoleContributor, 0, 1000)
 	if InviteGrantValid([]*nostr.Event{selfGrant}, ba, testBoardD, minted.PubKeyHex()) {
 		t.Error("a self-signed (non-owner-rooted) grant must not validate the key")
+	}
+}
+
+// TestClaimSingleUse_OneClaimNonceOneGrantee is the ready-ce0 security-property (c)
+// proof at the derivation seam: two DIFFERENT self-minted keys both present the SAME
+// claim-nonce, and the owner (accidentally, e.g. a leaked claim) signs a grant for
+// EACH. Derivation binds the claim to the FIRST grantee only; the SECOND grant is
+// ignored — the second key is NOT admitted. Single-use is REAL and owner-enforced,
+// not a relay marker.
+func TestClaimSingleUse_OneClaimNonceOneGrantee(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	first := testKey(t)
+	second := testKey(t)
+	const claim = "claim-nonce-xyz"
+
+	// The owner signs both grants; the FIRST (older created_at) binds the claim.
+	events := []*nostr.Event{
+		claimGrant(t, owner, ba, first.PubKeyHex(), RoleContributor, claim, 1000),
+		claimGrant(t, owner, ba, second.PubKeyHex(), RoleContributor, claim, 1001),
+	}
+
+	levels, _ := DeriveLevels(events, ba, testBoardD)
+	if lvl, ok := levels[first.PubKeyHex()]; !ok || lvl != LevelContributor {
+		t.Errorf("first grantee must be admitted at contributor (claim binds to it), got lvl=%d ok=%v", lvl, ok)
+	}
+	if _, ok := levels[second.PubKeyHex()]; ok {
+		t.Error("second grantee reusing the SAME claim-nonce must NOT be admitted (single-use)")
+	}
+
+	// ClaimGrantee reports the binding for the owner's client-side fail-fast check.
+	bound, ok := ClaimGrantee(events, ba, testBoardD, claim)
+	if !ok || bound != first.PubKeyHex() {
+		t.Errorf("ClaimGrantee = (%s,%v), want first grantee bound", bound, ok)
+	}
+	if _, ok := ClaimGrantee(events, ba, testBoardD, "unused-nonce"); ok {
+		t.Error("an unused claim-nonce must report no binding")
+	}
+}
+
+// TestClaimSingleUse_SameGranteeMayReclaim: the SAME grantee re-granting under its own
+// claim (e.g. a later revoke of that key) is NOT a single-use violation — the guard
+// fires only on a grantee MISMATCH.
+func TestClaimSingleUse_SameGranteeMayReclaim(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	g := testKey(t)
+	const claim = "claim-nonce-reuse"
+
+	events := []*nostr.Event{
+		claimGrant(t, owner, ba, g.PubKeyHex(), RoleContributor, claim, 1000),
+		claimGrant(t, owner, ba, g.PubKeyHex(), RoleRevoked, claim, 1001),
+	}
+	levels, _ := DeriveLevels(events, ba, testBoardD)
+	if lvl, ok := levels[g.PubKeyHex()]; !ok || lvl != LevelRevoked {
+		t.Errorf("same-grantee re-grant should apply latest (revoked), got lvl=%d ok=%v", lvl, ok)
 	}
 }

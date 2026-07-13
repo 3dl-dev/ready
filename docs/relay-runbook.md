@@ -208,6 +208,23 @@ cap); a maintainer may grant only `contributor`/`revoked`. The board must be pin
 first with `rd pin-board` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
 to `.ready/config.json`).
 
+**Admitting an invited teammate (self-mint claim model, ready-ce0).** `rd invite`
+mints a TTL-bounded, one-use **claim-nonce** (the `rd1_` token carries **no key**).
+The recipient runs `rd join <token>`, which **self-mints** a key and joins
+**read-only** (writing nothing to the relays), then reports its `pubkey` and the
+`claim`. Admit it by binding the claim to that pubkey — this is the same one signed
+act, plus the `--claim` flag:
+
+```bash
+rd grant <joiner-pubkey> contributor --claim <claim-nonce>   # binds nonce → pubkey
+rd relay sync-allowlist --apply                              # admits the key on locked relays
+```
+
+**Single-use is owner-enforced:** a claim-nonce binds to **exactly one** pubkey.
+If a leaked token is joined by two people, only the **first** pubkey you `--claim`
+is admitted; a second `rd grant ... --claim <same-nonce>` for a different pubkey is
+**refused** (the second joiner needs a fresh `rd invite`).
+
 **Manual fallback** (still valid; `sync-allowlist` produces the same file format):
 
 1. Add `"pubkey": "label"` to `scripts/relay-policy/write-allowlist.json`.

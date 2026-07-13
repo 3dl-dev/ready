@@ -1,27 +1,32 @@
 package main
 
-// Nostr-native mint-and-ship invite (ready-a49).
+// Nostr-native SELF-MINT invite/claim (ready-ce0, re-architected from ready-a49).
 //
-// `rd invite` on a nostr-native project (a pinned board in .ready/config.json)
-// MINTS a fresh secp256k1 contributor key, publishes an owner-signed kind-39301
-// CONTRIBUTOR grant for its pubkey, and SHIPS everything the joiner needs in a
-// single `rd1_` token: the board coordinate 30301:<owner>:<boardD>, the relay set,
-// a TTL, a one-use nonce, and the minted SECRET key. `rd join rd1_...` imports the
-// key to $RD_HOME, pins the board, updates the local relay config, and syncs so
-// `rd ready` returns the project's items immediately.
+// The old model MINTED a secret key and SHIPPED it in the token — a leaked token was
+// a full identity compromise, and the kind-39303 single-use marker (signed by that
+// same shipped key) guarded nothing. This is the design §2 "generate-then-authorize"
+// replacement:
 //
-// SECURITY. The secret key travels in the token BY DESIGN (closed team tier,
-// design §9): the joiner needs a signing identity and the owner mints an inert one
-// that is honored ONLY because of the owner-signed grant that rides the same
-// medium. The token is therefore a bearer secret — never logged, written only to
-// $RD_HOME on join, TTL-bounded, and ONE-USE. Single-use is enforced
-// RELAY/LOG-OBSERVABLY: the first redeemer publishes a signed kind-39303
-// invite-consumed marker carrying the nonce; any later redemption sees it and is
-// refused (pkg/sync.InviteNonceConsumed).
+//  1. `rd invite --ttl` (OWNER) mints ONLY a one-use CLAIM-NONCE. It publishes NO
+//     key and NO grant. The token carries {board coord, relay set, TTL, claim-nonce}
+//     and NO secret. The owner records the nonce locally as UNCLAIMED.
 //
-// This is the nostr replacement for the campfire admit + ed25519-seed rdx1_ token
-// (invite.go / join.go). The rdx1_ path remains for campfire-backed projects; a
-// nostr-native project (the default `rd init`) uses THIS path.
+//  2. `rd join <token>` (JOINER) SELF-MINTS a fresh secp256k1 key into $RD_HOME
+//     (INERT per design §9 — nothing it signs is honored until the owner grants it),
+//     pins the board, adopts the relay set, and syncs READ-ONLY (so `rd ready` works
+//     immediately). The joiner WRITES NOTHING to the relays pre-admission. It prints
+//     its pubkey + the claim-nonce for the owner.
+//
+//  3. `rd grant <joiner-pubkey> contributor --claim <nonce>` (OWNER) binds the grant
+//     to the joiner's self-minted pubkey AND consumes the claim-nonce. Single-use is
+//     REAL and owner-enforced: derivation binds one claim-nonce to exactly one
+//     pubkey, so a leaked claim admitted to a SECOND self-minted key is REFUSED.
+//
+// SECURITY. The token is a TTL-bounded CLAIM, not a bearer secret: a leak yields
+// only the right to self-mint and ask for a grant the owner may deny; there is no
+// importable key and no live grant in it. Single-use is a projection property, not a
+// relay write, so `rd join` no longer needs to publish anything (the ready-e03
+// fail-closed-relay-write breakage on locked relays is gone with the marker).
 
 import (
 	"context"
@@ -31,6 +36,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/ready/pkg/nostr"
@@ -38,70 +44,59 @@ import (
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
 
-// nostrInviteTokenPrefix is the prefix for nostr mint-and-ship tokens. Distinct
-// from the campfire rdx1_ prefix so `rd join` can dispatch on it.
+// nostrInviteTokenPrefix is the prefix for nostr claim tokens. Distinct from the
+// retired campfire rdx1_ prefix so `rd join` can dispatch on it.
 const nostrInviteTokenPrefix = "rd1_"
 
-// nostrInviteVersion is the token schema version (2 — v1 is the ed25519/campfire
-// rdx1_ payload).
-const nostrInviteVersion = 2
+// nostrClaimVersion is the token schema version. v3 is the self-mint CLAIM token (NO
+// secret). v2 was the insecure mint-and-ship token that shipped the secret key; it is
+// rejected at decode with a clear message.
+const nostrClaimVersion = 3
 
-// nostrInvitePayload is the JSON bundled into an rd1_ token. The secret key is a
-// bearer credential — see the file header.
-type nostrInvitePayload struct {
+// nostrClaimPayload is the JSON bundled into an rd1_ v3 token. It carries NO secret
+// key and NO grant — only a TTL-bounded, one-use claim-nonce and the coordinates the
+// joiner needs to sync read-only.
+type nostrClaimPayload struct {
 	Version   int      `json:"v"`
 	Board     string   `json:"board"`  // "30301:<ownerPubkey>:<boardD>"
-	SecretHex string   `json:"sk"`     // 64-char hex secp256k1 secret of the minted key
-	Relays    []string `json:"relays"` // read+write relay URLs the joiner adopts
-	Nonce     string   `json:"nonce"`  // one-use nonce (hex)
+	Relays    []string `json:"relays"` // read relay URLs the joiner adopts
+	Claim     string   `json:"claim"`  // one-use claim-nonce (hex)
 	IssuedAt  int64    `json:"iat"`
 	ExpiresAt int64    `json:"exp"`
 	Issuer    string   `json:"iss"` // owner pubkey (== board author); informational
 }
 
-// buildNostrInviteToken builds an rd1_ token AND the owner-signed kind-39301
-// contributor grant for the minted key. PURE (no I/O, no clock): the caller
-// supplies the minted key, nonce, and timestamps so the result is deterministic
-// and testable. ownerKey signs the grant (owner or a maintainer within the
-// escalation cap — contributor grants are cap-allowed for both). board is the
-// full "30301:<owner>:<boardD>" coordinate; the grant binds to it.
-func buildNostrInviteToken(ownerKey *nostr.Key, board string, minted *nostr.Key, relays []string, nonce string, issuedAt, expiresAt, grantCreatedAt int64) (token string, grant *nostr.Event, err error) {
-	owner, boardD, ok := rdSync.ParseBoardCoord(board)
-	if !ok {
-		return "", nil, fmt.Errorf("invite: malformed board coordinate %q (want 30301:<owner>:<boardD>)", board)
+// buildNostrClaimToken builds an rd1_ v3 claim token. PURE (no I/O, no clock, no
+// key): the caller supplies the claim-nonce and timestamps so the result is
+// deterministic and testable. The token carries NO secret material.
+func buildNostrClaimToken(board string, relays []string, claim string, issuedAt, expiresAt int64, issuer string) (string, error) {
+	if _, _, ok := rdSync.ParseBoardCoord(board); !ok {
+		return "", fmt.Errorf("invite: malformed board coordinate %q (want 30301:<owner>:<boardD>)", board)
 	}
-	grant, err = rdSync.BuildRoleGrantEvent(ownerKey, rdSync.RoleGrantSpec{
-		BoardD:      boardD,
-		BoardAuthor: owner,
-		Grantee:     minted.PubKeyHex(),
-		Role:        rdSync.RoleContributor,
-		Label:       "rd invite",
-	}, grantCreatedAt)
-	if err != nil {
-		return "", nil, fmt.Errorf("invite: build grant: %w", err)
+	if claim == "" {
+		return "", fmt.Errorf("invite: empty claim-nonce")
 	}
-	payload := nostrInvitePayload{
-		Version:   nostrInviteVersion,
+	payload := nostrClaimPayload{
+		Version:   nostrClaimVersion,
 		Board:     board,
-		SecretHex: minted.SecretHex(),
 		Relays:    relays,
-		Nonce:     nonce,
+		Claim:     claim,
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
-		Issuer:    owner,
+		Issuer:    issuer,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", nil, fmt.Errorf("invite: marshal token: %w", err)
+		return "", fmt.Errorf("invite: marshal token: %w", err)
 	}
-	return nostrInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(data), grant, nil
+	return nostrInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(data), nil
 }
 
-// decodeNostrInviteToken decodes and validates an rd1_ token's FORMAT and TTL.
-// Structural validation (version, board coordinate, 32-byte secret, non-empty
-// nonce) is fail-closed; a past ExpiresAt is rejected here so an expired token
-// never reaches the redemption path.
-func decodeNostrInviteToken(token string) (*nostrInvitePayload, error) {
+// decodeNostrClaimToken decodes and validates an rd1_ token's FORMAT and TTL. A v2
+// (secret-bearing) token is rejected with an explicit "insecure/unsupported" message
+// so a stale mint-and-ship token cannot be redeemed. A past ExpiresAt is rejected
+// here so an expired token never reaches the redemption path.
+func decodeNostrClaimToken(token string) (*nostrClaimPayload, error) {
 	if len(token) <= len(nostrInviteTokenPrefix) {
 		return nil, fmt.Errorf("token too short")
 	}
@@ -109,21 +104,31 @@ func decodeNostrInviteToken(token string) (*nostrInvitePayload, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid token encoding: %w", err)
 	}
-	var p nostrInvitePayload
+	// Detect the retired v2 secret-bearing token by its version before generic
+	// validation, so the operator gets an actionable error instead of "unsupported
+	// version N". The v2 payload carried an "sk" field and version 2.
+	var probe struct {
+		Version int    `json:"v"`
+		Secret  string `json:"sk"`
+	}
+	if err := json.Unmarshal(decoded, &probe); err == nil {
+		if probe.Version < nostrClaimVersion || probe.Secret != "" {
+			return nil, fmt.Errorf("unsupported/insecure invite token: this token ships a secret key (v%d). "+
+				"Regenerate it with `rd invite` on an up-to-date rd — the current model self-mints on join and ships NO secret", probe.Version)
+		}
+	}
+	var p nostrClaimPayload
 	if err := json.Unmarshal(decoded, &p); err != nil {
 		return nil, fmt.Errorf("invalid token payload: %w", err)
 	}
-	if p.Version != nostrInviteVersion {
+	if p.Version != nostrClaimVersion {
 		return nil, fmt.Errorf("unsupported token version %d", p.Version)
 	}
 	if _, _, ok := rdSync.ParseBoardCoord(p.Board); !ok {
 		return nil, fmt.Errorf("invalid board coordinate in token")
 	}
-	if len(p.SecretHex) != 64 || !isHex(p.SecretHex) {
-		return nil, fmt.Errorf("invalid secret key in token")
-	}
-	if p.Nonce == "" {
-		return nil, fmt.Errorf("token missing nonce")
+	if p.Claim == "" {
+		return nil, fmt.Errorf("token missing claim-nonce")
 	}
 	if time.Now().Unix() > p.ExpiresAt {
 		return nil, fmt.Errorf("token expired at %s", time.Unix(p.ExpiresAt, 0).UTC().Format(time.RFC3339))
@@ -131,50 +136,33 @@ func decodeNostrInviteToken(token string) (*nostrInvitePayload, error) {
 	return &p, nil
 }
 
-// inviteMedium is the shared event medium a mint-and-ship token syncs through. In
+// inviteMedium is the READ-ONLY event source a claim token syncs through. In
 // PRODUCTION it is backed by the token's relays (relayInviteMedium); the
-// two-actor DETERMINISTIC test backs it with a shared local NostrLog
-// (logInviteMedium) so verification needs NO live relay and no network egress
-// (ready-6d5 flaky family). Events() returns every signature-relevant event
-// visible on the medium; Publish ships the consumed marker back onto it.
+// deterministic test backs it with a shared local NostrLog (logInviteMedium) so
+// verification needs NO live relay and no network egress (ready-6d5 flaky family).
+// The joiner reads the board's events to sync read-only; it PUBLISHES NOTHING —
+// pre-admission the self-minted key writes to no relay (design §2, security prop b).
 type inviteMedium interface {
 	Events() ([]*nostr.Event, error)
-	Publish(events []*nostr.Event) error
 }
 
 // logInviteMedium models a relay as a shared local append-only log — the "local
-// transport dir" the deterministic test drives. Events() returns the whole log;
-// Publish appends (a relay-observable write both actors and any re-joiner see).
+// transport dir" the deterministic test drives. Events() returns the whole log.
 type logInviteMedium struct{ log *rdSync.NostrLog }
 
 func (m *logInviteMedium) Events() ([]*nostr.Event, error) { return m.log.ReadAll() }
-func (m *logInviteMedium) Publish(events []*nostr.Event) error {
-	_, err := m.log.AppendUnique(events)
-	return err
-}
 
-// relayInviteMedium is the production medium: Events() fetches the board's events
-// plus any invite-consumed markers from the token's relays; Publish best-effort
-// posts the consumed marker to them. A relay being unreachable degrades to an
-// empty snapshot / a buffered publish — never a panic — so the redeem path stays
-// fail-closed (an empty snapshot means "no grant present" ⇒ refused, and "no
-// marker" only lets a FIRST use through, which is correct).
+// relayInviteMedium is the production READ-ONLY medium: Events() fetches the board's
+// events from the token's relays. A relay being unreachable degrades to an empty
+// snapshot — never a panic — so the read-only join stays robust (an empty snapshot
+// just means `rd ready` shows nothing until the next sync). It NEVER publishes.
 type relayInviteMedium struct {
 	relays  []string
 	board   string
 	timeout time.Duration
-	// publishFn / fetchFn are seams the deterministic HIGH-3 test injects. Nil
-	// means "use the real nostr client" (the production path).
-	publishFn func(ctx context.Context, relay string, e *nostr.Event) (accepted bool, err error)
-	fetchFn   func(ctx context.Context, relay string, filter map[string]any) ([]*nostr.Event, error)
-}
-
-func (m *relayInviteMedium) publish1(ctx context.Context, relay string, e *nostr.Event) (bool, error) {
-	if m.publishFn != nil {
-		return m.publishFn(ctx, relay, e)
-	}
-	accepted, _, err := nostr.Publish(ctx, relay, e)
-	return accepted, err
+	// fetchFn is the seam the deterministic test injects. Nil means "use the real
+	// nostr client" (the production path).
+	fetchFn func(ctx context.Context, relay string, filter map[string]any) ([]*nostr.Event, error)
 }
 
 func (m *relayInviteMedium) fetch1(ctx context.Context, relay string, filter map[string]any) ([]*nostr.Event, error) {
@@ -186,22 +174,17 @@ func (m *relayInviteMedium) fetch1(ctx context.Context, relay string, filter map
 
 func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
 	seen := map[string]*nostr.Event{}
-	filters := []map[string]any{
-		rdSync.BoardSyncFilter(m.board, nil),
-		{"kinds": []int{rdSync.KindInviteConsumed}, "#a": []string{m.board}},
-	}
+	filter := rdSync.BoardSyncFilter(m.board, nil)
 	for _, relay := range m.relays {
-		for _, f := range filters {
-			ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
-			evs, err := m.fetch1(ctx, relay, f)
-			cancel()
-			if err != nil {
-				continue // best-effort: a down relay must not fail the join
-			}
-			for _, e := range evs {
-				if e != nil {
-					seen[e.ID] = e
-				}
+		ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
+		evs, err := m.fetch1(ctx, relay, filter)
+		cancel()
+		if err != nil {
+			continue // best-effort: a down relay must not fail the read-only join
+		}
+		for _, e := range evs {
+			if e != nil {
+				seen[e.ID] = e
 			}
 		}
 	}
@@ -212,117 +195,51 @@ func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
 	return out, nil
 }
 
-// Publish ships the invite-consumed marker to the token's relays FAIL-CLOSED
-// (HIGH-3 / ready-e03). The old body discarded nostr.Publish's (accepted, err) and
-// returned nil unconditionally, so if the kind-39303 marker never landed on the
-// token's relays the join still succeeded while cross-machine single-use was
-// silently bypassed (a leaked token stayed reusable for its full TTL). Now: for
-// each event, publish to the relays AND READ IT BACK; the marker must be OBSERVABLE
-// on at least one relay before the join is allowed to finalize. If it cannot be
-// confirmed anywhere, return an error so redeemNostrInviteToken rolls back and the
-// token is NOT treated as consumed.
-func (m *relayInviteMedium) Publish(events []*nostr.Event) error {
-	for _, e := range events {
-		confirmed := false
-		var lastErr error
-		for _, relay := range m.relays {
-			ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
-			accepted, err := m.publish1(ctx, relay, e)
-			if err != nil {
-				lastErr = err
-				cancel()
-				continue
-			}
-			if !accepted {
-				cancel()
-				continue
-			}
-			// Read-back: the relay claimed acceptance — confirm the marker is actually
-			// observable before trusting single-use to it.
-			if m.markerObservable(ctx, relay, e) {
-				confirmed = true
-				cancel()
-				break
-			}
-			cancel()
-		}
-		if !confirmed {
-			if lastErr != nil {
-				return fmt.Errorf("invite consumed-marker did not land on any relay (single-use would be bypassed): %w", lastErr)
-			}
-			return fmt.Errorf("invite consumed-marker could not be confirmed on any relay (single-use would be bypassed)")
-		}
-	}
-	return nil
-}
-
-// markerObservable re-fetches the invite-consumed markers for the board from relay
-// and reports whether e is present — the read-back that makes Publish fail-closed.
-func (m *relayInviteMedium) markerObservable(ctx context.Context, relay string, e *nostr.Event) bool {
-	filter := map[string]any{"kinds": []int{rdSync.KindInviteConsumed}, "#a": []string{m.board}}
-	evs, err := m.fetch1(ctx, relay, filter)
-	if err != nil {
-		return false
-	}
-	for _, got := range evs {
-		if got != nil && got.ID == e.ID {
-			return true
-		}
-	}
-	return false
-}
-
-// redeemNostrInviteToken is the JOIN core: single-use + grant checks first (a
-// rejected redemption leaves NO state), then key import, board pin, relay config,
-// item sync, and the consumed-marker publish. medium abstracts the relay/log
-// source so the deterministic test drives it locally. force overwrites an existing
-// $RD_HOME identity (mirroring the rdx1_ path's --force).
-func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, medium inviteMedium, force bool) error {
+// redeemNostrClaimToken is the JOIN core (design §2): local idempotency check, then
+// SELF-MINT a fresh key into $RD_HOME, pin the board, adopt relays, and import the
+// board's events READ-ONLY. It PUBLISHES NOTHING to any relay — the self-minted key
+// is inert until the owner grants it. Returns the self-minted pubkey (hex) the joiner
+// sends to the owner. medium abstracts the relay/log source so the deterministic test
+// drives it locally. force overrides both the local re-join guard and an existing
+// $RD_HOME identity.
+func redeemNostrClaimToken(p *nostrClaimPayload, rdHome, projectDir string, medium inviteMedium, force bool) (mintedPub string, err error) {
 	if time.Now().Unix() > p.ExpiresAt {
-		return fmt.Errorf("invite token expired at %s", time.Unix(p.ExpiresAt, 0).UTC().Format(time.RFC3339))
+		return "", fmt.Errorf("invite token expired at %s", time.Unix(p.ExpiresAt, 0).UTC().Format(time.RFC3339))
 	}
 	owner, boardD, ok := rdSync.ParseBoardCoord(p.Board)
 	if !ok {
-		return fmt.Errorf("invite token has a malformed board coordinate")
-	}
-	minted, err := nostr.KeyFromHex(p.SecretHex)
-	if err != nil {
-		return fmt.Errorf("invite token secret key is invalid: %w", err)
-	}
-	mintedPub := minted.PubKeyHex()
-
-	// Snapshot the shared medium (relay download / shared-log read).
-	events, err := medium.Events()
-	if err != nil {
-		return fmt.Errorf("reading invite medium: %w", err)
+		return "", fmt.Errorf("invite token has a malformed board coordinate")
 	}
 
-	// (1) SINGLE-USE — refuse if the nonce is already consumed. Before any write,
-	// so a rejected re-join leaves nothing behind.
-	if rdSync.InviteNonceConsumed(events, p.Nonce) {
-		return fmt.Errorf("invite token already redeemed — each token may only be used once")
-	}
-	// (2) GRANT PRESENCE — fail-closed: the minted key must actually hold an
-	// owner-rooted, cap-valid contributor grant on the pinned board. A token whose
-	// grant never landed (or was forged / cross-board) is refused before we import
-	// its identity.
-	if !rdSync.InviteGrantValid(events, owner, boardD, mintedPub) {
-		return fmt.Errorf("invite token is not authorized: no owner-signed contributor grant for its key on board %s", p.Board)
+	// (1) LOCAL IDEMPOTENCY (honest, not a security claim): a second `rd join` of the
+	// SAME token on THIS machine is refused without --force. The real single-use is
+	// owner-enforced at grant derivation; this only guards accidental re-redemption.
+	consumedPath := consumedInvitesPath(rdHome)
+	if !force {
+		already, cerr := localClaimPresent(consumedPath, p.Claim)
+		if cerr != nil {
+			return "", fmt.Errorf("checking local invite record: %w", cerr)
+		}
+		if already {
+			return "", fmt.Errorf("this invite token was already joined on this machine — pass --force to re-join (self-mint a new key)")
+		}
 	}
 
-	// (3) Identity import guard.
+	// (2) Identity guard: join SELF-MINTS a fresh key. Overwriting an existing
+	// $RD_HOME identity requires --force (mirrors the pre-cutover guard).
 	keyPath := nostr.DefaultKeyPath(rdHome)
 	hadKey := fileExists(keyPath)
 	if hadKey && !force {
-		return fmt.Errorf("identity already exists at %s — use --force to overwrite", keyPath)
+		return "", fmt.Errorf("identity already exists at %s — use --force to overwrite (self-mint a new key for this board)", keyPath)
 	}
+	minted, err := nostr.GenerateKey()
+	if err != nil {
+		return "", fmt.Errorf("self-minting join identity: %w", err)
+	}
+	mintedPub = minted.PubKeyHex()
 
-	// MED-7: snapshot EVERY file a post-write step mutates, so restore() reverts a
-	// half-adopted project on ANY late failure — not just the identity key. The old
-	// restore only reverted $RD_HOME's identity; if SaveSyncConfig / adoptInviteRelays
-	// / AppendUnique / marker steps failed after the board-pin / relay-adopt / log-import
-	// already wrote, those stayed, leaving a partially-joined project. The snapshot is
-	// taken BEFORE any write below.
+	// Snapshot every file a step below mutates so restore() reverts a half-adopted
+	// project on ANY late failure (MED-7 discipline, preserved).
 	type fileSnap struct {
 		path    string
 		data    []byte
@@ -337,6 +254,7 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 		snap(rdconfig.SyncConfigPath(projectDir)),
 		snap(rdconfig.Path(rdHome)),
 		snap(rdSync.NostrLogPath(projectDir)),
+		snap(consumedPath),
 	}
 	restore := func() {
 		for _, s := range snaps {
@@ -349,40 +267,41 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 	}
 
 	if err := nostr.SaveKeyFile(keyPath, minted, rdHome); err != nil {
-		return fmt.Errorf("writing invite identity: %w", err)
+		return "", fmt.Errorf("writing self-minted identity: %w", err)
 	}
 
-	// (4) Pin the board (load-modify-save so no sibling field is clobbered).
+	// (3) Pin the board (load-modify-save so no sibling field is clobbered).
 	syncCfg, err := rdconfig.LoadSyncConfig(projectDir)
 	if err != nil {
 		restore()
-		return fmt.Errorf("loading sync config: %w", err)
+		return "", fmt.Errorf("loading sync config: %w", err)
 	}
 	syncCfg.Board = p.Board
 	if err := rdconfig.SaveSyncConfig(projectDir, syncCfg); err != nil {
 		restore()
-		return fmt.Errorf("pinning board: %w", err)
+		return "", fmt.Errorf("pinning board: %w", err)
 	}
 
-	// (5) Adopt the token's relay set into the local rd.json (read+write).
+	// (4) Adopt the token's relay set into the local rd.json (read+write; the joiner
+	// reads now and writes once granted).
 	if len(p.Relays) > 0 {
 		if err := adoptInviteRelays(rdHome, p.Relays); err != nil {
 			restore()
-			return fmt.Errorf("updating relay config: %w", err)
+			return "", fmt.Errorf("updating relay config: %w", err)
 		}
 	}
 
-	// (6) Import the medium's events into the joiner's authoritative log, gated
-	// through the SAME web-of-trust set every other inbound seam uses (MED-5). Prior
-	// to this the import admitted any schnorr-valid event with Verify() ALONE — unlike
-	// reconcile / admitDownloaded / MergeFrom, which gate on the board owner's derived
-	// grant set. A hostile relay could therefore inject validly-signed FOREIGN-key
-	// events into the local authoritative log; the projection re-gates so they never
-	// project, but they would re-propagate on later sync (log poisoning), breaking the
-	// single-admission-choke invariant. Gate on DeriveReadTrust(owner) — { board owner }
-	// ∪ { cap-valid grantees, incl. the token's minted key } — before AppendUnique, so
-	// an ungranted foreign key is dropped at ingestion, fail-closed.
+	// (5) Import the medium's events into the joiner's authoritative log READ-ONLY,
+	// gated through the board owner's derived read-trust set (DeriveReadTrust): {board
+	// owner} ∪ {cap-valid grantees}. The self-minted key is NOT yet in that set (no
+	// grant), so nothing it might have signed would import — but it has signed nothing.
+	// A hostile relay's foreign-key events are dropped at ingestion, fail-closed.
 	localLog := rdSync.NewNostrLog(rdSync.NostrLogPath(projectDir))
+	events, err := medium.Events()
+	if err != nil {
+		restore()
+		return "", fmt.Errorf("reading invite medium: %w", err)
+	}
 	importTrust := rdSync.DeriveReadTrust(events, owner, boardD)
 	verified := make([]*nostr.Event, 0, len(events))
 	for _, e := range events {
@@ -396,34 +315,21 @@ func redeemNostrInviteToken(p *nostrInvitePayload, rdHome, projectDir string, me
 	}
 	if _, err := localLog.AppendUnique(verified); err != nil {
 		restore()
-		return fmt.Errorf("importing project items: %w", err)
+		return "", fmt.Errorf("importing project items: %w", err)
 	}
 
-	// (7) Consume the nonce RELAY/LOG-OBSERVABLY: publish a signed marker to the
-	// medium AND the local log so a later re-join (which reads the medium) is
-	// refused. Signed by the minted key — trusted because of its grant.
-	// The consumed marker is a leaf event (kind 39303, DriftScope==""): it is matched
-	// by nonce (InviteNonceConsumed), never ordered by created_at in latest-wins, so it
-	// takes the empty drift scope — consistent with DriftScope of a 39303 event.
-	marker, err := rdSync.BuildInviteConsumedEvent(minted, p.Nonce, p.Board, nostrNextCreatedAt(localLog, ""))
-	if err != nil {
+	// (6) Record the claim-nonce consumed LOCALLY (idempotency only; no relay write).
+	rec := localClaim{Claim: p.Claim, Board: p.Board, ExpiresAt: p.ExpiresAt, Pubkey: mintedPub}
+	if err := appendLocalClaim(consumedPath, rec); err != nil {
 		restore()
-		return fmt.Errorf("building consumed marker: %w", err)
+		return "", fmt.Errorf("recording local invite claim: %w", err)
 	}
-	if err := medium.Publish([]*nostr.Event{marker}); err != nil {
-		restore()
-		return fmt.Errorf("publishing consumed marker: %w", err)
-	}
-	if err := localLog.Append(marker); err != nil {
-		restore()
-		return fmt.Errorf("recording consumed marker locally: %w", err)
-	}
-	return nil
+	return mintedPub, nil
 }
 
-// adoptInviteRelays rewrites the local rd.json relay endpoints to the token's
-// relay set (each read+write), so the joiner's subsequent `rd sync` reaches
-// the same relays the owner published to. Load-modify-save preserves other config.
+// adoptInviteRelays rewrites the local rd.json relay endpoints to the token's relay
+// set (each read+write), so the joiner's subsequent `rd sync` reaches the same relays
+// the owner published to. Load-modify-save preserves other config.
 func adoptInviteRelays(rdHome string, relays []string) error {
 	cfg, err := rdconfig.Load(rdHome)
 	if err != nil {
@@ -440,80 +346,79 @@ func adoptInviteRelays(rdHome string, relays []string) error {
 	return rdconfig.Save(rdHome, cfg)
 }
 
-// runNostrInvite mints an rd1_ token for the current nostr-native project: it
-// generates a fresh contributor key, publishes the owner-signed grant to the local
-// log + relays, and prints the token. Returns an error the invite command
-// surfaces; the caller falls back to the campfire path when this project is not
-// nostr-native.
+// runNostrInvite mints an rd1_ v3 CLAIM token for the current nostr-native project. It
+// generates ONLY a one-use claim-nonce — NO key, NO grant is published at mint — and
+// records the nonce locally as UNCLAIMED. Returns the token the invite command prints.
 func runNostrInvite(ttl time.Duration) (string, error) {
 	dir, native := nostrNativeProject()
 	if !native {
-		return "", fmt.Errorf("rd invite --nostr requires a nostr-native project (a pinned board); run 'rd pin-board' first")
+		return "", fmt.Errorf("rd invite requires a nostr-native project (a pinned board); run 'rd pin-board' first")
 	}
 	board := nostrPinnedBoard(dir)
-	_, boardD, okBoard := rdSync.ParseBoardCoord(board)
+	owner, _, okBoard := rdSync.ParseBoardCoord(board)
 	if !okBoard {
 		return "", fmt.Errorf("pinned board %q is malformed", board)
 	}
 
-	pub, ok, err := nostrPublisher()
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("no .ready project directory found")
-	}
-
-	minted, err := nostr.GenerateKey()
-	if err != nil {
-		return "", fmt.Errorf("minting invite key: %w", err)
-	}
-	nonce, err := randomNonce()
+	claim, err := randomNonce()
 	if err != nil {
 		return "", err
 	}
 	now := time.Now()
 	relays := inviteRelaySet()
 
-	token, grant, err := buildNostrInviteToken(pub.Key, board, minted, relays, nonce, now.Unix(), now.Add(ttl).Unix(), nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, minted.PubKeyHex())))
+	token, err := buildNostrClaimToken(board, relays, claim, now.Unix(), now.Add(ttl).Unix(), owner)
 	if err != nil {
 		return "", err
 	}
-
-	// Publish the owner-signed grant: durable in the local log, best-effort to the
-	// relays. Never log the token's secret; the grant carries only the PUBLIC key.
-	if _, err := pub.PublishEvents(context.Background(), []*nostr.Event{grant}); err != nil {
-		return "", fmt.Errorf("publishing invite grant: %w", err)
-	}
+	// Record the nonce locally as UNCLAIMED (best-effort UX; never fails the mint —
+	// the token itself carries the nonce, and single-use is owner-enforced at grant).
+	_ = appendLocalClaim(unclaimedInvitesPath(RDHome()), localClaim{Claim: claim, Board: board, ExpiresAt: now.Add(ttl).Unix()})
 	return token, nil
 }
 
-// joinViaNostrInviteToken redeems an rd1_ token against the token's relays for the
-// current project directory. It is the production wrapper around
-// redeemNostrInviteToken (which the deterministic test drives with a local
-// medium).
+// joinViaNostrInviteToken redeems an rd1_ claim token against the token's relays for
+// the current project directory. It self-mints a read-only identity and prints the
+// pubkey + claim-nonce the joiner sends to the owner for a write grant. It creates a
+// .ready/ directory in the cwd if none exists, so a truly fresh joiner works without a
+// separate `rd init`.
 func joinViaNostrInviteToken(token string, force bool) error {
-	p, err := decodeNostrInviteToken(token)
+	p, err := decodeNostrClaimToken(token)
 	if err != nil {
 		return fmt.Errorf("invalid invite token: %w", err)
 	}
 	dir, ok := readyProjectDir()
 	if !ok {
-		return fmt.Errorf("run 'rd join' from inside a project directory (no .ready found in cwd or parents)")
+		// A fresh joiner has no project yet — create .ready/ in the cwd so the join
+		// can pin the board and import items without a separate `rd init`.
+		cwd, werr := os.Getwd()
+		if werr != nil {
+			return fmt.Errorf("resolving working directory: %w", werr)
+		}
+		if err := os.MkdirAll(filepath.Join(cwd, ".ready"), 0o755); err != nil {
+			return fmt.Errorf("creating .ready project directory: %w", err)
+		}
+		dir = cwd
 	}
 	medium := &relayInviteMedium{relays: p.Relays, board: p.Board, timeout: nostr.DefaultTimeout}
-	if err := redeemNostrInviteToken(p, RDHome(), dir, medium, force); err != nil {
+	mintedPub, err := redeemNostrClaimToken(p, RDHome(), dir, medium, force)
+	if err != nil {
 		return err
 	}
 	owner, _, _ := rdSync.ParseBoardCoord(p.Board)
 	remaining := time.Until(time.Unix(p.ExpiresAt, 0)).Truncate(time.Minute)
-	fmt.Fprintf(os.Stdout, "joined board %s via invite token (expires in %s)\n", shortHex(owner), remaining)
-	fmt.Println("  run 'rd ready' to see the project's items")
+	fmt.Fprintf(os.Stdout, "Joined board %s READ-ONLY (invite expires in %s).\n", shortHex(owner), remaining)
+	fmt.Println("  run 'rd ready' to see the project's items now.")
+	fmt.Println()
+	fmt.Println("To get WRITE access, send the owner this — they run `rd grant <pubkey> contributor --claim <claim>`:")
+	fmt.Printf("  pubkey=%s\n", mintedPub)
+	fmt.Printf("  claim=%s\n", p.Claim)
+	fmt.Println("  (on locked relays the owner then runs `rd relay sync-allowlist --apply`)")
 	return nil
 }
 
-// inviteRelaySet returns the relay URLs to ship in a token: the configured
-// read+write relays (deduped), falling back to the defaults.
+// inviteRelaySet returns the relay URLs to ship in a token: the configured read+write
+// relays (deduped), falling back to the defaults.
 func inviteRelaySet() []string {
 	seen := map[string]bool{}
 	var out []string

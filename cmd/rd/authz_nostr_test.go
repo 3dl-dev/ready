@@ -63,7 +63,7 @@ func TestGrantNative_PublishesGrantAndRegeneratesAllowlist(t *testing.T) {
 	}
 	grantee := gk.PubKeyHex()
 
-	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-pm", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-pm", 0, ""); err != nil {
 		t.Fatalf("runNostrGrantRevoke(grant): %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
 	}
 	grantee := gk.PubKeyHex()
 
-	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-pm", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-pm", 0, ""); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	file := defaultAllowlistPathForTest(dir)
@@ -119,7 +119,7 @@ func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
 	}
 
 	// Now revoke (the same primitive kill uses on the native path).
-	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleRevoked, "", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleRevoked, "", 0, ""); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestSessionsNostr_ListsFromLogNoDotCf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runNostrGrantRevoke(dir, gk.PubKeyHex(), rdSync.RoleContributor, "agent", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, gk.PubKeyHex(), rdSync.RoleContributor, "agent", 0, ""); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	if err := runSessionsNostr(dir, false); err != nil {
@@ -237,7 +237,7 @@ func TestNostrTrustSetNative_AdmitsGrantedDropsUngranted(t *testing.T) {
 		t.Fatal(err)
 	}
 	granted := gk.PubKeyHex()
-	if err := runNostrGrantRevoke(dir, granted, rdSync.RoleContributor, "agent", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, granted, rdSync.RoleContributor, "agent", 0, ""); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 

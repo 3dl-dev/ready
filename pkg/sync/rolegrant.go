@@ -83,6 +83,11 @@ type RoleGrantSpec struct {
 	From int64
 	// Label is an optional human label carried in content.
 	Label string
+	// Claim, when non-empty, is the one-use invite CLAIM-NONCE this grant consumes
+	// (ready-ce0 self-mint model). The owner binds a joiner's self-minted pubkey to
+	// the claim-nonce it presented; derivation enforces one-claim-nonce-per-pubkey
+	// (single-use), so a leaked claim admitted to a SECOND pubkey is rejected.
+	Claim string
 }
 
 // BuildRoleGrantEvent constructs and signs a kind-39301 role-grant. createdAt MUST
@@ -113,6 +118,9 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 	}
 	if spec.From > 0 {
 		tags = append(tags, []string{"from", strconv.FormatInt(spec.From, 10)})
+	}
+	if spec.Claim != "" {
+		tags = append(tags, []string{"claim", spec.Claim})
 	}
 	e := &nostr.Event{
 		Kind:      KindRoleGrant,
@@ -152,6 +160,9 @@ type roleGrant struct {
 	ID        string
 	// Label is the optional content label.
 	Label string
+	// Claim is the one-use invite claim-nonce this grant consumes ("claim" tag), or
+	// "" when the grant is not bound to an invite claim.
+	Claim string
 }
 
 // parseRoleGrant extracts a roleGrant from a kind-39301 event. It returns ok=false
@@ -194,6 +205,7 @@ func parseRoleGrant(e *nostr.Event) (roleGrant, bool) {
 		CreatedAt:  e.CreatedAt,
 		ID:         e.ID,
 		Label:      e.Content,
+		Claim:      tagValue(e, "claim"),
 	}, true
 }
 
@@ -301,8 +313,23 @@ func roleToLevel(role string) int {
 // checker.go's Level() fallback — callers must apply that default, not read a
 // missing key as level 0. The until map is populated in lockstep with levels.
 func DeriveLevels(events []*nostr.Event, boardAuthor, boardD string) (levels map[string]int, until map[string]int64) {
-	levels, until, _ = deriveGrants(events, boardAuthor, boardD)
+	levels, until, _, _ = deriveGrants(events, boardAuthor, boardD)
 	return levels, until
+}
+
+// ClaimGrantee reports the grantee pubkey an invite claim-nonce is currently bound
+// to under the cap-valid winning grants for the board 30301:<boardAuthor>:<boardD>,
+// and whether any binding exists (ready-ce0). It is the single-use lookup the owner's
+// `rd grant --claim` uses to FAIL FAST when a claim-nonce has already admitted a
+// different self-minted key — the same one-claim-nonce-per-pubkey rule deriveGrants
+// enforces at the projection seam (defense in depth). Pure of I/O and clock.
+func ClaimGrantee(events []*nostr.Event, boardAuthor, boardD, claim string) (grantee string, bound bool) {
+	if claim == "" {
+		return "", false
+	}
+	_, _, _, claimedBy := deriveGrants(events, boardAuthor, boardD)
+	g, ok := claimedBy[claim]
+	return g, ok
 }
 
 // DeriveReadTrust returns the READ-TRUST membership set implied by the signed
@@ -324,7 +351,7 @@ func DeriveLevels(events []*nostr.Event, boardAuthor, boardD string) (levels map
 // admitted by grant-derivation — only self and the operator's bootstrap
 // Config.TrustedPubkeys can admit it, exactly as before.
 func DeriveReadTrust(events []*nostr.Event, boardAuthor, boardD string) map[string]bool {
-	levels, _, _ := deriveGrants(events, boardAuthor, boardD)
+	levels, _, _, _ := deriveGrants(events, boardAuthor, boardD)
 	out := make(map[string]bool, len(levels))
 	for pk := range levels {
 		out[pk] = true
@@ -339,9 +366,10 @@ func DeriveReadTrust(events []*nostr.Event, boardAuthor, boardD string) map[stri
 // replay means the graded read-trust set and the coarse relay allowlist derive from
 // exactly the same signed source — the drift the runbook warns about is closed
 // structurally (design §4, §6, A3), not by keeping two derivations in step by hand.
-func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map[string]int, until map[string]int64, winning map[string]roleGrant) {
+func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map[string]int, until map[string]int64, winning map[string]roleGrant, claimedBy map[string]string) {
 	levels = make(map[string]int)
 	until = make(map[string]int64)
+	claimedBy = make(map[string]string)
 
 	// Bootstrap: the board author is the implicit level-2 trust root.
 	if boardAuthor != "" {
@@ -388,6 +416,20 @@ func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map
 		if !signerMayGrant(levels, boardAuthor, g.Signer, g.Grantee, g.Role) {
 			continue // escalation-cap violation — ignored.
 		}
+		// SINGLE-USE CLAIM BINDING (ready-ce0): a grant that consumes an invite
+		// claim-nonce binds that nonce to EXACTLY ONE grantee, first-cap-valid-wins.
+		// We process ascending, so the earliest cap-valid grant for a claim owns it;
+		// a later grant reusing the SAME claim for a DIFFERENT grantee is ignored — a
+		// leaked claim-nonce can never admit a second self-minted key. The same
+		// grantee may re-grant under its own claim (e.g. later revoke), so the guard
+		// only fires on a grantee MISMATCH. This is the real, owner-enforced
+		// single-use the deleted kind-39303 relay marker only pretended to provide.
+		if g.Claim != "" {
+			if bound, ok := claimedBy[g.Claim]; ok && bound != g.Grantee {
+				continue
+			}
+			claimedBy[g.Claim] = g.Grantee
+		}
 		levels[g.Grantee] = roleToLevel(g.Role)
 		winning[g.Grantee] = g
 	}
@@ -405,7 +447,7 @@ func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map
 		}
 	}
 
-	return levels, until, winning
+	return levels, until, winning, claimedBy
 }
 
 // signerMayGrant applies the escalation cap. levels reflects state replayed so
@@ -465,7 +507,7 @@ func signerMayGrant(levels map[string]int, boardAuthor, signer, grantee, role st
 // clear early error rather than being silently ignored only at derive (MED-6,
 // defense in depth). It is a pure function of the events — no I/O, no clock.
 func MayGrant(events []*nostr.Event, boardAuthor, boardD, signer, grantee, role string) bool {
-	levels, _, _ := deriveGrants(events, boardAuthor, boardD)
+	levels, _, _, _ := deriveGrants(events, boardAuthor, boardD)
 	return signerMayGrant(levels, boardAuthor, signer, grantee, role)
 }
 

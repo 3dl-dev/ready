@@ -57,7 +57,7 @@ func TestNostrScopeForKey_OwnerAllowed(t *testing.T) {
 func TestNostrScopeForKey_GrantedContributorAllowed(t *testing.T) {
 	dir, _ := setupNostrNativeProject(t)
 	contrib := freshKeyHex(t)
-	if err := runNostrGrantRevoke(dir, contrib, rdSync.RoleContributor, "agent-contrib", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, contrib, rdSync.RoleContributor, "agent-contrib", 0, ""); err != nil {
 		t.Fatalf("grant contributor: %v", err)
 	}
 
@@ -73,7 +73,7 @@ func TestNostrScopeForKey_GrantedContributorAllowed(t *testing.T) {
 func TestNostrScopeForKey_GrantedMaintainerAllowed(t *testing.T) {
 	dir, _ := setupNostrNativeProject(t)
 	maint := freshKeyHex(t)
-	if err := runNostrGrantRevoke(dir, maint, rdSync.RoleMaintainer, "agent-maint", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, maint, rdSync.RoleMaintainer, "agent-maint", 0, ""); err != nil {
 		t.Fatalf("grant maintainer: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestNostrScopeForKey_GrantedMaintainerAllowed(t *testing.T) {
 func TestNostrScopeForKey_RevokedDenied(t *testing.T) {
 	dir, _ := setupNostrNativeProject(t)
 	revoked := freshKeyHex(t)
-	if err := runNostrGrantRevoke(dir, revoked, rdSync.RoleContributor, "agent-x", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, revoked, rdSync.RoleContributor, "agent-x", 0, ""); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	// Precondition: the grant makes it allowed.
@@ -97,7 +97,7 @@ func TestNostrScopeForKey_RevokedDenied(t *testing.T) {
 		t.Fatalf("precondition: contributor should be allowed before revoke, got denied: %q", note)
 	}
 	// Now revoke via the same primitive `rd kill`/`rd revoke` uses.
-	if err := runNostrGrantRevoke(dir, revoked, rdSync.RoleRevoked, "", 0); err != nil {
+	if err := runNostrGrantRevoke(dir, revoked, rdSync.RoleRevoked, "", 0, ""); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 

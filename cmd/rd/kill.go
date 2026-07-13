@@ -32,7 +32,7 @@ EXAMPLE
 		// write-allowlist (the same primitive as 'rd revoke' under the unified model:
 		// there is no un-grant, only revoke).
 		if dir, native := nostrNativeProject(); native {
-			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0)
+			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, "", 0, "")
 		}
 
 		// nostr-native only (ready-cb6): a directory with no pinned nostr board is

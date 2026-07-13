@@ -77,25 +77,18 @@ func TestJoin_NoDotCfNoLock(t *testing.T) {
 		t.Fatalf("owner PublishItem: %v", err)
 	}
 
-	minted, err := nostr.GenerateKey()
+	token, err := buildNostrClaimToken(board, []string{"ws://127.0.0.1:1"}, "claim-nocf", now, now+7200, owner)
 	if err != nil {
-		t.Fatalf("minted GenerateKey: %v", err)
-	}
-	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, []string{"ws://127.0.0.1:1"}, "nonce-nocf", now, now+7200, now+2)
-	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
-	}
-	if err := medium.Publish([]*nostr.Event{grant}); err != nil {
-		t.Fatalf("publishing grant: %v", err)
+		t.Fatalf("buildNostrClaimToken: %v", err)
 	}
 
-	p, err := decodeNostrInviteToken(token)
+	p, err := decodeNostrClaimToken(token)
 	if err != nil {
 		t.Fatalf("decode token: %v", err)
 	}
 	joinHome := filepath.Join(base, "joiner-home")
 	joinDir := filepath.Join(base, "joiner-project")
-	if err := redeemNostrInviteToken(p, joinHome, joinDir, medium, false); err != nil {
+	if _, err := redeemNostrClaimToken(p, joinHome, joinDir, medium, false); err != nil {
 		t.Fatalf("redeem (join): %v", err)
 	}
 

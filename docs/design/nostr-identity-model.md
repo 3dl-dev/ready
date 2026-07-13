@@ -43,6 +43,18 @@ This is the one-liner both ready and dontguess independently arrived at. See `do
 
 **Provisioning — generate-then-authorize.** An agent key is generated locally on first `rd` use (same bootstrap as today) but is **inert**: it can sign, but nothing it signs is honored until (a) the owner publishes a role-grant naming its pubkey and (b) `rd relay sync-allowlist` (§4) adds it to the relay write-allowlist. Two admission steps collapse into one signed act plus one mechanical regeneration.
 
+**Invite lifecycle — self-mint claim (ready-ce0, implements generate-then-authorize for a remote joiner).** The invite is the generate-then-authorize model applied across machines. It carries **no secret**:
+
+1. **Owner mints a CLAIM** — `rd invite` produces an `rd1_` v3 token carrying only `{board coord, relay set, TTL, one-use claim-nonce}`. **No key, no grant** is created at mint. The nonce is recorded locally as UNCLAIMED.
+2. **Recipient joins READ-ONLY** — `rd join <token>` **self-mints** a fresh key into `$RD_HOME` (inert per §9), pins the board, adopts the relays, and imports the board's events **read-only** (gated by `DeriveReadTrust`). `rd ready` works immediately. The joiner **writes nothing to any relay** pre-admission. It prints its `pubkey` and the `claim`.
+3. **Recipient sends the owner `pubkey` + `claim`**.
+4. **Owner grants + admits** — `rd grant <pubkey> contributor --claim <claim>` publishes an owner-signed 39301 grant that **binds** the claim-nonce to that pubkey; then `rd relay sync-allowlist --apply` admits the key.
+
+**Security model of the invite.**
+- **The token carries no secret.** A leaked token is a **TTL-bounded claim**, not an identity compromise: it yields only the right to self-mint and *request* a grant the owner may deny — no importable key, no live grant.
+- **Single-use is REAL and owner-enforced** — *one claim-nonce → exactly one pubkey*. The binding lives in the grant's `claim` tag; `deriveGrants` binds a claim to the first cap-valid grantee and **ignores** any later grant reusing that nonce for a different grantee. `rd grant --claim` also refuses client-side (fail-fast) when a nonce is already bound elsewhere. This *replaces* the retired kind-39303 relay "invite-consumed" marker, which was signed by the same shipped key (so it guarded nothing — pure theater) and whose fail-closed relay write broke `rd join` on locked relays (reverses ready-e03's hardening of that mechanism).
+- **Local re-join idempotency** (honest, not a security claim): a second `rd join` of the same token on the same machine is refused without `--force`.
+
 **Rotation.** No special rotation event: publish `role=revoked` for the old pubkey (prospective — its past work stays valid), generate a new key, grant it the same role. Same primitive as revocation.
 
 ---

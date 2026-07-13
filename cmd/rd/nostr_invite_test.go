@@ -1,18 +1,21 @@
 package main
 
-// Deterministic tests for the nostr mint-and-ship invite (ready-a49).
+// Deterministic tests for the SELF-MINT nostr claim invite (ready-ce0).
 //
-// The two-actor test uses a SHARED LOCAL LOG as the sync medium — NO live relay,
-// no network egress — so it does not join the ready-6d5 flaky family (the cmd/rd
-// join tests that block on real relay dials). Owner mints; a SECOND $RD_HOME
-// redeems and `rd ready` (projection) shows the items; re-joining the same token
-// FAILS (nonce consumed); an expired token FAILS. Every event is real
-// (schnorr-signed + re-verified through the projection trust gate).
+// The two-actor test uses a SHARED LOCAL LOG as the read medium — NO live relay, no
+// network egress — so it does not join the ready-6d5 flaky family. It proves the
+// re-architecture's security properties:
+//   (a) the token carries NO secret key (two joins of one token self-mint DIFFERENT
+//       keys — nothing importable rides the token);
+//   (b) join WRITES NOTHING pre-admission (the shared medium is unchanged after a
+//       successful join — the self-minted key is inert, publishes to no relay);
+//   (e) inertness at projection (the self-minted key is absent from the board owner's
+//       derived read-trust until the owner grants it).
+// Every event is real (schnorr-signed + re-verified through the projection trust gate).
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +26,8 @@ import (
 	rdSync "github.com/campfire-net/ready/pkg/sync"
 )
 
-// projectTrust mirrors nostrTrustSet: self ∪ grant-derived read-trust for the
-// pinned board. Used to project a joiner's log exactly as `rd ready` would.
+// projectTrust mirrors nostrTrustSet: self ∪ grant-derived read-trust for the pinned
+// board. Used to project a joiner's log exactly as `rd ready` would.
 func projectTrust(events []*nostr.Event, selfPub, boardAuthor, boardD string) map[string]bool {
 	trust := map[string]bool{selfPub: true}
 	for pk := range rdSync.DeriveReadTrust(events, boardAuthor, boardD) {
@@ -33,14 +36,14 @@ func projectTrust(events []*nostr.Event, selfPub, boardAuthor, boardD string) ma
 	return trust
 }
 
-func TestNostrInvite_TwoActor_MintJoinRejoinExpiry(t *testing.T) {
+func TestNostrClaim_TwoActor_SelfMintReadOnlyThenGrant(t *testing.T) {
 	ctx := context.Background()
 
 	// The shared medium models a relay as a shared append-only log (no network).
-	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
+	sharedLog := rdSync.NewNostrLog(t.TempDir() + "/relay-log.jsonl")
 	medium := &logInviteMedium{log: sharedLog}
 
-	// --- OWNER: pin a board, publish two items + the invite grant to the medium ---
+	// --- OWNER: pin a board, publish two items to the medium ---
 	ownerKey, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatalf("owner GenerateKey: %v", err)
@@ -65,48 +68,67 @@ func TestNostrInvite_TwoActor_MintJoinRejoinExpiry(t *testing.T) {
 		t.Fatalf("owner PublishItem 2: %v", err)
 	}
 
-	// Mint the token + owner-signed grant; publish the grant to the medium.
-	minted, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("minted GenerateKey: %v", err)
-	}
-	const nonce = "det-nonce-01"
+	// Mint a CLAIM token — NO key, NO grant published.
+	const claim = "det-claim-01"
 	tokenRelays := []string{"ws://127.0.0.1:1"} // unreachable by design
-	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, tokenRelays, nonce, now, now+7200, now+2)
+	token, err := buildNostrClaimToken(board, tokenRelays, claim, now, now+7200, owner)
 	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
+		t.Fatalf("buildNostrClaimToken: %v", err)
 	}
-	if err := medium.Publish([]*nostr.Event{grant}); err != nil {
-		t.Fatalf("publishing grant to medium: %v", err)
-	}
-
-	// The token must never expose being anything but an opaque rd1_ string, and it
-	// must NOT contain the campfire prefix.
 	if !strings.HasPrefix(token, nostrInviteTokenPrefix) {
 		t.Fatalf("token missing rd1_ prefix: %q", token)
 	}
 
-	// --- ACTOR B: redeem (first use) against a FRESH $RD_HOME + project dir ---
+	// (a) NO SECRET IN THE TOKEN: the decoded payload has no "sk" field and no secret
+	// material of any kind.
+	rawJSON, err := base64.RawURLEncoding.DecodeString(token[len(nostrInviteTokenPrefix):])
+	if err != nil {
+		t.Fatalf("decode token base64: %v", err)
+	}
+	if strings.Contains(string(rawJSON), "\"sk\"") || strings.Contains(strings.ToLower(string(rawJSON)), "secret") {
+		t.Fatalf("token payload must carry NO secret, got %s", rawJSON)
+	}
+
+	// Snapshot the medium size — join must not grow it (prop b).
+	before, err := sharedLog.ReadAll()
+	if err != nil {
+		t.Fatalf("read medium before join: %v", err)
+	}
+
+	// --- JOINER: redeem (self-mint) against a FRESH $RD_HOME + project dir ---
 	bHome := t.TempDir()
 	bDir := t.TempDir()
-	pB, err := decodeNostrInviteToken(token)
+	pB, err := decodeNostrClaimToken(token)
 	if err != nil {
 		t.Fatalf("decode token (B): %v", err)
 	}
-	if err := redeemNostrInviteToken(pB, bHome, bDir, medium, false); err != nil {
-		t.Fatalf("Actor B redeem (first use): %v", err)
+	mintedPubB, err := redeemNostrClaimToken(pB, bHome, bDir, medium, false)
+	if err != nil {
+		t.Fatalf("Joiner B redeem: %v", err)
 	}
 
-	// Identity imported == the minted key.
+	// A self-minted identity was written; it matches the returned pubkey.
 	loaded, err := nostr.LoadKeyFile(nostr.DefaultKeyPath(bHome))
 	if err != nil {
 		t.Fatalf("loading B identity: %v", err)
 	}
-	if loaded.PubKeyHex() != minted.PubKeyHex() {
-		t.Errorf("B identity pubkey = %s, want minted %s", loaded.PubKeyHex(), minted.PubKeyHex())
+	if loaded.PubKeyHex() != mintedPubB {
+		t.Errorf("B identity pubkey = %s, want returned minted %s", loaded.PubKeyHex(), mintedPubB)
+	}
+	if loaded.PubKeyHex() == owner {
+		t.Error("self-minted key must NOT be the owner key")
 	}
 
-	// Board pinned in B's project.
+	// (b) JOIN WROTE NOTHING to the medium (no relay write pre-admission).
+	after, err := sharedLog.ReadAll()
+	if err != nil {
+		t.Fatalf("read medium after join: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("join wrote %d event(s) to the medium; must write NOTHING pre-admission", len(after)-len(before))
+	}
+
+	// Board pinned + relays adopted in B's project/config.
 	bSync, err := rdconfig.LoadSyncConfig(bDir)
 	if err != nil {
 		t.Fatalf("loading B sync config: %v", err)
@@ -114,8 +136,6 @@ func TestNostrInvite_TwoActor_MintJoinRejoinExpiry(t *testing.T) {
 	if bSync.Board != board {
 		t.Errorf("B pinned board = %q, want %q", bSync.Board, board)
 	}
-
-	// Relays adopted into B's rd.json.
 	bCfg, err := rdconfig.Load(bHome)
 	if err != nil {
 		t.Fatalf("loading B rd.json: %v", err)
@@ -124,13 +144,12 @@ func TestNostrInvite_TwoActor_MintJoinRejoinExpiry(t *testing.T) {
 		t.Errorf("B relay endpoints = %+v, want single %q", bCfg.RelayEndpoints, tokenRelays[0])
 	}
 
-	// `rd ready` (projection) shows the owner's two items, trust-admitted via the
-	// grant the token shipped — the load-bearing outcome.
+	// `rd ready` (projection) shows the owner's two items READ-ONLY (owner trust root).
 	bEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(bDir)).ReadAll()
 	if err != nil {
 		t.Fatalf("reading B log: %v", err)
 	}
-	trust := projectTrust(bEvents, minted.PubKeyHex(), owner, boardD)
+	trust := projectTrust(bEvents, mintedPubB, owner, boardD)
 	items := rdSync.ProjectItems(bEvents, rdSync.ProjectOptions{Trusted: trust, PinnedBoard: board})
 	for _, want := range []string{"ready-001", "ready-002"} {
 		if _, ok := items[want]; !ok {
@@ -138,327 +157,191 @@ func TestNostrInvite_TwoActor_MintJoinRejoinExpiry(t *testing.T) {
 		}
 	}
 
-	// --- RE-JOIN the same token: must FAIL (nonce consumed) and leave no state ---
+	// (e) INERTNESS: pre-grant, the self-minted key is ABSENT from the board owner's
+	// derived read-trust set.
+	if rdSync.DeriveReadTrust(bEvents, owner, boardD)[mintedPubB] {
+		t.Error("self-minted key must be inert (absent from read-trust) before the owner grants it")
+	}
+
+	// --- OWNER grants the self-minted key with --claim; single-use binds the nonce ---
+	grantEv, err := rdSync.BuildRoleGrantEvent(ownerKey, rdSync.RoleGrantSpec{
+		BoardD: boardD, BoardAuthor: owner, Grantee: mintedPubB,
+		Role: rdSync.RoleContributor, Claim: claim,
+	}, now+10)
+	if err != nil {
+		t.Fatalf("owner grant: %v", err)
+	}
+	withGrant := append(bEvents, grantEv)
+	if !rdSync.DeriveReadTrust(withGrant, owner, boardD)[mintedPubB] {
+		t.Error("after the owner's --claim grant the self-minted key must be admitted to read-trust")
+	}
+	if bound, ok := rdSync.ClaimGrantee(withGrant, owner, boardD, claim); !ok || bound != mintedPubB {
+		t.Errorf("claim %s should bind to the joiner pubkey, got (%s,%v)", claim, bound, ok)
+	}
+
+	// (a again) A SECOND joiner of the SAME token self-mints a DIFFERENT key — nothing
+	// importable rode the token.
 	cHome := t.TempDir()
 	cDir := t.TempDir()
-	pC, err := decodeNostrInviteToken(token)
+	pC, _ := decodeNostrClaimToken(token)
+	mintedPubC, err := redeemNostrClaimToken(pC, cHome, cDir, medium, false)
 	if err != nil {
-		t.Fatalf("decode token (C): %v", err)
+		t.Fatalf("Joiner C redeem: %v", err)
 	}
-	err = redeemNostrInviteToken(pC, cHome, cDir, medium, false)
-	if err == nil {
-		t.Fatal("re-join with a consumed token must FAIL, got nil")
-	}
-	if !strings.Contains(err.Error(), "already redeemed") {
-		t.Errorf("re-join error = %q, want 'already redeemed'", err.Error())
-	}
-	if fileExists(nostr.DefaultKeyPath(cHome)) {
-		t.Error("a rejected re-join must not write an identity")
-	}
-
-	// --- EXPIRED token: must FAIL at decode AND at redeem (defense in depth) ---
-	expMinted, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("expired-minted GenerateKey: %v", err)
-	}
-	expToken, expGrant, err := buildNostrInviteToken(ownerKey, board, expMinted, tokenRelays, "exp-nonce", now-7200, now-3600, now-7000)
-	if err != nil {
-		t.Fatalf("build expired token: %v", err)
-	}
-	if _, decErr := decodeNostrInviteToken(expToken); decErr == nil || !strings.Contains(decErr.Error(), "expired") {
-		t.Errorf("decode of expired token = %v, want 'expired' error", decErr)
-	}
-	// Even if an attacker crafts the payload directly (bypassing decode), redeem
-	// re-checks TTL.
-	_ = medium.Publish([]*nostr.Event{expGrant})
-	expPayload := &nostrInvitePayload{
-		Version: nostrInviteVersion, Board: board, SecretHex: expMinted.SecretHex(),
-		Relays: tokenRelays, Nonce: "exp-nonce", IssuedAt: now - 7200, ExpiresAt: now - 3600, Issuer: owner,
-	}
-	dHome := t.TempDir()
-	dDir := t.TempDir()
-	if err := redeemNostrInviteToken(expPayload, dHome, dDir, medium, false); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Errorf("redeem of expired payload = %v, want 'expired' error", err)
-	}
-	if fileExists(nostr.DefaultKeyPath(dHome)) {
-		t.Error("an expired redemption must not write an identity")
+	if mintedPubC == mintedPubB {
+		t.Error("two joins of one token must self-mint DIFFERENT keys (no key in the token)")
 	}
 }
 
-// TestNostrInvite_Decode_Rejections covers the token-format fail-closed paths.
-func TestNostrInvite_Decode_Rejections(t *testing.T) {
-	if _, err := decodeNostrInviteToken("rd1_"); err == nil {
+// TestNostrClaim_ReJoinLocalIdempotency: a second `rd join` of the SAME token on the
+// SAME machine is refused without --force (honest local idempotency), and succeeds
+// with --force (self-minting a fresh key).
+func TestNostrClaim_ReJoinLocalIdempotency(t *testing.T) {
+	sharedLog := rdSync.NewNostrLog(t.TempDir() + "/relay-log.jsonl")
+	medium := &logInviteMedium{log: sharedLog}
+	ownerKey, _ := nostr.GenerateKey()
+	owner := ownerKey.PubKeyHex()
+	board := rdSync.BoardCoord(owner, "ready")
+	now := time.Now().Unix()
+	token, err := buildNostrClaimToken(board, nil, "claim-rejoin", now, now+7200, owner)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	home := t.TempDir()
+	dir := t.TempDir()
+
+	p, _ := decodeNostrClaimToken(token)
+	if _, err := redeemNostrClaimToken(p, home, dir, medium, false); err != nil {
+		t.Fatalf("first join: %v", err)
+	}
+	// Second join, same home, no force → refused.
+	p2, _ := decodeNostrClaimToken(token)
+	if _, err := redeemNostrClaimToken(p2, home, dir, medium, false); err == nil ||
+		!strings.Contains(err.Error(), "already joined on this machine") {
+		t.Fatalf("re-join without --force = %v, want 'already joined on this machine'", err)
+	}
+	// With --force → allowed (self-mints again).
+	p3, _ := decodeNostrClaimToken(token)
+	if _, err := redeemNostrClaimToken(p3, home, dir, medium, true); err != nil {
+		t.Fatalf("re-join with --force: %v", err)
+	}
+}
+
+// TestNostrClaim_Decode_Rejections covers the token-format fail-closed paths, incl.
+// the retired v2 secret-bearing token.
+func TestNostrClaim_Decode_Rejections(t *testing.T) {
+	if _, err := decodeNostrClaimToken("rd1_"); err == nil {
 		t.Error("empty-body token should be rejected")
 	}
-	if _, err := decodeNostrInviteToken("rd1_!!!not-base64!!!"); err == nil {
+	if _, err := decodeNostrClaimToken("rd1_!!!not-base64!!!"); err == nil {
 		t.Error("non-base64 token should be rejected")
 	}
-	// Wrong version.
 	owner, _ := nostr.GenerateKey()
-	minted, _ := nostr.GenerateKey()
 	board := rdSync.BoardCoord(owner.PubKeyHex(), "ready")
 	now := time.Now().Unix()
-	good, _, err := buildNostrInviteToken(owner, board, minted, nil, "n", now, now+3600, now)
+	good, err := buildNostrClaimToken(board, nil, "n", now, now+3600, owner.PubKeyHex())
 	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
+		t.Fatalf("buildNostrClaimToken: %v", err)
 	}
-	if _, err := decodeNostrInviteToken(good); err != nil {
+	if _, err := decodeNostrClaimToken(good); err != nil {
 		t.Fatalf("valid token should decode: %v", err)
 	}
-}
-
-// TestNostrInvite_Redeem_UngrantedTokenRefused proves the grant-presence gate: a
-// well-formed, unexpired token whose grant never landed on the medium is refused
-// fail-closed, and writes no identity.
-func TestNostrInvite_Redeem_UngrantedTokenRefused(t *testing.T) {
-	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
-	medium := &logInviteMedium{log: sharedLog}
-
-	owner, _ := nostr.GenerateKey()
-	minted, _ := nostr.GenerateKey()
-	board := rdSync.BoardCoord(owner.PubKeyHex(), "ready")
-	now := time.Now().Unix()
-	// Build a token but DO NOT publish the grant to the medium.
-	token, _, err := buildNostrInviteToken(owner, board, minted, nil, "n2", now, now+3600, now)
-	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
+	// Expired token is rejected at decode.
+	expired, _ := buildNostrClaimToken(board, nil, "n", now-7200, now-3600, owner.PubKeyHex())
+	if _, err := decodeNostrClaimToken(expired); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Errorf("expired token decode = %v, want 'expired'", err)
 	}
-	p, err := decodeNostrInviteToken(token)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	home := t.TempDir()
-	dir := t.TempDir()
-	if err := redeemNostrInviteToken(p, home, dir, medium, false); err == nil || !strings.Contains(err.Error(), "not authorized") {
-		t.Errorf("ungranted token redeem = %v, want 'not authorized' error", err)
-	}
-	if fileExists(nostr.DefaultKeyPath(home)) {
-		t.Error("an unauthorized redemption must not write an identity")
+	// A retired v2 secret-bearing token must be rejected with an explicit message.
+	v2 := nostrInviteTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":2,"board":"`+board+`","sk":"`+strings.Repeat("a", 64)+`","nonce":"x","exp":`+itoa(now+3600)+`}`))
+	if _, err := decodeNostrClaimToken(v2); err == nil || !strings.Contains(err.Error(), "insecure") {
+		t.Errorf("v2 secret-bearing token decode = %v, want 'insecure' rejection", err)
 	}
 }
 
-// --- ready-cc5 security hardening: HIGH-3, MED-5, MED-7 ---
+// failEventsMedium's Events() fails — the LATE-failure injection point (the read step
+// runs after the key/board/relay writes, so a failure here must roll them all back).
+type failEventsMedium struct{}
 
-// TestRelayInviteMedium_Publish_FailClosed is the HIGH-3 / ready-e03 proof: the
-// production relay medium's Publish must FAIL (return an error) whenever the
-// kind-39303 consumed marker cannot be confirmed landed+observable on any relay —
-// so redeemNostrInviteToken rolls back instead of finalizing a join with single-use
-// silently bypassed. The old body discarded nostr.Publish's (accepted, err) and
-// always returned nil. The publish/fetch seams are injected so no live relay is
-// needed and the test is deterministic.
-func TestRelayInviteMedium_Publish_FailClosed(t *testing.T) {
-	minted, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	board := rdSync.BoardCoord(minted.PubKeyHex(), "ready")
-	marker, err := rdSync.BuildInviteConsumedEvent(minted, "nonce-h3", board, time.Now().Unix())
-	if err != nil {
-		t.Fatalf("BuildInviteConsumedEvent: %v", err)
-	}
-
-	// Case 1: the relay REJECTS the publish (accepted=false) -> Publish errors.
-	rejecting := &relayInviteMedium{
-		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
-		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return false, nil },
-		fetchFn:   func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
-	}
-	if err := rejecting.Publish([]*nostr.Event{marker}); err == nil {
-		t.Error("Publish must FAIL when no relay accepts the marker (fail-closed)")
-	}
-
-	// Case 2: the relay reports an ERROR -> Publish errors (surfaces it).
-	erroring := &relayInviteMedium{
-		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
-		publishFn: func(context.Context, string, *nostr.Event) (bool, error) {
-			return false, fmt.Errorf("dial refused")
-		},
-		fetchFn: func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
-	}
-	if err := erroring.Publish([]*nostr.Event{marker}); err == nil || !strings.Contains(err.Error(), "dial refused") {
-		t.Errorf("Publish must surface the publish error, got %v", err)
-	}
-
-	// Case 3: the relay ACCEPTS but the marker is NOT observable on read-back ->
-	// Publish still errors (a claimed-but-absent write must not consume the token).
-	lying := &relayInviteMedium{
-		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
-		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return true, nil },
-		fetchFn:   func(context.Context, string, map[string]any) ([]*nostr.Event, error) { return nil, nil },
-	}
-	if err := lying.Publish([]*nostr.Event{marker}); err == nil {
-		t.Error("Publish must FAIL when the marker is accepted but not observable on read-back")
-	}
-
-	// Case 4: accepted AND observable on read-back -> Publish SUCCEEDS.
-	good := &relayInviteMedium{
-		relays: []string{"ws://relay"}, board: board, timeout: time.Second,
-		publishFn: func(context.Context, string, *nostr.Event) (bool, error) { return true, nil },
-		fetchFn: func(context.Context, string, map[string]any) ([]*nostr.Event, error) {
-			return []*nostr.Event{marker}, nil
-		},
-	}
-	if err := good.Publish([]*nostr.Event{marker}); err != nil {
-		t.Errorf("Publish must succeed when the marker lands and reads back: %v", err)
-	}
+func (failEventsMedium) Events() ([]*nostr.Event, error) {
+	return nil, errForcedEvents
 }
 
-// TestNostrInvite_ImportGatedByTrust is the MED-5 proof: a FOREIGN-key event served
-// by the medium is NOT admitted to the joiner's local authoritative log on join. Only
-// events from the board owner's derived trust set (owner + cap-valid grantees, incl.
-// the token's minted key) enter the log; a validly-signed foreign event a hostile
-// relay injects is dropped at ingestion (single-admission-choke preserved).
-func TestNostrInvite_ImportGatedByTrust(t *testing.T) {
-	ctx := context.Background()
-	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
-	medium := &logInviteMedium{log: sharedLog}
+var errForcedEvents = &forcedErr{"forced medium read failure"}
 
+type forcedErr struct{ s string }
+
+func (e *forcedErr) Error() string { return e.s }
+
+// TestNostrClaim_LateFailure_FullRollback: when the medium read (a post-write step)
+// fails, redeem must leave NO partial state — not the self-minted identity, the board
+// pin, the adopted relay config, the imported log, nor the local claim record.
+func TestNostrClaim_LateFailure_FullRollback(t *testing.T) {
 	ownerKey, _ := nostr.GenerateKey()
 	owner := ownerKey.PubKeyHex()
-	const boardD = "ready"
-	board := rdSync.BoardCoord(owner, boardD)
-
-	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog}
-	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{owner}}
+	board := rdSync.BoardCoord(owner, "ready")
 	now := time.Now().Unix()
-	if _, err := ownerPub.PublishItem(ctx, &boardSpec, rdSync.CardSpec{
-		ItemID: "ready-001", Title: "owner item", Status: state.StatusActive,
-		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: owner,
-	}, now); err != nil {
-		t.Fatalf("owner PublishItem: %v", err)
-	}
-
-	// A HOSTILE, ungranted foreign key injects a validly-signed card onto the medium.
-	foreignKey, _ := nostr.GenerateKey()
-	foreignPub := &rdSync.Publisher{Key: foreignKey, Log: sharedLog}
-	if _, err := foreignPub.PublishItem(ctx, nil, rdSync.CardSpec{
-		ItemID: "ready-666", Title: "poison", Status: state.StatusActive,
-		Priority: "p0", Type: "task", BoardD: boardD, BoardAuthor: owner,
-	}, now+1); err != nil {
-		t.Fatalf("foreign PublishItem: %v", err)
-	}
-
-	// Mint + publish the owner-signed contributor grant.
-	minted, _ := nostr.GenerateKey()
-	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, nil, "nonce-med5", now, now+7200, now+2)
+	token, err := buildNostrClaimToken(board, []string{"ws://127.0.0.1:1"}, "claim-med7", now, now+7200, owner)
 	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
+		t.Fatalf("build: %v", err)
 	}
-	if err := medium.Publish([]*nostr.Event{grant}); err != nil {
-		t.Fatalf("publish grant: %v", err)
-	}
-
-	p, err := decodeNostrInviteToken(token)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	p, _ := decodeNostrClaimToken(token)
 	home := t.TempDir()
 	dir := t.TempDir()
-	if err := redeemNostrInviteToken(p, home, dir, medium, false); err != nil {
-		t.Fatalf("redeem: %v", err)
-	}
 
-	// The joiner's local log must NOT contain any event signed by the foreign key.
-	localEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
-	if err != nil {
-		t.Fatalf("read local log: %v", err)
-	}
-	for _, e := range localEvents {
-		if e.PubKey == foreignKey.PubKeyHex() {
-			t.Fatalf("foreign-key event admitted to the local log on join (log poisoning): %s", e.ID)
-		}
-	}
-	// Sanity: the owner's own item DID import (the gate is not over-broad).
-	foundOwner := false
-	for _, e := range localEvents {
-		if e.PubKey == owner {
-			foundOwner = true
-			break
-		}
-	}
-	if !foundOwner {
-		t.Fatal("owner-signed events must still import (trust gate must not drop the owner)")
-	}
-}
-
-// failPublishMedium models a medium whose Events() serves the owner's snapshot but
-// whose Publish (the LATE consumed-marker step) fails — the MED-7 forced-failure
-// injection point.
-type failPublishMedium struct{ src *rdSync.NostrLog }
-
-func (m *failPublishMedium) Events() ([]*nostr.Event, error) { return m.src.ReadAll() }
-func (m *failPublishMedium) Publish([]*nostr.Event) error {
-	return fmt.Errorf("forced marker-publish failure")
-}
-
-// TestNostrInvite_LateFailure_FullRollback is the MED-7 proof: when a post-write
-// step fails (here the consumed-marker publish, the last step), redeem must leave NO
-// partial project state — not just the identity, but the board pin, the adopted relay
-// config, and the imported log entries are ALL reverted.
-func TestNostrInvite_LateFailure_FullRollback(t *testing.T) {
-	ctx := context.Background()
-	sharedLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "relay-log.jsonl"))
-
-	ownerKey, _ := nostr.GenerateKey()
-	owner := ownerKey.PubKeyHex()
-	const boardD = "ready"
-	board := rdSync.BoardCoord(owner, boardD)
-
-	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog}
-	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{owner}}
-	now := time.Now().Unix()
-	if _, err := ownerPub.PublishItem(ctx, &boardSpec, rdSync.CardSpec{
-		ItemID: "ready-001", Title: "owner item", Status: state.StatusActive,
-		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: owner,
-	}, now); err != nil {
-		t.Fatalf("owner PublishItem: %v", err)
-	}
-
-	minted, _ := nostr.GenerateKey()
-	token, grant, err := buildNostrInviteToken(ownerKey, board, minted, []string{"ws://127.0.0.1:1"}, "nonce-med7", now, now+7200, now+2)
-	if err != nil {
-		t.Fatalf("buildNostrInviteToken: %v", err)
-	}
-	if _, err := sharedLog.AppendUnique([]*nostr.Event{grant}); err != nil {
-		t.Fatalf("append grant: %v", err)
-	}
-
-	p, err := decodeNostrInviteToken(token)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	home := t.TempDir()
-	dir := t.TempDir()
-	medium := &failPublishMedium{src: sharedLog}
-
-	err = redeemNostrInviteToken(p, home, dir, medium, false)
-	if err == nil || !strings.Contains(err.Error(), "forced marker-publish failure") {
+	_, err = redeemNostrClaimToken(p, home, dir, failEventsMedium{}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced medium read failure") {
 		t.Fatalf("redeem = %v, want the forced late failure surfaced", err)
 	}
 
-	// FULL rollback: identity, board pin, relay config, and imported log all reverted.
 	if fileExists(nostr.DefaultKeyPath(home)) {
-		t.Error("late failure left an identity (identity not rolled back)")
+		t.Error("late failure left an identity (not rolled back)")
 	}
 	syncCfg, err := rdconfig.LoadSyncConfig(dir)
 	if err != nil {
 		t.Fatalf("LoadSyncConfig: %v", err)
 	}
 	if syncCfg.Board != "" {
-		t.Errorf("late failure left a pinned board %q (board pin not rolled back)", syncCfg.Board)
+		t.Errorf("late failure left a pinned board %q (not rolled back)", syncCfg.Board)
 	}
 	relayCfg, err := rdconfig.Load(home)
 	if err != nil {
 		t.Fatalf("rdconfig.Load: %v", err)
 	}
 	if len(relayCfg.RelayEndpoints) != 0 {
-		t.Errorf("late failure left adopted relays %+v (relay config not rolled back)", relayCfg.RelayEndpoints)
+		t.Errorf("late failure left adopted relays %+v (not rolled back)", relayCfg.RelayEndpoints)
 	}
 	localEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
 		t.Fatalf("read local log: %v", err)
 	}
 	if len(localEvents) != 0 {
-		t.Errorf("late failure left %d imported log event(s) (log import not rolled back)", len(localEvents))
+		t.Errorf("late failure left %d imported log event(s) (not rolled back)", len(localEvents))
 	}
+	if present, _ := localClaimPresent(consumedInvitesPath(home), "claim-med7"); present {
+		t.Error("late failure left a local consumed-claim record (not rolled back)")
+	}
+}
+
+// itoa is a tiny int64→string helper for building the raw v2 test token.
+func itoa(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	var b [20]byte
+	i := len(b)
+	for v > 0 {
+		i--
+		b[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
 }

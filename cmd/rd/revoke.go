@@ -53,7 +53,7 @@ EXAMPLES
 			if retroactive {
 				return fmt.Errorf("--retroactive is campfire-only; on a nostr-native project use 'rd revoke %s --from <unix>' for retroactive (compromise) repudiation", pubKeyHex)
 			}
-			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, label, from)
+			return runNostrGrantRevoke(dir, pubKeyHex, rdSync.RoleRevoked, label, from, "")
 		}
 
 		// nostr-native only (ready-cb6): the campfire-backed revocation path has been

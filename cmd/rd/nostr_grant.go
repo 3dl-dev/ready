@@ -53,7 +53,7 @@ func resolveBoardAuthorD(dir, signerPubkey string) (boardAuthor, boardD string, 
 // DeriveLevels also ignores a cap-violating grant, but refusing to publish it keeps
 // the log clean), appends it to the local authoritative log, and best-effort
 // publishes it to the write relays.
-func publishRoleGrant(grantee, role, label string, from int64) error {
+func publishRoleGrant(grantee, role, label string, from int64, claim string) error {
 	if len(grantee) != 64 || !isHex(grantee) {
 		return fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
@@ -90,6 +90,17 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 			"(only the owner may mint maintainer/owner or revoke the owner/a maintainer; "+
 			"a contributor may grant nothing)", signer, role, grantee, rdSync.BoardCoord(boardAuthor, boardD))
 	}
+	// SINGLE-USE CLAIM (ready-ce0): when --claim binds this grant to an invite
+	// claim-nonce, refuse client-side (fail fast, clean log) if that nonce is already
+	// bound to a DIFFERENT self-minted pubkey. Derivation enforces the same
+	// one-claim-nonce-per-pubkey rule at projection (defense in depth), so a second
+	// grant reusing a leaked claim for another key never takes effect regardless.
+	if claim != "" {
+		if bound, ok := rdSync.ClaimGrantee(events, boardAuthor, boardD, claim); ok && bound != grantee {
+			return fmt.Errorf("invite claim-nonce %s is already consumed by pubkey %s — one claim-nonce admits exactly one key; "+
+				"the second joiner needs a fresh `rd invite` token", claim, bound)
+		}
+	}
 	spec := rdSync.RoleGrantSpec{
 		BoardD:      boardD,
 		BoardAuthor: boardAuthor,
@@ -97,6 +108,7 @@ func publishRoleGrant(grantee, role, label string, from int64) error {
 		Role:        role,
 		From:        from,
 		Label:       label,
+		Claim:       claim,
 	}
 	// Stamp with a strictly-monotonic created_at (max(now, newest+1)) SCOPED to THIS
 	// grantee's (board,grantee) grant slot (ready-be1), NOT a bare time.Now() and NOT
