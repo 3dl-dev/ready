@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/playbook"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/playbook"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 

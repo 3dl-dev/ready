@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestLiveRelay_ItemRoundTrip is the ground-source, no-mock proof for ready-a13:

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/resolve"
+	"github.com/3dl-dev/ready/pkg/resolve"
 )
 
 const jsonlResolveCampfire = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"

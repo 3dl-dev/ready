@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // ErrNotFound is returned when an item ID cannot be resolved.

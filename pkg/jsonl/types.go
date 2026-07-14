@@ -9,7 +9,7 @@ package jsonl
 import (
 	"encoding/json"
 
-	"github.com/campfire-net/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/msgrec"
 )
 
 // WorkTagPrefix is the tag namespace for all work management convention operations.

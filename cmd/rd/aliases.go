@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/timeparse"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/timeparse"
 	"github.com/spf13/cobra"
 )
 

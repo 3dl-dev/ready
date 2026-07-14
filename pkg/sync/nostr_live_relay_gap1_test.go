@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // TestLiveRelay_GrantPropagatesToDerivedTrust is the live half of the GAP-1

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	msgrec "github.com/campfire-net/ready/pkg/msgrec"
-	"github.com/campfire-net/ready/pkg/state"
+	msgrec "github.com/3dl-dev/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestDerive_CrossCampfireRef_NonBlocking verifies that a work:block message

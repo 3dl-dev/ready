@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestLiveRelay_BoardScopedStatusConvergence is the ready-7ec ground-source

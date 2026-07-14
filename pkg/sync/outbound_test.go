@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/jsonl"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/jsonl"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // makeRecord creates a MutationRecord for testing.

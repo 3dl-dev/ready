@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/campfire-net/ready/pkg/jsonl"
+	"github.com/3dl-dev/ready/pkg/jsonl"
 )
 
 // PlaybooksFile is the append-only JSONL file of playbook template records under

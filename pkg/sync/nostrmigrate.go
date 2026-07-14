@@ -35,8 +35,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // BuildHistoricalStatusEvent constructs and signs a NIP-34 status event that

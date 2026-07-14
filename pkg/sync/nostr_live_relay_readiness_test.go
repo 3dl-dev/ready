@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/views"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // TestLiveRelay_ReadinessParity is the ground-source, no-mock proof for

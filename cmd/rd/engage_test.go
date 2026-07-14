@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/playbook"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/playbook"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestPlaybookCreateList_RoundTrip drives the real playbook create/list cobra

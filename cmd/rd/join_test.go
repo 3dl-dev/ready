@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // TestIsHex verifies isHex correctly identifies hex strings.

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	"github.com/campfire-net/ready/pkg/state"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // seedRec is one on-disk mutation record for the campfire/JSONL backend — the

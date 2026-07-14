@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/campfire-net/ready/pkg/views"
+	"github.com/3dl-dev/ready/pkg/views"
 	"github.com/spf13/cobra"
 )
 

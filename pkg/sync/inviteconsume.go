@@ -20,7 +20,7 @@
 package sync
 
 import (
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // InviteGrantValid reports whether events carry a cap-valid, owner-rooted grant

@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // ReconcileResult summarises a reconcile pass.

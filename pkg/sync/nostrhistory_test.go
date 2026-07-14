@@ -6,8 +6,8 @@ package sync
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestProjection_FullHistoryReplay is the ready-b5f core proof: create, claim,

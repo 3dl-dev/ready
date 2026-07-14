@@ -35,7 +35,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // KindRoleGrant is the addressable "rd role-grant" event kind. It is purely

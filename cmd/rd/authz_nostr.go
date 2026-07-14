@@ -6,8 +6,8 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 

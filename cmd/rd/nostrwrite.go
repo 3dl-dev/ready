@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/playbook"
-	"github.com/campfire-net/ready/pkg/state"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/playbook"
+	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // ============================================================================

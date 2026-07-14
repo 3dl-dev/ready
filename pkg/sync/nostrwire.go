@@ -28,8 +28,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // Nostr event kinds used by the rd wire mapping. These follow the existing NIPs

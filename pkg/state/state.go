@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/declarations"
-	"github.com/campfire-net/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/declarations"
+	"github.com/3dl-dev/ready/pkg/msgrec"
 )
 
 // labelAtomPattern is the per-atom validation pattern for label names.

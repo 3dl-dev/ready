@@ -6,7 +6,7 @@ package views
 import (
 	"time"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // ViewName constants correspond to the named views in the convention spec.

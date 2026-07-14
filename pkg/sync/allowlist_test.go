@@ -13,7 +13,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 const ownerLabel = "owner (board author)"

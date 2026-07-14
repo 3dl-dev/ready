@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/views"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // TestReadyFilter_ETADoesNotFilter tests that ETA no longer gates the ready view.

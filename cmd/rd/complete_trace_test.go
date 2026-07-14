@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestCompleteReasonWithTrace_FoldsFlags is the pure-function guard: each provided

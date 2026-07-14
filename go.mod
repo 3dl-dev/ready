@@ -1,4 +1,4 @@
-module github.com/campfire-net/ready
+module github.com/3dl-dev/ready
 
 go 1.25.0
 
