@@ -51,7 +51,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/campfire-net/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
 func main() {

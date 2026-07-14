@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // newTestPublisher returns a relay-less Publisher whose events land in a fresh

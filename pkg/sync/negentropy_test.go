@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 func mustKey(t *testing.T) *nostr.Key {

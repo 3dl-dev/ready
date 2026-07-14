@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 

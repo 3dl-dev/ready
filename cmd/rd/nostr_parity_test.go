@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/state"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 func itemMap(ids ...string) map[string]*state.Item {

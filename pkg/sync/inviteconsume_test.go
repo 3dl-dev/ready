@@ -7,7 +7,7 @@ package sync
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // claimGrant builds+signs a 39301 grant that consumes an invite claim-nonce.

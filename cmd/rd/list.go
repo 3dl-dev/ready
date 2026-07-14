@@ -5,8 +5,8 @@ import (
 	"os"
 	"sort"
 
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/views"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )

@@ -9,7 +9,7 @@
 // fields they are ANDed (NIP-01 semantics).
 package sync
 
-import "github.com/campfire-net/ready/pkg/nostr"
+import "github.com/3dl-dev/ready/pkg/nostr"
 
 func matchesFilter(e *nostr.Event, filter map[string]any) bool {
 	for key, raw := range filter {

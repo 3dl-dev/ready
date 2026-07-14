@@ -24,8 +24,8 @@ import (
 	"strings"
 	"testing"
 
-	msgrec "github.com/campfire-net/ready/pkg/msgrec"
-	"github.com/campfire-net/ready/pkg/state"
+	msgrec "github.com/3dl-dev/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // mkCreate builds a minimal work:create record for itemID.

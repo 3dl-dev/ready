@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	msgrec "github.com/campfire-net/ready/pkg/msgrec"
-	"github.com/campfire-net/ready/pkg/jsonl"
-	"github.com/campfire-net/ready/pkg/state"
+	msgrec "github.com/3dl-dev/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/jsonl"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 const jsonlTestCampfire = "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678"

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
 // --- Path / SyncConfigPath ---

@@ -3,8 +3,8 @@ package state_test
 import (
 	"testing"
 
-	msgrec "github.com/campfire-net/ready/pkg/msgrec"
-	"github.com/campfire-net/ready/pkg/state"
+	msgrec "github.com/3dl-dev/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestDerive_Gate verifies that work:gate transitions item to waiting

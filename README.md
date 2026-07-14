@@ -9,7 +9,7 @@ too.
 
 ```bash
 curl -fsSL https://ready.3dl.dev/install.sh | sh
-# or: go install github.com/campfire-net/ready/cmd/rd@latest
+# or: go install github.com/3dl-dev/ready/cmd/rd@latest
 ```
 
 Self-contained binary, no separate identity ceremony — a secp256k1 signing key

@@ -16,8 +16,8 @@ package sync
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestProjection_TrustGate_DropsUntrustedTakeover is the core proof. A TRUSTED

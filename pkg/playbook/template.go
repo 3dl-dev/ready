@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/declarations"
+	"github.com/3dl-dev/ready/pkg/declarations"
 )
 
 // itemIDPattern is the required pattern for work item IDs.

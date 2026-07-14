@@ -11,7 +11,7 @@ package sync
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 const testBoardD = "ready"

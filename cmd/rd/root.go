@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/campfire-net/ready/pkg/resolve"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/resolve"
+	"github.com/3dl-dev/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 

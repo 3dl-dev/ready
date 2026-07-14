@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/declarations"
+	"github.com/3dl-dev/ready/pkg/declarations"
 )
 
 // rewriteTypeAlias checks whether itemType matches a known type alias and, if so,

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // liveRelayKey returns the ALLOWLISTED portfolio signing key the locked strfry

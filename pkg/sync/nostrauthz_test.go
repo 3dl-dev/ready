@@ -13,8 +13,8 @@ package sync
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // board authored by author with the given maintainer p-tags.

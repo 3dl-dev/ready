@@ -19,8 +19,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // readGrantEventsForTest returns every kind-39301 role-grant in the project's local

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
 // TestLiveRelay_PublishFetchVerifyTamper is the ground-source, no-mock proof of

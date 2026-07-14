@@ -36,7 +36,7 @@
     === RUN   TestProjection_DedupNoPhantomHistory
     --- PASS: TestProjection_DedupNoPhantomHistory (0.00s)
     PASS
-    ok  	github.com/campfire-net/ready/pkg/sync	0.285s
+    ok  	github.com/3dl-dev/ready/pkg/sync	0.285s
 [32mPASS[0m deterministic replay/dedup/skew/permutation-convergence proofs green
 [36m==>[0m STEP 5: LIVE same-second competing-edit convergence against ws://192.168.2.40:7777
     === RUN   TestLiveRelay_SameSecondConvergence
@@ -46,7 +46,7 @@
         nostr_live_relay_convergence_test.go:194: PROVEN: same-second competing edits converge across local-log, relay-reconciled, and permuted sources; winner="edit-Y" status="active"
     --- PASS: TestLiveRelay_SameSecondConvergence (1.03s)
     PASS
-    ok  	github.com/campfire-net/ready/pkg/sync	1.034s
+    ok  	github.com/3dl-dev/ready/pkg/sync	1.034s
 [32mPASS[0m LIVE: same-second competing edits converge across local-log, relay-reconciled, and permuted sources
 
 [32mPASS[0m ALL ready-f92 CAUSAL-ORDERING PROOFS PASSED

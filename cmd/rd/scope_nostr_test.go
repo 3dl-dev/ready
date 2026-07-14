@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // freshKeyHex returns a brand-new secp256k1 pubkey hex for use as a grantee.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
 // TestPinBoard_RefusesOnCampfireBackedProject verifies that `rd nostr pin-board`

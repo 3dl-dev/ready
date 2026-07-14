@@ -32,9 +32,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/state"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

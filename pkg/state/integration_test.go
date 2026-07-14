@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	msgrec "github.com/campfire-net/ready/pkg/msgrec"
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/views"
+	msgrec "github.com/3dl-dev/ready/pkg/msgrec"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // makeMsgFrom is like makeMsg but allows specifying sender.

@@ -27,7 +27,7 @@ package sync
 import (
 	"sort"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // DeriveAllowlist regenerates the relay write-allowlist {pubkey:label} from the

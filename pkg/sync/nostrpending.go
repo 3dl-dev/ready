@@ -18,7 +18,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // FlushResult summarises a pending-buffer flush.

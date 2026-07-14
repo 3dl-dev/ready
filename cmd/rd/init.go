@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 var initCmd = &cobra.Command{

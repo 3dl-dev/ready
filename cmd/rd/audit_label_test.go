@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // TestAuthorityResolverLabel_AllBranches drives every authority-label branch of

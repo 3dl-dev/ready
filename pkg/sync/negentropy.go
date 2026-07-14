@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
 // SyncResult reports the outcome + measured cost of a negentropy sync against one

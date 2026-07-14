@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/declarations"
+	"github.com/3dl-dev/ready/pkg/declarations"
 )
 
 // ValidateEnumFlags validates flag values against the enum constraints of the

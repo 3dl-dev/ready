@@ -5,8 +5,8 @@ package views_test
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/state"
-	"github.com/campfire-net/ready/pkg/views"
+	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // TestLabelFilter_MatchesCarriedAtom verifies that LabelFilter returns true

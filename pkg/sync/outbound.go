@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/jsonl"
+	"github.com/3dl-dev/ready/pkg/jsonl"
 )
 
 const (

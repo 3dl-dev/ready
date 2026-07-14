@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 

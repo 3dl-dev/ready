@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // TestReady_PipedOutput_BareIDs verifies that when stdout is not a TTY (piped),

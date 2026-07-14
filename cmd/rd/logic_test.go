@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // buildClaimMessage constructs the argsMap and tags for a work:claim operation,

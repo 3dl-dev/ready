@@ -39,9 +39,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/nostr"
-	"github.com/campfire-net/ready/pkg/rdconfig"
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // nostrInviteTokenPrefix is the prefix for nostr claim tokens. Distinct from the

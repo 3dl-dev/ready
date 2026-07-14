@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/ready/pkg/timeparse"
+	"github.com/3dl-dev/ready/pkg/timeparse"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )

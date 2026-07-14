@@ -12,4 +12,4 @@
     nostr_live_relay_test.go:116: PROVEN: item ready-a13-live-1783522662811484753 round-tripped through the live relay; state matches on clean-cache reconcile AND relay-offline local read
 --- PASS: TestLiveRelay_ItemRoundTrip (1.01s)
 PASS
-ok  	github.com/campfire-net/ready/pkg/sync	(cached)
+ok  	github.com/3dl-dev/ready/pkg/sync	(cached)

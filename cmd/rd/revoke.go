@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	rdSync "github.com/campfire-net/ready/pkg/sync"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/cobra"
 )
 

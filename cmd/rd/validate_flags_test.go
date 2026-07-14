@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/declarations"
+	"github.com/3dl-dev/ready/pkg/declarations"
 )
 
 // TestValidateEnumFlags_InvalidType verifies that an invalid --type value is

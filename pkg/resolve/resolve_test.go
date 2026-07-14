@@ -3,7 +3,7 @@ package resolve_test
 import (
 	"testing"
 
-	"github.com/campfire-net/ready/pkg/resolve"
+	"github.com/3dl-dev/ready/pkg/resolve"
 )
 
 // TestErrNotFound verifies the error type.
