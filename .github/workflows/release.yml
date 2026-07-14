@@ -122,7 +122,7 @@ jobs:
             echo "## Install"
             echo ""
             echo '```bash'
-            echo "curl -fsSL https://ready.getcampfire.dev/install.sh | sh"
+            echo "curl -fsSL https://ready.3dl.dev/install.sh | sh"
             echo '```'
             echo ""
             if [ -n "${FEATURES}" ]; then
