@@ -199,8 +199,16 @@ emitted in plaintext on a confidential board.
   (§3.1 `labels`). A granted member decrypts and renders human labels; a
   non-member sees only the opaque tokens (honest — preserves label count, hides
   plaintext).
-- **Query:** any label REQ filter (`rd list --label X`) on a confidential board
-  must TOKENIZE X with the LTK before REQ (`#l:[hex(HMAC(LTK,X))]`).
+- **Query:** rd filters labels CLIENT-SIDE — `rd list --label X` applies
+  `views.LabelFilter` over the projected `Item.Labels` (`cmd/rd/list.go`), and
+  board sync fetches whole boards by coordinate (`BoardSyncFilter`, `#a`), never
+  pushing an `#l` filter to the relay. So a granted member queries on the
+  DECRYPTED plaintext labels — no relay-side tokenization is needed; the token
+  exists purely to hide the label VALUE at rest from a non-member relay REQ.
+  (Reconciled during ready-c83: the original clause assumed a relay-side `#l`
+  filter rd does not use.) IF a future path ever pushes an `#l` filter to the
+  relay it MUST tokenize X with the LTK first (`#l:[hex(HMAC(LTK,X))]`) — the
+  member holds the LTK via `BoardKeyring.LTK` for exactly that.
 - **Do NOT** tokenize `d` or any tag the latest-wins projection keys on. ONLY `l`.
 - **Accepted limit:** a revoked member retaining the stable LTK can still compute
   label tokens and correlate them on FUTURE cards (equality only, never
