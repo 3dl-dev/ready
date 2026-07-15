@@ -277,6 +277,10 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
+	// Confidential-by-default (ready-216): seal the card + the status reason.
+	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
+		return err
+	}
 	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
@@ -309,6 +313,10 @@ func publishItemCardEditNostr(item *state.Item) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
+	// Confidential-by-default (ready-216): re-seal the edited card's free text.
+	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
+		return err
+	}
 	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 	if err != nil {
 		return err
@@ -742,9 +750,19 @@ func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 		return nil, nil, err
 	}
 	trusted := nostrTrustSet(dir, k.PubKeyHex())
+	// Confidential boards (ready-216): derive this reader's per-board key material
+	// from the log (recoverable via the identity key from owner/member grants). A
+	// granted member decrypts free text; a non-member sees placeholders; the fold
+	// gate quarantines plaintext cards. Nil/empty on a plaintext board → no-op.
+	keyring := boardReadKeyring(dir, k, events)
 	// ready-b57: status-authority is board-derived (author OR board maintainer),
 	// NOT the whole trust set. Read-trust stays the full set; Maintainers left nil.
-	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{Trusted: trusted, PinnedBoard: nostrPinnedBoard(dir)})
+	byID := rdSync.ProjectItems(events, rdSync.ProjectOptions{
+		Trusted:         trusted,
+		PinnedBoard:     nostrPinnedBoard(dir),
+		Decryptor:       keyring,
+		EncryptedBoards: keyring,
+	})
 	items := make([]*state.Item, 0, len(byID))
 	for _, it := range byID {
 		items = append(items, it)

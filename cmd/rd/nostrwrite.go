@@ -165,6 +165,11 @@ func publishItemFullCreateNostr(dir, signer string, item *state.Item) error {
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
 	card.BoardAuthor = boardAuthor
+	// Confidential-by-default (ready-216): seal free text under the board CEK,
+	// bootstrapping the owner key on first write. No-op on a plaintext board.
+	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
+		return err
+	}
 	// Only the board AUTHOR (owner) may sign the owner's 30301 board; an agent's
 	// card still joins the owner's board via BoardAuthor above.
 	var boardArg *rdSync.BoardSpec

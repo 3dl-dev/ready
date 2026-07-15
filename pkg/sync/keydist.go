@@ -102,6 +102,27 @@ func (kr *BoardKeyring) Cutover(coord string) (int64, bool) {
 	return c, ok
 }
 
+// CurrentEpoch returns the HIGHEST CEK epoch the reader holds for the board, its
+// CEK, and ok=false if the reader holds none. The write path seals new cards under
+// this epoch. LTK (if held) is returned via LTK(coord). A member that missed a
+// rotation returns its highest-held epoch — which is stale; the owner (who minted
+// the rotation and self-wrapped it) always holds the true current epoch.
+func (kr *BoardKeyring) CurrentEpoch(coord string) (epoch int, cek [32]byte, ok bool) {
+	if kr == nil {
+		return 0, cek, false
+	}
+	m, present := kr.ceks[coord]
+	if !present || len(m) == 0 {
+		return 0, cek, false
+	}
+	for ep, c := range m {
+		if ep > epoch {
+			epoch, cek, ok = ep, c, true
+		}
+	}
+	return epoch, cek, ok
+}
+
 // DeriveBoardKeyring scans the log for owner-signed kind-39301 grants and builds
 // the reader's key material for board (boardAuthor, boardD):
 //

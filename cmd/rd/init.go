@@ -35,6 +35,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		description, _ := cmd.Flags().GetString("description")
+		public, _ := cmd.Flags().GetBool("public")
 
 		positionalName := ""
 		if len(args) > 0 {
@@ -50,7 +51,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		return initNostr(cwd, name, description)
+		return initNostr(cwd, name, description, public)
 	},
 }
 
@@ -66,7 +67,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 // It writes NO .campfire/ and NO .cf/ — the default post-cutover path provisions
 // no campfire identity. boardD equals the project prefix so item ids (create.go)
 // and published cards bind to the same pinned board.
-func initNostr(cwd, name, description string) error {
+func initNostr(cwd, name, description string, public bool) error {
 	// Reject double-init.
 	if _, _, ok := projectRoot(); ok {
 		return fmt.Errorf(".campfire/root already exists — this project is already initialized")
@@ -94,9 +95,12 @@ func initNostr(cwd, name, description string) error {
 	coord := rdSync.BoardCoord(owner, boardD)
 
 	// Pin the authoritative board coordinate + project name in .ready/config.json.
+	// Confidential by DEFAULT (ready-216): a new board seals its free text unless
+	// --public opts out. The owner's first write mints + self-grants the CEK/LTK.
 	syncCfg := &rdconfig.SyncConfig{
-		ProjectName: name,
-		Board:       coord,
+		ProjectName:  name,
+		Board:        coord,
+		Confidential: !public,
 	}
 	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
 		return fmt.Errorf("writing .ready/config.json: %w", err)
@@ -163,5 +167,6 @@ func ensureRelayConfig() error {
 func init() {
 	initCmd.Flags().String("name", "", "project name (default: current directory name)")
 	initCmd.Flags().String("description", "", "project description")
+	initCmd.Flags().Bool("public", false, "create a PUBLIC board (free text stays plaintext); confidential is the default")
 	rootCmd.AddCommand(initCmd)
 }

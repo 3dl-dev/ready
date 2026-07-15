@@ -43,6 +43,19 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 	if err := publishRoleGrant(grantee, role, label, from, claim); err != nil {
 		return err
 	}
+	// Confidential-by-default (ready-216): revoking read access on a confidential
+	// board rotates the CEK epoch — mint a new epoch and re-wrap it to the remaining
+	// members, so cards authored after the revoke are unreadable by the revoked key
+	// (forward secrecy). No-op on a plaintext board or a non-owner signer.
+	if role == rdSync.RoleRevoked {
+		if pub, ok, perr := nostrPublisher(); perr == nil && ok {
+			if boardAuthor, boardD, berr := resolveBoardAuthorD(dir, pub.Key.PubKeyHex()); berr == nil {
+				if rerr := rekeyBoardOnRevoke(dir, pub, boardAuthor, boardD, grantee); rerr != nil {
+					fmt.Fprintf(os.Stderr, "warning: confidential rekey after revoke failed: %v\n", rerr)
+				}
+			}
+		}
+	}
 	surfaceAllowlistRegen(dir)
 	return nil
 }
