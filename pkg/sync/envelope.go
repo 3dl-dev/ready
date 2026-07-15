@@ -25,9 +25,104 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
+	"github.com/3dl-dev/ready/pkg/nostr"
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+// placeholderText is what the projection renders in place of confidential free
+// text when the reader cannot decrypt it (no grant, an epoch minted before the
+// grant, or an AEAD failure). It is a fixed, safe placeholder — the read path
+// NEVER surfaces raw ciphertext/base64, never panics, never exits non-zero.
+const placeholderText = "[encrypted]"
+
+// BoardDecryptor supplies per-board content-encryption keys to the projection so
+// a granted member's rd list/show renders confidential free text. Nil (the
+// default), or a miss for a card's epoch, or an AEAD failure, makes the free-text
+// fields render as placeholderText while every clear routing field still renders.
+// keydist (ready-a8a) provides the production implementation by unwrapping the
+// owner-signed role grant; the read path (ready-ce2) only CONSUMES it.
+type BoardDecryptor interface {
+	// CEK returns the content-encryption key for an event whose board coordinate
+	// is boardCoord and whose cek_epoch marker is epoch, and ok=false if the
+	// reader holds no such key.
+	CEK(boardCoord string, epoch int) (cek [32]byte, ok bool)
+}
+
+// boardCoordOf returns the event's 30301 board-membership coordinate. A card
+// carries it as its (only) "a" tag; a NIP-34 status event carries the board
+// coordinate as one of several "a" tags (the first "a" is the 30302 card
+// coordinate), so this scans for the "a" tag with the board-kind prefix — one
+// lookup that works for both event shapes.
+func boardCoordOf(e *nostr.Event) string {
+	prefix := fmt.Sprintf("%d:", KindBoard)
+	for _, tg := range e.Tags {
+		if len(tg) >= 2 && tg[0] == "a" && strings.HasPrefix(tg[1], prefix) {
+			return tg[1]
+		}
+	}
+	return ""
+}
+
+// isConfidential reports whether e carries an enc envelope marker at all (any
+// version). Used to decide placeholder-vs-plaintext on the read path and to
+// version-dispatch on the fold gate.
+func isConfidential(e *nostr.Event) bool {
+	return tagValue(e, tagEnc) != ""
+}
+
+// cekFor resolves the CEK for a confidential event via the decryptor, returning
+// ok=false unless the envelope is a KNOWN version, the cek_epoch parses, and the
+// decryptor holds the key. An unknown enc version or malformed epoch yields
+// ok=false (fail-closed to placeholder on read).
+func cekFor(e *nostr.Event, dec BoardDecryptor) (cek [32]byte, ok bool) {
+	if dec == nil || tagValue(e, tagEnc) != encVersion {
+		return cek, false
+	}
+	epoch, err := strconv.Atoi(tagValue(e, tagCEKEpoch))
+	if err != nil {
+		return cek, false
+	}
+	return dec.CEK(boardCoordOf(e), epoch)
+}
+
+// decryptCardPayload returns the decrypted free-text blob for a confidential
+// card, or ok=false when it cannot be decrypted (fail-closed to placeholder).
+func decryptCardPayload(e *nostr.Event, dec BoardDecryptor) (cardPayload, bool) {
+	var pl cardPayload
+	cek, ok := cekFor(e, dec)
+	if !ok {
+		return pl, false
+	}
+	raw, err := openContent(cek, e.Content)
+	if err != nil {
+		return pl, false
+	}
+	if err := json.Unmarshal(raw, &pl); err != nil {
+		return pl, false
+	}
+	return pl, true
+}
+
+// decryptStatusReason returns the decrypted close/change reason for a
+// confidential status event, or ok=false when it cannot be decrypted.
+func decryptStatusReason(e *nostr.Event, dec BoardDecryptor) (string, bool) {
+	cek, ok := cekFor(e, dec)
+	if !ok {
+		return "", false
+	}
+	raw, err := openContent(cek, e.Content)
+	if err != nil {
+		return "", false
+	}
+	var pl statusPayload
+	if err := json.Unmarshal(raw, &pl); err != nil {
+		return "", false
+	}
+	return pl.Reason, true
+}
 
 const (
 	// encVersion is the current envelope-version discriminator carried in the

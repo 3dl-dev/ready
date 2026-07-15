@@ -96,6 +96,16 @@ type ProjectOptions struct {
 	//     authoritative events survive, so a completed item does NOT reopen when
 	//     its past author is later revoked.
 	PinnedBoard string
+
+	// Decryptor, when non-nil, decrypts confidential free text (title,
+	// description, waiting_on, labels, close reason) for a GRANTED member (epic
+	// ready-216). It supplies the per-board CEK for a card/status event's (board
+	// coordinate, cek_epoch). Nil — or a miss for the event's epoch, or an AEAD
+	// failure — renders those fields as placeholderText while every CLEAR routing
+	// field still renders (fail-closed, never raw ciphertext, never a panic). It is
+	// injected so the read path is testable before keydist (ready-a8a) wires the
+	// real grant-unwrap; production callers pass nil until then.
+	Decryptor BoardDecryptor
 }
 
 // trusts reports whether pubkey is authorized under opts.Trusted. A nil Trusted
@@ -295,7 +305,7 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	out := make(map[string]*state.Item, len(winningCard))
 	for itemID, card := range winningCard {
 		author := card.PubKey
-		item := itemFromCard(card)
+		item := itemFromCard(card, opts.Decryptor)
 
 		// STATUS-AUTHORITY SET (ready-b57): who — besides the item author — may author
 		// an authoritative status transition on THIS item. It is the maintainers of the
@@ -373,12 +383,24 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			if by := tagValue(s, "by"); by != "" && maintainerSigners[s.PubKey] {
 				changedBy = by
 			}
+			// Close/change reason: plaintext status events carry it in Content
+			// verbatim; a confidential status event carries sealed ciphertext, so a
+			// granted member decrypts it and a non-member sees the placeholder — the
+			// history entry (who/when/from→to) still renders regardless.
+			note := s.Content
+			if isConfidential(s) {
+				if reason, ok := decryptStatusReason(s, opts.Decryptor); ok {
+					note = reason
+				} else {
+					note = placeholderText
+				}
+			}
 			item.History = append(item.History, state.HistoryEntry{
 				Timestamp:  time.Unix(s.CreatedAt, 0).UTC().Format(time.RFC3339),
 				FromStatus: prevStatus,
 				ToStatus:   toStatus,
 				ChangedBy:  changedBy,
-				Note:       s.Content,
+				Note:       note,
 			})
 			item.UpdatedAt = maxInt64(item.UpdatedAt, s.CreatedAt*int64(time.Second))
 			prevStatus = toStatus
@@ -518,7 +540,7 @@ func newerThan(a, b *nostr.Event) bool {
 // itemFromCard materializes a *state.Item from a 30302 card event's tags/content.
 // This is the card->item projection; the state authority still comes from the
 // status-authority pass in ProjectItems.
-func itemFromCard(e *nostr.Event) *state.Item {
+func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 	itemID := tagValue(e, "d")
 	// created_at is seconds; state.Item timestamps are unix nanos.
 	tsNano := e.CreatedAt * int64(time.Second)
@@ -551,6 +573,32 @@ func itemFromCard(e *nostr.Event) *state.Item {
 	}
 	if p := tagValue(e, "p"); p != "" {
 		item.By = p
+	}
+	// CONFIDENTIAL free-text substitution (epic ready-216): on a confidential card
+	// the clear title/waiting_on tags are absent and Content is ciphertext; the l
+	// tags are HMAC tokens. A granted member (decryptor holds the CEK) recovers the
+	// exact plaintext title/description/waiting_on/labels from the sealed blob; a
+	// non-member (or an epoch minted before the grant, or an AEAD failure)
+	// fail-closes to a placeholder for the free-text fields. Every CLEAR routing
+	// field above already rendered normally and is untouched here.
+	if isConfidential(e) {
+		if pl, ok := decryptCardPayload(e, dec); ok {
+			item.Title = pl.Title
+			item.Context = pl.Context
+			item.Description = pl.Context
+			item.WaitingOn = pl.WaitingOn
+			if len(pl.Labels) > 0 {
+				item.Labels = pl.Labels
+			}
+		} else {
+			item.Title = placeholderText
+			item.Context = placeholderText
+			item.Description = placeholderText
+			// waiting_on is free text — hide it rather than expose ""/ciphertext;
+			// the clear waiting_type still renders. Labels remain the opaque tokens
+			// carried in the clear l tags (present but not readable).
+			item.WaitingOn = ""
+		}
 	}
 	return item
 }
