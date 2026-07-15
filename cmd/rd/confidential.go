@@ -47,14 +47,17 @@ func cutoverCreatedAt(log *rdSync.NostrLog) int64 {
 	return now
 }
 
-// boardIsConfidential reports whether the project at dir is marked confidential
-// (rd init default; --public opts out). Existing boards load with it false.
+// boardIsConfidential reports whether the project at dir is confidential.
+// Confidentiality is the DEFAULT (epic ready-216): a board is confidential UNLESS
+// its config sets Public. A missing config, or one omitting the flag, is
+// confidential. (On a config read error we fail SAFE — confidential — rather than
+// silently writing plaintext to a board that should be sealed.)
 func boardIsConfidential(dir string) bool {
 	cfg, err := rdconfig.LoadSyncConfig(dir)
 	if err != nil {
-		return false
+		return true
 	}
-	return cfg.Confidential
+	return !cfg.Public
 }
 
 // envelopeFromKeyring builds a sealing Envelope from a reader's keyring for the
@@ -80,6 +83,13 @@ func envelopeFromKeyring(kr *rdSync.BoardKeyring, coord string) *rdSync.Envelope
 // never re-sealed over real content).
 func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, boardD string) (*rdSync.Envelope, error) {
 	if !boardIsConfidential(dir) {
+		return nil, nil
+	}
+	// Confidentiality is keyed to a PINNED board coordinate (the CEK is per-board).
+	// A project with no pinned board (legacy RD_NOSTR without a BP-3 pin) has no
+	// board to seal to → plaintext. A real `rd init` always pins, so this only
+	// exempts the unpinned legacy/edge case.
+	if nostrPinnedBoard(dir) == "" {
 		return nil, nil
 	}
 	coord := rdSync.BoardCoord(boardAuthor, boardD)
@@ -116,8 +126,51 @@ func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, b
 	if err := publishOwnerCEKSelfGrant(pub, boardAuthor, boardD, cek, ltk, 1); err != nil {
 		return nil, fmt.Errorf("bootstrapping confidential board key: %w", err)
 	}
+	// Wrap the CEK to every EXISTING member too, so flipping a board that already
+	// has members to confidential does not lock them out of their own board.
+	if err := wrapEpochToMembers(pub, boardAuthor, boardD, cek, ltk, 1, ""); err != nil {
+		return nil, fmt.Errorf("wrapping confidential board key to members: %w", err)
+	}
 	l := ltk
 	return &rdSync.Envelope{CEK: cek, Epoch: 1, LTK: &l}, nil
+}
+
+// wrapEpochToMembers publishes an owner-signed grant carrying the (cek, ltk, epoch)
+// wrapped to each current read-trusted member of the board EXCEPT the owner (which
+// is self-granted separately) and any excluded pubkey (e.g. a just-revoked member).
+// Shared by bootstrap (so an existing board's members keep access when it becomes
+// confidential) and by revoke rekey (so remaining members get the new epoch).
+func wrapEpochToMembers(pub *rdSync.Publisher, boardAuthor, boardD string, cek, ltk [32]byte, epoch int, exclude string) error {
+	events, err := pub.Log.ReadAll()
+	if err != nil {
+		return err
+	}
+	for member := range rdSync.DeriveReadTrust(events, boardAuthor, boardD) {
+		if member == boardAuthor || member == exclude {
+			continue
+		}
+		wCEK, werr := rdSync.WrapKey(pub.Key, member, cek)
+		if werr != nil {
+			return werr
+		}
+		wLTK, werr := rdSync.WrapKey(pub.Key, member, ltk)
+		if werr != nil {
+			return werr
+		}
+		spec := rdSync.RoleGrantSpec{
+			BoardD: boardD, BoardAuthor: boardAuthor, Grantee: member, Role: rdSync.RoleContributor,
+			Label:      "confidential-board key (epoch " + strconv.Itoa(epoch) + ")",
+			WrappedCEK: wCEK, CEKEpoch: epoch, WrappedLTK: wLTK,
+		}
+		ev, berr := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, member)))
+		if berr != nil {
+			return berr
+		}
+		if _, perr := pub.PublishEvents(context.Background(), []*nostr.Event{ev}); perr != nil {
+			return perr
+		}
+	}
+	return nil
 }
 
 // setCardEnvelope seals card for the board's confidentiality mode (or leaves it
@@ -245,32 +298,6 @@ func rekeyBoardOnRevoke(dir string, pub *rdSync.Publisher, boardAuthor, boardD, 
 		return err
 	}
 	// Re-wrap the new epoch CEK (+ the stable LTK) to every remaining read-trusted
-	// member except the revoked key and the owner (already self-granted above).
-	remaining := rdSync.DeriveReadTrust(events, boardAuthor, boardD)
-	for member := range remaining {
-		if member == revokedPubkey || member == boardAuthor {
-			continue
-		}
-		wCEK, werr := rdSync.WrapKey(pub.Key, member, newCEK)
-		if werr != nil {
-			return werr
-		}
-		wLTK, werr := rdSync.WrapKey(pub.Key, member, ltk)
-		if werr != nil {
-			return werr
-		}
-		spec := rdSync.RoleGrantSpec{
-			BoardD: boardD, BoardAuthor: boardAuthor, Grantee: member, Role: rdSync.RoleContributor,
-			Label:      "confidential-board rekey (epoch " + strconv.Itoa(newEpoch) + ")",
-			WrappedCEK: wCEK, CEKEpoch: newEpoch, WrappedLTK: wLTK,
-		}
-		ev, berr := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, member)))
-		if berr != nil {
-			return berr
-		}
-		if _, perr := pub.PublishEvents(context.Background(), []*nostr.Event{ev}); perr != nil {
-			return perr
-		}
-	}
-	return nil
+	// member, excluding the just-revoked key (the owner is self-granted above).
+	return wrapEpochToMembers(pub, boardAuthor, boardD, newCEK, ltk, newEpoch, revokedPubkey)
 }

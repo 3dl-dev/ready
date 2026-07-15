@@ -35,7 +35,7 @@ var confidentialEnableCmd = &cobra.Command{
 		if cfg.Board == "" {
 			return fmt.Errorf("no pinned board in this project; run `rd init` first")
 		}
-		cfg.Confidential = true
+		cfg.Public = false // confidential is the default; clear any opt-out
 		if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
 			return err
 		}
@@ -85,8 +85,8 @@ var confidentialStatusCmd = &cobra.Command{
 		if cfg.Board == "" {
 			return fmt.Errorf("no pinned board in this project")
 		}
-		if !cfg.Confidential {
-			fmt.Printf("board %s is PUBLIC (free text is plaintext)\n", cfg.Board)
+		if cfg.Public {
+			fmt.Printf("board %s is PUBLIC (free text is plaintext; --public opt-out)\n", cfg.Board)
 			return nil
 		}
 		k, err := nostrKey()

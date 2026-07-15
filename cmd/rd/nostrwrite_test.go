@@ -35,7 +35,11 @@ func setupNostrNativeProject(t *testing.T) (string, string) {
 		t.Fatalf("projectPrefix(%q) is empty; test dir must have a >=2-char name", dir)
 	}
 	coord := rdSync.BoardCoord(owner, boardD)
-	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord}); err != nil {
+	// This helper backs the pre-confidentiality nostr-mechanics tests, which inspect
+	// the CLEAR wire (title/label/dep tags). Confidentiality is now the default, so
+	// mark the board Public to keep those tests on the plaintext path; confidential
+	// behavior has its own coverage (setupConfidentialProject + the ready-216 suite).
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Public: true}); err != nil {
 		t.Fatalf("SaveSyncConfig: %v", err)
 	}
 	board := rdSync.BoardSpec{BoardD: boardD, Title: "project", Maintainers: []string{owner}}

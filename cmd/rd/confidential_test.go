@@ -31,7 +31,7 @@ func setupConfidentialProject(t *testing.T) (string, string) {
 	owner := k.PubKeyHex()
 	boardD := projectPrefix(dir)
 	coord := rdSync.BoardCoord(owner, boardD)
-	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Confidential: true}); err != nil {
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord}); err != nil {
 		t.Fatalf("SaveSyncConfig: %v", err)
 	}
 	board := rdSync.BoardSpec{BoardD: boardD, Title: "project", Maintainers: []string{owner}}
@@ -129,7 +129,7 @@ func TestConfidentialEnableMigration(t *testing.T) {
 	boardD := projectPrefix(dir)
 	coord := rdSync.BoardCoord(owner, boardD)
 	// Start PUBLIC.
-	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Confidential: false}); err != nil {
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Public: true}); err != nil {
 		t.Fatalf("SaveSyncConfig: %v", err)
 	}
 	board := rdSync.BoardSpec{BoardD: boardD, Title: "project", Maintainers: []string{owner}}
@@ -143,7 +143,7 @@ func TestConfidentialEnableMigration(t *testing.T) {
 
 	// Enable confidential mode (mirror `rd confidential enable`): mark + bootstrap.
 	cfg, _ := rdconfig.LoadSyncConfig(dir)
-	cfg.Confidential = true
+	cfg.Public = false
 	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
 		t.Fatalf("save confidential cfg: %v", err)
 	}
@@ -279,6 +279,59 @@ func TestTwoIdentityConfidentialCLI(t *testing.T) {
 	}
 }
 
+// TestConfidentialBootstrapWrapsExistingMembers proves that flipping a board that
+// ALREADY has a member to confidential wraps the CEK to that member at bootstrap —
+// so making a live multi-writer board confidential does not lock existing members
+// out of their own board.
+func TestConfidentialBootstrapWrapsExistingMembers(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+	boardD := projectPrefix(dir)
+	coord := rdSync.BoardCoord(owner, boardD)
+	// Start PUBLIC (plaintext).
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Public: true}); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+	board := rdSync.BoardSpec{BoardD: boardD, Title: "project", Maintainers: []string{owner}}
+	be, _ := rdSync.BuildBoardEvent(k, board, time.Now().Unix())
+	rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{be})
+
+	// Owner grants a member while the board is still public (grant carries no CEK).
+	mk, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("member key: %v", err)
+	}
+	if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
+		t.Fatalf("grant member on public board: %v", err)
+	}
+
+	// Flip to confidential and bootstrap (as the owner's first confidential write would).
+	cfg, _ := rdconfig.LoadSyncConfig(dir)
+	cfg.Public = false
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("flip confidential: %v", err)
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		t.Fatalf("publisher: %v", err)
+	}
+	if _, err := boardConfidentialEnvelope(dir, pub, owner, boardD); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	// The pre-existing member must now hold the CEK — via the bootstrap wrap, with
+	// NO explicit post-flip grant.
+	events, _ := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	kr := rdSync.DeriveBoardKeyring(events, mk, owner, boardD)
+	if _, _, ok := kr.CurrentEpoch(coord); !ok {
+		t.Fatal("existing member did NOT receive the CEK at bootstrap — flipping the board locked them out")
+	}
+}
+
 func TestPublicBoardStaysPlaintext(t *testing.T) {
 	// A board explicitly marked NOT confidential keeps writing plaintext cards.
 	dir := setupNostrCmdTest(t)
@@ -288,7 +341,7 @@ func TestPublicBoardStaysPlaintext(t *testing.T) {
 	}
 	owner := k.PubKeyHex()
 	coord := rdSync.BoardCoord(owner, projectPrefix(dir))
-	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Confidential: false}); err != nil {
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Public: true}); err != nil {
 		t.Fatalf("SaveSyncConfig: %v", err)
 	}
 	board := rdSync.BoardSpec{BoardD: projectPrefix(dir), Title: "project", Maintainers: []string{owner}}
