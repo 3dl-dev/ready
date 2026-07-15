@@ -110,7 +110,7 @@ func TestBoardSyncFilterMatchesCardAndStatusEvents(t *testing.T) {
 	}
 
 	// NEW shape: status event additively carries the board coordinate.
-	newStatus, err := BuildStatusEventWithIssueRoot(k, itemID, state.StatusDone, card.ID, "", boardCoord, "shipped", 1001)
+	newStatus, err := BuildStatusEventWithIssueRoot(k, itemID, state.StatusDone, card.ID, "", boardCoord, "shipped", 1001, nil)
 	if err != nil {
 		t.Fatalf("build status (with board): %v", err)
 	}
