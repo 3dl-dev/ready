@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ready &mdash; the work queue for humans and AI agents</title>
-  <meta name="description" content="rd is one CLI that humans and AI agents both drive. Work items are signed nostr events in a local-first log — no database, no SaaS, no server. Works offline, keeps a permanent signed audit trail, and encrypts the work that needs to stay private.">
+  <meta name="description" content="One CLI that people and AI agents both drive. Every item is a signed nostr event in a log on your machine. No server, no signup, no database. Works offline, keeps every receipt, encrypts what's private.">
 
   <!-- Open Graph -->
   <meta property="og:title" content="Ready — the work queue for humans and AI agents">
-  <meta property="og:description" content="One CLI, driven the same by people and agents. Every item is a signed nostr event in a local-first log — no backend, no SaaS. Offline-first, permanent signed audit trail, confidential by default.">
+  <meta property="og:description" content="One CLI, driven the same by people and agents. Signed events in a log on your machine. No server, no login. Works offline. Confidential by default.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ready.3dl.dev">
 
@@ -25,11 +25,7 @@
     "downloadUrl": "https://github.com/3dl-dev/ready/releases",
     "codeRepository": "https://github.com/3dl-dev/ready",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-    "author": {
-      "@type": "Organization",
-      "name": "Third Division Labs",
-      "url": "https://3dl.dev"
-    }
+    "author": { "@type": "Organization", "name": "Third Division Labs", "url": "https://3dl.dev" }
   }
   </script>
 
@@ -62,14 +58,12 @@
   <!-- Hero -->
   <section class="hero">
     <div class="ds-container">
-      <p class="hero-problem">Work management as a nostr convention</p>
-      <h1>One work queue for your team and&nbsp;your <span>AI&nbsp;agents.</span></h1>
+      <p class="hero-problem">Nostr-native &middot; no server &middot; no signup</p>
+      <h1>Your agents need a work queue. <span>So do you.</span></h1>
       <p class="hero-sub">
-        <code>rd</code> is a single command-line tool that humans and agents drive the same way &mdash;
-        create, claim, delegate, close. Every item is a <strong>signed nostr event</strong> in a
-        local-first log: no database, no SaaS, no server to run. Your machine is the source of truth;
-        relays are replaceable caches. It works fully offline, keeps a permanent signed audit trail, and
-        encrypts the work that needs to stay private.
+        <code>rd</code> is one CLI, driven the same by people and AI agents. Create, claim, close.
+        No server, no login, no database. Every item is a signed event in a log on your machine.
+        It works offline, keeps every receipt, and encrypts what's private.
       </p>
       <div class="hero-actions">
         <a href="#install" class="ds-btn-primary">Install rd</a>
@@ -80,77 +74,72 @@
       </div>
       <p class="hero-facts">
         No account <span>&middot;</span> Works offline <span>&middot;</span> Single binary
-        <span>&middot;</span> Signed audit trail <span>&middot;</span> Confidential by default
+        <span>&middot;</span> Signed history <span>&middot;</span> Confidential by default
         <span>&middot;</span> Open source
       </p>
     </div>
   </section>
 
-  <!-- Why rd — what you get -->
+  <!-- Why rd -->
   <section id="why">
     <div class="ds-container">
       <p class="section-label">Why rd</p>
-      <h2 class="section-title">A work tracker that isn't a web app</h2>
+      <h2 class="section-title">Not another web app</h2>
       <p class="section-desc">
-        Issue trackers assume a server, an account, and a browser. <code>rd</code> assumes a terminal and a
-        signing key. That one change &mdash; work as signed events in a log you own, instead of rows in
-        someone's database &mdash; is what lets agents and humans share it, work offline, and keep receipts forever.
+        Every issue tracker wants a server, an account, and a browser tab. <code>rd</code> wants a terminal
+        and a key. That one swap is why agents can drive it, why it works on a plane, and why nobody loses
+        your history but you.
       </p>
 
       <div class="feature-grid">
         <div class="feature-card">
           <span class="feature-icon">&#129309;</span>
-          <h3>Humans <em>and</em> agents, one CLI</h3>
-          <p>There's no separate agent API and no MCP server to run. A person at a terminal and a Claude&nbsp;Code
-          session run the exact same commands &mdash; <code>rd create</code>, <code>rd claim</code>,
-          <code>rd done</code>. Output is pipe-friendly: bare IDs when piped, tables when interactive.</p>
+          <h3>One CLI, humans <em>and</em> agents</h3>
+          <p>No agent API. No MCP server. A person and a Claude&nbsp;Code session run the same commands.
+          Pipe them, script them, done.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128230;</span>
-          <h3>One binary, no backend</h3>
-          <p>No Postgres, no Redis, no SaaS, no login. Install one self-contained binary and run
-          <code>rd init</code>. A secp256k1 signing key is minted on first use &mdash; no separate identity ceremony.</p>
+          <h3>One binary, no server</h3>
+          <p>No Postgres, no Redis, no SaaS login. Drop in the binary, run <code>rd init</code>, get to work.
+          Your key is minted on first use.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128244;</span>
-          <h3>Local-first, works offline</h3>
-          <p>Your append-only log (<code>.ready/nostr-log.jsonl</code>) is the authority. Relays only sync it
-          between machines. Pull the network cable and every command still works &mdash; writes buffer and
-          flush when a relay reappears.</p>
+          <h3>Works offline</h3>
+          <p>Your local log is the boss; relays just copy it around. Kill the wifi and every command still runs.
+          Writes catch up when you're back.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128271;</span>
-          <h3>A signed audit trail, forever</h3>
-          <p>Every create, claim, status change, delegation, and gate is a signed nostr event, appended once
-          and kept. Who did what, when, and why &mdash; cryptographically attributed, never compacted, never
+          <h3>Every receipt, forever</h3>
+          <p>Each move is a signed event. Who did it, when, and why. Provable, permanent, never compacted or
           archived away.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128272;</span>
           <h3>Confidential by default</h3>
-          <p>Titles, descriptions, and close reasons are encrypted so only granted members can read them &mdash;
-          a relay operator sees opaque ciphertext. The routing graph stays queryable. <code>--public</code> opts out.</p>
+          <p>Titles and descriptions are encrypted. Members read them; the relay sees noise. <code>--public</code>
+          when you actually want it open.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128256;</span>
-          <h3>Built for delegation</h3>
-          <p>Every item carries <code>for</code> (who needs the outcome) and <code>by</code> (who's doing it).
-          Agents escalate decisions to humans with <code>rd gate</code>; humans rule with <code>rd approve</code>.
-          Delegation is an act you record, not an assumption.</p>
+          <h3>Made for handoffs</h3>
+          <p><code>for</code> is who needs it. <code>by</code> is who's on it. Agents escalate to you with
+          <code>rd gate</code>; you answer with <code>rd approve</code>.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- See it run -->
+  <!-- Demos -->
   <section id="demos">
     <div class="ds-container">
       <p class="section-label">See it run</p>
-      <h2 class="section-title">Real demos, real output</h2>
+      <h2 class="section-title">Don't take my word for it</h2>
       <p class="section-desc">
-        These play back actual output captured from the nostr-native
-        <a href="https://github.com/3dl-dev/ready/tree/main/scripts">demo scripts</a>.
-        Hit play &mdash; solo lifecycle, a two-person team, an agent-to-human gate, and per-agent identity isolation.
+        Real output, captured straight from the <a href="https://github.com/3dl-dev/ready/tree/main/scripts">demo scripts</a>.
+        Hit play: solo loop, a two-person team, an agent kicking a decision up to a human, and two agents on one board.
       </p>
 
       <div class="demo-terminals">
@@ -162,30 +151,30 @@
     </div>
   </section>
 
-  <!-- How it works — the lifecycle -->
+  <!-- How it works -->
   <section id="usage">
     <div class="ds-container">
       <p class="section-label">How it works</p>
       <h2 class="section-title">Create &rarr; Claim &rarr; Close</h2>
       <p class="section-desc">
-        Every work item follows the same three-step lifecycle, and the same commands serve a human at a
-        keyboard or an agent reading a prompt. Priority sets the ETA &mdash; P0 is now, P3 is 72 hours.
+        Three verbs. Same for you at a keyboard and an agent reading a prompt. Priority sets the clock:
+        P0 is now, P3 is three days out.
       </p>
 
       <div class="demo-block">
-        <div class="ds-code-block"><span class="comment"># Create a work item — prints the item ID when piped</span>
+        <div class="ds-code-block"><span class="comment"># Create an item. Piped, it just prints the ID.</span>
 <span class="cmd">rd create "Ship login page" --priority p1 --type task</span>
 <span class="output">myproject-45e</span>
 
-<span class="comment"># What needs attention right now?</span>
+<span class="comment"># What needs me right now?</span>
 <span class="cmd">rd ready</span>
 <span class="output">  myproject-45e  p1        inbox       3h          Ship login page</span>
 
-<span class="comment"># Claim it — you're now the performer</span>
+<span class="comment"># Grab it. You're the performer now.</span>
 <span class="cmd">rd claim myproject-45e</span>
 <span class="output">claimed myproject-45e</span>
 
-<span class="comment"># Close with a reason — the audit trail records the "why"</span>
+<span class="comment"># Close it with a reason. The reason is the point.</span>
 <span class="cmd">rd done myproject-45e --reason "Login page ships with JWT auth"</span>
 <span class="output">closed myproject-45e (done)</span></div>
       </div>
@@ -193,59 +182,57 @@
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
           <h3>The attention engine</h3>
-          <p>Named views filter the log by who you are and what's actionable. <code>rd ready</code> is the
-          default lens; the rest slice by status, ownership, and time.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="comment"># Views: ready, work, pending, overdue, delegated, my-work</span>
+          <p>Views filter the log by who you are and what's live. <code>rd ready</code> is the default. The rest
+          slice by status, owner, and time.</p>
+          <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="comment"># ready, work, pending, overdue, delegated, my-work</span>
 <span class="cmd">rd ready --view overdue</span>
 <span class="cmd">rd list --status active --priority p0,p1</span>
 <span class="cmd">rd list --by atlas/worker-3 --all --json</span></div>
         </div>
         <div>
           <h3>Delegate, block, escalate</h3>
-          <p>Reassign the performer, wire a dependency (even across projects you own), or push a decision to
-          a human without leaving the terminal.</p>
+          <p>Hand it off, chain a dependency, or kick a decision up to a human. All from the terminal.</p>
           <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="cmd">rd delegate api-a1b --to atlas/worker-3</span>
 <span class="cmd">rd dep add api-a1b api-9f2</span>
 <span class="cmd">rd gate api-a1b --gate-type design \
-  --description "PKCE vs device flow?"</span></div>
+  --description "PKCE or device flow?"</span></div>
         </div>
       </div>
 
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
-          <h3>Playbooks for recurring shapes</h3>
-          <p>Incident runbooks, release prep, feature rollouts &mdash; stamp a template into real items with
-          their dependencies already wired, instead of decomposing by hand every time.</p>
+          <h3>Playbooks</h3>
+          <p>Runbooks, release prep, rollouts. Stamp a template into real items with the deps already wired.
+          Stop rebuilding the same tree by hand.</p>
           <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="cmd">rd playbook list</span>
 <span class="cmd">rd engage release-checklist --project api</span>
 <span class="output">engaged release-checklist &rarr; 6 items (deps wired)</span></div>
         </div>
         <div>
-          <h3>Any nostr client can read it</h3>
-          <p>Because every operation is a plain signed event, the log <em>is</em> the integration surface. Point
-          any nostr-aware tool at a relay and read the boards, cards, and status events directly &mdash; no
-          <code>rd</code>-specific API required.</p>
+          <h3>The log is the API</h3>
+          <p>Every op is a plain signed event. Point any nostr client at a relay and read the boards and cards
+          straight off it. No <code>rd</code>-specific anything.</p>
         </div>
       </div>
 
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>Command reference</h3>
+        <h3>The commands</h3>
         <div class="cmd-table">
           <table>
             <tbody>
-              <tr><td><code>rd init --name &lt;project&gt;</code></td><td>Start a project &mdash; local signed-event log + a nostr board (confidential by default; <code>--public</code> opts out)</td></tr>
-              <tr><td><code>rd create "..." --type task --priority p1</code></td><td>Create a work item (prints the item ID when piped)</td></tr>
-              <tr><td><code>rd ready</code></td><td>What needs attention now (bare IDs when piped)</td></tr>
-              <tr><td><code>rd list [--status ...] [--by ...] [--all]</code></td><td>List items with filters</td></tr>
-              <tr><td><code>rd show &lt;id&gt;</code></td><td>Item details + full audit trail</td></tr>
-              <tr><td><code>rd claim &lt;id&gt;</code></td><td>Accept work, become the performer</td></tr>
-              <tr><td><code>rd delegate &lt;id&gt; --to &lt;identity&gt;</code></td><td>Assign to a person, agent, or automaton</td></tr>
-              <tr><td><code>rd done &lt;id&gt; --reason "..."</code></td><td>Close with a reason &mdash; recorded to the audit trail</td></tr>
-              <tr><td><code>rd gate &lt;id&gt; --gate-type design</code></td><td>Escalate a decision to a human</td></tr>
-              <tr><td><code>rd approve &lt;id&gt; --reason "..."</code></td><td>Resolve a pending gate</td></tr>
-              <tr><td><code>rd invite</code> / <code>rd join &lt;token&gt;</code></td><td>One-use invite / join a project (items auto-sync)</td></tr>
-              <tr><td><code>rd grant &lt;pubkey&gt; &lt;role&gt;</code> / <code>rd revoke &lt;pubkey&gt;</code></td><td>Owner-rooted role grant / revoke (rotates the confidential key)</td></tr>
-              <tr><td><code>rd engage &lt;playbook&gt;</code></td><td>Instantiate a playbook into wired-up items</td></tr>
+              <tr><td><code>rd init --name &lt;project&gt;</code></td><td>Start a project. Local log + a nostr board. Confidential by default; <code>--public</code> opts out.</td></tr>
+              <tr><td><code>rd create "..." --type task --priority p1</code></td><td>New item. Prints the ID when piped.</td></tr>
+              <tr><td><code>rd ready</code></td><td>What needs you now.</td></tr>
+              <tr><td><code>rd list [--status ...] [--by ...] [--all]</code></td><td>List with filters.</td></tr>
+              <tr><td><code>rd show &lt;id&gt;</code></td><td>Details plus the full history.</td></tr>
+              <tr><td><code>rd claim &lt;id&gt;</code></td><td>Take it. You're the performer.</td></tr>
+              <tr><td><code>rd delegate &lt;id&gt; --to &lt;identity&gt;</code></td><td>Hand it to a person, agent, or bot.</td></tr>
+              <tr><td><code>rd done &lt;id&gt; --reason "..."</code></td><td>Close it. The reason lands in history.</td></tr>
+              <tr><td><code>rd gate &lt;id&gt; --gate-type design</code></td><td>Kick a decision to a human.</td></tr>
+              <tr><td><code>rd approve &lt;id&gt; --reason "..."</code></td><td>Answer a gate.</td></tr>
+              <tr><td><code>rd invite</code> / <code>rd join &lt;token&gt;</code></td><td>One-use invite / join. Items auto-sync.</td></tr>
+              <tr><td><code>rd grant &lt;pubkey&gt; &lt;role&gt;</code> / <code>rd revoke</code></td><td>Add a member / drop one (rotates the key).</td></tr>
+              <tr><td><code>rd engage &lt;playbook&gt;</code></td><td>Stamp a template into wired-up items.</td></tr>
             </tbody>
           </table>
         </div>
@@ -257,16 +244,14 @@
   <section id="ways">
     <div class="ds-container">
       <p class="section-label">Ways to use it</p>
-      <h2 class="section-title">From one project to your whole org</h2>
+      <h2 class="section-title">One repo or your whole org</h2>
       <p class="section-desc">
-        Same tool, same commands, at every scale. Nothing to migrate, nothing to import or export &mdash; each
-        step just adds reach. It's free wherever you run it yourself; the only paid piece is hosting relays
-        you'd rather not operate.
+        Same tool, same commands, at every size. Nothing to migrate. Free wherever you host it yourself.
+        You only pay if you want us running the relays.
       </p>
 
       <div class="tier-grid">
 
-        <!-- Solo -->
         <div class="tier-card">
           <div class="tier-header">
             <span class="tier-label">Solo</span>
@@ -274,12 +259,12 @@
             <p class="tier-price">Free &middot; Local</p>
           </div>
           <ul class="tier-features">
-            <li>Local signed-event log per project</li>
+            <li>Local log per project</li>
             <li>Your machine is the source of truth</li>
-            <li>Works fully offline</li>
-            <li>Full CLI &mdash; create, claim, close</li>
-            <li>Named views &amp; the attention engine</li>
-            <li>Permanent signed audit trail</li>
+            <li>Fully offline</li>
+            <li>The whole CLI</li>
+            <li>Views &amp; the attention engine</li>
+            <li>Signed history, kept forever</li>
           </ul>
           <div class="ds-code-block tier-code"><span class="cmd">rd init --name myproject</span>
 <span class="output">initialized myproject (confidential)</span>
@@ -288,10 +273,9 @@
 
 <span class="cmd">ITEM=$(rd create "Ship login" --priority p1 --type task)</span>
 <span class="cmd">rd claim $ITEM &amp;&amp; rd done $ITEM --reason "..."</span></div>
-          <p class="tier-note">No account, no server. Just <code>rd init</code> and go.</p>
+          <p class="tier-note">No account, no server. <code>rd init</code> and go.</p>
         </div>
 
-        <!-- Multi-project -->
         <div class="tier-card">
           <div class="tier-header">
             <span class="tier-label">Individual</span>
@@ -300,23 +284,22 @@
           </div>
           <ul class="tier-features">
             <li>Everything in Solo</li>
-            <li>One identity key, every project</li>
-            <li>Cross-project delegation</li>
-            <li>Cross-project queries</li>
-            <li>Per-project log &amp; board</li>
-            <li>Auto-detects the project from cwd</li>
+            <li>One key, every project</li>
+            <li>Delegate across projects</li>
+            <li>Query across projects</li>
+            <li>A board + log per project</li>
+            <li>Auto-detects the project</li>
           </ul>
-          <div class="ds-code-block tier-code"><span class="comment"># Each project keeps its own board + local log</span>
+          <div class="ds-code-block tier-code"><span class="comment"># Each project keeps its own board + log</span>
 <span class="cmd">cd ~/api      &amp;&amp; rd init --name api</span>
 <span class="cmd">cd ~/frontend &amp;&amp; rd init --name frontend</span>
 
-<span class="comment"># Query across projects with one key</span>
+<span class="comment"># One key, query anywhere</span>
 <span class="cmd">rd ready --project api</span>
 <span class="cmd">rd list  --project frontend --all</span></div>
-          <p class="tier-note">One <code>$RD_HOME</code> owner key signs across every project you own.</p>
+          <p class="tier-note">One key signs across everything you own.</p>
         </div>
 
-        <!-- Team / agents -->
         <div class="tier-card tier-card--featured">
           <div class="tier-header">
             <span class="tier-label">Team &amp; agents</span>
@@ -325,46 +308,45 @@
           </div>
           <ul class="tier-features">
             <li>Everything in Many projects</li>
-            <li>Relay sync across machines (NIP-77)</li>
-            <li>Humans + agents on one queue</li>
-            <li>Per-actor identities via <code>$RD_ACTOR</code></li>
-            <li>Gate escalations &amp; approvals</li>
-            <li>Confidential boards with granted members</li>
+            <li>Sync across machines (NIP-77)</li>
+            <li>Humans + agents, one board</li>
+            <li>A key per actor via <code>$RD_ACTOR</code></li>
+            <li>Gates &amp; approvals</li>
+            <li>Confidential boards, real members</li>
           </ul>
-          <div class="ds-code-block tier-code"><span class="comment"># Owner invites a teammate or spins up an agent</span>
+          <div class="ds-code-block tier-code"><span class="comment"># Invite a teammate or spin up an agent</span>
 <span class="cmd">TOKEN=$(rd invite)</span>
-<span class="output">rdx1_eyJ2Ijox...  (one-use, expires in 2h)</span>
+<span class="output">rdx1_eyJ2Ijox...  (one-use, 2h)</span>
 
-<span class="comment"># They join with one command; items auto-sync</span>
+<span class="comment"># They run one command. Items sync.</span>
 <span class="cmd">rd join $TOKEN</span>
 <span class="cmd">rd ready</span>
 <span class="output">  backend-a1b  p1  inbox  3h  Build auth API</span></div>
-          <p class="tier-note">A teammate or a swarm of agents shares the same board. No key exchange, no manual pull.</p>
+          <p class="tier-note">A teammate or a swarm of agents, same board. No key exchange, no manual pull.</p>
         </div>
 
-        <!-- Org -->
         <div class="tier-card">
           <div class="tier-header">
             <span class="tier-label">Enterprise</span>
             <h3>Org-wide</h3>
-            <p class="tier-price">Hosted &middot; Contact us</p>
+            <p class="tier-price">Hosted &middot; Talk to us</p>
           </div>
           <ul class="tier-features">
             <li>Everything in Shared queue</li>
-            <li>Cross-project discovery</li>
-            <li>Graded, revocable operator provenance</li>
-            <li>Owner-rooted role grants + forward secrecy</li>
-            <li>Permanent, portable audit trail</li>
-            <li>Bridges to existing tools (Slack, Teams)</li>
+            <li>Discovery across projects</li>
+            <li>Graded, revocable roles</li>
+            <li>Owner-rooted grants + forward secrecy</li>
+            <li>Portable history that never expires</li>
+            <li>Bridges to Slack, Teams</li>
           </ul>
-          <div class="ds-code-block tier-code"><span class="comment"># Owner grants read/write; revoke rotates the key</span>
+          <div class="ds-code-block tier-code"><span class="comment"># Add a member. Revoke rotates the key.</span>
 <span class="cmd">rd grant 9f2a1c... contributor</span>
 <span class="cmd">rd revoke 9f2a1c...</span>
-<span class="output">revoked &mdash; future items sealed under a new epoch</span>
+<span class="output">revoked &mdash; new items sealed under a fresh key</span>
 
-<span class="comment"># Every state change stays a signed event, kept forever</span>
+<span class="comment"># Every change is a signed event, kept forever</span>
 <span class="cmd">rd show api-d4e</span></div>
-          <p class="tier-note">Owner-rooted grants, forward-secret revocation, and a signed trail that never expires.</p>
+          <p class="tier-note">Owner-rooted grants, forward-secret revoke, a history that never expires.</p>
         </div>
 
       </div>
@@ -377,97 +359,90 @@
       <p class="section-label">For agents</p>
       <h2 class="section-title">Built for the ones doing the work</h2>
       <p class="section-desc">
-        <code>rd</code>'s primary users are AI agents; humans use it too. Drop one of these into your project
-        and Claude&nbsp;Code starts tracking work immediately &mdash; no MCP server, no special integration, just
-        <code>rd</code> on PATH.
+        rd's main users are AI agents. Humans too. Drop one of these in and Claude&nbsp;Code starts tracking
+        work. No MCP server, no integration. Just <code>rd</code> on PATH.
       </p>
 
-      <!-- Recipe 1 -->
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>1 &middot; Add it to CLAUDE.md</h3>
+        <h3>1 &middot; Paste it into CLAUDE.md</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
-          Paste this into your project's <code>CLAUDE.md</code>. Claude reads it at session start and uses
-          <code>rd</code> like any other CLI &mdash; including recovering its place after a context reset.
+          Claude reads it at session start and uses <code>rd</code> like any other CLI. It even finds its place
+          again after a context reset.
         </p>
         <div class="demo-block">
           <div class="ds-code-block"><span class="output">## Work Management
 
-rd is on PATH and auto-detects the project from the working directory.
+rd is on PATH and auto-detects the project.
 
-- Start every session: `rd ready` (what's actionable now)
+- Start every session: `rd ready`
 - Claim before working: `rd claim &lt;id&gt;`
 - Close with a reason: `rd done &lt;id&gt; --reason "..."`
-- After a context reset: `rd ready --view work`, then `rd show &lt;id&gt;` to reload
+- Lost the thread? `rd ready --view work`, then `rd show &lt;id&gt;`
 - New items: `ITEM=$(rd create "..." --type task --priority p1)`
-- Recurring shapes: `rd playbook list` before decomposing by hand
-- Everything supports `--json` for structured output</span></div>
+- Repeating work? `rd playbook list` before decomposing by hand
+- Everything speaks `--json`</span></div>
         </div>
       </div>
 
-      <!-- Recipe 2 -->
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>2 &middot; Or drop in the skill file</h3>
+        <h3>2 &middot; Or drop in the skill</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
-          Download <a href="SKILL.md">SKILL.md</a> into <code>.claude/skills/rd/</code>. Claude&nbsp;Code
-          discovers it automatically and gains full <code>rd</code> command knowledge.
+          Grab <a href="SKILL.md">SKILL.md</a> into <code>.claude/skills/rd/</code>. Claude&nbsp;Code finds it and
+          learns every command.
         </p>
         <div class="ds-code-block"><span class="cmd">mkdir -p .claude/skills/rd</span>
 <span class="cmd">curl -fsSL https://ready.3dl.dev/SKILL.md -o .claude/skills/rd/SKILL.md</span></div>
       </div>
 
-      <!-- Recipe 3 -->
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>3 &middot; Run a multi-agent swarm on one queue</h3>
+        <h3>3 &middot; Point a swarm at one queue</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
-          Spawn parallel Claude&nbsp;Code agents that share a work queue. Each gets its own signing identity;
-          the filesystem handles isolation &mdash; no env-var juggling.
+          Spin up parallel Claude&nbsp;Code agents on a shared queue. Each gets its own key. The filesystem keeps
+          them apart. No env-var juggling.
         </p>
         <div class="demo-block">
-          <div class="ds-code-block"><span class="comment"># Owner seeds the queue</span>
+          <div class="ds-code-block"><span class="comment"># Seed the queue</span>
 <span class="cmd">rd create "Build auth"  --priority p0 --type task</span>
 <span class="cmd">rd create "Build API"   --priority p1 --type task</span>
 <span class="cmd">rd create "Write tests" --priority p1 --type task</span>
 
-<span class="comment"># Each agent joins from its own worktree, then pulls from the shared queue</span>
+<span class="comment"># Each agent joins from its own worktree and pulls</span>
 <span class="cmd">rd join $(rd invite)</span>
 <span class="cmd">ITEM=$(rd ready | head -1)</span>
-<span class="cmd">rd claim $ITEM &amp;&amp; rd done $ITEM --reason "Auth module complete"</span></div>
+<span class="cmd">rd claim $ITEM &amp;&amp; rd done $ITEM --reason "Auth done"</span></div>
         </div>
       </div>
 
-      <!-- Recipe 4 -->
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>4 &middot; Let an agent escalate to a human</h3>
+        <h3>4 &middot; Let an agent ask you</h3>
         <p style="color: var(--ds-text-secondary); margin-bottom: var(--ds-space-md); line-height: 1.6;">
-          The agent hits a decision it shouldn't make alone. It posts a gate; the human rules from any terminal.
-          No dashboard, no ticket system &mdash; just signed events.
+          It hits a call it shouldn't make alone. It posts a gate. You answer from any terminal. No dashboard,
+          no ticket queue.
         </p>
         <div class="demo-block">
           <div class="ds-code-block"><span class="comment"># Agent: "I need a ruling."</span>
 <span class="cmd">rd gate myapp-d4e --gate-type design \
-  --description "PKCE vs device flow for mobile auth"</span>
+  --description "PKCE or device flow for mobile auth?"</span>
 <span class="output">{"id":"myapp-d4e","gate_type":"design","status":"waiting"}</span>
 
-<span class="comment"># Human: sees it, decides, moves on</span>
+<span class="comment"># You: decide, move on.</span>
 <span class="cmd">rd gates</span>
-<span class="output">  myapp-d4e  p1  design  PKCE vs device flow</span>
+<span class="output">  myapp-d4e  p1  design  PKCE or device flow</span>
 <span class="cmd">rd approve myapp-d4e --reason "PKCE. Need the browser redirect."</span>
-<span class="comment"># Agent's item is back to active — it continues from there.</span></div>
+<span class="comment"># Its item flips back to active. It picks up from there.</span></div>
         </div>
       </div>
 
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
-          <h3>Zero-config identity per actor</h3>
-          <p>Every actor signs with its own secp256k1 key under <code>$RD_HOME</code>. <code>$RD_ACTOR</code>
-          selects which key signs, so the owner and a named agent on the same host are attributed distinctly &mdash;
-          <code>RD_ACTOR=agent:pm rd claim &lt;id&gt;</code> and the transition is stamped to that key.</p>
+          <h3>A key per actor, no config</h3>
+          <p>Every actor signs with its own secp256k1 key under <code>$RD_HOME</code>. <code>$RD_ACTOR</code> picks
+          which. Owner and agent on the same box, attributed apart.</p>
         </div>
         <div>
-          <h3>The same commands, always</h3>
-          <p>There is no separate agent surface to learn or keep in sync. Whatever a human can do, an agent does
-          with the identical command &mdash; which is exactly why a person and a swarm can share one board without
-          stepping on each other.</p>
+          <h3>Same commands. Always.</h3>
+          <p>Nothing separate for agents to learn or keep in sync. Whatever you can do, they do with the same
+          command. That's why a person and a swarm share one board without collisions.</p>
         </div>
       </div>
     </div>
@@ -477,20 +452,20 @@ rd is on PATH and auto-detects the project from the working directory.
   <section id="confidential">
     <div class="ds-container">
       <p class="section-label">Confidential boards</p>
-      <h2 class="section-title">Encrypt the work that has to stay private</h2>
+      <h2 class="section-title">Some work has secrets. Keep them.</h2>
       <p class="section-desc">
-        On a confidential board (the default), a work item's free text is encrypted so only granted members can
-        read it &mdash; while the routing graph stays clear enough that sync, dedupe, and every query keep working
-        untouched. Confidentiality is a property of the log, not a feature of a server you have to trust.
+        On a confidential board (the default), the free text is encrypted so only members can read it.
+        Everything the relay needs to sync and filter stays clear. There's no server to trust because there's
+        no server.
       </p>
 
       <div class="two-col">
         <div>
-          <h3>What's sealed, what stays clear</h3>
-          <p>Encrypted into the event body: the <strong>title, description, close reason, and waiting-on</strong>.
-          Left clear so the relay can still index and filter: status, dependencies, priority, assignees, parent,
-          due date. Labels are HMAC-tokenized &mdash; filterable by members, opaque to everyone else.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="comment"># What a non-member sees when they REQ the relay:</span>
+          <h3>Sealed vs. clear</h3>
+          <p>Encrypted: title, description, close reason. Clear, so sync and queries keep working: status, deps,
+          priority, assignees, due date. Labels get tokenized, so members filter by them and everyone else sees
+          hashes.</p>
+          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="comment"># What a non-member pulls off the relay:</span>
 <span class="output">kind: 30302   (item card)
   d:        api-d4e            &larr; clear (routing)
   status:   active            &larr; clear
@@ -499,15 +474,14 @@ rd is on PATH and auto-detects the project from the working directory.
   content:  kJ4d…b2==         &larr; sealed: title + body</span></div>
         </div>
         <div>
-          <h3>Keys live in the log, not on a server</h3>
-          <p>The per-board key is wrapped to each member (and to the owner) inside an owner-signed grant, using
-          <strong>NIP-44</strong>. So the key is recoverable from the replicated log by anyone holding the identity
-          key &mdash; nothing extra to back up, and a relay operator never sees plaintext or keys.</p>
+          <h3>Keys live in the log</h3>
+          <p>The board key is wrapped to each member inside a signed grant (NIP-44). Hold your identity key and
+          you recover it from the log. Nothing extra to back up. The relay never sees a key or a word of
+          plaintext.</p>
           <div class="ds-callout" style="margin-top: var(--ds-space-sm);">
-            <span class="ds-callout-label">Forward secrecy on revoke</span>
-            <code>rd revoke</code> mints a new key epoch and re-wraps it to the remaining members. A removed
-            member keeps what it already read but can't decrypt anything authored after &mdash; and its own
-            historical reads still resolve.
+            <span class="ds-callout-label">Revoke and it rotates</span>
+            Drop a member and rd mints a new key for the rest. They keep what they already read and lose
+            everything after. No re-encrypting the past, no shared-password reset.
           </div>
         </div>
       </div>
@@ -516,113 +490,107 @@ rd is on PATH and auto-detects the project from the working directory.
         <div class="feature-card">
           <span class="feature-icon">&#9989;</span>
           <h3>On by default</h3>
-          <p><code>rd init</code> creates a confidential board; <code>rd init --public</code> opts out. Granted
-          members read plaintext transparently &mdash; no manual key handling, ever.</p>
+          <p><code>rd init</code> gives you a confidential board. <code>--public</code> if you want it open.
+          Members read plaintext with zero key wrangling.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128273;</span>
-          <h3>Owner is the root of trust</h3>
-          <p>Only the board owner mints and distributes the key, inside the same signed grant that confers write
-          access. Membership <em>is</em> the read key &mdash; one action, not two.</p>
+          <h3>You hold the root</h3>
+          <p>Only the owner hands out the key, inside the same grant that gives write access. Membership is the
+          read key. One move, not two.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128274;</span>
-          <h3>Real crypto, standard NIPs</h3>
-          <p>ChaCha20-Poly1305 over the content, NIP-44 v2 to wrap the key, validated against the official
-          NIP-44 test vectors. The relay is a dumb, replaceable cache of ciphertext.</p>
+          <h3>Real crypto</h3>
+          <p>ChaCha20-Poly1305 on the content, NIP-44 to wrap the key, checked against the official test vectors.
+          The relay is a dumb cache of ciphertext.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Nostr goodness -->
+  <!-- Nostr -->
   <section id="nostr">
     <div class="ds-container">
       <p class="section-label">Nostr-native, no server</p>
       <h2 class="section-title">Signed events, not a database</h2>
       <p class="section-desc">
-        Ready isn't a project-management app with a backend bolted on. <code>rd</code> is a <em>convention</em> &mdash;
-        a structured vocabulary of work operations that maps onto ordinary signed nostr events any relay or client
-        can read. That's the whole architecture.
+        rd isn't an app with a backend. It's a convention: a set of work operations that map onto plain signed
+        nostr events. That's the whole architecture.
       </p>
 
       <div class="two-col">
         <div>
-          <h3>State is a projection of the log</h3>
-          <p>When you run <code>rd create</code>, <code>rd</code> builds a signed item card (kind 30302) and a
-          NIP-34 status event, appends both to your local append-only log, and publishes them to your relays.
-          <code>rd claim</code> appends another status event with a causal link back to the card. An item's
-          current state is <strong>computed by replaying the log</strong> &mdash; there is no separate database to
-          drift out of sync.</p>
+          <h3>State is just the log, replayed</h3>
+          <p><code>rd create</code> signs an item card (kind 30302) and a status event, appends both to your
+          local log, and publishes to your relays. <code>rd claim</code> appends another. An item's current
+          state is computed by replaying the log. There's no database to drift.</p>
         </div>
         <div>
-          <h3>The core work vocabulary</h3>
-          <div class="ds-code-block" style="font-size: 12px;"><span class="output">work:create       new item with full payload
-work:claim        accept work, become performer
-work:status       transition status
-work:delegate     assign / reassign performer
-work:block        wire a dependency
-work:gate         request human escalation
-work:gate-resolve resolve a gate
-work:grant        owner-rooted role grant
-work:update       modify fields
-work:close        terminal close with reason</span></div>
+          <h3>The verbs, on the wire</h3>
+          <div class="ds-code-block" style="font-size: 12px;"><span class="output">work:create       new item
+work:claim        take it
+work:status       change status
+work:delegate     reassign
+work:block        chain a dependency
+work:gate         ask a human
+work:gate-resolve answer
+work:grant        add a member
+work:update       edit fields
+work:close        close with a reason</span></div>
         </div>
       </div>
 
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
           <h3>Identity is a key, not an account</h3>
-          <p>Every actor is a secp256k1 keypair under <code>$RD_HOME</code> &mdash; minted on first use, no
-          signup. The same key Schnorr-signs your events and does the ECDH that unwraps confidential board keys.
-          Membership and trust are owner-rooted <em>role grants</em> (kind 39301): revocable, graded, and
-          derivable from the signed log alone.</p>
+          <p>Every actor is a secp256k1 keypair under <code>$RD_HOME</code>, minted on first use. No signup. The
+          same key signs your events and unwraps confidential board keys. Membership is owner-rooted role grants
+          (kind 39301): revocable, graded, all derivable from the signed log.</p>
         </div>
         <div>
-          <h3>Relays are replaceable caches</h3>
-          <p>A relay's only job is to move signed events between machines. Run your own (a self-hosted
-          write-allowlist admits only owner-granted keys), rent a hosted one, or point at several for
-          redundancy. Lose them all and your local log is intact &mdash; work never lived on the relay.</p>
+          <h3>Relays are throwaway</h3>
+          <p>A relay just moves signed events between machines. Run your own, rent one, point at several. Lose
+          them all and your local log is fine. The work never lived on the relay.</p>
         </div>
       </div>
 
       <div class="two-col" style="margin-top: var(--ds-space-xl);">
         <div>
-          <h3>Federation without a mothership</h3>
-          <p>Each project is its own nostr board (kind 30301) with its own authoritative local log. Relays sync
-          boards between machines; there is no central server that could go down or hold your data hostage.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Relays (self-hosted, 2+ for no single point of failure)
-  &boxvr; write-allowlist: owner-rooted role grants
-  &boxvr; Board: api      (local log authoritative)
-  &boxvr; Board: frontend (local log authoritative)
-  &boxur; Board: infra    (local log authoritative)</span></div>
+          <h3>Federated, no mothership</h3>
+          <p>Each project is its own nostr board (kind 30301) with its own local log as the authority. Relays
+          sync boards between machines. No central server to go down or hold your data.</p>
+          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Relays (self-hosted, 2+ so nothing is a SPOF)
+  &boxvr; write-allowlist: owner-rooted grants
+  &boxvr; Board: api      (local log = truth)
+  &boxvr; Board: frontend (local log = truth)
+  &boxur; Board: infra    (local log = truth)</span></div>
         </div>
         <div>
-          <h3>Nothing to compact &mdash; ever</h3>
-          <p>The append-only log <strong>is</strong> the audit trail. Every create, claim, status change,
-          delegation, gate, and grant is a signed event, appended once and kept.</p>
+          <h3>Nothing to compact</h3>
+          <p>The append-only log <em>is</em> the history. Every create, claim, delegate, gate, and grant is a
+          signed event, written once and kept.</p>
           <div class="ds-callout" style="margin-top: var(--ds-space-sm);">
-            <span class="ds-callout-label">The trail survives</span>
-            Relays may drop old data &mdash; your local log never does. Nothing is archived away; nothing needs to be.
+            <span class="ds-callout-label">It survives</span>
+            Relays can drop old data. Your local log doesn't. Nothing is archived away, and nothing needs to be.
           </div>
         </div>
       </div>
 
       <div style="margin-top: var(--ds-space-xl);">
-        <h3>Built on open nostr standards</h3>
-        <p style="color: var(--ds-text-secondary); max-width: 680px; line-height: 1.6;">
-          Ready layers a work vocabulary on public NIPs &mdash; addressable boards and cards, NIP-34 status
-          events, NIP-22 comments, NIP-44 v2 encryption, NIP-77 Negentropy sync. There's no custom wire protocol
-          to implement: any nostr client already speaks the transport, and the events are the API.
+        <h3>Plain open nostr</h3>
+        <p style="color: var(--ds-text-secondary); max-width: 640px; line-height: 1.6;">
+          Boards and cards, NIP-34 status, NIP-22 comments, NIP-44 encryption, NIP-77 sync. No custom protocol.
+          Any nostr client already speaks it, and the events are the API.
         </p>
         <div class="ecosystem-links">
           <a href="https://github.com/3dl-dev/ready" class="ds-card ecosystem-card">
             <h4>Ready source</h4>
-            <p>The rd CLI &mdash; event schema, projection engine, confidential envelope, and named views. MIT-friendly, all in the open.</p>
+            <p>The rd CLI. Event schema, projection engine, confidential envelope, named views. All in the open.</p>
           </a>
           <a href="https://3dl.dev" class="ds-card ecosystem-card">
             <h4>Third Division Labs</h4>
-            <p>Built and maintained by 3DL.</p>
+            <p>Built and run by 3DL.</p>
           </a>
         </div>
       </div>
@@ -635,8 +603,7 @@ work:close        terminal close with reason</span></div>
       <p class="section-label">Get started</p>
       <h2 class="section-title">Install rd</h2>
       <p class="section-desc">
-        A self-contained binary &mdash; no separate server, no identity ceremony. Run one command, then
-        <code>rd init</code> and you're tracking work.
+        One binary. No server, no ceremony. Run this, then <code>rd init</code>, and you're tracking work.
       </p>
       <div class="install-grid">
         <div class="install-option">
