@@ -84,16 +84,20 @@ func encWellFormed(e *nostr.Event) bool {
 	return len(raw) >= chacha20poly1305.NonceSize+chacha20poly1305.Overhead
 }
 
-// shouldQuarantineCard is the fail-closed fold gate (ready-710). On a confidential
-// board it returns true (→ the caller skips the card, so it never folds into the
-// latest-wins projection) for any card lacking a well-formed enc envelope, EXCEPT
-// a genuine pre-cutover plaintext card (no enc marker, created before the first
-// epoch), which is grandfathered. A post-cutover plaintext card, or a v-shaped
-// card with a malformed/short/unknown enc envelope or smuggled cleartext, is
-// quarantined. Grandfathering happens ONLY here — the projection loop is the
-// full-log replay — never in the live ingest path. A nil set or a plaintext board
-// makes the gate inert.
-func shouldQuarantineCard(e *nostr.Event, ebs EncryptedBoardSet) bool {
+// shouldQuarantine is the fail-closed fold gate (ready-710). On a confidential
+// board it returns true (→ the caller skips the event, so it never folds into the
+// latest-wins projection / history) for any card OR NIP-34 status event lacking a
+// well-formed enc envelope, EXCEPT a genuine pre-cutover plaintext event (no enc
+// marker, created before the first epoch), which is grandfathered. A post-cutover
+// plaintext event, or a v-shaped event with a malformed/short/unknown enc envelope
+// or smuggled cleartext, is quarantined — so a plaintext status event cannot fold
+// its cleartext reason into history any more than a plaintext card can fold its
+// cleartext title/description. Grandfathering happens ONLY here — the projection
+// loop is the full-log replay — never in the live ingest path. A nil set or a
+// plaintext board makes the gate inert. Works for both events because boardCoordOf
+// and encWellFormed handle a card's sole "a" tag and a status event's board "a" tag
+// identically.
+func shouldQuarantine(e *nostr.Event, ebs EncryptedBoardSet) bool {
 	if ebs == nil {
 		return false
 	}

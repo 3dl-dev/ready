@@ -271,14 +271,16 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		if opts.PinnedBoard != "" && e.Kind == KindCard && tagValue(e, "a") != opts.PinnedBoard {
 			continue
 		}
-		// FAIL-CLOSED FOLD GATE (ready-710): on a confidential board, a card lacking
-		// a well-formed enc envelope is quarantined — it never enters winningCard, so
-		// its cleartext free text cannot fold into the projection. A genuine
-		// pre-cutover plaintext card is grandfathered (only here — this loop IS the
-		// full-log replay). Inert when EncryptedBoards is nil or the board is
-		// plaintext. Sibling to the board-pin skip above; strfry can't validate
-		// payload shape, so this local fold is the single enforcement point.
-		if e.Kind == KindCard && shouldQuarantineCard(e, opts.EncryptedBoards) {
+		// FAIL-CLOSED FOLD GATE (ready-710): on a confidential board, a card OR a
+		// NIP-34 status event lacking a well-formed enc envelope is quarantined — it
+		// never enters winningCard / statusEvents, so its cleartext free text (a
+		// card's title/description or a status event's close reason) cannot fold into
+		// the projection or history. A genuine pre-cutover plaintext event is
+		// grandfathered (only here — this loop IS the full-log replay). Inert when
+		// EncryptedBoards is nil or the board is plaintext. Sibling to the board-pin
+		// skip above; strfry can't validate payload shape, so this local fold is the
+		// single enforcement point.
+		if (e.Kind == KindCard || isStatusKind(e.Kind)) && shouldQuarantine(e, opts.EncryptedBoards) {
 			continue
 		}
 		seen[e.ID] = true

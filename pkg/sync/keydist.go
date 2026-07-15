@@ -140,6 +140,13 @@ func DeriveBoardKeyring(events []*nostr.Event, reader *nostr.Key, boardAuthor, b
 		if g.Signer != boardAuthor || g.WrappedCEK == "" {
 			continue
 		}
+		// A valid CEK epoch is >= 1 (cards seal under Epoch >= 1). parseRoleGrant
+		// coerces an unparseable cek_epoch tag to 0; reject such a grant's CEK
+		// entirely rather than binding a key to a bogus epoch or setting the board
+		// cutover from a malformed grant.
+		if g.CEKEpoch < 1 {
+			continue
+		}
 		// Board-global cutover: earliest owner CEK-bearing grant (public created_at,
 		// tracked regardless of who the grant is addressed to).
 		if cur, seen := kr.cutover[coord]; !seen || g.CreatedAt < cur {

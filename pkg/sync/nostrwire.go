@@ -289,16 +289,24 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 		tags = append(tags, []string{"waiting_on", spec.WaitingOn})
 	}
 	for _, label := range spec.Labels {
-		if label != "" {
-			// Under tokenization (Enc.LTK set) the clear l value is an owner-keyed
-			// HMAC token (equality-filterable, not readable); the plaintext label
-			// rides inside the sealed Content for member-side rendering. Otherwise
-			// the plaintext label is emitted exactly as before.
-			if spec.Enc != nil && spec.Enc.LTK != nil {
-				tags = append(tags, []string{"l", labelToken(*spec.Enc.LTK, label)})
-			} else {
-				tags = append(tags, []string{"l", label})
-			}
+		if label == "" {
+			continue
+		}
+		switch {
+		case spec.Enc != nil && spec.Enc.LTK != nil:
+			// Confidential + tokenization: the clear l value is an owner-keyed HMAC
+			// token (equality-filterable, not readable); the plaintext label rides
+			// inside the sealed Content for member-side rendering.
+			tags = append(tags, []string{"l", labelToken(*spec.Enc.LTK, label)})
+		case spec.Enc != nil:
+			// Confidential board with NO LTK: emit NO clear l tag — a plaintext label
+			// tag would leak the label value. The label still rides in the sealed
+			// Content blob (member-side rendering) and rd filters labels CLIENT-SIDE,
+			// so no relay-indexed l tag is needed. (Never leak a plaintext label on a
+			// confidential board regardless of whether an LTK was injected.)
+		default:
+			// Plaintext board: emit the label exactly as before.
+			tags = append(tags, []string{"l", label})
 		}
 	}
 	if spec.ETA != "" {
