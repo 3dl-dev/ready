@@ -51,6 +51,66 @@ type BoardDecryptor interface {
 	CEK(boardCoord string, epoch int) (cek [32]byte, ok bool)
 }
 
+// EncryptedBoardSet marks which boards are in confidential mode and the cutover
+// timestamp of each board's first CEK epoch. It is the fold gate's "is this board
+// encrypted / what is its cutover" signal (ready-710). keydist (ready-a8a)
+// provides the production implementation from the board's CEK-epoch state; the
+// fold gate only CONSUMES it via this interface (no hardcoded marker). Nil leaves
+// every board plaintext-legal (gate inert), so it ships without keydist.
+type EncryptedBoardSet interface {
+	// Cutover returns the created_at (unix SECONDS) boundary of boardCoord's first
+	// CEK epoch and ok=true when the board is in encrypted mode; ok=false when the
+	// board is plaintext (the gate is inert for it).
+	Cutover(boardCoord string) (cutover int64, ok bool)
+}
+
+// encWellFormed reports whether e is a well-formed confidential card/status event:
+// the enc marker is a KNOWN version, cek_epoch parses, and Content base64-decodes
+// to at least a nonce+AEAD-tag (so a v-shaped card carrying smuggled cleartext, an
+// empty/short body, or an unknown enc version is NOT well-formed). This is a
+// STRUCTURAL check — it cannot (and must not) verify the AEAD, which needs the CEK
+// the fold runs without; a member's read path does the AEAD verify.
+func encWellFormed(e *nostr.Event) bool {
+	if tagValue(e, tagEnc) != encVersion { // absent OR unknown version → malformed
+		return false
+	}
+	if _, err := strconv.Atoi(tagValue(e, tagCEKEpoch)); err != nil {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(e.Content)
+	if err != nil {
+		return false
+	}
+	return len(raw) >= chacha20poly1305.NonceSize+chacha20poly1305.Overhead
+}
+
+// shouldQuarantineCard is the fail-closed fold gate (ready-710). On a confidential
+// board it returns true (→ the caller skips the card, so it never folds into the
+// latest-wins projection) for any card lacking a well-formed enc envelope, EXCEPT
+// a genuine pre-cutover plaintext card (no enc marker, created before the first
+// epoch), which is grandfathered. A post-cutover plaintext card, or a v-shaped
+// card with a malformed/short/unknown enc envelope or smuggled cleartext, is
+// quarantined. Grandfathering happens ONLY here — the projection loop is the
+// full-log replay — never in the live ingest path. A nil set or a plaintext board
+// makes the gate inert.
+func shouldQuarantineCard(e *nostr.Event, ebs EncryptedBoardSet) bool {
+	if ebs == nil {
+		return false
+	}
+	cutover, enc := ebs.Cutover(boardCoordOf(e))
+	if !enc {
+		return false // board is plaintext — cleartext cards legal
+	}
+	if encWellFormed(e) {
+		return false // proper confidential card — keep
+	}
+	// Not well-formed. Grandfather ONLY a genuine pre-cutover plaintext card.
+	if e.CreatedAt < cutover && !isConfidential(e) {
+		return false
+	}
+	return true // quarantine (fail-closed)
+}
+
 // boardCoordOf returns the event's 30301 board-membership coordinate. A card
 // carries it as its (only) "a" tag; a NIP-34 status event carries the board
 // coordinate as one of several "a" tags (the first "a" is the 30302 card

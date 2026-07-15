@@ -106,6 +106,13 @@ type ProjectOptions struct {
 	// injected so the read path is testable before keydist (ready-a8a) wires the
 	// real grant-unwrap; production callers pass nil until then.
 	Decryptor BoardDecryptor
+
+	// EncryptedBoards, when non-nil, drives the FAIL-CLOSED FOLD GATE (ready-710):
+	// on a board it marks confidential, a card lacking a well-formed enc envelope
+	// is quarantined (never folded), except a genuine pre-cutover plaintext card
+	// (grandfathered here, on replay). Nil leaves every board plaintext-legal (gate
+	// inert). keydist (ready-a8a) populates it from the board's CEK-epoch state.
+	EncryptedBoards EncryptedBoardSet
 }
 
 // trusts reports whether pubkey is authorized under opts.Trusted. A nil Trusted
@@ -262,6 +269,16 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		// here (they carry item state / authorship); status authority is already
 		// per-coordinate bound. Inert when no board is pinned.
 		if opts.PinnedBoard != "" && e.Kind == KindCard && tagValue(e, "a") != opts.PinnedBoard {
+			continue
+		}
+		// FAIL-CLOSED FOLD GATE (ready-710): on a confidential board, a card lacking
+		// a well-formed enc envelope is quarantined — it never enters winningCard, so
+		// its cleartext free text cannot fold into the projection. A genuine
+		// pre-cutover plaintext card is grandfathered (only here — this loop IS the
+		// full-log replay). Inert when EncryptedBoards is nil or the board is
+		// plaintext. Sibling to the board-pin skip above; strfry can't validate
+		// payload shape, so this local fold is the single enforcement point.
+		if e.Kind == KindCard && shouldQuarantineCard(e, opts.EncryptedBoards) {
 			continue
 		}
 		seen[e.ID] = true
