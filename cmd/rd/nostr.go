@@ -445,6 +445,9 @@ var nostrPublishCmd = &cobra.Command{
 		if res.Buffered {
 			fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 		}
+		if res.Rejected {
+			fmt.Fprintln(os.Stderr, "WARNING: some events were permanently rejected by a relay (malformed/disallowed) and dead-lettered to nostr-rejected.jsonl — they will NOT be retried; inspect and fix.")
+		}
 		return nil
 	},
 }
@@ -600,6 +603,9 @@ var nostrPutCmd = &cobra.Command{
 		if res.Buffered {
 			fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 		}
+		if res.Rejected {
+			fmt.Fprintln(os.Stderr, "WARNING: some events were permanently rejected by a relay (malformed/disallowed) and dead-lettered to nostr-rejected.jsonl — they will NOT be retried; inspect and fix.")
+		}
 		return nil
 	},
 }
@@ -681,8 +687,18 @@ var nostrFlushCmd = &cobra.Command{
 			enc.SetIndent("", "  ")
 			return enc.Encode(res)
 		}
-		fmt.Printf("flush: total=%d flushed=%d remaining=%d relay_errors=%d\n",
-			res.Total, res.Flushed, res.Remaining, len(res.RelayErrors))
+		fmt.Printf("flush: total=%d flushed=%d remaining=%d rejected=%d relay_errors=%d write_errors=%d\n",
+			res.Total, res.Flushed, res.Remaining, res.Rejected, len(res.RelayErrors), len(res.WriteErrors))
+		if res.Rejected > 0 {
+			fmt.Printf("  %d event(s) permanently rejected -> dead-lettered to %s (NOT retried; inspect and fix)\n",
+				res.Rejected, rdSync.NostrRejectedFile)
+		}
+		if len(res.WriteErrors) > 0 {
+			fmt.Fprintf(os.Stderr, "  %d local dead-letter WRITE error(s) (disk/permissions, not relay) — events kept in the retry buffer:\n", len(res.WriteErrors))
+			for _, we := range res.WriteErrors {
+				fmt.Fprintf(os.Stderr, "    %s\n", we)
+			}
+		}
 		return nil
 	},
 }
@@ -964,6 +980,9 @@ modified. Idempotent by event id (safe to re-run).`,
 			fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 		} else {
 			fmt.Printf("published to relays: %v\n", relays)
+		}
+		if res.Rejected {
+			fmt.Fprintln(os.Stderr, "WARNING: some migration events were permanently rejected by a relay and dead-lettered to nostr-rejected.jsonl — NOT retried; inspect and fix.")
 		}
 		return nil
 	},

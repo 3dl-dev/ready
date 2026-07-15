@@ -150,6 +150,9 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	if res.Buffered {
 		fmt.Println("  (reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
 	}
+	if res.Rejected {
+		fmt.Fprintln(os.Stderr, "  WARNING: the role-grant event was permanently rejected by a relay and dead-lettered to nostr-rejected.jsonl — NOT retried; inspect and fix.")
+	}
 	return nil
 }
 

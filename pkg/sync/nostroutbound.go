@@ -51,14 +51,25 @@ type EventAck struct {
 	Acks    []RelayAck
 	// AnyRelay is true if at least one relay accepted (OK,true).
 	AnyRelay bool
+	// Permanent is true if no relay accepted the event AND at least one relay
+	// rejected it for a permanent reason (malformed/disallowed) — it was
+	// dead-lettered, not buffered for retry (ready-1c2).
+	Permanent bool
+	// Reason carries the relay message that classified a Permanent rejection.
+	Reason string `json:",omitempty"`
 }
 
 // PublishResult summarises a PublishItem call.
 type PublishResult struct {
 	ItemID string
 	Events []EventAck
-	// Buffered is true if at least one event reached no relay and was buffered.
+	// Buffered is true if at least one event reached no relay for a TRANSIENT
+	// reason and was buffered to the pending retry queue.
 	Buffered bool
+	// Rejected is true if at least one event was PERMANENTLY rejected by a relay
+	// and dead-lettered to nostr-rejected.jsonl (ready-1c2). Distinct from
+	// Buffered: a rejected event will NOT be retried.
+	Rejected bool
 }
 
 // PublishItem materializes an item as board+card+status events, appends them to
@@ -272,22 +283,52 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 		timeout = nostr.DefaultTimeout
 	}
 	for _, e := range events {
+		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout)
 		ack := EventAck{EventID: e.ID, Kind: e.Kind}
-		for _, relay := range p.WriteRelays {
-			rctx, cancel := context.WithTimeout(ctx, timeout)
-			accepted, msg, err := nostr.Publish(rctx, relay, e)
-			cancel()
-			ra := RelayAck{Relay: relay, Accepted: accepted, Message: msg}
-			if err != nil {
-				ra.Err = err.Error()
+		for _, a := range attempts {
+			ra := RelayAck{Relay: a.Relay, Accepted: a.Accepted, Message: a.Message}
+			if a.Err != nil {
+				ra.Err = a.Err.Error()
 			}
-			if accepted {
+			// Classified outcome, not the raw bool: an OK,false "duplicate:" reply
+			// means the relay already holds the event, so it counts as delivered.
+			if a.Outcome == outcomeAccepted {
 				ack.AnyRelay = true
 			}
 			ack.Acks = append(ack.Acks, ra)
 		}
-		if !ack.AnyRelay {
-			// Reached no relay — buffer for later flush. Already durable in the log.
+
+		switch outcome {
+		case outcomeAccepted:
+			// Stored by at least one relay — nothing to buffer.
+		case outcomePermanent:
+			// No relay will ever accept this exact event. Dead-letter it instead
+			// of re-buffering forever (ready-1c2). Still durable in the log.
+			ack.Permanent = true
+			ack.Reason = permReason
+			if p.PendingPath == "" {
+				// No on-disk queue configured; the event remains durable in the
+				// authoritative log. Surface it so it is not silently lost.
+				res.Rejected = true
+				fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s); no pending path — retained in authoritative log only\n", e.ID, permReason)
+				break
+			}
+			if derr := appendRejectedEvent(rejectedPathFor(p.PendingPath), RejectedRecord{Event: e, Reason: permReason}); derr != nil {
+				// Dead-letter write failed — fall back to the retry buffer so the
+				// event is not lost from EVERY on-disk queue (symmetry with
+				// FlushNostrPending; the fresh publish must not be the odd path).
+				fmt.Fprintf(os.Stderr, "warning: sync: dead-letter write failed (%v); buffering %s for retry instead\n", derr, e.ID)
+				if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: sync: buffering nostr event to pending: %v\n", bufErr)
+				}
+				res.Buffered = true
+				break
+			}
+			res.Rejected = true
+			fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s) — dead-lettered to %s, will NOT retry\n", e.ID, permReason, NostrRejectedFile)
+		default: // outcomeTransient
+			// Reached no relay for a retryable reason — buffer for later flush.
+			// Already durable in the log.
 			res.Buffered = true
 			if p.PendingPath != "" {
 				if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {

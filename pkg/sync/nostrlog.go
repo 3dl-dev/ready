@@ -31,6 +31,17 @@ const (
 	// (offline). They are already durable in the log; this is only the relay
 	// publish retry queue.
 	NostrPendingFile = "nostr-pending.jsonl"
+	// NostrRejectedFile is the dead-letter queue: signed events a relay
+	// PERMANENTLY refused (malformed "invalid:" / structurally disallowed
+	// "restricted:"). Kept out of the retry queue (ready-1c2) so they stop
+	// re-publishing forever; retained here for operator diagnosis. Still durable
+	// in the authoritative log.
+	NostrRejectedFile = "nostr-rejected.jsonl"
+
+	// ReadyDir is the project-state directory name under the project root. It is
+	// the parent of the authoritative log, the pending buffer, and the
+	// dead-letter queue.
+	ReadyDir = ".ready"
 
 	// MaxCreatedAtSkew bounds how far into the FUTURE an inbound (relay-reconciled,
 	// git-merged, or negentropy-synced) event's created_at may be relative to the

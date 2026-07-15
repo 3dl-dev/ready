@@ -2,12 +2,14 @@
 //
 // When rd mutates an item while every relay is unreachable, the signed events are
 // ALWAYS durable in the local authoritative log, and additionally queued in the
-// offline relay-retry buffer (nostr-pending.jsonl) by the Publisher. FlushPending
-// drains that buffer on reconnect: it re-publishes each buffered event to the
-// write relays and drops the ones a relay accepted. Re-publishing is idempotent
-// by nostr event id — a relay that already stored the event answers OK,true, so
-// flushing twice (or racing two machines) is harmless. Events a relay is still
-// unable to accept stay buffered for the next flush.
+// offline relay-retry buffer (nostr-pending.jsonl) by the Publisher.
+// FlushNostrPending drains that buffer on reconnect: it re-publishes each
+// buffered event to the write relays and drops the ones a relay accepted.
+// Re-publishing is idempotent by nostr event id — a relay that already stored the
+// event answers OK,true, so flushing twice (or racing two machines) is harmless.
+// An event a relay PERMANENTLY refuses (invalid:/restricted:) is dead-lettered to
+// nostr-rejected.jsonl instead of being retried forever (ready-1c2); a purely
+// transient failure stays buffered for the next flush.
 package sync
 
 import (
@@ -27,13 +29,24 @@ type FlushResult struct {
 	Total int
 	// Flushed is how many at least one relay accepted (and were dropped from the buffer).
 	Flushed int
-	// Remaining is how many still could not reach any relay (kept in the buffer).
+	// Remaining is how many still could not reach any relay for a TRANSIENT reason
+	// (kept in the buffer for the next flush).
 	Remaining int
-	// RelayErrors holds per-relay publish errors encountered.
+	// Rejected is how many were PERMANENTLY refused by a relay and dead-lettered
+	// to nostr-rejected.jsonl (ready-1c2). They are removed from the retry queue
+	// so a poisoned record can never block the buffer forever.
+	Rejected int
+	// RejectReasons holds the relay message for each dead-lettered event.
+	RejectReasons []string
+	// RelayErrors holds per-relay publish (transport) errors encountered.
 	RelayErrors []string
+	// WriteErrors holds LOCAL filesystem errors from dead-lettering (e.g. writing
+	// nostr-rejected.jsonl failed). Kept distinct from RelayErrors so an operator
+	// is not sent chasing relay connectivity for a local disk fault.
+	WriteErrors []string
 }
 
-// FlushPending re-publishes every event buffered in pendingPath to the write
+// FlushNostrPending re-publishes every event buffered in pendingPath to the write
 // relays and rewrites the buffer with only the events that still reached no relay.
 // A missing/empty buffer is a no-op. The authoritative log is never touched here —
 // the buffer is purely a relay-delivery retry queue.
@@ -53,24 +66,39 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	}
 
 	var remaining []*nostr.Event
+	var rejected []RejectedRecord
 	for _, e := range events {
-		anyRelay := false
-		for _, relay := range relays {
-			pctx, cancel := context.WithTimeout(ctx, timeout)
-			accepted, _, perr := nostr.Publish(pctx, relay, e)
-			cancel()
-			if perr != nil {
-				res.RelayErrors = append(res.RelayErrors, fmt.Sprintf("%s: %v", relay, perr))
-				continue
-			}
-			if accepted {
-				anyRelay = true
+		attempts, outcome, permReason := publishEventToRelays(ctx, relays, e, timeout)
+		for _, a := range attempts {
+			if a.Err != nil {
+				res.RelayErrors = append(res.RelayErrors, fmt.Sprintf("%s: %v", a.Relay, a.Err))
 			}
 		}
-		if anyRelay {
+		switch outcome {
+		case outcomeAccepted:
 			res.Flushed++
-		} else {
+		case outcomePermanent:
+			// Permanently refused — dead-letter it so it stops clogging the retry
+			// queue forever (ready-1c2). Never blocks the records behind it.
+			rejected = append(rejected, RejectedRecord{Event: e, Reason: permReason})
+		default: // outcomeTransient
 			remaining = append(remaining, e)
+		}
+	}
+
+	// Persist the dead-letters. A dead-letter WRITE failure is a LOCAL fault (not
+	// a relay fault) and must not lose the event, so on failure we keep it in the
+	// retry buffer rather than drop it.
+	if len(rejected) > 0 {
+		rp := rejectedPathFor(pendingPath)
+		for _, rec := range rejected {
+			if derr := appendRejectedEvent(rp, rec); derr != nil {
+				res.WriteErrors = append(res.WriteErrors, fmt.Sprintf("dead-letter %s: %v", rec.Event.ID, derr))
+				remaining = append(remaining, rec.Event)
+				continue
+			}
+			res.Rejected++
+			res.RejectReasons = append(res.RejectReasons, rec.Reason)
 		}
 	}
 	res.Remaining = len(remaining)
