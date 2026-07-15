@@ -3,12 +3,12 @@ module github.com/3dl-dev/ready
 go 1.25.0
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
+	golang.org/x/crypto v0.54.0
 )
 
 require (
@@ -16,5 +16,5 @@ require (
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )

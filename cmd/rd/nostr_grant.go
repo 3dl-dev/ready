@@ -120,6 +120,17 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	// unrelated grant burst inflate a fresh grant's created_at and beat a genuinely-later
 	// cross-machine revoke (the ready-be1 lost-revoke) — cross-machine convergence
 	// (the (created_at,id) key) is unchanged.
+	// Confidential-by-default (ready-216): on a confidential board an owner grant
+	// that confers read access carries the current-epoch CEK + the LTK NIP-44-wrapped
+	// to the grantee, so `rd grant` alone lets the member read. No-op on a plaintext
+	// board, for a revoke, or for a non-owner signer (only owner-signed CEK counts).
+	wCEK, cekEpoch, wLTK, kerr := confidentialGrantKeys(dir, pub, boardAuthor, boardD, grantee, role)
+	if kerr != nil {
+		return fmt.Errorf("wrapping board CEK for grant: %w", kerr)
+	}
+	spec.WrappedCEK = wCEK
+	spec.CEKEpoch = cekEpoch
+	spec.WrappedLTK = wLTK
 	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, grantee)))
 	if err != nil {
 		return err

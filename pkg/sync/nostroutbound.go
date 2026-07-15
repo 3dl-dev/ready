@@ -106,7 +106,7 @@ func (p *Publisher) PublishItemWithReason(ctx context.Context, board *BoardSpec,
 		events = append(events, issueEvent)
 	}
 
-	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt)
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt, card.Enc)
 	if err != nil {
 		return res, err
 	}
@@ -136,7 +136,7 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 		return res, err
 	}
 
-	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt)
+	se, err := BuildStatusEventWithIssueRoot(p.Key, card.ItemID, card.Status, ce.ID, issueID, cardBoardCoord(p.Key, card), reason, createdAt, card.Enc)
 	if err != nil {
 		return res, err
 	}
@@ -156,6 +156,16 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 // the caller then fails the whole publish (matching every other build-step
 // error in this file) rather than silently skipping the anchor.
 func (p *Publisher) ensureIssueEvent(card CardSpec, createdAt int64) (issueID string, newEvent *nostr.Event, err error) {
+	// CONFIDENTIAL boards (ready-216): the NIP-34 kind:1621 issue event carries the
+	// title (clear "subject" tag) and description (clear Content) for generic NIP-34
+	// client interop. On a confidential board that would leak exactly the two most
+	// sensitive free-text fields the envelope seals into the card — and a generic
+	// client cannot read confidential content anyway — so suppress the issue-event
+	// anchor entirely. The status event then simply carries no issue-root "e" tag
+	// (BuildStatusEventWithIssueRoot treats issueEventID="" as "no anchor").
+	if card.Enc != nil {
+		return "", nil, nil
+	}
 	existing, err := p.Log.ReadAll()
 	if err != nil {
 		return "", nil, fmt.Errorf("sync: reading log for issue-root lookup: %w", err)

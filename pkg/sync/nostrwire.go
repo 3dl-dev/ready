@@ -161,6 +161,15 @@ type CardSpec struct {
 	// Due carries the item's hard due date (Item.Due, RFC3339). Additive rd-extension
 	// tag ("due") (ready-187). DISTINCT from ETA. Old cards default to empty Due.
 	Due string
+
+	// Enc, when non-nil, puts this card in CONFIDENTIAL mode (epic ready-216): the
+	// free-text fields (Title, Context, WaitingOn) are AEAD-sealed into
+	// event.Content and the clear title/waiting_on tags are dropped; when Enc.LTK
+	// is set the l label tags are HMAC-tokenized. Every relay-indexed routing tag
+	// stays plaintext. Nil = plaintext mode, the exact pre-existing code path with
+	// zero structural drift. Injected here so the write path is testable before
+	// keydist (ready-a8a) supplies the CEK by unwrapping the owner-signed grant.
+	Enc *Envelope
 }
 
 // BoardSpec describes an rd project/campfire as a NIP-100 board (30301).
@@ -240,7 +249,11 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	}
 	tags := [][]string{
 		{"d", spec.ItemID},
-		{"title", spec.Title},
+	}
+	// CONFIDENTIAL mode drops the clear title tag (its value moves into the sealed
+	// Content); plaintext mode emits it exactly where it always was (right after d).
+	if spec.Enc == nil {
+		tags = append(tags, []string{"title", spec.Title})
 	}
 	if coord := cardBoardCoord(k, spec); coord != "" {
 		tags = append(tags, []string{"a", coord})
@@ -270,11 +283,29 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	if spec.WaitingType != "" {
 		tags = append(tags, []string{"waiting_type", spec.WaitingType})
 	}
-	if spec.WaitingOn != "" {
+	// CONFIDENTIAL mode moves waiting_on into the sealed Content (it is free text);
+	// plaintext mode emits the clear tag as before.
+	if spec.WaitingOn != "" && spec.Enc == nil {
 		tags = append(tags, []string{"waiting_on", spec.WaitingOn})
 	}
 	for _, label := range spec.Labels {
-		if label != "" {
+		if label == "" {
+			continue
+		}
+		switch {
+		case spec.Enc != nil && spec.Enc.LTK != nil:
+			// Confidential + tokenization: the clear l value is an owner-keyed HMAC
+			// token (equality-filterable, not readable); the plaintext label rides
+			// inside the sealed Content for member-side rendering.
+			tags = append(tags, []string{"l", labelToken(*spec.Enc.LTK, label)})
+		case spec.Enc != nil:
+			// Confidential board with NO LTK: emit NO clear l tag — a plaintext label
+			// tag would leak the label value. The label still rides in the sealed
+			// Content blob (member-side rendering) and rd filters labels CLIENT-SIDE,
+			// so no relay-indexed l tag is needed. (Never leak a plaintext label on a
+			// confidential board regardless of whether an LTK was injected.)
+		default:
+			// Plaintext board: emit the label exactly as before.
 			tags = append(tags, []string{"l", label})
 		}
 	}
@@ -297,11 +328,23 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	if spec.Due != "" {
 		tags = append(tags, []string{"due", spec.Due})
 	}
+	// Content: plaintext mode carries the raw description; confidential mode seals
+	// the {title,context,waiting_on,labels} blob and adds the clear enc/cek_epoch
+	// markers. No other new clear tag is added; NO content-hash tag ever (spec §6).
+	content := spec.Context
+	if spec.Enc != nil {
+		sealed, err := sealCardPayload(spec.Enc, spec)
+		if err != nil {
+			return nil, fmt.Errorf("sync: seal card content: %w", err)
+		}
+		content = sealed
+		tags = append(tags, encMarkerTags(spec.Enc)...)
+	}
 	e := &nostr.Event{
 		Kind:      KindCard,
 		CreatedAt: createdAt,
 		Tags:      tags,
-		Content:   spec.Context,
+		Content:   content,
 	}
 	if err := e.Sign(k); err != nil {
 		return nil, fmt.Errorf("sync: sign card event: %w", err)
@@ -370,12 +413,26 @@ func BuildStatusEvent(k *nostr.Key, itemID, rdStatus, cardEventID, reason string
 // cardBoardCoord — fixes this without touching the card-coordinate anchor at
 // tag position 0 that everything else (rd's own projection, the ready-da7 issue
 // anchor, the ready-d65 migration parity) already depends on.
-func BuildStatusEventWithIssueRoot(k *nostr.Key, itemID, rdStatus, cardEventID, issueEventID, boardCoord, reason string, createdAt int64) (*nostr.Event, error) {
+func BuildStatusEventWithIssueRoot(k *nostr.Key, itemID, rdStatus, cardEventID, issueEventID, boardCoord, reason string, createdAt int64, env *Envelope) (*nostr.Event, error) {
 	e, err := BuildStatusEvent(k, itemID, rdStatus, cardEventID, reason, createdAt)
 	if err != nil {
 		return nil, err
 	}
 	changed := false
+	// CONFIDENTIAL mode: seal the {reason} blob into Content and add the clear
+	// enc/cek_epoch markers. BuildStatusEvent set the plaintext reason in Content
+	// (in-memory only); it is overwritten here before the re-sign below, so the
+	// plaintext reason is never signed or published. This is the single status-event
+	// path the live confidential write flow uses (nostroutbound Publisher).
+	if env != nil {
+		sealed, err := sealStatusPayload(env, reason)
+		if err != nil {
+			return nil, fmt.Errorf("sync: seal status content: %w", err)
+		}
+		e.Content = sealed
+		e.Tags = append(e.Tags, encMarkerTags(env)...)
+		changed = true
+	}
 	if issueEventID != "" {
 		// NIP-10 marked "e" tag: ["e", <event-id>, <relay-hint>, "root"]. The relay
 		// hint is left empty (rd doesn't track per-event relay provenance); readers

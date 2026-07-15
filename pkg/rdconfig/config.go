@@ -176,6 +176,16 @@ type SyncConfig struct {
 	// rejected on board grounds); existing installs load with an empty Board and are
 	// therefore unaffected until the pin is written.
 	Board string `json:"board,omitempty"`
+
+	// Confidential, when true, marks this board as a CONFIDENTIAL rd board (epic
+	// ready-216): the owner's first write mints a per-board CEK+LTK (published as an
+	// owner self-grant in the log so it is recoverable from the identity key) and
+	// every card/status event authored here seals its free text (title, description,
+	// waiting_on, close reason) into event.Content while routing tags stay clear and
+	// labels are HMAC-tokenized. `rd init` sets this true by DEFAULT (opt out with
+	// --public); EXISTING boards load with it false and stay plaintext until
+	// explicitly enabled, so this never silently flips a board already in use.
+	Confidential bool `json:"confidential,omitempty"`
 }
 
 // SyncConfigPath returns the path to the project-local sync config file.

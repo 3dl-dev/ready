@@ -88,6 +88,20 @@ type RoleGrantSpec struct {
 	// the claim-nonce it presented; derivation enforces one-claim-nonce-per-pubkey
 	// (single-use), so a leaked claim admitted to a SECOND pubkey is rejected.
 	Claim string
+
+	// WrappedCEK, when non-empty, is the per-board content-encryption key for
+	// CEKEpoch, NIP-44-v2-wrapped to Grantee (confidential boards, epic ready-216).
+	// It rides INSIDE this owner-signed grant so one signed action confers write
+	// authority AND the read key. The grantee is bound by the SIGNED p tag, never a
+	// payload field (NIP-44 v2 has no AAD) — see keydist.go WrapKey/DeriveBoardKeyring.
+	WrappedCEK string
+	// CEKEpoch is the epoch id WrappedCEK belongs to (>=1); cards sealed under that
+	// epoch carry a matching cek_epoch marker. Emitted only when WrappedCEK is set.
+	CEKEpoch int
+	// WrappedLTK, when non-empty, is the per-board Label Token Key (stable across CEK
+	// epochs, ruling (b)) NIP-44-v2-wrapped to Grantee — lets the member tokenize
+	// labels before REQ and is epoch-independent.
+	WrappedLTK string
 }
 
 // BuildRoleGrantEvent constructs and signs a kind-39301 role-grant. createdAt MUST
@@ -121,6 +135,18 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 	}
 	if spec.Claim != "" {
 		tags = append(tags, []string{"claim", spec.Claim})
+	}
+	// Confidential-board key material (ready-216): the wrapped CEK (+ its epoch) and
+	// the wrapped LTK ride as ADDITIVE signed tags. The owner's Schnorr signature
+	// covers them and the grantee is bound by the p tag above — a captured wrap
+	// cannot be retargeted (re-signing needs the owner key; the wrap is ECDH-bound to
+	// the original grantee). A plaintext grant emits none of these (zero drift).
+	if spec.WrappedCEK != "" {
+		tags = append(tags, []string{"cek", spec.WrappedCEK})
+		tags = append(tags, []string{"cek_epoch", strconv.Itoa(spec.CEKEpoch)})
+	}
+	if spec.WrappedLTK != "" {
+		tags = append(tags, []string{"ltk", spec.WrappedLTK})
 	}
 	e := &nostr.Event{
 		Kind:      KindRoleGrant,
@@ -163,6 +189,12 @@ type roleGrant struct {
 	// Claim is the one-use invite claim-nonce this grant consumes ("claim" tag), or
 	// "" when the grant is not bound to an invite claim.
 	Claim string
+	// Confidential-board key material (ready-216), empty on a plaintext grant:
+	// WrappedCEK ("cek" tag) is the NIP-44-wrapped per-board CEK for CEKEpoch
+	// ("cek_epoch" tag); WrappedLTK ("ltk" tag) is the wrapped label-token key.
+	WrappedCEK string
+	CEKEpoch   int
+	WrappedLTK string
 }
 
 // parseRoleGrant extracts a roleGrant from a kind-39301 event. It returns ok=false
@@ -195,6 +227,12 @@ func parseRoleGrant(e *nostr.Event) (roleGrant, bool) {
 		}
 		from = v
 	}
+	cekEpoch := 0
+	if s := tagValue(e, "cek_epoch"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			cekEpoch = v
+		}
+	}
 	return roleGrant{
 		Signer:     e.PubKey,
 		Grantee:    grantee,
@@ -206,6 +244,9 @@ func parseRoleGrant(e *nostr.Event) (roleGrant, bool) {
 		ID:         e.ID,
 		Label:      e.Content,
 		Claim:      tagValue(e, "claim"),
+		WrappedCEK: tagValue(e, "cek"),
+		CEKEpoch:   cekEpoch,
+		WrappedLTK: tagValue(e, "ltk"),
 	}, true
 }
 
