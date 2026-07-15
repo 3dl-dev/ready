@@ -233,6 +233,17 @@ enforcement point.** On a confidential board:
 - The projection is otherwise UNCHANGED — it still dedupes by clear `d`, filters
   by clear tags, and never reads `Content`.
 
+**Accepted limit (grandfather trusts `created_at`):** the pre-cutover exception
+compares the card's author-set `created_at` against the (owner-signed, unforgeable)
+cutover. `created_at` is covered by the author's signature but chosen by the
+author, so an ADMITTED member can backdate a plaintext card below the cutover and
+evade quarantine. This leaks only that member's OWN card — the same class as §9.2
+residual #2 ("an honest admitted member runs a bad client and leaks their own
+content"), bounded by the NIP-42 write-allowlist. The exception exists so genuine
+pre-cutover cards survive the one-time migration to confidential mode; tightening
+it (e.g. dropping grandfathering once every item has a confidential card) is a
+future option if the residual is ever deemed unacceptable.
+
 The "encrypted mode + cutover timestamp" signal is established by keydist
 (ready-a8a); foldgate consumes that signal rather than inventing a marker.
 
