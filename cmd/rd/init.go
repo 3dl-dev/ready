@@ -137,13 +137,23 @@ func initNostr(cwd, name, description string, public bool) error {
 		return enc.Encode(out)
 	}
 
-	fmt.Printf("initialized %s (nostr-native)\n", name)
+	mode := "confidential"
+	if public {
+		mode = "public"
+	}
+	fmt.Printf("initialized %s (%s)\n", name, mode)
 	fmt.Printf("  board: %s\n", coord)
 	fmt.Printf("  owner: %s\n", owner)
 	fmt.Printf("  log:   %s\n", rdSync.NostrLogPath(cwd))
 	fmt.Println()
-	fmt.Println("  work items are signed events in .ready/nostr-log.jsonl (the source of truth);")
-	fmt.Println("  relays are a replaceable cache. create your first item with:")
+	if public {
+		fmt.Println("  free text is PLAINTEXT on this board (--public). work items are signed events")
+		fmt.Println("  in .ready/nostr-log.jsonl (the source of truth); relays are a replaceable cache.")
+	} else {
+		fmt.Println("  free text is ENCRYPTED — only granted members can read it. work items are signed")
+		fmt.Println("  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.")
+	}
+	fmt.Println("  create your first item with:")
 	fmt.Println("    rd create \"...\" --type task --priority p1")
 	return nil
 }
