@@ -177,15 +177,17 @@ type SyncConfig struct {
 	// therefore unaffected until the pin is written.
 	Board string `json:"board,omitempty"`
 
-	// Confidential, when true, marks this board as a CONFIDENTIAL rd board (epic
-	// ready-216): the owner's first write mints a per-board CEK+LTK (published as an
-	// owner self-grant in the log so it is recoverable from the identity key) and
-	// every card/status event authored here seals its free text (title, description,
-	// waiting_on, close reason) into event.Content while routing tags stay clear and
-	// labels are HMAC-tokenized. `rd init` sets this true by DEFAULT (opt out with
-	// --public); EXISTING boards load with it false and stay plaintext until
-	// explicitly enabled, so this never silently flips a board already in use.
-	Confidential bool `json:"confidential,omitempty"`
+	// Public, when true, OPTS OUT of confidentiality: this board keeps its free text
+	// (title, description, waiting_on, close reason) in plaintext. Confidentiality is
+	// the DEFAULT (epic ready-216): a board is confidential UNLESS Public is set, so a
+	// board whose config omits this field (the zero value) is confidential. On a
+	// confidential board the owner's first write mints a per-board CEK+LTK (published
+	// as an owner self-grant + wrapped to every current member, recoverable from the
+	// log via the identity key) and every card/status event seals its free text into
+	// event.Content while routing tags stay clear and labels are HMAC-tokenized.
+	// `rd init --public` sets this; existing plaintext cards are grandfathered when a
+	// board first becomes confidential.
+	Public bool `json:"public,omitempty"`
 }
 
 // SyncConfigPath returns the path to the project-local sync config file.

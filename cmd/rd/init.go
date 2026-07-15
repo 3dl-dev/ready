@@ -98,9 +98,9 @@ func initNostr(cwd, name, description string, public bool) error {
 	// Confidential by DEFAULT (ready-216): a new board seals its free text unless
 	// --public opts out. The owner's first write mints + self-grants the CEK/LTK.
 	syncCfg := &rdconfig.SyncConfig{
-		ProjectName:  name,
-		Board:        coord,
-		Confidential: !public,
+		ProjectName: name,
+		Board:       coord,
+		Public:      public,
 	}
 	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
 		return fmt.Errorf("writing .ready/config.json: %w", err)
