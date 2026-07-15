@@ -97,6 +97,26 @@
   text-align: left;
 }
 
+.hero-facts {
+  margin-top: var(--ds-space-lg);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  color: var(--ds-text-muted);
+  letter-spacing: 0.02em;
+  line-height: 1.9;
+}
+
+.hero-facts span {
+  color: var(--ds-border);
+  margin: 0 6px;
+}
+
+/* Accent emphasis inside feature-card headings */
+.feature-card h3 em {
+  font-style: normal;
+  color: var(--accent);
+}
+
 /* ── Sections ── */
 section {
   padding: var(--ds-space-section) 0;
