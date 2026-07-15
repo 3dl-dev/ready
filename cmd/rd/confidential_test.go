@@ -7,12 +7,15 @@ package main
 // against the on-disk event log.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
+	"github.com/3dl-dev/ready/pkg/state"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
@@ -191,6 +194,88 @@ func TestConfidentialEnableMigration(t *testing.T) {
 	}
 	if !newSealed {
 		t.Fatal("new card should be sealed at rest")
+	}
+}
+
+// TestTwoIdentityConfidentialCLI is the two-identity CLI end-to-end (ready-deb):
+// an OWNER grants a distinct MEMBER identity, the member reads plaintext through
+// the real `rd` read path, a non-member sees the placeholder, and after `rd revoke`
+// the member keeps its pre-revoke (epoch-1) reads but a post-revoke (epoch-2) card
+// is unreadable to it (forward secrecy) — all by swapping the ambient $RD_HOME /
+// $CF_HOME identity in-process, exactly as two machines would.
+func TestTwoIdentityConfidentialCLI(t *testing.T) {
+	dir, _ := setupConfidentialProject(t)
+	ownerHome := os.Getenv("RD_HOME")
+	ownerCf := os.Getenv("CF_HOME")
+
+	// Owner authors an epoch-1 confidential item.
+	id1, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "SECRET epoch-1", context: "member-readable", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("owner create: %v", err)
+	}
+
+	// Mint a DISTINCT member identity, persisted to its own home.
+	mk, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("member key: %v", err)
+	}
+	memberPub := mk.PubKeyHex()
+	memberHome := t.TempDir()
+	if err := nostr.WriteKeyFileExclusive(filepath.Join(memberHome, "nostr-identity.json"), mk, memberHome); err != nil {
+		t.Fatalf("persist member key: %v", err)
+	}
+	memberCf := t.TempDir()
+
+	// Owner grants the member read access (wraps the CEK into the signed grant).
+	if err := publishRoleGrant(memberPub, rdSync.RoleContributor, "", 0, ""); err != nil {
+		t.Fatalf("owner grant: %v", err)
+	}
+
+	readAs := func(home, cf string) map[string]*state.Item {
+		t.Helper()
+		t.Setenv("RD_HOME", home)
+		t.Setenv("CF_HOME", cf)
+		_, byID, err := nostrProjectAllItems()
+		if err != nil {
+			t.Fatalf("read as %s: %v", home, err)
+		}
+		return byID
+	}
+
+	// MEMBER reads the epoch-1 item as plaintext.
+	if it := readAs(memberHome, memberCf)[id1]; it == nil || it.Title != "SECRET epoch-1" {
+		t.Fatalf("granted member did not read plaintext: %+v", it)
+	}
+
+	// A NON-member (fresh third identity) sees the placeholder.
+	if it := readAs(t.TempDir(), t.TempDir())[id1]; it == nil || it.Title != "[encrypted]" {
+		t.Fatalf("non-member should see placeholder, got %+v", it)
+	}
+
+	// OWNER revokes the member (rotates to epoch 2) and authors an epoch-2 item.
+	t.Setenv("RD_HOME", ownerHome)
+	t.Setenv("CF_HOME", ownerCf)
+	if err := runNostrGrantRevoke(dir, memberPub, rdSync.RoleRevoked, "", 0, ""); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	id2, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "SECRET epoch-2", context: "post-revoke", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("owner create epoch-2: %v", err)
+	}
+
+	// MEMBER keeps its epoch-1 read but the epoch-2 card is a placeholder (forward secrecy).
+	byMember := readAs(memberHome, memberCf)
+	if it := byMember[id1]; it == nil || it.Title != "SECRET epoch-1" {
+		t.Fatalf("revoked member lost its historical epoch-1 read: %+v", it)
+	}
+	if it := byMember[id2]; it == nil || it.Title != "[encrypted]" {
+		t.Fatalf("revoked member read a POST-revoke epoch-2 card — forward secrecy broken: %+v", it)
+	}
+
+	// OWNER still reads everything.
+	byOwner := readAs(ownerHome, ownerCf)
+	if byOwner[id1].Title != "SECRET epoch-1" || byOwner[id2].Title != "SECRET epoch-2" {
+		t.Fatalf("owner lost a read: e1=%q e2=%q", byOwner[id1].Title, byOwner[id2].Title)
 	}
 }
 
