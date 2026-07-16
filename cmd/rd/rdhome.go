@@ -159,8 +159,9 @@ func copyFile0600(src, dst string) error {
 // legacy ".cf" nostr identity + rd.json into $RD_HOME. --dry-run prints the plan
 // without touching disk. Keys are per-machine, so each host migrates independently.
 var migrateHomeCmd = &cobra.Command{
-	Use:   "migrate-home",
-	Short: "Migrate the nostr identity + rd.json from the legacy .cf home into $RD_HOME (identity-preserving)",
+	Use:    "migrate-home",
+	Hidden: true, // runs automatically on first key load (migrateRDHomeIfNeeded); command is for --dry-run inspection only
+	Short:  "Migrate the nostr identity + rd.json from the legacy .cf home into $RD_HOME (identity-preserving)",
 	Long: `Copy this machine's nostr signing identity (nostr-identity.json) and rd.json
 FORWARD from the legacy home (the resolved .cf directory) into the rd home
 ($RD_HOME, default ~/.config/rd). The copy is identity-preserving: the pubkey is

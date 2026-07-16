@@ -17,8 +17,9 @@ import (
 // top-level flags below resolve identically. That keeps a single source of truth
 // for the migration/parity logic — the two surfaces can never drift.
 var migrateCmd = &cobra.Command{
-	Use:   "migrate",
-	Short: "Re-emit the legacy item set as nostr events; --parity verifies the migration",
+	Use:    "migrate",
+	Hidden: true, // one-time legacy-JSONL cutover; not part of the steady-state surface
+	Short:  "Re-emit the legacy item set as nostr events; --parity verifies the migration",
 	Long: `Migrate this project's legacy (local JSONL) work items to the nostr-native backend.
 
 Default (no flags): re-emit every item as nostr events — a 30301 board, one 30302
