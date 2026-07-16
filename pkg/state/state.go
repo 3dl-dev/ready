@@ -5,12 +5,9 @@
 package state
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1012,100 +1009,6 @@ func applyStrandedItemReclaim(items map[string]*Item, roleMap map[string]roleInf
 			}
 		}
 	}
-}
-
-// DeriveFromJSONL reads all MutationRecords from the given JSONL file path,
-// converts them to msgrec.MessageRecord, and derives item state by replaying
-// the mutation log. The campfireID is inferred from the first record's
-// CampfireID field; callers may pass an empty string to use that default,
-// or pass an explicit value to override (useful in tests).
-//
-// Returns an empty map (not an error) when the file does not exist —
-// a missing mutations.jsonl is valid for a freshly initialised project.
-func DeriveFromJSONL(path string) (map[string]*Item, error) {
-	return DeriveFromJSONLWithCampfire(path, "")
-}
-
-// DeriveFromJSONLWithCampfire is like DeriveFromJSONL but accepts an explicit
-// campfireID override. When campfireID is empty, it is inferred from the first
-// record's CampfireID field (falling back to an empty string).
-func DeriveFromJSONLWithCampfire(path, campfireID string) (map[string]*Item, error) {
-	records, err := readMutations(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(records) == 0 {
-		return make(map[string]*Item), nil
-	}
-	// Infer campfireID from first record when not provided.
-	if campfireID == "" {
-		campfireID = records[0].CampfireID
-	}
-	// Convert MutationRecords → msgrec.MessageRecord.
-	msgs := make([]msgrec.MessageRecord, len(records))
-	for i, r := range records {
-		msgs[i] = msgrec.MessageRecord{
-			ID:          r.MsgID,
-			CampfireID:  r.CampfireID,
-			Timestamp:   r.Timestamp,
-			Payload:     []byte(r.Payload),
-			Tags:        r.Tags,
-			Sender:      r.Sender,
-			Antecedents: r.Antecedents,
-			ReceivedAt:  r.Timestamp,
-		}
-	}
-	return Derive(campfireID, msgs), nil
-}
-
-// mutationRecord is a minimal local type that mirrors jsonl.MutationRecord.
-// We define it here to avoid an import cycle (jsonl imports nothing from state,
-// but state must not import jsonl either). The JSON field names match exactly.
-type mutationRecord struct {
-	MsgID       string          `json:"msg_id"`
-	CampfireID  string          `json:"campfire_id"`
-	Timestamp   int64           `json:"timestamp"`
-	Operation   string          `json:"operation"`
-	Payload     json.RawMessage `json:"payload"`
-	Tags        []string        `json:"tags"`
-	Sender      string          `json:"sender"`
-	Antecedents []string        `json:"antecedents,omitempty"`
-}
-
-// readMutations opens the JSONL file at path and returns all valid records
-// sorted by Timestamp ascending. Returns nil, nil when the file does not exist.
-func readMutations(path string) ([]mutationRecord, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("state: open %s: %w", path, err)
-	}
-	defer f.Close()
-
-	var records []mutationRecord
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var r mutationRecord
-		if err := json.Unmarshal(line, &r); err != nil {
-			continue // skip malformed lines — resilience
-		}
-		records = append(records, r)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("state: read %s: %w", path, err)
-	}
-	// Sort by timestamp ascending (matches store behaviour).
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].Timestamp < records[j].Timestamp
-	})
-	return records, nil
 }
 
 // ClearSentinel is the value that clears a field in work:update.

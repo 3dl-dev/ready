@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/3dl-dev/ready/pkg/resolve"
 	"github.com/3dl-dev/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
@@ -211,7 +210,7 @@ func itemByID(itemID string) (*state.Item, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, resolve.ErrNotFound{ID: itemID}
+		return nil, fmt.Errorf("item %q not found", itemID)
 	}
 	return it, nil
 }

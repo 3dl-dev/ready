@@ -40,93 +40,25 @@ func fullItem() *state.Item {
 	}
 }
 
-// TestMigration_CarriesAllFields is the completeness proof (ready-187): a single
-// item that populates Level/For/ParentID/Due (and labels/eta/assignee) must survive
-// the migration round-trip item-for-item. Before the CardSpec carried these tags
-// they projected back empty and STRICT CompareItem flags the loss.
-func TestMigration_CarriesAllFields(t *testing.T) {
-	k, err := nostr.GenerateKey()
+// itemCardEvents is a minimal fixture builder: a board event plus one signed card
+// event per item — enough valid signed events to exercise the log-durability paths.
+func itemCardEvents(t *testing.T, k *nostr.Key, boardD string, src map[string]*state.Item) []*nostr.Event {
+	t.Helper()
+	board, err := BuildBoardEvent(k, BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}, 1)
 	if err != nil {
-		t.Fatalf("key: %v", err)
+		t.Fatalf("board: %v", err)
 	}
-	src := fullItem()
-	events := migrateToEvents(t, k, "ready", map[string]*state.Item{src.ID: src})
-	trusted := map[string]bool{k.PubKeyHex(): true}
-	projected := ProjectItems(events, ProjectOptions{Maintainers: trusted, Trusted: trusted})
-
-	p := projected[src.ID]
-	if p == nil {
-		t.Fatalf("item lost from projection")
+	events := []*nostr.Event{board}
+	ts := int64(2)
+	for _, item := range src {
+		ce, err := BuildCardEvent(k, CardSpecFromItem(item, boardD), ts)
+		if err != nil {
+			t.Fatalf("card %s: %v", item.ID, err)
+		}
+		events = append(events, ce)
+		ts++
 	}
-	if p.Level != src.Level {
-		t.Errorf("Level lost: got %q want %q", p.Level, src.Level)
-	}
-	if p.For != src.For {
-		t.Errorf("For lost: got %q want %q", p.For, src.For)
-	}
-	if p.ParentID != src.ParentID {
-		t.Errorf("ParentID lost: got %q want %q", p.ParentID, src.ParentID)
-	}
-	if p.Due != src.Due {
-		t.Errorf("Due lost: got %q want %q", p.Due, src.Due)
-	}
-	if par := CompareItem(src, p); !par.Match() {
-		t.Fatalf("strict parity failed on a fully-populated item: %v", par.Diffs)
-	}
-}
-
-// TestCompareItem_DetectsEachField proves the STRICT checker is not vacuous: it must
-// flag a silent alteration in EVERY newly-covered field. For each field we take a
-// perfect projection, mutate exactly one field, and require CompareItem to report a
-// diff naming that field.
-func TestCompareItem_DetectsEachField(t *testing.T) {
-	base := func() *state.Item {
-		it := fullItem()
-		// clone-ish: fullItem returns a fresh struct each call, so base() and the
-		// mutated copy are independent.
-		return it
-	}
-	cases := []struct {
-		field  string
-		mutate func(*state.Item)
-	}{
-		{"title", func(i *state.Item) { i.Title = "changed" }},
-		{"context", func(i *state.Item) { i.Context = "changed" }},
-		{"status", func(i *state.Item) { i.Status = state.StatusDone }},
-		{"priority", func(i *state.Item) { i.Priority = "p0" }},
-		{"type", func(i *state.Item) { i.Type = "bug" }},
-		{"deps", func(i *state.Item) { i.BlockedBy = []string{"ready-x"} }},
-		{"labels", func(i *state.Item) { i.Labels = []string{"different"} }},
-		{"eta", func(i *state.Item) { i.ETA = "2030-01-01T00:00:00Z" }},
-		{"assignee", func(i *state.Item) { i.By = "someone-else" }},
-		{"level", func(i *state.Item) { i.Level = "agent" }},
-		{"for", func(i *state.Item) { i.For = "other-party" }},
-		{"parent", func(i *state.Item) { i.ParentID = "ready-other-epic" }},
-		{"due", func(i *state.Item) { i.Due = "2030-01-01T00:00:00Z" }},
-		{"history_len", func(i *state.Item) { i.History = i.History[:1] }},
-		{"close_reasons", func(i *state.Item) { i.History[0].Note = "tampered" }},
-		{"provenance", func(i *state.Item) { i.History[0].ChangedBy = "impostor" }},
-	}
-	for _, tc := range cases {
-		t.Run(tc.field, func(t *testing.T) {
-			source := base()
-			projected := base()
-			tc.mutate(projected)
-			par := CompareItem(source, projected)
-			if par.Match() {
-				t.Fatalf("CompareItem did NOT detect an alteration in %q", tc.field)
-			}
-			found := false
-			for _, d := range par.Diffs {
-				if len(d) >= len(tc.field) && d[:len(tc.field)] == tc.field {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("alteration in %q not reported by that field name; diffs=%v", tc.field, par.Diffs)
-			}
-		})
-	}
+	return events
 }
 
 // TestReadAll_SkipsCorruptLine proves the durability invariant (ready-187): a single
@@ -141,7 +73,7 @@ func TestReadAll_SkipsCorruptLine(t *testing.T) {
 	log := NewNostrLog(path)
 
 	// Two good events...
-	good := migrateToEvents(t, k, "ready", map[string]*state.Item{"ready-full": fullItem()})
+	good := itemCardEvents(t, k, "ready", map[string]*state.Item{"ready-full": fullItem()})
 	if _, err := log.AppendUnique(good); err != nil {
 		t.Fatalf("append good: %v", err)
 	}
@@ -157,7 +89,7 @@ func TestReadAll_SkipsCorruptLine(t *testing.T) {
 
 	other := fullItem()
 	other.ID = "ready-second"
-	more := migrateToEvents(t, k, "ready", map[string]*state.Item{other.ID: other})
+	more := itemCardEvents(t, k, "ready", map[string]*state.Item{other.ID: other})
 	// AppendUnique itself must survive the corrupt line already on disk.
 	if _, err := log.AppendUnique(more); err != nil {
 		t.Fatalf("append after corrupt: %v", err)
@@ -192,16 +124,13 @@ func TestAppendUnique_RaceSafe(t *testing.T) {
 	// Build a batch of distinct events once; every goroutine tries to append the
 	// SAME batch, so a correct AppendUnique writes each event exactly once total.
 	const nItems = 40
-	events := make([]*nostr.Event, 0, nItems)
+	src := make(map[string]*state.Item, nItems)
 	for i := 0; i < nItems; i++ {
 		it := fullItem()
 		it.ID = fmt.Sprintf("ready-r%02d", i)
-		evs, err := BuildItemMigrationEvents(k, "ready", it)
-		if err != nil {
-			t.Fatalf("build %d: %v", i, err)
-		}
-		events = append(events, evs...)
+		src[it.ID] = it
 	}
+	events := itemCardEvents(t, k, "ready", src)
 
 	const workers = 8
 	var wg sync.WaitGroup
