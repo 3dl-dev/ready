@@ -457,15 +457,25 @@ func deriveGrants(events []*nostr.Event, boardAuthor, boardD string) (levels map
 		if !signerMayGrant(levels, boardAuthor, g.Signer, g.Grantee, g.Role) {
 			continue // escalation-cap violation — ignored.
 		}
-		// SINGLE-USE CLAIM BINDING (ready-ce0): a grant that consumes an invite
-		// claim-nonce binds that nonce to EXACTLY ONE grantee, first-cap-valid-wins.
-		// We process ascending, so the earliest cap-valid grant for a claim owns it;
-		// a later grant reusing the SAME claim for a DIFFERENT grantee is ignored — a
-		// leaked claim-nonce can never admit a second self-minted key. The same
-		// grantee may re-grant under its own claim (e.g. later revoke), so the guard
-		// only fires on a grantee MISMATCH. This is the real, owner-enforced
-		// single-use the deleted kind-39303 relay marker only pretended to provide.
-		if g.Claim != "" {
+		// SINGLE-USE CLAIM BINDING (ready-ce0, owner-scoped ready-557): a grant that
+		// consumes an invite claim-nonce binds that nonce to EXACTLY ONE grantee,
+		// first-cap-valid-wins. We process ascending, so the earliest OWNER grant for a
+		// claim owns it; a later owner grant reusing the SAME claim for a DIFFERENT
+		// grantee is ignored — a leaked claim-nonce can never admit a second self-minted
+		// key. The same grantee may re-grant under its own claim (e.g. later revoke), so
+		// the guard only fires on a grantee MISMATCH.
+		//
+		// OWNER-ONLY CONSUMPTION (ready-557): only the board OWNER may consume a
+		// claim-nonce. The mint-and-ship flow has the owner sign the claim-binding grant
+		// (nostr_invite.go), so a claim tag on a NON-owner (maintainer) grant is inert —
+		// it neither binds nor drops the grant, which still applies as an ordinary
+		// contributor grant a maintainer is already entitled to publish. Without this
+		// scope a rogue/compromised maintainer could pre-consume an owner's outstanding
+		// claim-nonce for a grantee of its choosing, forcing the legit joiner to
+		// re-request a fresh invite (griefing, not escalation — single-use still held).
+		// This is the real, owner-enforced single-use the deleted kind-39303 relay
+		// marker only pretended to provide.
+		if g.Claim != "" && g.Signer == boardAuthor {
 			if bound, ok := claimedBy[g.Claim]; ok && bound != g.Grantee {
 				continue
 			}
