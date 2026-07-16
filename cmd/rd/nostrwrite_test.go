@@ -71,7 +71,7 @@ func setupNostrNativeProject(t *testing.T) (string, string) {
 func assertNoDotCf(t *testing.T) {
 	t.Helper()
 	roots := map[string]bool{}
-	if h := CFHome(); h != "" {
+	if h := RDHome(); h != "" {
 		roots[h] = true
 		roots[filepath.Dir(h)] = true
 	}
@@ -109,14 +109,12 @@ func walkAssertNoCampfireIdentity(t *testing.T, root string) {
 	})
 }
 
-// assertNoCampfireStore fails if a campfire store.db exists under CFHome — the
-// point-blank proof that the `rd show` native path no longer opens a campfire
-// store (ready-6ef #4). Scoped to the show path: list/ready still touch store.db
-// transitionally (see assertNoDotCf's note), so this is asserted only in tests
-// that drive exactly the show path in an otherwise store-free project.
+// assertNoCampfireStore fails if a campfire store.db exists under the rd home —
+// the point-blank proof that the `rd show` native path never opens a campfire
+// store (ready-6ef #4).
 func assertNoCampfireStore(t *testing.T) {
 	t.Helper()
-	storePath := filepath.Join(CFHome(), "store.db")
+	storePath := filepath.Join(RDHome(), "store.db")
 	if _, err := os.Stat(storePath); err == nil {
 		t.Fatalf("FAIL: a campfire store.db was provisioned at %s — the nostr-native `rd show` path must not open a campfire store", storePath)
 	} else if !os.IsNotExist(err) {

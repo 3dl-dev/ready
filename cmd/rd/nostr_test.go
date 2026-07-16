@@ -63,23 +63,14 @@ func setupNostrCmdTest(t *testing.T) string {
 	t.Cleanup(func() { _ = os.Chdir(origCwd) })
 
 	base := t.TempDir()
-	cfHome := filepath.Join(base, ".cf")
-	if err := os.MkdirAll(cfHome, 0700); err != nil {
-		t.Fatalf("mkdir .cf: %v", err)
-	}
 	projectDir := filepath.Join(base, "project")
 	if err := os.MkdirAll(filepath.Join(projectDir, ".ready"), 0700); err != nil {
 		t.Fatalf("mkdir .ready: %v", err)
 	}
 
-	origRdHome := rdHome
-	rdHome = cfHome
-	t.Cleanup(func() { rdHome = origRdHome })
-
-	// Isolate RDHome() (where nostrKey now reads/writes the nostr identity) to a
+	// Isolate RDHome() (where nostrKey reads/writes the nostr identity) to a
 	// per-test dir under $TMPDIR — outside any git work tree, so the key-path
-	// guard accepts it — distinct from cfHome. cfHome (the legacy .cf) starts
-	// empty, so no migration fires and a fresh key is generated under RD_HOME.
+	// guard accepts it. A fresh key is generated under RD_HOME on first use.
 	rdHomeDir := filepath.Join(base, "rdhome")
 	if err := os.MkdirAll(rdHomeDir, 0o700); err != nil {
 		t.Fatalf("mkdir rdhome: %v", err)

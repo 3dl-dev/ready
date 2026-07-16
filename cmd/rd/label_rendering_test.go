@@ -500,19 +500,9 @@ func setupShowMutationsWithLabels(t *testing.T, itemID, title string, labels []s
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	hexID := strings.Repeat("dd", 32) // 64-char hex campfire ID
+	hexID := strings.Repeat("dd", 32) // 64-char hex id
 
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-
-	origRDHome := rdHome
-	rdHome = ""
-
-	// Write alias store.
-	aliasContent, _ := json.Marshal(map[string]string{"labelproject": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
+	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
 
 	readyDir := filepath.Join(tmpDir, ".ready")
 	if err := os.MkdirAll(readyDir, 0700); err != nil {
@@ -552,12 +542,6 @@ func setupShowMutationsWithLabels(t *testing.T, itemID, title string, labels []s
 
 	cleanup := func() {
 		_ = os.Chdir(origCwd)
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-		rdHome = origRDHome
 		os.RemoveAll(tmpDir)
 	}
 	return tmpDir, cleanup
@@ -654,16 +638,7 @@ func setupMultiItemMutations(t *testing.T) (string, func()) {
 
 	hexID := strings.Repeat("aa", 32)
 
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-
-	origRDHome := rdHome
-	rdHome = ""
-
-	aliasContent, _ := json.Marshal(map[string]string{"labelrune": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
+	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
 
 	readyDir := filepath.Join(tmpDir, ".ready")
 	if err := os.MkdirAll(readyDir, 0700); err != nil {
@@ -718,12 +693,6 @@ func setupMultiItemMutations(t *testing.T) (string, func()) {
 
 	cleanup := func() {
 		_ = os.Chdir(origCwd)
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-		rdHome = origRDHome
 		os.RemoveAll(tmpDir)
 	}
 	return tmpDir, cleanup

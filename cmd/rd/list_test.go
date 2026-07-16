@@ -246,27 +246,9 @@ func TestList_NoHexInOutputWhenProjectNameConfigured(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	hexID := strings.Repeat("cd", 32) // 64-char hex campfire ID
+	hexID := strings.Repeat("cd", 32) // 64-char hex id
 
-	// Point CF_HOME at tmpDir.
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-	defer func() {
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-	}()
-	origRDHome := rdHome
-	rdHome = ""
-	defer func() { rdHome = origRDHome }()
-
-	// Write alias store: "listproject" -> hexID.
-	aliasContent, _ := json.Marshal(map[string]string{"listproject": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
+	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
 
 	// Write .ready/config.json with project_name.
 	readyDir := filepath.Join(tmpDir, ".ready")
@@ -364,19 +346,9 @@ func setupMutationsDir(t *testing.T, items []struct{ id, title string }) (string
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	hexID := strings.Repeat("ee", 32) // 64-char hex campfire ID
+	hexID := strings.Repeat("ee", 32) // 64-char hex id
 
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-
-	origRDHome := rdHome
-	rdHome = ""
-
-	// Write alias store.
-	aliasContent, _ := json.Marshal(map[string]string{"pipeproject": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
+	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
 
 	readyDir := filepath.Join(tmpDir, ".ready")
 	if err := os.MkdirAll(readyDir, 0700); err != nil {
@@ -407,12 +379,6 @@ func setupMutationsDir(t *testing.T, items []struct{ id, title string }) (string
 
 	cleanup := func() {
 		_ = os.Chdir(origCwd)
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-		rdHome = origRDHome
 		os.RemoveAll(tmpDir)
 	}
 	return tmpDir, cleanup

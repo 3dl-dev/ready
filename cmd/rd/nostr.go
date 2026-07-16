@@ -62,19 +62,11 @@ func rdActor() string {
 
 // nostrKey loads (or first-run creates) the portfolio secp256k1 signing key for
 // the CURRENT actor ($RD_ACTOR, default "owner") from the rd home ($RD_HOME /
-// RDHome()), with NO dependency on campfire's ".cf". On first run it
-// identity-preservingly COPIES a legacy .cf key forward into the OWNER slot (never
-// regenerates — see migrateRDHomeIfNeeded); a NAMED agent's key is generated fresh
-// and is INERT until granted+allowlisted (BP-5). Emits a loud warning if the loaded
-// identity is self-inconsistent.
+// RDHome()). A first-run OWNER key is generated fresh; a NAMED agent's key is also
+// generated fresh and is INERT until granted+allowlisted (BP-5). Emits a loud
+// warning if the loaded identity is self-inconsistent.
 func nostrKey() (*nostr.Key, error) {
 	rdHome := RDHome()
-	// The migration only ever touches the OWNER slot (legacy .cf -> nostr-identity.json);
-	// running it regardless of actor just ensures the owner key exists and is harmless
-	// for a named-agent invocation (which loads a different file).
-	if err := migrateRDHomeIfNeeded(rdHome); err != nil {
-		return nil, fmt.Errorf("nostr identity migration: %w", err)
-	}
 	keyPath, err := nostr.ActorKeyPath(rdHome, rdActor())
 	if err != nil {
 		return nil, fmt.Errorf("nostr: resolve actor key path: %w", err)
@@ -499,6 +491,28 @@ func nostrReconcileBoardIntoLog() error {
 		fmt.Fprintf(os.Stderr, "nostr: reconcile-all fetched=%d added=%d relay_errors=%d\n", r.Fetched, r.Added, len(r.RelayErrors))
 	}
 	return nil
+}
+
+// autoReconcileBoardBestEffort pulls the pinned board's latest events from the
+// read relays into the local log before a read, so `rd ready`/`rd list` reflect
+// other machines' updates with no manual `rd sync`. Zero-cost no-op when the
+// project is local-only (no read relays configured). Best-effort: a relay error
+// never blocks the read — the local signed log is authoritative. Skipped when
+// offline is true (the read-local escape hatch).
+func autoReconcileBoardBestEffort(offline bool) {
+	if offline || len(nostrReadRelays()) == 0 {
+		return
+	}
+	_ = nostrReconcileBoardIntoLog()
+}
+
+// autoReconcileItemBestEffort is the single-item analogue for `rd show` — same
+// no-op-when-local-only and never-fail-the-read contract.
+func autoReconcileItemBestEffort(itemID string, offline bool) {
+	if offline || len(nostrReadRelays()) == 0 {
+		return
+	}
+	_, _ = nostrReconcileItemIntoLog(itemID)
 }
 
 // nostrSeedDemoCmd is ground-source proof infrastructure for ready-82c: it

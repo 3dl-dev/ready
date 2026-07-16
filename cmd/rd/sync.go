@@ -13,8 +13,9 @@ import (
 // with THIS command as the scope, so the promoted surface and the substrate can
 // never drift. nostrSyncCmd reads no flags of its own.
 var syncCmd = &cobra.Command{
-	Use:   "sync",
-	Short: "Negentropy-sync the local nostr log with the relays (two-machine convergence)",
+	Use:    "sync",
+	Hidden: true, // reads auto-reconcile and writes auto-flush; manual full-negentropy sync is now a rare escape hatch
+	Short:  "Negentropy-sync the local nostr log with the relays (two-machine convergence)",
 	Long: `Reconcile the local append-only nostr event log against the configured
 relays via NIP-77 negentropy and perform the resulting download + upload, so two
 machines converge on identical work-item state by transferring only the

@@ -21,22 +21,13 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
 		auditFlag, _ := cmd.Flags().GetBool("audit")
-		reconcileFlag, _ := cmd.Flags().GetBool("reconcile")
+		offlineFlag, _ := cmd.Flags().GetBool("offline")
 
-		// --reconcile (ready-f58, migrated from the deleted `rd nostr show`):
-		// cache-fill this item from the read relays into the local authoritative log
-		// BEFORE reconstructing it, so a fresh/clean cache can still show the item.
-		// The local log stays authoritative; the relay fetch only adds trust-gated
-		// events that were missing locally.
-		var reconcileNote string
-		if reconcileFlag {
-			note, err := nostrReconcileItemIntoLog(itemID)
-			if err != nil {
-				cmd.SilenceUsage = true
-				return err
-			}
-			reconcileNote = note
-		}
+		// Reads auto-reconcile this item from the read relays into the local
+		// authoritative log before reconstructing it, so a fresh/clean cache can
+		// still show it with no manual `rd sync`. No-op when local-only;
+		// best-effort (never blocks the read); --offline skips it.
+		autoReconcileItemBestEffort(itemID, offlineFlag)
 
 		// The read + audit authority is the nostr projection or local JSONL —
 		// never a campfire store. `rd show` (incl. --audit) provisions NO campfire
@@ -46,9 +37,6 @@ Example:
 		item, err := byIDFromJSONLOrStore(itemID)
 		if err != nil {
 			cmd.SilenceUsage = true
-			if reconcileNote != "" {
-				return fmt.Errorf("%w; %s", err, reconcileNote)
-			}
 			return err
 		}
 
@@ -143,15 +131,14 @@ Example:
 			fmt.Printf("Campfire: %s\n", formatCampfireIDForDisplay(item.CampfireID))
 		}
 		fmt.Printf("Msg ID:   %s\n", item.MsgID)
-		if reconcileNote != "" {
-			fmt.Printf("(%s)\n", reconcileNote)
-		}
 		return nil
 	},
 }
 
 func init() {
 	showCmd.Flags().Bool("audit", false, "annotate each history entry with the cf-authority grant scope its actor acted under")
-	showCmd.Flags().Bool("reconcile", false, "cache-fill this item from the read relays into the local log before reconstructing (local log stays authoritative)")
+	showCmd.Flags().Bool("offline", false, "read local only — skip the automatic relay reconcile")
+	showCmd.Flags().Bool("reconcile", false, "deprecated: reads auto-reconcile by default (flag kept as a no-op)")
+	_ = showCmd.Flags().MarkHidden("reconcile")
 	rootCmd.AddCommand(showCmd)
 }

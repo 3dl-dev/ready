@@ -193,14 +193,18 @@ func configureRelays(relays []string, local bool) error {
 		return nil // already configured — do not clobber
 	}
 
-	// Prompt only when the user gave no explicit choice and we have a terminal.
-	if len(relays) == 0 && !local && isInteractive() {
+	// Prompt only when interactive, not in --json mode, and no explicit choice
+	// was given. JSON mode is non-interactive by contract — prompting there would
+	// also corrupt the JSON on stdout.
+	if len(relays) == 0 && !local && !jsonOutput && isInteractive() {
 		relays = promptRelays()
 	}
 
 	if len(relays) == 0 {
-		fmt.Println("  relays: none (local-only). the signed log is the source of truth;")
-		fmt.Println("          add relays anytime with --relay on init or by editing rd.json.")
+		if !jsonOutput {
+			fmt.Println("  relays: none (local-only). the signed log is the source of truth;")
+			fmt.Println("          add relays anytime with --relay on init or by editing rd.json.")
+		}
 		return nil // local-only: write no relay endpoints
 	}
 
@@ -219,9 +223,11 @@ func configureRelays(relays []string, local bool) error {
 	if err := rdconfig.Save(home, cfg); err != nil {
 		return err
 	}
-	fmt.Printf("  relays: %d configured (read+write)\n", len(eps))
-	for _, e := range eps {
-		fmt.Printf("          %s\n", e.URL)
+	if !jsonOutput {
+		fmt.Printf("  relays: %d configured (read+write)\n", len(eps))
+		for _, e := range eps {
+			fmt.Printf("          %s\n", e.URL)
+		}
 	}
 	return nil
 }
@@ -239,10 +245,10 @@ func isInteractive() bool {
 // promptRelays asks the user for comma/space-separated relay URL(s). An empty
 // line means local-only.
 func promptRelays() []string {
-	fmt.Println()
-	fmt.Println("Relays sync this project across machines and teammates (optional).")
-	fmt.Println("The local signed log works standalone, so this is safe to skip.")
-	fmt.Print("Enter relay URL(s) [comma-separated], or press Enter for local-only: ")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Relays sync this project across machines and teammates (optional).")
+	fmt.Fprintln(os.Stderr, "The local signed log works standalone, so this is safe to skip.")
+	fmt.Fprint(os.Stderr, "Enter relay URL(s) [comma-separated], or press Enter for local-only: ")
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
