@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -33,40 +34,71 @@ func nostrWriteRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	cfg := projectSyncConfig()
-	if cfg == nil {
-		return nil // local-only
-	}
-	return cfg.WriteRelayURLs()
+	eps := resolveRelayConfig()
+	return relayURLs(eps, func(r rdconfig.RelayEndpoint) bool { return r.Write })
 }
 
 func nostrReadRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	cfg := projectSyncConfig()
-	if cfg == nil {
-		return nil // local-only
-	}
-	return cfg.ReadRelayURLs()
+	eps := resolveRelayConfig()
+	return relayURLs(eps, func(r rdconfig.RelayEndpoint) bool { return r.Read })
 }
 
-// projectSyncConfig loads THIS project's .ready/config.json for relay resolution.
-// Relays are per-project (BYOR) so a --local project never inherits another
-// project's relays. Returns nil (local-only) when there is no project. A parse
-// error is surfaced loudly — silently degrading to local-only would stop syncing
-// with no warning — but still degrades to local-only so reads/writes keep working.
-func projectSyncConfig() *rdconfig.SyncConfig {
-	dir, ok := readyProjectDir()
-	if !ok {
-		return nil
+func relayURLs(eps []rdconfig.RelayEndpoint, want func(rdconfig.RelayEndpoint) bool) []string {
+	var out []string
+	for _, r := range eps {
+		if want(r) {
+			out = append(out, r.URL)
+		}
 	}
-	cfg, err := rdconfig.LoadSyncConfig(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — treating this project as local-only (not syncing to relays)\n", rdconfig.SyncConfigPath(dir), err)
-		return nil
+	return out
+}
+
+// resolveRelayConfig resolves the relay endpoints for the current directory using
+// a config CASCADE (nearest declaration wins):
+//
+//  1. env RD_NOSTR_RELAY_URL — handled by the callers above (highest precedence).
+//  2. Walk UP from cwd. The first .ready/config.json that DECLARES a relay policy
+//     wins: RelaysLocalOnly=true → local-only (empty, stop — the explicit opt-out
+//     that prevents a --local project inheriting an ancestor's relay); non-empty
+//     RelayEndpoints → those. A config that declares neither is transparent and the
+//     walk continues to its parent.
+//  3. The home rd.json ($RD_HOME) RelayEndpoints — the machine-wide default.
+//  4. Nothing → local-only.
+//
+// So a user sets relays once (home rd.json, or an umbrella .ready/config.json) and
+// every project under it inherits, while any project overrides with its own
+// --relay, and --local opts out without leaking to the inherited relay.
+func resolveRelayConfig() []rdconfig.RelayEndpoint {
+	dir, err := os.Getwd()
+	if err == nil {
+		for {
+			cfgPath := rdconfig.SyncConfigPath(dir)
+			if fileExists(cfgPath) {
+				sc, lerr := rdconfig.LoadSyncConfig(dir)
+				if lerr != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — skipping this level of relay config\n", cfgPath, lerr)
+				} else if sc.RelaysLocalOnly {
+					return nil // explicit opt-out — stop, no inheritance
+				} else if len(sc.RelayEndpoints) > 0 {
+					return sc.RelayEndpoints // declared here — wins
+				}
+				// declares neither: transparent, keep walking up
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
 	}
-	return cfg
+	// Home fallback: the machine-wide default in $RD_HOME/rd.json.
+	if cfg, herr := rdconfig.Load(RDHome()); herr == nil && cfg != nil {
+		return cfg.RelayEndpoints
+	}
+	return nil
 }
 
 // rdActor resolves the DURABLE actor id this process signs as (BP-4). $RD_ACTOR
