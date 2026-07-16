@@ -494,11 +494,11 @@ The `work` view surfaces items in `active` status. `rd show` includes the full h
 Agents can query JSON directly — no parsing wrapper needed:
 
 ```bash
-# Get assigned work as JSON
-rd ready --view my-work --json
+# Get the ready queue as JSON
+rd ready --json
 
 # Claim the first item
-ITEM_ID=$(rd ready --view my-work --json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+ITEM_ID=$(rd ready --json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
 rd claim $ITEM_ID --reason "Starting batch job"
 
 # Post incremental progress
@@ -512,17 +512,19 @@ rd done $ITEM_ID --reason "Batch complete: 142 records processed, 0 errors"
 Real transcript excerpt (`test/demo/output/05-agent-workflow.txt`):
 
 ```
-$ rd ready --view my-work --json
-[{"id":"rdtestagentprojs-f79","title":"Reindex search corpus","status":"inbox",...}]
+$ rd ready --json | python3 -c '<project id, title, priority, status>'
+{"id": "rdtestagentprojs1-2e5", "title": "Reindex search corpus", "priority": "p1", "status": "inbox"}
+{"id": "rdtestagentprojs1-419", "title": "Update dependency manifest", "priority": "p2", "status": "inbox"}
+# agent selected item: rdtestagentprojs1-2e5
 
-$ rd claim rdtestagentprojs-f79 --reason "Starting batch reindex job"
-claimed rdtestagentprojs-f79
+$ rd claim rdtestagentprojs1-2e5 --reason "Starting batch reindex job"
+claimed rdtestagentprojs1-2e5
 
-$ rd progress rdtestagentprojs-f79 --notes "Processed 47/142 records, 0 errors"
-progress noted on rdtestagentprojs-f79
+$ rd progress rdtestagentprojs1-2e5 --notes "Processed 47/142 records, 0 errors"
+updated rdtestagentprojs1-2e5
 
-$ rd done rdtestagentprojs-f79 --reason "Batch complete: 142 records processed, 0 errors"
-closed rdtestagentprojs-f79 (done)
+$ rd done rdtestagentprojs1-2e5 --reason "Batch complete: 142 records processed, 0 errors"
+closed rdtestagentprojs1-2e5 (done)
 ```
 
 ---
@@ -589,4 +591,4 @@ rd create "Quarterly review" --priority p2 --eta "2026-04-15T09:00"
 - Convention spec: `docs/convention/work-management.md` — full operation declarations, field validation, compaction policy
 - Named view predicates: `pkg/views/` — S-expression predicates for each built-in view
 - Identity model: [`docs/design/nostr-identity-model.md`](design/nostr-identity-model.md) — `$RD_HOME`, per-actor keys, kind-39301 grants
-- Migration runbook: [`docs/nostr-migration.md`](nostr-migration.md), or the short version in the [README](../README.md#migrating-an-existing-campfire-project)
+- Migration runbook: [`docs/nostr-migration.md`](nostr-migration.md) — re-emit a legacy project's item set as signed nostr events, with a parity check

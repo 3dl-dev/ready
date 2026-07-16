@@ -1,46 +1,37 @@
 === SECTION: init ===
-$ mkdir -p $PROJECT/.cf && cf init --cf-home $PROJECT/.cf
-Your identity campfire: 35db2ae1a9ca33f8a5f9f26d9f06b7764a5c0088bb717f161805839b13da63de. Share it like any beacon.
+$ cd myproject && rd init --name "myproject"
+initialized myproject (confidential)
+  board: 30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestsoloproj79
+  owner: a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25
+  log:   /tmp/rdtest-solo-proj-L79N/.ready/nostr-log.jsonl
 
-Next: cf discover    find campfires
-      cf create      start one
-      cf join <id>   join one
-
-=== SECTION: project ===
-$ cd PROJECT && rd init --name "myproject"
-warning: no beacon root configured (set CF_BEACON_ROOT or pass --beacon-root) — project name bound locally only
-initialized myproject
-  campfire: 7b0929f77f95...
-  summary campfire: 0f3f2b3a8f7e...
-  inbox campfire: 7501d754bd3d...
-  encrypted: true (E2E intent set; SDK encryption enabled when available)
-  declarations: 16 operations published
-
-  home campfire: found (35db2ae1a9ca...)
-  run 'rd register --org <name>' to add naming
+  free text is ENCRYPTED — only granted members can read it. work items are signed
+  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.
+  create your first item with:
+    rd create "..." --type task --priority p1
 
 === SECTION: create ===
 $ rd create "Ship login page" --priority p1 --type task
-# item ID: rdtestsoloproja-e1f
+# item ID: rdtestsoloproj79-bc2
 
 === SECTION: ready ===
 $ rd ready
-rdtestsoloproja-e1f
+rdtestsoloproj79-bc2
 
 === SECTION: claim ===
-$ rd claim rdtestsoloproja-e1f
-claimed rdtestsoloproja-e1f
+$ rd claim rdtestsoloproj79-bc2
+claimed rdtestsoloproj79-bc2
 
 === SECTION: progress ===
-$ rd progress rdtestsoloproja-e1f --notes "Wired up auth middleware"
-progress noted on rdtestsoloproja-e1f
+$ rd progress rdtestsoloproj79-bc2 --notes "Wired up auth middleware"
+updated rdtestsoloproj79-bc2
 
 === SECTION: done ===
-$ rd done rdtestsoloproja-e1f --reason "Login page ships with JWT auth"
-closed rdtestsoloproja-e1f (done)
+$ rd done rdtestsoloproj79-bc2 --reason "Login page ships with JWT auth"
+closed rdtestsoloproj79-bc2 (done)
 
 === SECTION: verify ===
 $ rd list --all
-rdtestsoloproja-e1f
+rdtestsoloproj79-bc2
 
 # Demo complete. Transcript written to: /home/baron/projects/ready/test/demo/output/01-solo.txt

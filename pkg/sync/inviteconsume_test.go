@@ -105,6 +105,47 @@ func TestClaimSingleUse_OneClaimNonceOneGrantee(t *testing.T) {
 	}
 }
 
+// TestClaimSingleUse_MaintainerCannotPreConsume is the ready-557 proof: a rogue/
+// compromised MAINTAINER cannot pre-consume the owner's outstanding claim-nonce.
+// The maintainer signs a contributor grant carrying the owner's claim-nonce for a
+// grantee of its choosing (attacker). Under the owner-only consumption rule the
+// maintainer grant does NOT bind the nonce — so the owner's later legit grant to the
+// real joiner still consumes it and admits the joiner. (Before the fix, the
+// maintainer's grant bound the claim to `attacker`, and the owner's grant to
+// `joiner` was dropped on grantee-mismatch — griefing.)
+func TestClaimSingleUse_MaintainerCannotPreConsume(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	maint := testKey(t)
+	attacker := testKey(t) // maintainer's chosen grantee
+	joiner := testKey(t)   // the legit self-minted joiner the owner intends to admit
+	const claim = "owner-outstanding-nonce"
+
+	events := []*nostr.Event{
+		// Owner appoints the maintainer.
+		grant(t, owner, ba, maint.PubKeyHex(), RoleMaintainer, 0, 1000),
+		// Rogue maintainer tries to pre-consume the owner's claim-nonce for `attacker`.
+		claimGrant(t, maint, ba, attacker.PubKeyHex(), RoleContributor, claim, 1001),
+		// Owner later binds the SAME claim to the legit joiner.
+		claimGrant(t, owner, ba, joiner.PubKeyHex(), RoleContributor, claim, 1002),
+	}
+
+	levels, _ := DeriveLevels(events, ba, testBoardD)
+	// The owner's claim-binding grant must take effect despite the maintainer's earlier
+	// claim-carrying grant — the joiner is admitted.
+	if lvl, ok := levels[joiner.PubKeyHex()]; !ok || lvl != LevelContributor {
+		t.Errorf("legit joiner must be admitted at contributor (owner owns the claim), got lvl=%d ok=%v", lvl, ok)
+	}
+	// The claim binds to the OWNER's grantee (joiner), not the maintainer's (attacker).
+	bound, ok := ClaimGrantee(events, ba, testBoardD, claim)
+	if !ok || bound != joiner.PubKeyHex() {
+		t.Errorf("claim must bind to the owner's grantee (joiner), got (%s,%v)", bound, ok)
+	}
+	if bound == attacker.PubKeyHex() {
+		t.Error("maintainer must NOT be able to pre-consume the owner's claim-nonce (ready-557 griefing)")
+	}
+}
+
 // TestClaimSingleUse_SameGranteeMayReclaim: the SAME grantee re-granting under its own
 // claim (e.g. a later revoke of that key) is NOT a single-use violation — the guard
 // fires only on a grantee MISMATCH.

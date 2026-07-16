@@ -1,71 +1,51 @@
-=== SECTION: setup ===
-$ cf init --cf-home "$CF_HOME"
-Your identity campfire: d205e96980727177e8acfc3e2f056a9493f749a39b39b6acd759ac89dc8bcb5d. Share it like any beacon.
-
-Next: cf discover    find campfires
-      cf create      start one
-      cf join <id>   join one
-
 === SECTION: init-backend ===
-$ cd BACKEND && rd init --name "backend"
-warning: no beacon root configured (set CF_BEACON_ROOT or pass --beacon-root) — project name bound locally only
-initialized backend
-  campfire: db468d83b830...
-  summary campfire: 13bd06710548...
-  inbox campfire: 147c4e998fbc...
-  encrypted: true (E2E intent set; SDK encryption enabled when available)
-  declarations: 16 operations published
+$ cd backend && rd init --name "backend"
+initialized backend (confidential)
+  board: 30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestbackendnw4
+  owner: a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25
+  log:   /tmp/rdtest-backend-nw4C/.ready/nostr-log.jsonl
 
-  home campfire: found (d205e9698072...)
-  run 'rd register --org <name>' to add naming
+  free text is ENCRYPTED — only granted members can read it. work items are signed
+  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.
+  create your first item with:
+    rd create "..." --type task --priority p1
 
 === SECTION: init-frontend ===
-$ cd FRONTEND && rd init --name "frontend"
-warning: no beacon root configured (set CF_BEACON_ROOT or pass --beacon-root) — project name bound locally only
-initialized frontend
-  campfire: e73d91b8aa83...
-  summary campfire: 41ddb1f72fd9...
-  inbox campfire: 022d797294e4...
-  encrypted: true (E2E intent set; SDK encryption enabled when available)
-  declarations: 16 operations published
+$ cd frontend && rd init --name "frontend"
+initialized frontend (confidential)
+  board: 30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestfrontend1p
+  owner: a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25
+  log:   /tmp/rdtest-frontend-Y1pQ/.ready/nostr-log.jsonl
 
-  home campfire: found (d205e9698072...)
-  run 'rd register --org <name>' to add naming
+  free text is ENCRYPTED — only granted members can read it. work items are signed
+  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.
+  create your first item with:
+    rd create "..." --type task --priority p1
 
 === SECTION: create-items ===
-$ cd BACKEND && rd create "Expose /api/v1/users endpoint" --priority p1 --type task
-# backend item ID: rdtestbackendn8e2-322
+$ cd backend && rd create "Expose /api/v1/users endpoint" --priority p1 --type task
+# backend item ID: rdtestbackendnw4-8f3
 
-$ cd FRONTEND && rd create "Build user list page" --priority p1 --type task
-# frontend item ID: rdtestfrontendtisl-a91
+$ cd frontend && rd create "Build user list page" --priority p1 --type task
+# frontend item ID: rdtestfrontend1p-632
 
-=== SECTION: wire-dep ===
-# Wire a real cross-project dep: frontend item blocked by backend item
-# rd dep add resolves the blocker across all campfires in CF_HOME
-$ cd FRONTEND && rd dep add rdtestfrontendtisl-a91 rdtestbackendn8e2-322
-blocked: rdtestfrontendtisl-a91 is now blocked by db468d83b83043f509ab48fba65c12d227d7910efe304f179e90452628616c3a.rdtestbackendn8e2-322 [cross]
+=== SECTION: scope-backend ===
+# Same identity, same command — but run from the backend tree, walk-up
+# resolves the backend board and 'rd ready' shows only the backend item.
+$ cd backend && rd ready
+rdtestbackendnw4-8f3
 
-=== SECTION: show-blocked ===
-$ cd FRONTEND && rd dep tree rdtestfrontendtisl-a91
-rdtestfrontendtisl-a91  [inbox]  Build user list page
+=== SECTION: scope-frontend ===
+# Run from the frontend tree, walk-up resolves the frontend board.
+$ cd frontend && rd ready
+rdtestfrontend1p-632
 
-$ cd FRONTEND && rd ready
-# (frontend item is blocked by backend item — not shown in ready)
+=== SECTION: verify ===
+# Each board is fully independent. 'rd list --all' is board-scoped too.
+$ cd backend && rd list --all
+rdtestbackendnw4-8f3
 
-=== SECTION: close-blocker ===
-# Backend team ships the endpoint:
-$ cd BACKEND && rd update rdtestbackendn8e2-322 --status active
-updated rdtestbackendn8e2-322
-
-$ cd BACKEND && rd done rdtestbackendn8e2-322 --reason "API endpoint /api/v1/users deployed"
-closed rdtestbackendn8e2-322 (done)
-
-=== SECTION: verify-unblocked ===
-$ cd FRONTEND && rd ready
-rdtestfrontendtisl-a91
-# frontend item is now unblocked and ready
-
-$ cd FRONTEND && rd dep tree rdtestfrontendtisl-a91
-rdtestfrontendtisl-a91  [inbox]  Build user list page
+$ cd frontend && rd list --all
+rdtestfrontend1p-632
 
 # Demo complete. Transcript written to: /home/baron/projects/ready/test/demo/output/03-multiproject.txt

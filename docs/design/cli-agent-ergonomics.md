@@ -17,7 +17,7 @@
 The following items shipped in the v0.9.x cycle:
 
 - ✅ **Pipe-friendly output** (ready-e09, ready-72e): `rd create`, `rd ready`, `rd list` print bare IDs when output is not a TTY. `ITEM=$(rd create ...)` and `for id in $(rd ready)` now work without `--json`. See notes on ready-42c below.
-- ✅ **Inbox warning suppressed for non-owners** (ready-3ce): convention server inbox warning no longer shown to agents who aren't the campfire owner.
+- ✅ **Inbox warning suppressed for non-owners** (ready-3ce): inbox warning no longer shown to agents who aren't the board owner.
 - ✅ **Durability warnings suppressed for local filesystem** (ready-b56): noise removed for the common dev case.
 - ✅ **Demo script refresh** (ready-d2b): all 11 demos rebuilt and output files updated.
 - ✅ **Invite tokens** (ready-c31): `rd admit` replaced with `rd invite` / `rd join`.
@@ -61,7 +61,7 @@ The broader migration — moving all remaining warnings to stderr rather than su
 
 **Remaining scope:**
 - `cmd/rd/root.go` — the `warn()` helper (if it exists) or all inline warning prints
-- `cmd/rd/send.go` — campfire send failure warnings
+- `cmd/rd/send.go` — relay send failure warnings
 - Any command that prints "warning:" to stdout outside the two suppressed cases
 
 **Pattern:** Create a `warnf(format, args...)` helper that writes to stderr. Replace all warning prints.
@@ -78,8 +78,7 @@ Primary getting-started guide for agents. Content:
 # Agent Quickstart
 
 ## Join a project
-cf init                    # once — creates identity at ~/.cf
-rd join <campfire-id>      # join the project
+rd join <invite-token>     # self-mints your key, pins the board read-only
 
 ## Work loop
 rd ready --view my-work    # your queue (JSON by default)
@@ -105,12 +104,11 @@ A2A discovery file. Format:
 ```json
 {
   "name": "ready",
-  "description": "Work management as a campfire convention",
-  "protocol": "campfire",
-  "mcp_endpoint": "npx @campfire-net/campfire-mcp",
+  "description": "Work management as a nostr convention",
+  "protocol": "nostr",
   "docs": {
-    "agent_quickstart": "https://ready.getcampfire.dev/docs/agent",
-    "convention_schema": "https://ready.getcampfire.dev/docs/convention"
+    "agent_quickstart": "https://ready.3dl.dev/docs/agent",
+    "convention_schema": "https://ready.3dl.dev/docs/convention"
   },
   "operations": [
     "work:create", "work:claim", "work:close", "work:status",
@@ -128,4 +126,4 @@ Lead with agent workflow. Move operator setup to "Setting up a project" section 
 
 ### ready-d2b: Demo script refresh — ✅ Done
 
-All 11 demo scripts rebuilt and output files updated (`test/demo/output/*.txt`). The output reflects pipe-friendly behavior and suppressed warnings. Note: output changed due to pipe-friendly output (bare IDs when piped) and suppressed warnings — not JSON default as originally anticipated.
+After the nostr cutover the demo suite is **5 nostr-native workflow scripts** — `01-solo`, `02-team`, `03-multiproject`, `05-agent-workflow`, `06-gate-escalation` — each regenerating a fresh transcript in `test/demo/output/*.txt`. The **6 org / hosted-topology scripts** (`04-org-observer`, `07-hosted-multi-machine`, `08-org-naming`, `09-cattle-workstation`, `10-bridge-hybrid`, `11-filesystem-isolation`) had no nostr-native equivalent and were removed in the cutover. The remaining transcripts reflect pipe-friendly output (bare IDs when piped) and suppressed warnings.

@@ -1,33 +1,36 @@
 #!/usr/bin/env bash
-# 01-solo.sh — Solo developer demo: create → claim → progress → done
+# 01-solo.sh — Solo developer demo: init → create → ready → claim → progress → done
+# Nostr-native: 'rd init' mints a local secp256k1 identity and stores work items
+# as signed events in .ready/nostr-log.jsonl (the source of truth). Everything
+# below runs fully OFFLINE — relays are a replaceable cache, never required.
 # Produces a real terminal transcript for documentation.
 set -euo pipefail
 
-RD=/tmp/rd-demo
+RD="${RD:-/tmp/rd-demo}"
+if [[ ! -x "$RD" ]]; then
+    export PATH="$PATH:/usr/local/go/bin"
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    ( cd "$repo_root" && go build -o "$RD" ./cmd/rd )
+fi
+
 OUTPUT_DIR="$(cd "$(dirname "$0")" && pwd)/output"
 OUTPUT_FILE="$OUTPUT_DIR/01-solo.txt"
-
 mkdir -p "$OUTPUT_DIR"
 
-# Isolated environment — identity lives inside the project directory
+# Isolated environment: a throwaway project directory plus a dedicated rd-home
+# for the nostr identity, so the demo never touches the real ~/.config/rd.
 PROJECT=$(mktemp -d /tmp/rdtest-solo-proj-XXXX)
-trap "rm -rf $PROJECT" EXIT
+export RD_HOME=$(mktemp -d /tmp/rdtest-solo-home-XXXX)
+trap 'rm -rf "$PROJECT" "$RD_HOME"' EXIT
 
 # Tee all output to the transcript file
 exec > >(tee "$OUTPUT_FILE") 2>&1
 
-# One-time: create project-local .cf/ and initialize identity there
-mkdir -p "$PROJECT/.cf"
-echo "=== SECTION: init ==="
-echo "$ mkdir -p \$PROJECT/.cf && cf init --cf-home \$PROJECT/.cf"
-cf init --cf-home "$PROJECT/.cf"
-
-# From now on: cd into the project and run — walk-up finds .cf/identity.json
+# From now on: cd into the project and run — walk-up finds .ready/
 cd "$PROJECT"
 
-echo ""
-echo "=== SECTION: project ==="
-echo "$ cd PROJECT && rd init --name \"myproject\""
+echo "=== SECTION: init ==="
+echo "$ cd myproject && rd init --name \"myproject\""
 "$RD" init --name "myproject"
 
 echo ""
