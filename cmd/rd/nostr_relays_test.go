@@ -1,58 +1,78 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
-// TestNostrRelays_ResolveFromProjectConfig guards the BYOR path: relays a user
-// configured in THIS project's .ready/config.json must be loaded and used by the
-// read/write paths. Per-project (not global) so a --local project never inherits
-// another project's relays (ready review [0]).
-func TestNostrRelays_ResolveFromProjectConfig(t *testing.T) {
-	dir := setupNostrCmdTest(t) // isolated project + chdir + RD_HOME
-	t.Setenv("RD_NOSTR_RELAY_URL", "") // ensure the single-relay env override is off
+func rw(url string) rdconfig.RelayEndpoint {
+	return rdconfig.RelayEndpoint{URL: url, Read: true, Write: true}
+}
 
-	cfg := &rdconfig.SyncConfig{RelayEndpoints: []rdconfig.RelayEndpoint{
-		{URL: "wss://rw.example.com", Read: true, Write: true},
-		{URL: "wss://read-only.example.com", Read: true, Write: false},
-	}}
-	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
-		t.Fatalf("save sync config: %v", err)
+// TestRelayCascade_ProjectWins: a relay declared on THIS project's config wins
+// over anything inherited.
+func TestRelayCascade_ProjectWins(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	// Home config also has a relay — the project's must win.
+	_ = rdconfig.Save(RDHome(), &rdconfig.Config{RelayEndpoints: []rdconfig.RelayEndpoint{rw("wss://home.example")}})
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{RelayEndpoints: []rdconfig.RelayEndpoint{rw("wss://project.example")}}); err != nil {
+		t.Fatal(err)
 	}
-
-	w := nostrWriteRelays()
-	if len(w) != 1 || w[0] != "wss://rw.example.com" {
-		t.Errorf("nostrWriteRelays() = %v, want [wss://rw.example.com]", w)
-	}
-	r := nostrReadRelays()
-	if len(r) != 2 {
-		t.Errorf("nostrReadRelays() = %v, want both configured read relays", r)
+	if got := nostrWriteRelays(); len(got) != 1 || got[0] != "wss://project.example" {
+		t.Errorf("project relay must win, got %v", got)
 	}
 }
 
-// TestNostrRelays_LocalOnlyWhenUnconfigured proves the ship default: a project with
-// no relay config resolves to nothing (local-only) — no baked-in topology.
-func TestNostrRelays_LocalOnlyWhenUnconfigured(t *testing.T) {
+// TestRelayCascade_InheritsFromAncestor: a project with no relay policy inherits
+// from an ancestor directory's .ready/config.json.
+func TestRelayCascade_InheritsFromAncestor(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	ancestor := filepath.Dir(dir) // the temp base above <base>/project
+	if err := rdconfig.SaveSyncConfig(ancestor, &rdconfig.SyncConfig{RelayEndpoints: []rdconfig.RelayEndpoint{rw("wss://umbrella.example")}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := nostrWriteRelays(); len(got) != 1 || got[0] != "wss://umbrella.example" {
+		t.Errorf("must inherit ancestor relay, got %v", got)
+	}
+}
+
+// TestRelayCascade_InheritsFromHome: no project/ancestor policy → the home rd.json
+// relay is the machine-wide default.
+func TestRelayCascade_InheritsFromHome(t *testing.T) {
 	setupNostrCmdTest(t)
 	t.Setenv("RD_NOSTR_RELAY_URL", "")
-
-	if got := nostrWriteRelays(); len(got) != 0 {
-		t.Errorf("unconfigured nostrWriteRelays() = %v, want local-only (empty)", got)
+	if err := rdconfig.Save(RDHome(), &rdconfig.Config{RelayEndpoints: []rdconfig.RelayEndpoint{rw("wss://home.example")}}); err != nil {
+		t.Fatal(err)
 	}
-	if got := nostrReadRelays(); len(got) != 0 {
-		t.Errorf("unconfigured nostrReadRelays() = %v, want local-only (empty)", got)
+	if got := nostrReadRelays(); len(got) != 1 || got[0] != "wss://home.example" {
+		t.Errorf("must inherit home relay, got %v", got)
 	}
 }
 
-// TestNostrRelays_EnvOverrideWins proves RD_NOSTR_RELAY_URL still short-circuits
-// config resolution (the demo/single-relay override).
-func TestNostrRelays_EnvOverrideWins(t *testing.T) {
-	setupNostrCmdTest(t)
-	t.Setenv("RD_NOSTR_RELAY_URL", "wss://override.example.com")
+// TestRelayCascade_LocalOnlyStopsInheritance: --local (RelaysLocalOnly) opts out —
+// even when an ancestor/home relay exists, the project stays local (no leak).
+func TestRelayCascade_LocalOnlyStopsInheritance(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	_ = rdconfig.Save(RDHome(), &rdconfig.Config{RelayEndpoints: []rdconfig.RelayEndpoint{rw("wss://home.example")}})
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{RelaysLocalOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := nostrWriteRelays(); len(got) != 0 {
+		t.Errorf("--local must not inherit any relay, got %v", got)
+	}
+}
 
-	if got := nostrWriteRelays(); len(got) != 1 || got[0] != "wss://override.example.com" {
-		t.Errorf("env override nostrWriteRelays() = %v, want [wss://override.example.com]", got)
+// TestRelayCascade_EnvOverrideWins: RD_NOSTR_RELAY_URL beats the whole cascade.
+func TestRelayCascade_EnvOverrideWins(t *testing.T) {
+	dir := setupNostrCmdTest(t)
+	t.Setenv("RD_NOSTR_RELAY_URL", "wss://override.example")
+	_ = rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{RelaysLocalOnly: true})
+	if got := nostrWriteRelays(); len(got) != 1 || got[0] != "wss://override.example" {
+		t.Errorf("env override must win, got %v", got)
 	}
 }

@@ -191,10 +191,17 @@ type SyncConfig struct {
 	Public bool `json:"public,omitempty"`
 
 	// RelayEndpoints are THIS project's nostr relays (BYOR), chosen at `rd init`
-	// (--relay / interactive prompt) or by editing this file. Per-project so that a
-	// `--local` project never inherits another project's relays. Empty = local-only:
-	// the signed log is authoritative and a project works with no reachable relay.
+	// (--relay / interactive prompt) or by editing this file. When set they WIN over
+	// any inherited config. When BOTH this and RelaysLocalOnly are empty/false, relay
+	// resolution walks UP the directory tree (ancestor .ready/config.json) and finally
+	// the home rd.json — so a machine- or umbrella-level relay config is inherited.
 	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
+
+	// RelaysLocalOnly, when true, is an explicit opt-out: this project is local-only
+	// and does NOT inherit relays from any ancestor or the home config. `rd init
+	// --local` sets it. This is what keeps a --local project's confidential work from
+	// leaking to a relay configured higher up the tree.
+	RelaysLocalOnly bool `json:"relays_local_only,omitempty"`
 }
 
 // WriteRelayURLs returns the URLs of this project's write-flagged relays.
