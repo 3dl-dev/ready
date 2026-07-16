@@ -1,101 +1,48 @@
-# Ready Team Demo — Thu Apr  9 02:19:03 UTC 2026
-# Two identities: owner and member
+=== SECTION: owner-init ===
+$ cd teamproject && rd init --name teamproject   (owner)
+initialized teamproject (confidential)
+  board: 30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestteamownerg
+  owner: a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25
+  log:   /tmp/rdtest-team-owner-NgDU/.ready/nostr-log.jsonl
 
-═══════════════════════════════════════════════════════════
-  1. Initialize owner identity
-═══════════════════════════════════════════════════════════
+  free text is ENCRYPTED — only granted members can read it. work items are signed
+  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.
+  create your first item with:
+    rd create "..." --type task --priority p1
 
-$ mkdir -p $PROJECT/.cf && cf init --cf-home $PROJECT/.cf  (owner)
-Your identity campfire: e1f366f975a82a762db60881c466835cb4a08a17359ac62ec4d4ae787de7a48a. Share it like any beacon.
+=== SECTION: owner-invite ===
+# Owner mints a one-use invite token (no key inside — TTL-bounded).
+$ rd invite
+rd1_...  (invite token — treat as secret; carries no private key)
 
-Next: cf discover    find campfires
-      cf create      start one
-      cf join <id>   join one
+=== SECTION: joiner-join ===
+# Joiner runs 'rd join' in a FRESH rd-home + project dir. It self-mints its
+# own key, pins the board READ-ONLY, and prints a pubkey + claim-nonce.
+$ rd join <invite-token>
+Joined board a9f766ae56bb... READ-ONLY (invite expires in 1h59m0s).
+  run 'rd ready' to see the project's items now.
 
+To get WRITE access, send the owner this — they run `rd grant <pubkey> contributor --claim <claim>`:
+  pubkey=92ba4a104d6b47d1b74b07c433deb4e50147fc12c95c6343cef70641ccb2fa42
+  claim=63dc8a8b92e9884b041168c78161ba7d
+  (on locked relays the owner then runs `rd relay sync-allowlist --apply`)
 
-═══════════════════════════════════════════════════════════
-  2. Owner initializes project
-═══════════════════════════════════════════════════════════
+=== SECTION: owner-grant ===
+# Owner grants write access, consuming the joiner's one-use claim-nonce.
+$ rd grant <joiner-pubkey> contributor --claim <claim-nonce>
+published role-grant: grantee=92ba4a104d6b47d1b74b07c433deb4e50147fc12c95c6343cef70641ccb2fa42 role=contributor board=30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestteamownerg
+  event id=ae97863c35136edba489946762ff319aed42f75f38dd67d15a81b2623c0a8fb0 relay-accepted=true
+regenerated relay write-allowlist scripts/relay-policy/write-allowlist.json (2 key(s) admitted)
+  ADD (2):
+    92ba4a104d6b47d1b74b07c433deb4e50147fc12c95c6343cef70641ccb2fa42  
+    a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25  board author (owner) — bootstrap trust root
+  next: 'rd relay sync-allowlist --apply' to push the update to the relays
 
-$ cd $PROJECT && rd init --name teamproject
-warning: no beacon root configured (set CF_BEACON_ROOT or pass --beacon-root) — project name bound locally only
-initialized teamproject
-  campfire: 00d5716f0154...
-  summary campfire: 989afcdd6d8d...
-  inbox campfire: 310995470e3f...
-  encrypted: true (E2E intent set; SDK encryption enabled when available)
-  declarations: 16 operations published
+=== SECTION: verify-grant ===
+# The owner-signed grant landed — the joiner is now an admitted contributor.
+$ rd sessions
+PUBKEY           ROLE         LABEL
+92ba4a104d6b...  contributor  
+a9f766ae56bb...  owner        board author (owner) — bootstrap trust root
 
-  home campfire: found (e1f366f975a8...)
-  run 'rd register --org <name>' to add naming
-
-
-═══════════════════════════════════════════════════════════
-  3. Owner generates invite token
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT && rd invite
-rdx1_...  (invite token — treat as secret)
-
-
-═══════════════════════════════════════════════════════════
-  4. Member joins via invite token
-═══════════════════════════════════════════════════════════
-
-$ mkdir -p $PROJECT/member/.cf && cd $PROJECT && CF_HOME=$PROJECT/member/.cf rd join <invite-token>  (one-time identity bootstrap)
-joined 00d5716f0154... via invite token (expires in 1h59m0s)
-
-
-═══════════════════════════════════════════════════════════
-  5. Owner creates work item
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT && rd create 'Build API' --type task --priority p1
-Created item: rdtestteamproj-776
-
-
-═══════════════════════════════════════════════════════════
-  6. Owner delegates item to member
-═══════════════════════════════════════════════════════════
-
-Delegating to member identity: 6d2d5a5f4c38...
-
-$ cd $PROJECT && rd delegate rdtestteamproj-776 --to <member-identity>
-delegated rdtestteamproj-776 to 6d2d5a5f4c389e5f78cd462149d4065f1045948ad08418945d0af84979d50f47
-
-
-═══════════════════════════════════════════════════════════
-  7. Member views ready items
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT/member && rd ready
-rdtestteamproj-776
-
-
-═══════════════════════════════════════════════════════════
-  8. Member claims item (sets active)
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT/member && rd update rdtestteamproj-776 --status active
-updated rdtestteamproj-776
-
-
-═══════════════════════════════════════════════════════════
-  9. Member completes item
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT/member && rd done rdtestteamproj-776 --reason 'API complete'
-warning: campfire send failed (buffered to pending.jsonl): operator provenance level 1 insufficient: operation "work:close" requires level 2
-closed rdtestteamproj-776 (done)
-
-
-═══════════════════════════════════════════════════════════
-  10. Owner verifies — list all items
-═══════════════════════════════════════════════════════════
-
-$ cd $PROJECT && rd list --all
-rdtestteamproj-776
-
-══════════════════════════════════════════════════════════════
-  Demo complete. Transcript saved to: /home/baron/projects/ready/test/demo/output/02-team.txt
-══════════════════════════════════════════════════════════════
+# Demo complete. Transcript written to: /home/baron/projects/ready/test/demo/output/02-team.txt

@@ -1,117 +1,68 @@
 #!/usr/bin/env bash
-# Demo: two-identity team workflow
-# Owner creates a project, invites a member via token, creates and delegates work,
-# member claims and completes it, owner verifies.
+# 02-team.sh — Two-identity team workflow (self-mint invite model, fully OFFLINE)
+# Owner initializes a project and mints a one-use invite token. The token carries
+# NO key — only the board coordinate, relays, a TTL and a claim-nonce. The joiner
+# self-mints its own secp256k1 key with 'rd join', pins the board READ-ONLY, and
+# reports back a pubkey + claim-nonce. The owner then publishes an owner-signed
+# kind-39301 role-grant that admits the joiner as a contributor.
+# Produces a real terminal transcript for documentation.
 set -euo pipefail
 
-RD=/tmp/rd-demo
-OUT_DIR="$(cd "$(dirname "$0")" && pwd)/output"
-OUT="$OUT_DIR/02-team.txt"
-mkdir -p "$OUT_DIR"
+RD="${RD:-/tmp/rd-demo}"
+if [[ ! -x "$RD" ]]; then
+    export PATH="$PATH:/usr/local/go/bin"
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    ( cd "$repo_root" && go build -o "$RD" ./cmd/rd )
+fi
 
-PROJECT=$(mktemp -d /tmp/rdtest-team-proj-XXXX)
-trap "rm -rf $PROJECT" EXIT
+OUTPUT_DIR="$(cd "$(dirname "$0")" && pwd)/output"
+OUTPUT_FILE="$OUTPUT_DIR/02-team.txt"
+mkdir -p "$OUTPUT_DIR"
 
-tee_section() {
-    local header="$1"
-    {
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "  $header"
-        echo "═══════════════════════════════════════════════════════════"
-        echo ""
-    } | tee -a "$OUT"
-}
+# Two identities = two rd-homes. Two separate project trees (each identity keeps
+# its own local signed-event log). Everything is isolated under /tmp.
+OWNER_PROJ=$(mktemp -d /tmp/rdtest-team-owner-XXXX)
+OWNER_HOME=$(mktemp -d /tmp/rdtest-team-ohome-XXXX)
+JOIN_PROJ=$(mktemp -d /tmp/rdtest-team-join-XXXX)
+JOIN_HOME=$(mktemp -d /tmp/rdtest-team-jhome-XXXX)
+trap 'rm -rf "$OWNER_PROJ" "$OWNER_HOME" "$JOIN_PROJ" "$JOIN_HOME"' EXIT
 
-run() {
-    local label="$1"; shift
-    echo "$ $label" | tee -a "$OUT"
-    "$@" 2>&1 | tee -a "$OUT"
-    echo "" | tee -a "$OUT"
-}
+# Tee all output to the transcript file
+exec > >(tee "$OUTPUT_FILE") 2>&1
 
-# Start fresh output
-> "$OUT"
+echo "=== SECTION: owner-init ==="
+echo "$ cd teamproject && rd init --name teamproject   (owner)"
+( cd "$OWNER_PROJ" && "$RD" --rd-home "$OWNER_HOME" init --name teamproject )
 
-echo "# Ready Team Demo — $(date)" | tee -a "$OUT"
-echo "# Two identities: owner and member" | tee -a "$OUT"
+echo ""
+echo "=== SECTION: owner-invite ==="
+echo "# Owner mints a one-use invite token (no key inside — TTL-bounded)."
+echo "$ rd invite"
+INVITE_OUT=$(cd "$OWNER_PROJ" && "$RD" --rd-home "$OWNER_HOME" invite 2>&1)
+TOKEN=$(echo "$INVITE_OUT" | grep -oE 'rd1_[A-Za-z0-9_-]+' | head -1)
+echo "rd1_...  (invite token — treat as secret; carries no private key)"
 
-# ── 1. Initialize owner identity ─────────────────────────────────────────────
-tee_section "1. Initialize owner identity"
+echo ""
+echo "=== SECTION: joiner-join ==="
+echo "# Joiner runs 'rd join' in a FRESH rd-home + project dir. It self-mints its"
+echo "# own key, pins the board READ-ONLY, and prints a pubkey + claim-nonce."
+echo "$ rd join <invite-token>"
+JOIN_OUT=$(cd "$JOIN_PROJ" && RD_HOME="$JOIN_HOME" "$RD" join "$TOKEN" 2>&1)
+echo "$JOIN_OUT"
+PUBKEY=$(echo "$JOIN_OUT" | grep -oE 'pubkey=[0-9a-f]+' | cut -d= -f2)
+CLAIM=$(echo "$JOIN_OUT" | grep -oE 'claim=[0-9a-f]+' | cut -d= -f2)
 
-# Owner identity lives in $PROJECT/.cf/ — walk-up finds it from anywhere in $PROJECT
-mkdir -p "$PROJECT/.cf"
-run "mkdir -p \$PROJECT/.cf && cf init --cf-home \$PROJECT/.cf  (owner)" \
-    cf init --cf-home "$PROJECT/.cf"
+echo ""
+echo "=== SECTION: owner-grant ==="
+echo "# Owner grants write access, consuming the joiner's one-use claim-nonce."
+echo "$ rd grant <joiner-pubkey> contributor --claim <claim-nonce>"
+( cd "$OWNER_PROJ" && "$RD" --rd-home "$OWNER_HOME" grant "$PUBKEY" contributor --claim "$CLAIM" )
 
-# ── 2. Owner creates project ──────────────────────────────────────────────────
-tee_section "2. Owner initializes project"
+echo ""
+echo "=== SECTION: verify-grant ==="
+echo "# The owner-signed grant landed — the joiner is now an admitted contributor."
+echo "$ rd sessions"
+( cd "$OWNER_PROJ" && "$RD" --rd-home "$OWNER_HOME" sessions )
 
-run "cd \$PROJECT && rd init --name teamproject" \
-    bash -c "cd '$PROJECT' && '$RD' init --name teamproject"
-
-# ── 3. Owner generates invite token ──────────────────────────────────────────
-tee_section "3. Owner generates invite token"
-
-INVITE_TOKEN=$(cd "$PROJECT" && "$RD" invite 2>&1 | grep '^rdx1_')
-echo "$ cd \$PROJECT && rd invite" | tee -a "$OUT"
-echo "rdx1_...  (invite token — treat as secret)" | tee -a "$OUT"
-echo "" | tee -a "$OUT"
-
-# ── 4. Member joins via token ────────────────────────────────────────────────
-tee_section "4. Member joins via invite token"
-
-# Member identity goes into $PROJECT/member/.cf/ — join runs from the project root
-# so that .campfire/root and .ready/ are shared (same project directory).
-# After join, member cd into their subdir and walk-up finds:
-#   .cf/identity.json  at $PROJECT/member/.cf/   (member identity)
-#   .campfire/root     at $PROJECT/              (shared project)
-mkdir -p "$PROJECT/member/.cf"
-run "mkdir -p \$PROJECT/member/.cf && cd \$PROJECT && CF_HOME=\$PROJECT/member/.cf rd join <invite-token>  (one-time identity bootstrap)" \
-    bash -c "cd '$PROJECT' && CF_HOME='$PROJECT/member/.cf' '$RD' join '$INVITE_TOKEN'"
-
-# ── 5. Owner creates a work item ──────────────────────────────────────────────
-tee_section "5. Owner creates work item"
-
-ITEM_ID=$(cd "$PROJECT" && "$RD" create "Build API" --type task --priority p1)
-echo "$ cd \$PROJECT && rd create 'Build API' --type task --priority p1" | tee -a "$OUT"
-echo "Created item: $ITEM_ID" | tee -a "$OUT"
-echo "" | tee -a "$OUT"
-
-# ── 6. Owner delegates to member ─────────────────────────────────────────────
-tee_section "6. Owner delegates item to member"
-
-MEMBER_PUBKEY=$(CF_HOME="$PROJECT/member/.cf" cf id --json | python3 -c "import sys,json; print(json.load(sys.stdin)['public_key'])")
-echo "Delegating to member identity: ${MEMBER_PUBKEY:0:12}..." | tee -a "$OUT"
-echo "" | tee -a "$OUT"
-
-run "cd \$PROJECT && rd delegate $ITEM_ID --to <member-identity>" \
-    bash -c "cd '$PROJECT' && '$RD' delegate '$ITEM_ID' --to '$MEMBER_PUBKEY'"
-
-# ── 7. Member views their work ────────────────────────────────────────────────
-tee_section "7. Member views ready items"
-
-run "cd \$PROJECT/member && rd ready" \
-    bash -c "cd '$PROJECT/member' && '$RD' ready"
-
-# ── 8. Member claims item ────────────────────────────────────────────────────
-tee_section "8. Member claims item (sets active)"
-
-run "cd \$PROJECT/member && rd update $ITEM_ID --status active" \
-    bash -c "cd '$PROJECT/member' && '$RD' update '$ITEM_ID' --status active"
-
-# ── 9. Member completes item ─────────────────────────────────────────────────
-tee_section "9. Member completes item"
-
-run "cd \$PROJECT/member && rd done $ITEM_ID --reason 'API complete'" \
-    bash -c "cd '$PROJECT/member' && '$RD' done '$ITEM_ID' --reason 'API complete'"
-
-# ── 10. Owner verifies ────────────────────────────────────────────────────────
-tee_section "10. Owner verifies — list all items"
-
-run "cd \$PROJECT && rd list --all" \
-    bash -c "cd '$PROJECT' && '$RD' list --all"
-
-echo "══════════════════════════════════════════════════════════════" | tee -a "$OUT"
-echo "  Demo complete. Transcript saved to: $OUT" | tee -a "$OUT"
-echo "══════════════════════════════════════════════════════════════" | tee -a "$OUT"
+echo ""
+echo "# Demo complete. Transcript written to: $OUTPUT_FILE"

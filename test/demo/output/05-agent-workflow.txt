@@ -1,217 +1,57 @@
-# Ready Agent Workflow Demo — Thu Apr  9 02:19:06 UTC 2026
-# Demonstrates programmatic agent integration: JSON parsing, claim/progress/done cycle
-
 === SECTION: setup ===
+$ cd ci-project && rd init --name ci-project
+initialized ci-project (confidential)
+  board: 30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:rdtestagentprojs1
+  owner: a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25
+  log:   /tmp/rdtest-agent-proj-sOC1/.ready/nostr-log.jsonl
 
-$ mkdir -p $PROJECT/.cf && cf init --cf-home $PROJECT/.cf  (owner)
-Your identity campfire: 79565fafbcf1c3df50e6a557e164a18ef787a0191d0386038dbd05d1a2092a86. Share it like any beacon.
-
-Next: cf discover    find campfires
-      cf create      start one
-      cf join <id>   join one
-
-$ cd $PROJECT && rd init --name ci-project
-warning: no beacon root configured (set CF_BEACON_ROOT or pass --beacon-root) — project name bound locally only
-initialized ci-project
-  campfire: 95c806d0c504...
-  summary campfire: 9491e7ddec5a...
-  inbox campfire: 3e3e793dcb80...
-  encrypted: true (E2E intent set; SDK encryption enabled when available)
-  declarations: 16 operations published
-
-  home campfire: found (79565fafbcf1...)
-  run 'rd register --org <name>' to add naming
-
-Project campfire ID: 95c806d0c504dbc22e5c005996059a183d55b2b8d5f086797ce93ce0e93aceea
-
-# Owner generates an invite token for the agent (agent role)
-
-$ cd $PROJECT && rd invite --role agent  (owner generates agent token)
-rdx1_...  (agent invite token)
-
-$ mkdir -p $PROJECT/agent/.cf && cd $PROJECT && CF_HOME=$PROJECT/agent/.cf rd join <agent-token>  (one-time identity bootstrap)
-joined 95c806d0c504... via invite token (expires in 1h59m0s)
+  free text is ENCRYPTED — only granted members can read it. work items are signed
+  events in .ready/nostr-log.jsonl (the source of truth); relays cache ciphertext.
+  create your first item with:
+    rd create "..." --type task --priority p1
 
 === SECTION: create-work ===
+$ rd create "Reindex search corpus" --type task --priority p1
+# created: rdtestagentprojs1-2e5
 
-# Owner creates two work items
-
-$ cd $PROJECT && rd create "Reindex search corpus" --type task --priority p1
-Created: rdtestagentprojs-f79
-
-$ cd $PROJECT && rd create "Update dependency manifest" --type task --priority p2
-Created: rdtestagentprojs-0dd
-
-# Owner delegates rdtestagentprojs-f79 to the agent
-
-$ cd $PROJECT && rd delegate rdtestagentprojs-f79 --to <agent-pubkey> --reason "Route to indexer bot"
-delegated rdtestagentprojs-f79 to b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617
+$ rd create "Update dependency manifest" --type task --priority p2
+# created: rdtestagentprojs1-419
 
 === SECTION: agent-query ===
-
-# Agent uses --json to query its assigned work programmatically
-
-$ cd $PROJECT/agent && rd ready --view my-work --json
-[
-  {
-    "id": "rdtestagentprojs-f79",
-    "msg_id": "4a60940c-a7d0-4767-aa48-9f18f7c8efdd",
-    "campfire_id": "95c806d0c504dbc22e5c005996059a183d55b2b8d5f086797ce93ce0e93aceea",
-    "title": "Reindex search corpus",
-    "type": "task",
-    "for": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-    "by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617",
-    "priority": "p1",
-    "status": "inbox",
-    "eta": "2026-04-09T06:19:07Z",
-    "created_at": 1775701147260202106,
-    "updated_at": 1775701147321683831,
-    "history": [
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "inbox",
-        "changed_by": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-        "note": "created"
-      }
-    ]
-  }
-]
-
-# Parse item ID from JSON output
-# Agent's assigned item: rdtestagentprojs-f79
+# Agent queries its ready queue as JSON and projects the fields it needs —
+# no wrapper library, just a one-line parse over the machine-readable output.
+$ rd ready --json | python3 -c '<project id, title, priority, status>'
+{"id": "rdtestagentprojs1-2e5", "title": "Reindex search corpus", "priority": "p1", "status": "inbox"}
+{"id": "rdtestagentprojs1-419", "title": "Update dependency manifest", "priority": "p2", "status": "inbox"}
+# agent selected item: rdtestagentprojs1-2e5
 
 === SECTION: agent-claim ===
+$ rd claim rdtestagentprojs1-2e5 --reason "Starting batch reindex job"
+claimed rdtestagentprojs1-2e5
 
-# Agent claims the item — accepts delegation, transitions to active
-
-$ cd $PROJECT/agent && rd claim rdtestagentprojs-f79 --reason "Starting batch reindex job"
-claimed rdtestagentprojs-f79
-
-# Verify status is now active
-$ cd $PROJECT/agent && rd ready --view work --json
-[
-  {
-    "id": "rdtestagentprojs-f79",
-    "msg_id": "4a60940c-a7d0-4767-aa48-9f18f7c8efdd",
-    "campfire_id": "95c806d0c504dbc22e5c005996059a183d55b2b8d5f086797ce93ce0e93aceea",
-    "title": "Reindex search corpus",
-    "type": "task",
-    "for": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-    "by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617",
-    "priority": "p1",
-    "status": "active",
-    "eta": "2026-04-09T06:19:07Z",
-    "created_at": 1775701147260202106,
-    "updated_at": 1775701147420312268,
-    "history": [
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "inbox",
-        "changed_by": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-        "note": "created"
-      },
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "active",
-        "changed_by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617"
-      }
-    ]
-  }
-]
+# Confirm the item is now active.
+$ rd ready --view work --json | python3 -c '<project id, status>'
+{"id": "rdtestagentprojs1-2e5", "status": "active"}
 
 === SECTION: agent-progress ===
+$ rd progress rdtestagentprojs1-2e5 --notes "Processed 47/142 records, 0 errors"
+updated rdtestagentprojs1-2e5
 
-# Agent posts incremental progress notes as work proceeds
-
-$ cd $PROJECT/agent && rd progress rdtestagentprojs-f79 --notes "Processed 47/142 records, 0 errors"
-progress noted on rdtestagentprojs-f79
-
-$ cd $PROJECT/agent && rd progress rdtestagentprojs-f79 --notes "Processed 142/142 records, 0 errors — indexing complete"
-progress noted on rdtestagentprojs-f79
+$ rd progress rdtestagentprojs1-2e5 --notes "Processed 142/142 records, 0 errors — indexing complete"
+updated rdtestagentprojs1-2e5
 
 === SECTION: agent-done ===
-
-# Agent closes the item with a structured result
-
-$ cd $PROJECT/agent && rd done rdtestagentprojs-f79 --reason "Batch complete: 142 records processed, 0 errors"
-warning: campfire send failed (buffered to pending.jsonl): operator provenance level 1 insufficient: operation "work:close" requires level 2
-closed rdtestagentprojs-f79 (done)
+$ rd done rdtestagentprojs1-2e5 --reason "Batch complete: 142 records processed, 0 errors"
+closed rdtestagentprojs1-2e5 (done)
 
 === SECTION: verify ===
+# Owner queries all items as JSON and projects a status summary.
+$ rd list --all --json | python3 -c '<project id, title, status>'
+{"id": "rdtestagentprojs1-2e5", "title": "Reindex search corpus", "status": "done"}
+{"id": "rdtestagentprojs1-419", "title": "Update dependency manifest", "status": "inbox"}
 
-# Owner queries all items as JSON to confirm completion
+$ rd list --all
+rdtestagentprojs1-2e5
+rdtestagentprojs1-419
 
-$ cd $PROJECT && rd list --all --json
-[
-  {
-    "id": "rdtestagentprojs-f79",
-    "msg_id": "4a60940c-a7d0-4767-aa48-9f18f7c8efdd",
-    "campfire_id": "95c806d0c504dbc22e5c005996059a183d55b2b8d5f086797ce93ce0e93aceea",
-    "title": "Reindex search corpus",
-    "context": "[2026-04-09T02:19Z] Processed 47/142 records, 0 errors\n\n[2026-04-09T02:19Z] Processed 142/142 records, 0 errors — indexing complete",
-    "description": "[2026-04-09T02:19Z] Processed 47/142 records, 0 errors\n\n[2026-04-09T02:19Z] Processed 142/142 records, 0 errors — indexing complete",
-    "type": "task",
-    "for": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-    "by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617",
-    "priority": "p1",
-    "status": "done",
-    "eta": "2026-04-09T06:19:07Z",
-    "created_at": 1775701147260202106,
-    "updated_at": 1775701147510769975,
-    "history": [
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "inbox",
-        "changed_by": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-        "note": "created"
-      },
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "active",
-        "changed_by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617"
-      },
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "active",
-        "to_status": "done",
-        "changed_by": "b36f39690563c1e5e8b967a8419ce604553a1af6b36e2f12bfa7c5a3ca4aa617",
-        "note": "Batch complete: 142 records processed, 0 errors"
-      }
-    ]
-  },
-  {
-    "id": "rdtestagentprojs-0dd",
-    "msg_id": "9b53a236-a7d3-4233-8735-cf46879c961e",
-    "campfire_id": "95c806d0c504dbc22e5c005996059a183d55b2b8d5f086797ce93ce0e93aceea",
-    "title": "Update dependency manifest",
-    "type": "task",
-    "for": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-    "priority": "p2",
-    "status": "inbox",
-    "eta": "2026-04-10T02:19:07Z",
-    "created_at": 1775701147280295757,
-    "updated_at": 1775701147280295757,
-    "history": [
-      {
-        "timestamp": "2026-04-09T02:19:07Z",
-        "from_status": "inbox",
-        "to_status": "inbox",
-        "changed_by": "a851dd2ce227eff2f9be086cf68c7c3d41bd75539f5a03456bbb661fa1c06003",
-        "note": "created"
-      }
-    ]
-  }
-]
-
-$ cd $PROJECT && rd list --all
-rdtestagentprojs-f79
-rdtestagentprojs-0dd
-
-══════════════════════════════════════════════════════════════
-  Demo complete. Transcript saved to: /home/baron/projects/ready/test/demo/output/05-agent-workflow.txt
-══════════════════════════════════════════════════════════════
+# Demo complete. Transcript written to: /home/baron/projects/ready/test/demo/output/05-agent-workflow.txt
