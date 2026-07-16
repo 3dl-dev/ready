@@ -19,6 +19,12 @@ import (
 // the env var only forces it for a directory with no pinned board.
 func nostrEnabled() bool { return os.Getenv("RD_NOSTR") == "1" }
 
+// autoReconcileTimeout bounds the opportunistic relay dial on the read hot path
+// (rd ready/list/show). Short by design: a read must not block on an unreachable
+// relay — the local log is authoritative, and reconcile is best-effort. The manual
+// `rd sync` still uses the full nostr.DefaultTimeout for a thorough convergence.
+const autoReconcileTimeout = 2 * time.Second
+
 // nostrWriteRelays returns the write-relay URLs, honoring an RD_NOSTR_RELAY_URL
 // override (single relay — used by the demo to target one relay or a deliberately
 // unreachable endpoint for the relay-offline proof). Endpoints otherwise come
@@ -27,9 +33,9 @@ func nostrWriteRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	cfg, err := rdconfig.Load(RDHome())
-	if err != nil || cfg == nil {
-		return nil // local-only: no reachable relays, the local log is authoritative
+	cfg := projectSyncConfig()
+	if cfg == nil {
+		return nil // local-only
 	}
 	return cfg.WriteRelayURLs()
 }
@@ -38,11 +44,29 @@ func nostrReadRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	cfg, err := rdconfig.Load(RDHome())
-	if err != nil || cfg == nil {
-		return nil // local-only: no reachable relays, the local log is authoritative
+	cfg := projectSyncConfig()
+	if cfg == nil {
+		return nil // local-only
 	}
 	return cfg.ReadRelayURLs()
+}
+
+// projectSyncConfig loads THIS project's .ready/config.json for relay resolution.
+// Relays are per-project (BYOR) so a --local project never inherits another
+// project's relays. Returns nil (local-only) when there is no project. A parse
+// error is surfaced loudly — silently degrading to local-only would stop syncing
+// with no warning — but still degrades to local-only so reads/writes keep working.
+func projectSyncConfig() *rdconfig.SyncConfig {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return nil
+	}
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — treating this project as local-only (not syncing to relays)\n", rdconfig.SyncConfigPath(dir), err)
+		return nil
+	}
+	return cfg
 }
 
 // rdActor resolves the DURABLE actor id this process signs as (BP-4). $RD_ACTOR
@@ -367,7 +391,7 @@ func nostrReconcileItemIntoLog(itemID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	r, err := rdSync.ReconcileItem(context.Background(), nostrReadRelays(), log, itemID, nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
+	r, err := rdSync.ReconcileItem(context.Background(), nostrReadRelays(), log, itemID, nostrTrustSet(dir, k.PubKeyHex()), autoReconcileTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -482,7 +506,7 @@ func nostrReconcileBoardIntoLog() error {
 		return err
 	}
 	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-	r, err := rdSync.ReconcileBoard(context.Background(), nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(dir, k.PubKeyHex()), nostr.DefaultTimeout)
+	r, err := rdSync.ReconcileBoard(context.Background(), nostrReadRelays(), log, nostrPinnedBoard(dir), nostrTrustSet(dir, k.PubKeyHex()), autoReconcileTimeout)
 	if err != nil {
 		return err
 	}

@@ -366,6 +366,12 @@ func runNostrInvite(ttl time.Duration) (string, error) {
 	}
 	now := time.Now()
 	relays := inviteRelaySet()
+	if len(relays) == 0 {
+		// A local-only project has no relay for a teammate to sync through, so the
+		// token would be unusable. Warn loudly rather than mint a dead invite.
+		fmt.Fprintln(os.Stderr, "warning: this project has no relays configured, so the invitee has no way to reach your board.")
+		fmt.Fprintln(os.Stderr, "         Add a relay (edit .ready/config.json's relay_endpoints, or re-init with --relay) before inviting.")
+	}
 
 	token, err := buildNostrClaimToken(board, relays, claim, now.Unix(), now.Add(ttl).Unix(), owner)
 	if err != nil {

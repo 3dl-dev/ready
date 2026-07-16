@@ -61,6 +61,58 @@ func itemCardEvents(t *testing.T, k *nostr.Key, boardD string, src map[string]*s
 	return events
 }
 
+// TestCardSpec_RoundTripsAllFields guards the live write-path invariant that the
+// deleted migration test used to cover (ready review [9]): CardSpecFromItem ->
+// BuildCardEvent -> ProjectItems must preserve Level/For/ParentID/Due/ETA/labels,
+// because CardSpecFromItem materializes every rd create/claim/progress/close card.
+// A future edit dropping one of these tags would silently lose the field on every
+// republish; this test fails loudly instead.
+func TestCardSpec_RoundTripsAllFields(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	src := &state.Item{
+		ID:       "ready-rt",
+		Title:    "round-trip item",
+		Type:     "task",
+		Status:   state.StatusActive,
+		Priority: "p1",
+		For:      "atlas/worker-7",
+		Level:    "human",
+		ParentID: "ready-epic",
+		ETA:      "2026-07-03T09:00:00Z",
+		Due:      "2026-07-04T09:00:00Z",
+		Labels:   []string{"security", "bug"}, // seed atoms so the registry admits them
+	}
+	events := itemCardEvents(t, k, "ready", map[string]*state.Item{src.ID: src})
+	trusted := map[string]bool{k.PubKeyHex(): true}
+	got := ProjectItems(events, ProjectOptions{Maintainers: trusted, Trusted: trusted})[src.ID]
+	if got == nil {
+		t.Fatalf("item %s lost in projection", src.ID)
+	}
+	for _, c := range []struct{ name, got, want string }{
+		{"Level", got.Level, src.Level},
+		{"For", got.For, src.For},
+		{"ParentID", got.ParentID, src.ParentID},
+		{"ETA", got.ETA, src.ETA},
+		{"Due", got.Due, src.Due},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s not preserved: got %q want %q", c.name, c.got, c.want)
+		}
+	}
+	labels := map[string]bool{}
+	for _, l := range got.Labels {
+		labels[l] = true
+	}
+	for _, want := range src.Labels {
+		if !labels[want] {
+			t.Errorf("label %q not preserved (got %v)", want, got.Labels)
+		}
+	}
+}
+
 // TestReadAll_SkipsCorruptLine proves the durability invariant (ready-187): a single
 // malformed/truncated line does NOT take the whole log down. ReadAll must skip the
 // bad line and keep replaying the good ones.

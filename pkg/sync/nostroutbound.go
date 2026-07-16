@@ -366,6 +366,12 @@ func appendPendingEvent(path string, e *nostr.Event) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// Serialize against a concurrent FlushNostrPending rewrite (ready review [6]).
+	unlock, err := lockPending(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

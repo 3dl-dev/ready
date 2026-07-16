@@ -6,22 +6,20 @@ import (
 	"github.com/3dl-dev/ready/pkg/rdconfig"
 )
 
-// TestNostrRelays_ResolveFromRDHomeConfig guards the BYOR path: relays a user
-// configured (at `rd init --relay` or by editing rd.json) must actually be loaded
-// and used by the read/write paths. Regression guard for the latent bug where
-// nostrReadRelays/nostrWriteRelays used a zero-value Config and only ever returned
-// the (now removed) hardcoded DefaultRelays(), silently ignoring rd.json.
-func TestNostrRelays_ResolveFromRDHomeConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("RD_HOME", home)
+// TestNostrRelays_ResolveFromProjectConfig guards the BYOR path: relays a user
+// configured in THIS project's .ready/config.json must be loaded and used by the
+// read/write paths. Per-project (not global) so a --local project never inherits
+// another project's relays (ready review [0]).
+func TestNostrRelays_ResolveFromProjectConfig(t *testing.T) {
+	dir := setupNostrCmdTest(t) // isolated project + chdir + RD_HOME
 	t.Setenv("RD_NOSTR_RELAY_URL", "") // ensure the single-relay env override is off
 
-	cfg := &rdconfig.Config{RelayEndpoints: []rdconfig.RelayEndpoint{
+	cfg := &rdconfig.SyncConfig{RelayEndpoints: []rdconfig.RelayEndpoint{
 		{URL: "wss://rw.example.com", Read: true, Write: true},
 		{URL: "wss://read-only.example.com", Read: true, Write: false},
 	}}
-	if err := rdconfig.Save(home, cfg); err != nil {
-		t.Fatalf("save config: %v", err)
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("save sync config: %v", err)
 	}
 
 	w := nostrWriteRelays()
@@ -34,11 +32,10 @@ func TestNostrRelays_ResolveFromRDHomeConfig(t *testing.T) {
 	}
 }
 
-// TestNostrRelays_LocalOnlyWhenUnconfigured proves the ship default: with no relay
-// config on disk, both paths resolve to nothing (local-only) — no baked-in topology.
+// TestNostrRelays_LocalOnlyWhenUnconfigured proves the ship default: a project with
+// no relay config resolves to nothing (local-only) — no baked-in topology.
 func TestNostrRelays_LocalOnlyWhenUnconfigured(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("RD_HOME", home)
+	setupNostrCmdTest(t)
 	t.Setenv("RD_NOSTR_RELAY_URL", "")
 
 	if got := nostrWriteRelays(); len(got) != 0 {
@@ -52,8 +49,7 @@ func TestNostrRelays_LocalOnlyWhenUnconfigured(t *testing.T) {
 // TestNostrRelays_EnvOverrideWins proves RD_NOSTR_RELAY_URL still short-circuits
 // config resolution (the demo/single-relay override).
 func TestNostrRelays_EnvOverrideWins(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("RD_HOME", home)
+	setupNostrCmdTest(t)
 	t.Setenv("RD_NOSTR_RELAY_URL", "wss://override.example.com")
 
 	if got := nostrWriteRelays(); len(got) != 1 || got[0] != "wss://override.example.com" {

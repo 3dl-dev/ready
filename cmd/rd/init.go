@@ -110,21 +110,21 @@ func initNostr(cwd, name, description string, public bool, relays []string, loca
 	owner := k.PubKeyHex()
 	coord := rdSync.BoardCoord(owner, boardD)
 
-	// Pin the authoritative board coordinate + project name in .ready/config.json.
-	// Confidential by DEFAULT (ready-216): a new board seals its free text unless
-	// --public opts out. The owner's first write mints + self-grants the CEK/LTK.
+	// Resolve the relay choice (local-only vs BYOR) — per-project, so a --local
+	// project never inherits another project's relays.
+	eps := resolveRelayEndpoints(relays, local)
+
+	// Pin the authoritative board coordinate + project name + relays in
+	// .ready/config.json. Confidential by DEFAULT (ready-216): a new board seals its
+	// free text unless --public opts out. The owner's first write mints the CEK/LTK.
 	syncCfg := &rdconfig.SyncConfig{
-		ProjectName: name,
-		Board:       coord,
-		Public:      public,
+		ProjectName:    name,
+		Board:          coord,
+		Public:         public,
+		RelayEndpoints: eps,
 	}
 	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
 		return fmt.Errorf("writing .ready/config.json: %w", err)
-	}
-
-	// Resolve relay choice (local-only vs BYOR) and persist it under $RD_HOME.
-	if err := configureRelays(relays, local); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not persist relay config: %v\n", err)
 	}
 
 	// Build + append the signed 30301 board event to the authoritative log.
@@ -174,62 +174,40 @@ func initNostr(cwd, name, description string, public bool, relays []string, loca
 	return nil
 }
 
-// configureRelays resolves the relay choice for a fresh project and persists it
-// into rd.json under $RD_HOME. The ship default is LOCAL-ONLY — the binary bakes
-// in no relay topology. Resolution order:
+// resolveRelayEndpoints resolves the relay choice for a fresh project into the
+// endpoints to store in THIS project's .ready/config.json. The ship default is
+// LOCAL-ONLY — the binary bakes in no relay topology. Resolution order:
 //   - --relay <url> (repeatable): use exactly those (BYOR), skip the prompt.
 //   - --local: explicit local-only, skip the prompt.
 //   - interactive terminal, neither flag: prompt for relay URL(s), Enter = local.
 //   - non-interactive, neither flag: local-only (never blocks a scripted init).
-//
-// It never clobbers a relay config already present in rd.json.
-func configureRelays(relays []string, local bool) error {
-	home := RDHome()
-	cfg, err := rdconfig.Load(home)
-	if err != nil {
-		cfg = &rdconfig.Config{}
-	}
-	if len(cfg.RelayEndpoints) > 0 {
-		return nil // already configured — do not clobber
-	}
-
-	// Prompt only when interactive, not in --json mode, and no explicit choice
-	// was given. JSON mode is non-interactive by contract — prompting there would
-	// also corrupt the JSON on stdout.
+func resolveRelayEndpoints(relays []string, local bool) []rdconfig.RelayEndpoint {
+	// Prompt only when interactive, not in --json mode, and no explicit choice was
+	// given. JSON mode is non-interactive by contract — prompting there would also
+	// corrupt the JSON on stdout.
 	if len(relays) == 0 && !local && !jsonOutput && isInteractive() {
 		relays = promptRelays()
 	}
 
-	if len(relays) == 0 {
-		if !jsonOutput {
-			fmt.Println("  relays: none (local-only). the signed log is the source of truth;")
-			fmt.Println("          add relays anytime with --relay on init or by editing rd.json.")
-		}
-		return nil // local-only: write no relay endpoints
-	}
-
 	eps := make([]rdconfig.RelayEndpoint, 0, len(relays))
 	for _, u := range relays {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
+		if u = strings.TrimSpace(u); u != "" {
+			eps = append(eps, rdconfig.RelayEndpoint{URL: u, Read: true, Write: true})
 		}
-		eps = append(eps, rdconfig.RelayEndpoint{URL: u, Read: true, Write: true})
 	}
-	if len(eps) == 0 {
-		return nil
-	}
-	cfg.RelayEndpoints = eps
-	if err := rdconfig.Save(home, cfg); err != nil {
-		return err
-	}
+
 	if !jsonOutput {
-		fmt.Printf("  relays: %d configured (read+write)\n", len(eps))
-		for _, e := range eps {
-			fmt.Printf("          %s\n", e.URL)
+		if len(eps) == 0 {
+			fmt.Println("  relays: none (local-only). the signed log is the source of truth;")
+			fmt.Println("          add relays anytime by editing .ready/config.json.")
+		} else {
+			fmt.Printf("  relays: %d configured (read+write)\n", len(eps))
+			for _, e := range eps {
+				fmt.Printf("          %s\n", e.URL)
+			}
 		}
 	}
-	return nil
+	return eps
 }
 
 // isInteractive reports whether stdin is a terminal, so a scripted/agent 'rd
