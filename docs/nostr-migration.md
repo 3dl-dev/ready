@@ -87,8 +87,12 @@ item-for-item parity on: count, status, priority, type, deps, gate, history leng
 close-reasons, and provenance. Exits non-zero on any mismatch (a lost or silently
 altered item). Ground-source: it reads the **real** live item set — never fabricated.
 
-Ground-source demo: `scripts/nostr-migration-parity-demo.sh`
-(captured run: `docs/nostr-migration-parity-demo.out`). On the live 1565-item set:
+Historical proof of the one-time cutover, captured run:
+`docs/nostr-migration-parity-demo.out`. The re-runnable demo script was retired
+after the cutover completed — its live-relay step (ready-c86) permanently
+NIP-33-poisoned real `ready-XXX` ids on the shared strfry relays, and its offline
+mode depended on the legacy campfire fixture dirs that this cleanup removed. On the
+live 1565-item set the captured run showed:
 
 ```
 STEP 1  FULL local-authoritative parity: source=1565 projected=1565 matched=1565 mismatched=0

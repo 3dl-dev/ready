@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/3dl-dev/ready/pkg/playbook"
-	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // TestPlaybookCreateList_RoundTrip drives the real playbook create/list cobra
@@ -100,10 +102,16 @@ func TestEngage_InstantiatesItemsAndDepEdges(t *testing.T) {
 		t.Fatalf("Add template: %v", err)
 	}
 
-	if err := engageCmd.Flags().Set("var", "svc=api"); err != nil {
+	// --var is a StringArray whose Set() APPENDS. The old reset
+	// (Set("var", "")) appended an empty element that poisoned the next run
+	// with `invalid --var ""` under `go test -count` / parallel load, because
+	// engageCmd is a package-level singleton. Reset via SliceValue.Replace so
+	// the flag is deterministic across repeated runs.
+	varFlag := engageCmd.Flags().Lookup("var").Value.(pflag.SliceValue)
+	if err := varFlag.Replace([]string{"svc=api"}); err != nil {
 		t.Fatalf("set --var: %v", err)
 	}
-	t.Cleanup(func() { _ = engageCmd.Flags().Set("var", "") })
+	t.Cleanup(func() { _ = varFlag.Replace(nil) })
 
 	if err := engageCmd.RunE(engageCmd, []string{"deploy"}); err != nil {
 		t.Fatalf("engage RunE: %v", err)

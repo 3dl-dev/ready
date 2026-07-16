@@ -27,6 +27,7 @@ func projectRoot() (campfireID string, projectDir string, ok bool) {
 		if err == nil {
 			id := strings.TrimSpace(string(data))
 			if len(id) == 64 {
+				guardResolvedProjectDir(dir)
 				return id, dir, true
 			}
 		}

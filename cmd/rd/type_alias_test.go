@@ -31,6 +31,11 @@ import (
 // This test exercises createCmd.RunE directly (not a standalone mirror) per
 // done condition: "Test executing the actual cobra command".
 func TestCreate_TypeBugAlias_RewritesToTaskAndLabel(t *testing.T) {
+	// ready-b3b: this test drives createCmd.RunE all the way to the store, so it
+	// MUST run isolated — without this, walk-up resolves the real project and the
+	// create leaks a junk "Test bug item" into production state.
+	isolateTempDir(t)
+
 	// Set --type bug + --priority p1 on the real createCmd.
 	if err := createCmd.Flags().Set("type", "bug"); err != nil {
 		t.Fatalf("setting --type: %v", err)

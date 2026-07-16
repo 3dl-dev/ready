@@ -196,7 +196,7 @@ main() {
   info "Next steps:"
   printf "\n"
   printf "  rd init --name myproject       # initialize a project\n"
-  printf "  rd create --title \"First task\" # create an item\n"
+  printf "  rd create --title \"First task\" --type task --priority p1  # create an item\n"
   printf "  rd ready                       # what needs attention?\n"
   printf "\n"
   printf "  Docs: https://ready.3dl.dev\n"

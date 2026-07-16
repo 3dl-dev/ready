@@ -163,6 +163,17 @@ func cfHomeWalkUp() string {
 //	    adversary A7)
 //	(4) default: $XDG_CONFIG_HOME/rd, else ~/.config/rd (XDG)
 func RDHome() string {
+	dir := resolveRDHome()
+	// ready-bf8: a test that resolves RDHome() outside its temp sandbox is about
+	// to read/write the REAL nostr identity + config under ~/.config/rd (the
+	// case-4 default is independent of cwd, so isolateTempDir's chdir alone does
+	// NOT cover it). The guard is nil in production, so this is a no-op there.
+	guardResolvedRDHome(dir)
+	return dir
+}
+
+// resolveRDHome is the pure resolution cascade for RDHome (see RDHome's doc).
+func resolveRDHome() string {
 	if rdHomeFlag != "" {
 		return rdHomeFlag
 	}
@@ -181,6 +192,20 @@ func RDHome() string {
 		os.Exit(1)
 	}
 	return filepath.Join(home, ".config", "rd")
+}
+
+// rdHomeGuard is a test-only hook, the RDHome() analogue of projectDirGuard.
+// TestMain installs it so a test that resolves the rd home outside its temp
+// sandbox fails loudly instead of silently touching the real ~/.config/rd
+// identity/config (the ready-bf8 leak). Always nil in production.
+var rdHomeGuard func(dir string)
+
+// guardResolvedRDHome hands a resolved rd home to the test guard, if installed.
+// No-op in production.
+func guardResolvedRDHome(dir string) {
+	if rdHomeGuard != nil {
+		rdHomeGuard(dir)
+	}
 }
 
 // rdHomeWalkUp walks up from the current working directory looking for a ".rd/"
@@ -209,6 +234,24 @@ func rdHomeWalkUp() string {
 	return ""
 }
 
+// projectDirGuard is a test-only hook. When non-nil it is called with every real
+// project directory the walk-up resolvers (projectRoot, readyProjectDir) are
+// about to return. TestMain installs it so a test that resolves project state
+// outside its temp sandbox fails loudly instead of silently reading/writing the
+// real .ready/ + .campfire/ tree — the ready-b3b leak, where unisolated tests
+// running under .claude/worktrees/<agent>/ walked up into the production project
+// and minted junk items. It is always nil in production builds (TestMain exists
+// only in the test binary), so the walk-up path is unchanged outside `go test`.
+var projectDirGuard func(dir string)
+
+// guardResolvedProjectDir hands a resolved project directory to the test guard,
+// if one is installed. No-op in production.
+func guardResolvedProjectDir(dir string) {
+	if projectDirGuard != nil {
+		projectDirGuard(dir)
+	}
+}
+
 // readyProjectDir walks up from cwd looking for a .ready/ directory.
 // Returns (projectDir, true) if found. This covers both campfire-backed
 // projects (which have .campfire/root AND .ready/) and JSONL-only projects
@@ -230,6 +273,7 @@ func readyProjectDir() (string, bool) {
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".ready")); err == nil {
+			guardResolvedProjectDir(dir)
 			return dir, true
 		}
 		parent := filepath.Dir(dir)

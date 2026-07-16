@@ -84,15 +84,19 @@ var TerminalStatuses = map[string]bool{
 	StatusFailed:    true,
 }
 
-// Item is the derived state of a work item. All fields are derived from
-// campfire messages; the campfire message log is the source of truth.
+// Item is the derived state of a work item. All fields are derived from the
+// project's signed event log; that log is the source of truth.
 type Item struct {
 	// ID is the work item ID (project-prefixed, e.g. "ready-a1b").
 	ID string `json:"id"`
-	// MsgID is the campfire message ID of the work:create message.
+	// MsgID is the event ID of the work:create event — the antecedent target
+	// that subsequent operations (claim, status, close) reference. On a
+	// nostr-native project this is the nostr event id.
 	MsgID string `json:"msg_id"`
-	// CampfireID is the campfire this item lives in.
-	CampfireID string `json:"campfire_id"`
+	// CampfireID is set only for legacy campfire-era items. A nostr-native item
+	// never carries one, so it is omitempty — the shipped nostr JSON surface
+	// must not leak a "campfire_id" field (zero-campfire invariant, ready-327).
+	CampfireID string `json:"campfire_id,omitempty"`
 
 	Title       string `json:"title"`
 	Context     string `json:"context,omitempty"`

@@ -38,6 +38,10 @@ type FlushResult struct {
 	Rejected int
 	// RejectReasons holds the relay message for each dead-lettered event.
 	RejectReasons []string
+	// Corrupt is how many buffer lines could not be parsed as a nostr event and
+	// were quarantined to nostr-corrupt.jsonl (ready-e52) rather than aborting the
+	// flush. The underlying events remain durable in the authoritative log.
+	Corrupt int
 	// RelayErrors holds per-relay publish (transport) errors encountered.
 	RelayErrors []string
 	// WriteErrors holds LOCAL filesystem errors from dead-lettering (e.g. writing
@@ -56,12 +60,38 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 		timeout = nostr.DefaultTimeout
 	}
 
-	events, err := readPendingEvents(pendingPath)
+	events, corrupt, err := readPendingEvents(pendingPath)
 	if err != nil {
 		return res, err
 	}
+
+	// Quarantine unparseable lines first so they cannot wedge the queue
+	// (ready-e52). They can never be published; move them to nostr-corrupt.jsonl
+	// and let the buffer rewrite (event-based) drop them. On quarantine WRITE
+	// failure we still drop the line — keeping an unpublishable line in the retry
+	// buffer would re-introduce the head-of-line block, and the underlying event
+	// is already durable in the authoritative log regardless.
+	if len(corrupt) > 0 {
+		cp := corruptPathFor(pendingPath)
+		for _, raw := range corrupt {
+			if cerr := appendCorruptLine(cp, raw); cerr != nil {
+				res.WriteErrors = append(res.WriteErrors, fmt.Sprintf("quarantine corrupt line: %v", cerr))
+			}
+			res.Corrupt++
+		}
+		fmt.Fprintf(os.Stderr, "warning: sync: skipped %d unparseable line(s) in %s — quarantined to %s (already durable in the log)\n",
+			res.Corrupt, NostrPendingFile, NostrCorruptFile)
+	}
+
 	res.Total = len(events)
 	if len(events) == 0 {
+		// Still must rewrite the buffer if we quarantined lines, so the corrupt
+		// lines don't linger and re-quarantine on every flush.
+		if len(corrupt) > 0 {
+			if rerr := rewritePendingEvents(pendingPath, nil); rerr != nil {
+				return res, rerr
+			}
+		}
 		return res, nil
 	}
 
@@ -109,16 +139,20 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	return res, nil
 }
 
-func readPendingEvents(path string) ([]*nostr.Event, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
+// readPendingEvents parses the pending buffer. A line that cannot be unmarshaled
+// into a nostr event is NOT fatal (ready-e52): it is skipped and returned as a
+// raw corrupt line so the caller can quarantine it, instead of aborting the whole
+// flush and wedging every valid event queued behind it. Only I/O and scan errors
+// (e.g. a line exceeding the buffer cap) are returned as err.
+func readPendingEvents(path string) (events []*nostr.Event, corrupt [][]byte, err error) {
+	f, oerr := os.Open(path)
+	if os.IsNotExist(oerr) {
+		return nil, nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("sync: open pending: %w", err)
+	if oerr != nil {
+		return nil, nil, fmt.Errorf("sync: open pending: %w", oerr)
 	}
 	defer f.Close()
-	var out []*nostr.Event
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -127,16 +161,19 @@ func readPendingEvents(path string) ([]*nostr.Event, error) {
 			continue
 		}
 		var e nostr.Event
-		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("sync: parse pending: %w", err)
+		if uerr := json.Unmarshal(line, &e); uerr != nil {
+			// Unparseable — can never be published. Copy it (sc.Bytes() is
+			// reused on the next Scan) and hand it back for quarantine.
+			corrupt = append(corrupt, append([]byte{}, line...))
+			continue
 		}
 		ev := e
-		out = append(out, &ev)
+		events = append(events, &ev)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("sync: scan pending: %w", err)
+	if serr := sc.Err(); serr != nil {
+		return nil, nil, fmt.Errorf("sync: scan pending: %w", serr)
 	}
-	return out, nil
+	return events, corrupt, nil
 }
 
 // rewritePendingEvents atomically replaces the buffer with the given events. An

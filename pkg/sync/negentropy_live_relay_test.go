@@ -129,7 +129,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	if !res.Buffered {
 		t.Fatal("expected events to be buffered when the only relay is unreachable")
 	}
-	buffered, _ := readPendingEvents(pendingPath)
+	buffered, _, _ := readPendingEvents(pendingPath)
 	if len(buffered) == 0 {
 		t.Fatal("pending buffer should be non-empty offline")
 	}
