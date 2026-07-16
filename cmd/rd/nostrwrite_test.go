@@ -577,7 +577,7 @@ func sliceContains(s []string, v string) bool {
 // resolves items from the nostr projection by DEFAULT. A create publishes to the
 // nostr log only (never JSONL/store), so if the default read still went through
 // the campfire/JSONL backend, list would be empty. Reading it back via the shared
-// allItemsFromJSONLOrStore(openStore) path — exactly what `rd list` does — proves
+// allProjectItems(openStore) path — exactly what `rd list` does — proves
 // reads default to nostr. No .cf is provisioned.
 func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 	setupNostrNativeProject(t)
@@ -593,9 +593,9 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 		t.Fatalf("runCreateNostr: %v", err)
 	}
 
-	items, err := allItemsFromJSONLOrStore()
+	items, err := allProjectItems()
 	if err != nil {
-		t.Fatalf("allItemsFromJSONLOrStore: %v", err)
+		t.Fatalf("allProjectItems: %v", err)
 	}
 	var found *state.Item
 	for _, it := range items {
@@ -611,13 +611,13 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 		t.Fatalf("read title = %q; want %q", found.Title, "Read me back")
 	}
 
-	// byIDFromJSONLOrStore (the `rd show` path) must resolve from nostr too.
-	byID, err := byIDFromJSONLOrStore(id)
+	// itemByID (the `rd show` path) must resolve from nostr too.
+	byID, err := itemByID(id)
 	if err != nil {
-		t.Fatalf("byIDFromJSONLOrStore: %v", err)
+		t.Fatalf("itemByID: %v", err)
 	}
 	if byID == nil || byID.ID != id {
-		t.Fatalf("byIDFromJSONLOrStore(%s) = %+v; want the projected item", id, byID)
+		t.Fatalf("itemByID(%s) = %+v; want the projected item", id, byID)
 	}
 
 	assertNoDotCf(t)

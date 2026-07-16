@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -240,41 +238,11 @@ func TestList_NoHexInOutputWhenProjectNameConfigured(t *testing.T) {
 	defer func() { jsonOutput = origJSON }()
 	jsonOutput = false
 
-	tmpDir, err := os.MkdirTemp("", "test-list-nohex")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	hexID := strings.Repeat("cd", 32) // 64-char hex id
-
-	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
-
-	// Write .ready/config.json with project_name.
-	readyDir := filepath.Join(tmpDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0700); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(readyDir, "config.json"), []byte(`{"project_name":"listproject"}`), 0600); err != nil {
-		t.Fatalf("WriteFile config.json: %v", err)
-	}
-
-	// Write mutations.jsonl with one work item whose campfire_id is the hex.
-	createPayload := `{"id":"ready-list1","title":"List Test Item","type":"task","for":"agent@test","priority":"p2"}`
-	mutation := `{"msg_id":"test-msg-list1","campfire_id":"` + hexID + `","timestamp":1000000000000000001,"operation":"work:create","payload":` + createPayload + `,"tags":["work:create"],"sender":"testsender"}`
-	if err := os.WriteFile(filepath.Join(readyDir, "mutations.jsonl"), []byte(mutation+"\n"), 0600); err != nil {
-		t.Fatalf("WriteFile mutations.jsonl: %v", err)
-	}
-
-	// Chdir to tmpDir so readyProjectDir() and projectRoot() find our setup.
-	origCwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-	defer os.Chdir(origCwd)
+	// A nostr-native project (owner pubkey is a 64-char hex) with one item — the
+	// board owner hex must never leak into the human list output.
+	setupNostrProjectWithItems(t, "listproject", []*state.Item{
+		{ID: "ready-list1", Title: "List Test Item", Type: "task", For: "agent@test", Priority: "p2"},
+	})
 
 	// Capture os.Stdout.
 	origStdout := os.Stdout
@@ -336,52 +304,17 @@ func isHexString(s string) bool {
 	return true
 }
 
-// setupMutationsDir creates a temp dir with a .ready/mutations.jsonl containing
-// the given items and wires CF_HOME / rdHome accordingly.
-// Returns tmpDir and a cleanup function.
+// setupMutationsDir creates a nostr-native project with the given items published
+// as signed cards, returning the project dir. Cleanup is handled by the shared
+// helper (t.Cleanup / t.TempDir).
 func setupMutationsDir(t *testing.T, items []struct{ id, title string }) (string, func()) {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "test-pipe-output")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+	its := make([]*state.Item, 0, len(items))
+	for _, item := range items {
+		its = append(its, &state.Item{ID: item.id, Title: item.title, Type: "task", For: "agent@test", Priority: "p2"})
 	}
-
-	hexID := strings.Repeat("ee", 32) // 64-char hex id
-
-	t.Setenv("RD_HOME", filepath.Join(tmpDir, ".rd-home"))
-
-	readyDir := filepath.Join(tmpDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0700); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(readyDir, "config.json"), []byte(`{"project_name":"pipeproject"}`), 0600); err != nil {
-		t.Fatalf("WriteFile config.json: %v", err)
-	}
-
-	// Write mutations for each item.
-	var mutations string
-	for i, item := range items {
-		payload := `{"id":"` + item.id + `","title":"` + item.title + `","type":"task","for":"agent@test","priority":"p2"}`
-		mutation := `{"msg_id":"test-msg-` + item.id + `","campfire_id":"` + hexID + `","timestamp":` + fmt.Sprintf("%d", 1000000000000000001+int64(i)) + `,"operation":"work:create","payload":` + payload + `,"tags":["work:create"],"sender":"testsender"}`
-		mutations += mutation + "\n"
-	}
-	if err := os.WriteFile(filepath.Join(readyDir, "mutations.jsonl"), []byte(mutations), 0600); err != nil {
-		t.Fatalf("WriteFile mutations.jsonl: %v", err)
-	}
-
-	origCwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-
-	cleanup := func() {
-		_ = os.Chdir(origCwd)
-		os.RemoveAll(tmpDir)
-	}
-	return tmpDir, cleanup
+	dir := setupNostrProjectWithItems(t, "pipeproject", its)
+	return dir, func() {}
 }
 
 // captureStdoutPipe replaces os.Stdout with a pipe, calls fn, then returns the output.
@@ -465,12 +398,12 @@ func TestList_PipedOutput_JSON_Unchanged(t *testing.T) {
 
 	origJSON := jsonOutput
 	defer func() { jsonOutput = origJSON }()
-	jsonOutput = true // --json mode
 
 	_, cleanup := setupMutationsDir(t, []struct{ id, title string }{
 		{"pipe-json-a1b", "JSON Item"},
 	})
 	defer cleanup()
+	jsonOutput = true // --json mode (after setup, which resets the global)
 
 	output := captureStdoutPipe(t, func() {
 		if err := listCmd.RunE(listCmd, []string{}); err != nil {

@@ -628,7 +628,7 @@ func publishEngagedItemsNostr(dir, forParty string, items []*playbook.ExpandedIt
 // publishImplicitUnblockNostrNative re-publishes the card of every item the
 // just-closed item was blocking, so the projection drops the now-stale dep edge —
 // deps parity across the native close path. Unlike publishImplicitUnblockNostr
-// (which resolves via byIDFromJSONLOrStore + a store), this resolves purely from
+// (which resolves via itemByID + a store), this resolves purely from
 // the nostr projection.
 func publishImplicitUnblockNostrNative(blockedIDs []string) {
 	if len(blockedIDs) == 0 {

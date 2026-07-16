@@ -77,13 +77,13 @@ var depTreeCmd = &cobra.Command{
 		itemID := args[0]
 
 		// Resolve root item.
-		root, err := byIDFromJSONLOrStore(itemID)
+		root, err := itemByID(itemID)
 		if err != nil {
 			return err
 		}
 
 		// Load all items from the nostr projection / local JSONL log for tree walking.
-		items, err := allItemsFromJSONLOrStore()
+		items, err := allProjectItems()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}

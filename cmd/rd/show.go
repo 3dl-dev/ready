@@ -31,10 +31,10 @@ Example:
 
 		// The read + audit authority is the nostr projection or local JSONL —
 		// never a campfire store. `rd show` (incl. --audit) provisions NO campfire
-		// store.db (ready-cb6 I7): byIDFromJSONLOrStore resolves from the nostr
+		// store.db (ready-cb6 I7): itemByID resolves from the nostr
 		// projection (nostr-native) or mutations.jsonl, and the audit path below
 		// resolves authority from the same signed sources.
-		item, err := byIDFromJSONLOrStore(itemID)
+		item, err := itemByID(itemID)
 		if err != nil {
 			cmd.SilenceUsage = true
 			return err

@@ -51,7 +51,7 @@ Example:
 		// best-effort, --offline skips) so the list reflects other machines.
 		autoReconcileBoardBestEffort(offline)
 
-		items, err := allItemsFromJSONLOrStore()
+		items, err := allProjectItems()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}

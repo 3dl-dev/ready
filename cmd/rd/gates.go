@@ -23,7 +23,7 @@ Convention spec §5: gates view — pending human escalations.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectFilter, _ := cmd.Flags().GetString("project")
 
-		items, err := allItemsFromJSONLOrStore()
+		items, err := allProjectItems()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}

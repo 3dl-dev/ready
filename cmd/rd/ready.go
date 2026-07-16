@@ -58,7 +58,7 @@ Example:
 				forFilter = selfHex
 			}
 
-			items, err := allItemsFromJSONLOrStore()
+			items, err := allProjectItems()
 			if err != nil {
 				return fmt.Errorf("loading items: %w", err)
 			}

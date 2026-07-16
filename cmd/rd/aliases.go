@@ -99,7 +99,7 @@ Example:
 
 		// Cascade: close open descendants (recursive subtree) first, leaves-up.
 		if cascade {
-			allItems, err := allItemsFromJSONLOrStore()
+			allItems, err := allProjectItems()
 			if err != nil {
 				return fmt.Errorf("loading items for cascade: %w", err)
 			}

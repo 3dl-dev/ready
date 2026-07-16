@@ -197,49 +197,21 @@ func readyProjectDir() (string, bool) {
 	return "", false
 }
 
-// jsonlPath returns the path to .ready/mutations.jsonl for the current project.
-// Returns an empty string if no project root is found (not initialized).
-func jsonlPath() string {
-	dir, ok := readyProjectDir()
+// allProjectItems returns all items, projected from the local nostr log (the
+// authoritative source). Empty on a project with no board.
+func allProjectItems() ([]*state.Item, error) {
+	items, _, err := nostrDualReadAll()
+	return items, err
+}
+
+// itemByID resolves a single item by ID from the nostr projection.
+func itemByID(itemID string) (*state.Item, error) {
+	it, ok, err := nostrDualReadByID(itemID)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return ""
+		return nil, resolve.ErrNotFound{ID: itemID}
 	}
-	return filepath.Join(dir, ".ready", "mutations.jsonl")
-}
-
-// allItemsFromJSONLOrStore returns all items from the nostr projection (default
-// on a nostr-native project, or when RD_NOSTR_READ=1) or the local JSONL log.
-//
-// CUTOVER (ready-cb6 I7): the campfire store read fallback and cross-campfire
-// blocking (a campfire-topology-only feature) have been deleted — a nostr board
-// is a single project, so there is no cross-store topology to resolve. The store
-// parameter is retained only so the write-path call sites (which still open a
-// store for the executor) need not change ahead of the write-path cutover; it is
-// unused for resolution.
-func allItemsFromJSONLOrStore() ([]*state.Item, error) {
-	// DUAL-READ (ready-d65): when RD_NOSTR_READ=1, or on a nostr-native project,
-	// resolve the item set from the nostr projection.
-	if items, ok, err := nostrDualReadAll(); ok {
-		return items, err
-	}
-	if path := jsonlPath(); path != "" {
-		// campfireID may be empty for JSONL-only projects; DeriveFromJSONL handles that.
-		campfireID, _, _ := projectRoot()
-		return resolve.AllItemsFromJSONL(path, campfireID)
-	}
-	return nil, nil
-}
-
-// byIDFromJSONLOrStore resolves an item by ID from the nostr projection or JSONL.
-func byIDFromJSONLOrStore(itemID string) (*state.Item, error) {
-	// DUAL-READ (ready-d65): resolve from the nostr projection when active.
-	if it, ok, err := nostrDualReadByID(itemID); ok {
-		return it, err
-	}
-	if path := jsonlPath(); path != "" {
-		// campfireID may be empty for JSONL-only projects.
-		campfireID, _, _ := projectRoot()
-		return resolve.ByIDFromJSONL(path, campfireID, itemID)
-	}
-	return nil, resolve.ErrNotFound{ID: itemID}
+	return it, nil
 }
