@@ -19,7 +19,8 @@ var depCmd = &cobra.Command{
 
   rd dep add <blocked-id> <blocker-id>    wire a dependency
   rd dep remove <blocked-id> <blocker-id> remove a dependency
-  rd dep tree <id>                        show dependency tree`,
+  rd dep tree <id>                        show downstream dependency tree
+  rd dep tree --up <id>                   show upstream blocker chain (see also: rd why)`,
 }
 
 // depAddCmd implements rd dep add <blocked-id> <blocker-id>.
@@ -75,6 +76,12 @@ var depTreeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
+
+		// --up walks UPSTREAM (blocked_by[]) — the chain of blockers that led to
+		// this item — instead of the default downstream (blocks + children) walk.
+		if up, _ := cmd.Flags().GetBool("up"); up {
+			return runUpTree(itemID)
+		}
 
 		// Resolve root item.
 		root, err := itemByID(itemID)
@@ -208,6 +215,7 @@ func printDepTree(item *state.Item, items map[string]*state.Item, prefix string,
 
 func init() {
 	depRemoveCmd.Flags().String("reason", "", "reason for removing the dependency")
+	depTreeCmd.Flags().Bool("up", false, "walk upstream (blocked_by) — show the chain of blockers that led to the item")
 	depCmd.AddCommand(depAddCmd)
 	depCmd.AddCommand(depRemoveCmd)
 	depCmd.AddCommand(depTreeCmd)

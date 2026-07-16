@@ -30,19 +30,38 @@ truth; relays are replaceable caches. These operations regenerate/push the relay
 write-allowlist and drain the offline publish buffer to the relays.`,
 }
 
-// logCmd groups operations on the local authoritative signed-event log: merging
-// another machine's committed log (the relay-free degrade floor), re-publishing an
-// item's current state, and the put-by-id primitive the two-machine sync demos drive.
+// logCmd is dual-purpose. As `rd log <item-id>` it renders an item's unified
+// timeline — status transitions (item.History) and progress notes (timestamped
+// blocks in item.Context) merged into one chronological view. Its subcommands
+// (merge-log, publish, put) are low-level authoritative-log escape hatches.
+//
+// The dispatch is unambiguous: an item ID never collides with a subcommand name,
+// so `rd log ready-abc` runs this RunE while `rd log merge-log …` dispatches down.
 var logCmd = &cobra.Command{
-	Use:    "log",
-	Hidden: true, // low-level log escape hatches (merge/publish/put) — automatic or debug-only
-	Short:  "Local authoritative-log operations (merge-log, publish, put)",
-	Long: `Operate directly on the local append-only signed-event log
-(.ready/nostr-log.jsonl) — the source of truth. Relays are replaceable caches.
+	Use:   "log <item-id>",
+	Short: "Show an item's unified timeline (status history + progress notes)",
+	Long: `Show a work item's unified timeline.
 
-merge-log merges another machine's committed log (relay-free convergence);
-publish re-emits an item's current state to the log + relays; put creates or
-updates an item by explicit id (used by the two-machine sync demos).`,
+Progress notes (appended by 'rd progress') and status transitions (claim, status
+changes, close) are stored separately — progress in the context field, transitions
+in the audit history. 'rd log <item-id>' merges both into ONE chronological view,
+answering "what happened to this item, in order".
+
+Example:
+  rd log ready-a1b
+  rd log ready-a1b --json
+
+Advanced subcommands operate directly on the local append-only signed-event log
+(.ready/nostr-log.jsonl): merge-log merges another machine's committed log
+(relay-free convergence); publish re-emits an item's current state; put creates or
+updates an item by explicit id.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		return renderTimeline(args[0])
+	},
 }
 
 func init() {

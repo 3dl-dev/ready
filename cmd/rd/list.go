@@ -17,7 +17,8 @@ var listCmd = &cobra.Command{
 	Long: `List work items across all projects.
 
 Filters (all optional, combinable):
-  --status    filter by status (repeatable, OR semantics)
+  --status     filter by status (repeatable, OR semantics)
+  --resolution filter by outcome of closed items (done, failed, cancelled)
   --for       filter by 'for' party
   --by        filter by 'by' party
   --project   filter by project
@@ -35,9 +36,11 @@ Example:
   rd list --by atlas/worker-3 --json         machine-readable
   rd list --priority p0 --priority p1        urgent items only
   rd list --label bug                        items tagged 'bug'
-  rd list --label bug --label security       items tagged both 'bug' AND 'security'`,
+  rd list --label bug --label security       items tagged both 'bug' AND 'security'
+  rd list --resolution failed                items we tried and that failed`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		statusFilters, _ := cmd.Flags().GetStringArray("status")
+		resolutionFilter, _ := cmd.Flags().GetString("resolution")
 		forFilter, _ := cmd.Flags().GetString("for")
 		byFilter, _ := cmd.Flags().GetString("by")
 		projectFilter, _ := cmd.Flags().GetString("project")
@@ -46,6 +49,19 @@ Example:
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 		all, _ := cmd.Flags().GetBool("all")
 		offline, _ := cmd.Flags().GetBool("offline")
+
+		// --resolution is a first-class outcome filter. A resolution IS the terminal
+		// status of a closed item, so it resolves to an explicit --status entry
+		// (which also lifts the default terminal-item exclusion). Answers "what did
+		// we try for X and how did it go" via `rd list --resolution failed`.
+		if resolutionFilter != "" {
+			canonical, err := validateResolution(resolutionFilter)
+			if err != nil {
+				cmd.SilenceUsage = true
+				return err
+			}
+			statusFilters = append(statusFilters, canonical)
+		}
 
 		// Reads auto-reconcile from the read relays first (no-op when local-only,
 		// best-effort, --offline skips) so the list reflects other machines.
@@ -147,6 +163,22 @@ func applyListFilters(items []*state.Item, statusFilters []string, forFilter, by
 	return filtered
 }
 
+// validateResolution validates a --resolution value and returns the canonical
+// terminal status it maps to. Accepts the three terminal resolutions
+// (done, failed, cancelled) plus the "completed" bd-compat alias for done.
+func validateResolution(resolution string) (string, error) {
+	switch resolution {
+	case state.StatusDone, "completed":
+		return state.StatusDone, nil
+	case state.StatusFailed:
+		return state.StatusFailed, nil
+	case state.StatusCancelled:
+		return state.StatusCancelled, nil
+	default:
+		return "", fmt.Errorf("invalid --resolution %q: must be one of done, failed, cancelled", resolution)
+	}
+}
+
 // printUnknownLabelHints writes a hint to stderr for each requested label atom
 // that is not present in the label registry. This is called only when the
 // label-filtered result is empty, to help users distinguish "valid label, no
@@ -170,6 +202,7 @@ func printUnknownLabelHints(atoms []string) {
 
 func init() {
 	listCmd.Flags().StringArray("status", nil, "filter by status (repeatable, OR semantics)")
+	listCmd.Flags().String("resolution", "", "filter by outcome of closed items: done, failed, or cancelled")
 	listCmd.Flags().String("for", "", "filter by 'for' party")
 	listCmd.Flags().String("by", "", "filter by 'by' party")
 	listCmd.Flags().String("project", "", "filter by project")
