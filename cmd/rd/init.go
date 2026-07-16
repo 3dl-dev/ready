@@ -77,6 +77,14 @@ func initNostr(cwd, name, description string, public bool) error {
 		return fmt.Errorf(".ready/ already exists — this project is already initialized")
 	}
 
+	// ready-b3b: init writes real project state (.ready/, config.json,
+	// nostr-log.jsonl) directly at cwd without going through the walk-up
+	// resolvers, so funnel cwd through the same sandbox guard. No-op in
+	// production; in tests it fails loudly if an unisolated init would mint a
+	// project tree outside the temp sandbox (the guard's protection would
+	// otherwise be bypassed on a nostr-native tree that carries no .campfire/root).
+	guardResolvedProjectDir(cwd)
+
 	boardD := projectPrefix(cwd)
 	if boardD == "" {
 		return fmt.Errorf("cannot derive a board identifier from directory %q (need a name of at least 2 alphanumeric characters)", filepath.Base(cwd))

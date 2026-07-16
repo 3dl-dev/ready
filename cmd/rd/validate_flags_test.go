@@ -331,6 +331,11 @@ func TestCreateCmd_InvalidType_ExitsBeforeStore(t *testing.T) {
 // which will fail for a different reason in the test environment — no identity).
 // This is the acceptance test: valid input must not be rejected by our validation.
 func TestCreateCmd_ValidType_ProceedsToStore(t *testing.T) {
+	// ready-b3b: this test drives createCmd.RunE past enum validation to the
+	// store, so it MUST run isolated — without this, walk-up resolves the real
+	// project and the create leaks a junk "Test item" into production state.
+	isolateTempDir(t)
+
 	if err := createCmd.Flags().Set("type", "task"); err != nil {
 		t.Fatalf("setting --type flag: %v", err)
 	}

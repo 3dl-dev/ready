@@ -209,6 +209,24 @@ func rdHomeWalkUp() string {
 	return ""
 }
 
+// projectDirGuard is a test-only hook. When non-nil it is called with every real
+// project directory the walk-up resolvers (projectRoot, readyProjectDir) are
+// about to return. TestMain installs it so a test that resolves project state
+// outside its temp sandbox fails loudly instead of silently reading/writing the
+// real .ready/ + .campfire/ tree — the ready-b3b leak, where unisolated tests
+// running under .claude/worktrees/<agent>/ walked up into the production project
+// and minted junk items. It is always nil in production builds (TestMain exists
+// only in the test binary), so the walk-up path is unchanged outside `go test`.
+var projectDirGuard func(dir string)
+
+// guardResolvedProjectDir hands a resolved project directory to the test guard,
+// if one is installed. No-op in production.
+func guardResolvedProjectDir(dir string) {
+	if projectDirGuard != nil {
+		projectDirGuard(dir)
+	}
+}
+
 // readyProjectDir walks up from cwd looking for a .ready/ directory.
 // Returns (projectDir, true) if found. This covers both campfire-backed
 // projects (which have .campfire/root AND .ready/) and JSONL-only projects
@@ -230,6 +248,7 @@ func readyProjectDir() (string, bool) {
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".ready")); err == nil {
+			guardResolvedProjectDir(dir)
 			return dir, true
 		}
 		parent := filepath.Dir(dir)
