@@ -164,11 +164,10 @@ func guardResolvedProjectDir(dir string) {
 }
 
 // readyProjectDir walks up from cwd looking for a .ready/ directory.
-// Returns (projectDir, true) if found. This covers both campfire-backed
-// projects (which have .campfire/root AND .ready/) and JSONL-only projects
-// (which have only .ready/).
+// Returns (projectDir, true) if found.
 func readyProjectDir() (string, bool) {
-	// First try via campfire root (campfire-backed projects).
+	// A legacy tree may still carry a .campfire/root marker beside .ready/;
+	// honor it for locating the project dir, then fall back to the .ready walk-up.
 	if _, dir, ok := projectRoot(); ok {
 		if _, err := os.Stat(filepath.Join(dir, ".ready")); err == nil {
 			return dir, true

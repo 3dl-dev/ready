@@ -14,9 +14,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// nostrEnabled reports whether the rd->nostr publish path is active. It is gated
-// off by default so the campfire baseline (and its tests) are unaffected; the
-// ground-source demo turns it on with RD_NOSTR=1.
+// nostrEnabled reports whether RD_NOSTR forces the nostr publish path on. It is
+// redundant on a normal (nostr-native) project, where publishing is always active;
+// the env var only forces it for a directory with no pinned board.
 func nostrEnabled() bool { return os.Getenv("RD_NOSTR") == "1" }
 
 // nostrWriteRelays returns the write-relay URLs, honoring an RD_NOSTR_RELAY_URL
@@ -711,17 +711,14 @@ var nostrMergeCmd = &cobra.Command{
 	},
 }
 
-// nostrReadEnabled reports whether DUAL-READ resolves rd items from the nostr
-// projection instead of the campfire/JSONL backend. It is OFF by default so
-// campfire stays the authoritative default backend (the operator's explicit
-// non-destructive scope for ready-d65): the live campfire-backed rd the
-// orchestrator runs is never affected. RD_NOSTR_READ=1 flips a SINGLE process to
-// read from the nostr log — the controlled, nostr-only verification context.
+// nostrReadEnabled reports whether RD_NOSTR_READ forces the nostr-projection read
+// path on. It is redundant on a normal project (reads already resolve from the
+// nostr projection); the env var only matters for a directory with no pinned
+// board, where it forces the projection read anyway.
 func nostrReadEnabled() bool { return os.Getenv("RD_NOSTR_READ") == "1" }
 
 // nostrProjectAllItems reads the local authoritative nostr log and returns the
-// projected item set (both as a slice and by id). This is the read side of
-// dual-read and the "projected" side of the parity proof: a pure replay of the
+// projected item set (both as a slice and by id): a pure replay of the
 // signed-event log through the same web-of-trust gate the reconcile path uses.
 func nostrProjectAllItems() ([]*state.Item, map[string]*state.Item, error) {
 	dir, ok := readyProjectDir()

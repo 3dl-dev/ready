@@ -19,27 +19,20 @@ import (
 // coordinate in .ready/config.json and keeps its work items as signed secp256k1
 // events in .ready/nostr-log.jsonl. On THIS path every mutation:
 //
-//   - signs with the secp256k1 OWNER key ($RD_HOME, pkg/nostr) — never a .cf
-//     ed25519 identity;
+//   - signs with the secp256k1 OWNER key ($RD_HOME, pkg/nostr);
 //   - resolves the target item from the nostr PROJECTION (the local authoritative
-//     log), never from the campfire store / mutations.jsonl;
+//     log);
 //   - treats the local-log append performed by the publish* helpers as the PRIMARY
 //     durable write (relay reachability is irrelevant — a relay failure buffers,
-//     never fails the mutation, but a LOG append failure IS fatal here);
-//   - never calls requireAgentAndStore / requireExecutor / protocol.Init, so no
-//     .cf/identity.json is ever created or read.
+//     never fails the mutation, but a LOG append failure IS fatal here).
 //
 // item.By is set to the secp256k1 SIGNING pubkey; audit ChangedBy is derived by
 // the projection from each status event's PubKey (also the secp256k1 signer) —
-// see pkg/sync/nostrproject.go. The campfire executor code stays PRESENT but
-// UNINVOKED on this path (I7/ready-cb6 deletes it); campfire-backed and --offline
-// JSONL-only projects keep their existing code paths untouched.
+// see pkg/sync/nostrproject.go.
 // ============================================================================
 
 // errNotNostrProject is returned by every write command when the current directory
-// is not a nostr-native ready project. After the campfire cutover (ready-cb6) the
-// nostr-native local signed-event log is the ONLY write path — there is no campfire
-// executor and no --offline JSONL writer to fall back to.
+// is not a ready project. The local signed-event log is the only write path.
 func errNotNostrProject() error {
 	return fmt.Errorf("not a ready project: run 'rd init --name <project>' to create one")
 }
@@ -60,11 +53,9 @@ func nostrNativeProject() (string, bool) {
 	return dir, true
 }
 
-// nostrWriteActive reports whether the rd->nostr publish helpers must run as the
-// PRIMARY durable write. True whenever RD_NOSTR is explicitly set (the legacy
-// best-effort mirror on a campfire project) OR the project is nostr-native (the
-// cutover default path). Only a campfire-backed / --offline project with RD_NOSTR
-// unset skips publishing — preserving pre-cutover behaviour for those paths.
+// nostrWriteActive reports whether the rd->nostr publish helpers run as the
+// PRIMARY durable write. True on any nostr-native project (a pinned board in
+// .ready/config.json), or when RD_NOSTR forces it for a board-less directory.
 func nostrWriteActive() bool {
 	if nostrEnabled() {
 		return true
@@ -73,16 +64,9 @@ func nostrWriteActive() bool {
 	return native
 }
 
-// nostrReadActive reports whether the DUAL-READ surface (list/ready/show) must
-// resolve items from the nostr projection instead of the campfire/JSONL backend.
-// It is the read-side mirror of nostrWriteActive (ready-6ef S-read): true whenever
-// RD_NOSTR_READ is explicitly set (the legacy single-process verification context)
-// OR the project is nostr-native (the cutover DEFAULT path — a pinned board in
-// .ready/config.json). Campfire-backed and --offline JSONL-only projects with
-// RD_NOSTR_READ unset keep reading their existing backend, so the campfire
-// executor/read path stays selectable (present-but-uninvoked on the default path)
-// until I7 deletes it. This makes `rd list/ready/show` read the nostr projection
-// by DEFAULT on an `rd init` project with NO env set — DONE#3 of the cutover.
+// nostrReadActive reports whether list/ready/show resolve items from the nostr
+// projection. True on any nostr-native project (a pinned board), or when
+// RD_NOSTR_READ forces it for a board-less directory.
 func nostrReadActive() bool {
 	if nostrReadEnabled() {
 		return true
