@@ -33,7 +33,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          # Track go.mod's required version. setup-go@v6 sets GOTOOLCHAIN=local,
+          # so a pinned older version (was '1.24') no longer auto-upgrades to
+          # satisfy `go 1.25.0` in go.mod and the build fails — read it from source.
+          go-version-file: go.mod
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
