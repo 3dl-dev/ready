@@ -162,8 +162,11 @@ explicit owner-signed kind-39301 role-grants, so the admitted set is **purely
 grant-derived** for our web-of-trust keys — no longer preserved-by-absence. The third
 entry, the `dontguess` exchange operator key `6c74c7bb`, is **another project's
 identity** sharing the relay: it is a documented **preserved/unmanaged** tenant, NOT
-granted into rd's role-grants (see the escalation on ready-5ae for whether to formally
-grant it a `contributor` role or leave it preserved). It is present in the committed
+granted into rd's role-grants. **Decision (ready-677): leave it preserved, do NOT
+role-grant it.** dontguess authors no `ready` work-items — it only shares the strfry
+relay infrastructure — so a `ready` `contributor`/`maintainer` grant would wrongly
+authorize it to mutate `ready`'s board state. A shared-infra tenant belongs in the
+no-lockout preserve set, not in `ready`'s web-of-trust. It is present in the committed
 file and on both live relays; `sync-allowlist` preserves it and never locks it out.
 
 This is the SAME trust set as rd's **client-side** gate: `rdconfig.Config`
