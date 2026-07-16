@@ -92,7 +92,11 @@ func TestRDHome_DefaultConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("home: %v", err)
 	}
-	if got := RDHome(); got != filepath.Join(home, ".config", "rd") {
+	// Assert the pure resolution cascade (resolveRDHome), not RDHome() — the
+	// latter is intentionally guarded (ready-bf8) to panic when a test resolves
+	// the real ~/.config/rd home. Here we are verifying the default path string,
+	// not touching the home, so the unguarded resolver is the right unit.
+	if got := resolveRDHome(); got != filepath.Join(home, ".config", "rd") {
 		t.Fatalf("default ~/.config/rd: got %q", got)
 	}
 }

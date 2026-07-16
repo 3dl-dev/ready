@@ -163,6 +163,17 @@ func cfHomeWalkUp() string {
 //	    adversary A7)
 //	(4) default: $XDG_CONFIG_HOME/rd, else ~/.config/rd (XDG)
 func RDHome() string {
+	dir := resolveRDHome()
+	// ready-bf8: a test that resolves RDHome() outside its temp sandbox is about
+	// to read/write the REAL nostr identity + config under ~/.config/rd (the
+	// case-4 default is independent of cwd, so isolateTempDir's chdir alone does
+	// NOT cover it). The guard is nil in production, so this is a no-op there.
+	guardResolvedRDHome(dir)
+	return dir
+}
+
+// resolveRDHome is the pure resolution cascade for RDHome (see RDHome's doc).
+func resolveRDHome() string {
 	if rdHomeFlag != "" {
 		return rdHomeFlag
 	}
@@ -181,6 +192,20 @@ func RDHome() string {
 		os.Exit(1)
 	}
 	return filepath.Join(home, ".config", "rd")
+}
+
+// rdHomeGuard is a test-only hook, the RDHome() analogue of projectDirGuard.
+// TestMain installs it so a test that resolves the rd home outside its temp
+// sandbox fails loudly instead of silently touching the real ~/.config/rd
+// identity/config (the ready-bf8 leak). Always nil in production.
+var rdHomeGuard func(dir string)
+
+// guardResolvedRDHome hands a resolved rd home to the test guard, if installed.
+// No-op in production.
+func guardResolvedRDHome(dir string) {
+	if rdHomeGuard != nil {
+		rdHomeGuard(dir)
+	}
 }
 
 // rdHomeWalkUp walks up from the current working directory looking for a ".rd/"

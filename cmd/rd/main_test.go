@@ -26,7 +26,23 @@ import (
 // because this TestMain is compiled only into the test binary.
 func TestMain(m *testing.M) {
 	projectDirGuard = assertProjectDirSandboxed
+	rdHomeGuard = assertRDHomeSandboxed
 	os.Exit(m.Run())
+}
+
+// assertRDHomeSandboxed is the ready-bf8 analogue of assertProjectDirSandboxed:
+// it panics unless the resolved rd home lives inside the process temp root, so a
+// test that resolves RDHome() without isolating it (and would read/write the real
+// ~/.config/rd nostr identity + config) fails loudly instead of leaking.
+func assertRDHomeSandboxed(dir string) {
+	if projectDirWithinTemp(dir) {
+		return
+	}
+	panic(fmt.Sprintf(
+		"ready-bf8: test resolved rd home %q outside the temp sandbox %q — "+
+			"this test would read/write the REAL nostr identity + config (~/.config/rd). "+
+			"Isolate it with isolateTempDir(t) (which pins RD_HOME) before resolving RDHome().",
+		dir, os.TempDir()))
 }
 
 // assertProjectDirSandboxed panics unless dir lives inside the process temp root
