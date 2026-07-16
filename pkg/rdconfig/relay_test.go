@@ -6,31 +6,22 @@ import (
 )
 
 func TestDefaultRelays(t *testing.T) {
-	relays := DefaultRelays()
-	if len(relays) != 2 {
-		t.Fatalf("expected 2 default relays, got %d", len(relays))
-	}
-	for _, r := range relays {
-		if r.URL == "" {
-			t.Errorf("default relay has empty URL: %+v", r)
-		}
-		if !r.Read || !r.Write {
-			t.Errorf("default relay should be read+write for failover: %+v", r)
-		}
+	// Ship default is LOCAL-ONLY: no relay topology baked into the binary.
+	if got := DefaultRelays(); len(got) != 0 {
+		t.Fatalf("expected 0 default relays (local-only), got %d: %+v", len(got), got)
 	}
 }
 
-func TestConfigRelaysFallsBackToDefault(t *testing.T) {
+func TestConfigRelaysLocalOnlyByDefault(t *testing.T) {
 	c := &Config{}
-	got := c.Relays()
-	if len(got) != len(DefaultRelays()) {
-		t.Fatalf("empty config should fall back to defaults, got %d", len(got))
+	if got := c.Relays(); len(got) != 0 {
+		t.Fatalf("empty config should be local-only (no relays), got %d", len(got))
 	}
-	if len(c.WriteRelayURLs()) != 2 {
-		t.Errorf("expected 2 write relay URLs by default, got %v", c.WriteRelayURLs())
+	if got := c.WriteRelayURLs(); len(got) != 0 {
+		t.Errorf("expected no write relay URLs by default, got %v", got)
 	}
-	if len(c.ReadRelayURLs()) != 2 {
-		t.Errorf("expected 2 read relay URLs by default, got %v", c.ReadRelayURLs())
+	if got := c.ReadRelayURLs(); len(got) != 0 {
+		t.Errorf("expected no read relay URLs by default, got %v", got)
 	}
 }
 
@@ -61,8 +52,8 @@ func TestRelayEndpointsRoundTrip(t *testing.T) {
 	want := &Config{
 		Org: "acme",
 		RelayEndpoints: []RelayEndpoint{
-			{URL: "ws://192.168.2.40:7777", Read: true, Write: true},
-			{URL: "ws://192.168.2.41:7777", Read: true, Write: true},
+			{URL: "wss://relay-a.example.com", Read: true, Write: true},
+			{URL: "wss://relay-b.example.com", Read: true, Write: true},
 		},
 	}
 	if err := Save(dir, want); err != nil {

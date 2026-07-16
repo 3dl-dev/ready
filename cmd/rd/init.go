@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,6 +38,12 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 		name, _ := cmd.Flags().GetString("name")
 		description, _ := cmd.Flags().GetString("description")
 		public, _ := cmd.Flags().GetBool("public")
+		relays, _ := cmd.Flags().GetStringArray("relay")
+		local, _ := cmd.Flags().GetBool("local")
+
+		if len(relays) > 0 && local {
+			return fmt.Errorf("--local and --relay are mutually exclusive")
+		}
 
 		positionalName := ""
 		if len(args) > 0 {
@@ -51,7 +59,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		return initNostr(cwd, name, description, public)
+		return initNostr(cwd, name, description, public, relays, local)
 	},
 }
 
@@ -67,7 +75,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 // It writes NO .campfire/ and NO .cf/ — the default post-cutover path provisions
 // no campfire identity. boardD equals the project prefix so item ids (create.go)
 // and published cards bind to the same pinned board.
-func initNostr(cwd, name, description string, public bool) error {
+func initNostr(cwd, name, description string, public bool, relays []string, local bool) error {
 	// Reject double-init.
 	if _, _, ok := projectRoot(); ok {
 		return fmt.Errorf(".campfire/root already exists — this project is already initialized")
@@ -102,21 +110,21 @@ func initNostr(cwd, name, description string, public bool) error {
 	owner := k.PubKeyHex()
 	coord := rdSync.BoardCoord(owner, boardD)
 
-	// Pin the authoritative board coordinate + project name in .ready/config.json.
-	// Confidential by DEFAULT (ready-216): a new board seals its free text unless
-	// --public opts out. The owner's first write mints + self-grants the CEK/LTK.
+	// Resolve the relay choice (local-only vs BYOR) — per-project, so a --local
+	// project never inherits another project's relays.
+	eps := resolveRelayEndpoints(relays, local)
+
+	// Pin the authoritative board coordinate + project name + relays in
+	// .ready/config.json. Confidential by DEFAULT (ready-216): a new board seals its
+	// free text unless --public opts out. The owner's first write mints the CEK/LTK.
 	syncCfg := &rdconfig.SyncConfig{
-		ProjectName: name,
-		Board:       coord,
-		Public:      public,
+		ProjectName:    name,
+		Board:          coord,
+		Public:         public,
+		RelayEndpoints: eps,
 	}
 	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
 		return fmt.Errorf("writing .ready/config.json: %w", err)
-	}
-
-	// Ensure a relay config exists under $RD_HOME (defaults when unset).
-	if err := ensureRelayConfig(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not persist relay config: %v\n", err)
 	}
 
 	// Build + append the signed 30301 board event to the authoritative log.
@@ -166,25 +174,90 @@ func initNostr(cwd, name, description string, public bool) error {
 	return nil
 }
 
-// ensureRelayConfig persists the default nostr relay topology into rd.json under
-// $RD_HOME when no relay endpoints are configured yet, so a freshly initialized
-// project has an on-disk relay config. It never clobbers an existing config.
-func ensureRelayConfig() error {
-	home := RDHome()
-	cfg, err := rdconfig.Load(home)
+// resolveRelayEndpoints resolves the relay choice for a fresh project into the
+// endpoints to store in THIS project's .ready/config.json. The ship default is
+// LOCAL-ONLY — the binary bakes in no relay topology. Resolution order:
+//   - --relay <url> (repeatable): use exactly those (BYOR), skip the prompt.
+//   - --local: explicit local-only, skip the prompt.
+//   - interactive terminal, neither flag: prompt for relay URL(s), Enter = local.
+//   - non-interactive, neither flag: local-only (never blocks a scripted init).
+func resolveRelayEndpoints(relays []string, local bool) []rdconfig.RelayEndpoint {
+	// Prompt only when interactive, not in --json mode, and no explicit choice was
+	// given. JSON mode is non-interactive by contract — prompting there would also
+	// corrupt the JSON on stdout.
+	if len(relays) == 0 && !local && !jsonOutput && isInteractive() {
+		relays = promptRelays()
+	}
+
+	eps := make([]rdconfig.RelayEndpoint, 0, len(relays))
+	for _, u := range relays {
+		if u = strings.TrimSpace(u); u != "" {
+			eps = append(eps, rdconfig.RelayEndpoint{URL: u, Read: true, Write: true})
+		}
+	}
+
+	if !jsonOutput {
+		if len(eps) == 0 {
+			fmt.Println("  relays: none (local-only). the signed log is the source of truth;")
+			fmt.Println("          add relays anytime by editing .ready/config.json.")
+		} else {
+			fmt.Printf("  relays: %d configured (read+write)\n", len(eps))
+			for _, e := range eps {
+				fmt.Printf("          %s\n", e.URL)
+			}
+		}
+	}
+	return eps
+}
+
+// isInteractive reports whether stdin is a terminal, so a scripted/agent 'rd
+// init' never blocks on a prompt.
+func isInteractive() bool {
+	fi, err := os.Stdin.Stat()
 	if err != nil {
-		cfg = &rdconfig.Config{}
+		return false
 	}
-	if len(cfg.RelayEndpoints) > 0 {
-		return nil // already configured — do not clobber
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// promptRelays asks the user for comma/space-separated relay URL(s). An empty
+// line means local-only.
+func promptRelays() []string {
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Relays sync this project across machines and teammates (optional).")
+	fmt.Fprintln(os.Stderr, "The local signed log works standalone, so this is safe to skip.")
+	fmt.Fprint(os.Stderr, "Enter relay URL(s) [comma-separated], or press Enter for local-only: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return nil
 	}
-	cfg.RelayEndpoints = rdconfig.DefaultRelays()
-	return rdconfig.Save(home, cfg)
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	return splitRelayList(line)
+}
+
+// splitRelayList splits a relay list on commas and whitespace, dropping blanks.
+func splitRelayList(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func init() {
 	initCmd.Flags().String("name", "", "project name (default: current directory name)")
 	initCmd.Flags().String("description", "", "project description")
 	initCmd.Flags().Bool("public", false, "create a PUBLIC board (free text stays plaintext); confidential is the default")
+	initCmd.Flags().StringArray("relay", nil, "relay URL to sync through (repeatable); omit for local-only. BYOR — no relay is baked in")
+	initCmd.Flags().Bool("local", false, "local-only: configure no relays (skips the interactive prompt)")
 	rootCmd.AddCommand(initCmd)
 }

@@ -6,7 +6,7 @@
 #   (b) a random UNTRUSTED key attempts to publish -> REJECTED by the relay, with
 #       the relay's own OK,false block reason shown;
 #   (c) reads stay OPEN (an unauthenticated REQ still returns events).
-# Proven on relay-a (192.168.2.40) AND relay-b (192.168.2.41).
+# Proven on relay-a (relay-a.internal) AND relay-b (relay-b.internal).
 #
 # Enforcement is by the event's AUTHOR pubkey: strfry verifies the schnorr
 # signature before the writePolicy plugin runs, so an allowlisted pubkey field is
@@ -20,8 +20,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RELAY_A="${RELAY_A:-ws://192.168.2.40:7777}"
-RELAY_B="${RELAY_B:-ws://192.168.2.41:7777}"
+RELAY_A="${RELAY_A:-ws://relay-a.internal:7777}"
+RELAY_B="${RELAY_B:-ws://relay-b.internal:7777}"
 KEY_PATH="${KEY_PATH:-$HOME/.cf/nostr-identity.json}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/docs}"
 OUT="$OUT_DIR/relay-writepolicy-demo-output.txt"

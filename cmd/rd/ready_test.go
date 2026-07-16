@@ -68,12 +68,12 @@ func TestReady_PipedOutput_JSON_Unchanged(t *testing.T) {
 
 	origJSON := jsonOutput
 	defer func() { jsonOutput = origJSON }()
-	jsonOutput = true // --json mode
 
 	_, cleanup := setupMutationsDir(t, []struct{ id, title string }{
 		{"pipe-rjson-a1b", "Ready JSON Item"},
 	})
 	defer cleanup()
+	jsonOutput = true // --json mode (after setup, which resets the global)
 
 	if err := readyCmd.Flags().Set("for", ""); err != nil {
 		t.Fatalf("setting --for flag: %v", err)

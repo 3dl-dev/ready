@@ -17,7 +17,7 @@ Use --for to filter by the party the work is assigned to.`,
 		forFilter, _ := cmd.Flags().GetString("for")
 		projectFilter, _ := cmd.Flags().GetString("project")
 
-		items, err := allItemsFromJSONLOrStore()
+		items, err := allProjectItems()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}

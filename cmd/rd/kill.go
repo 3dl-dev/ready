@@ -8,8 +8,9 @@ import (
 )
 
 var killCmd = &cobra.Command{
-	Use:   "kill <pubkey>",
-	Short: "Revoke a grant-holder's role (nostr-native alias for 'rd revoke')",
+	Use:    "kill <pubkey>",
+	Hidden: true, // pure alias for 'rd revoke' — kept callable, off the primary surface
+	Short:  "Revoke a grant-holder's role (nostr-native alias for 'rd revoke')",
 	Long: `Revoke <pubkey>'s trust by publishing an owner-signed kind-39301 grant with
 role="revoked" on the pinned board, then regenerating the relay write-allowlist.
 The revocation is prospective (effective now): the key's past authoritative

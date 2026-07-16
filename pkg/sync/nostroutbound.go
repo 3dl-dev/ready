@@ -282,6 +282,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
 	}
+	reachedRelay := false
 	for _, e := range events {
 		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout)
 		ack := EventAck{EventID: e.ID, Kind: e.Kind}
@@ -296,6 +297,9 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 				ack.AnyRelay = true
 			}
 			ack.Acks = append(ack.Acks, ra)
+		}
+		if ack.AnyRelay {
+			reachedRelay = true
 		}
 
 		switch outcome {
@@ -338,6 +342,23 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 		}
 		res.Events = append(res.Events, ack)
 	}
+
+	// Auto-drain the offline backlog. If this publish proved relay connectivity,
+	// flush any events earlier offline writes buffered to nostr-pending.jsonl —
+	// so reconnecting and writing anything empties the queue on its own and no
+	// human ever runs a manual flush. Best-effort and gated on a non-empty buffer
+	// so it costs nothing on the common path; never fails the operation (the events
+	// are already durable in the local log). Re-publish is idempotent by event id.
+	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout)
+	}
+}
+
+// fileHasContent reports whether path exists and is non-empty, so the auto-drain
+// only dials relays when there is actually a backlog to flush.
+func fileHasContent(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Size() > 0
 }
 
 // appendPendingEvent appends a signed event to the nostr pending buffer (JSONL).
@@ -345,6 +366,12 @@ func appendPendingEvent(path string, e *nostr.Event) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// Serialize against a concurrent FlushNostrPending rewrite (ready review [6]).
+	unlock, err := lockPending(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

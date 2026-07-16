@@ -45,8 +45,13 @@ Example:
 		typeFilter, _ := cmd.Flags().GetString("type")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 		all, _ := cmd.Flags().GetBool("all")
+		offline, _ := cmd.Flags().GetBool("offline")
 
-		items, err := allItemsFromJSONLOrStore()
+		// Reads auto-reconcile from the read relays first (no-op when local-only,
+		// best-effort, --offline skips) so the list reflects other machines.
+		autoReconcileBoardBestEffort(offline)
+
+		items, err := allProjectItems()
 		if err != nil {
 			return fmt.Errorf("loading items: %w", err)
 		}
@@ -172,5 +177,6 @@ func init() {
 	listCmd.Flags().String("type", "", "filter by type")
 	listCmd.Flags().StringArray("label", nil, "filter by label atom (repeatable, AND semantics)")
 	listCmd.Flags().Bool("all", false, "include terminal items (done, cancelled, failed)")
+	listCmd.Flags().Bool("offline", false, "read local only — skip the automatic relay reconcile")
 	rootCmd.AddCommand(listCmd)
 }

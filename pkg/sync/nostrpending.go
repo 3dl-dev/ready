@@ -18,10 +18,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/3dl-dev/ready/pkg/jsonl"
 	"github.com/3dl-dev/ready/pkg/nostr"
 )
+
+// lockPending acquires an exclusive advisory lock serializing all access to the
+// pending buffer. It locks a SEPARATE, never-removed lock file (not the data file,
+// whose rewrite/os.Remove would otherwise break the flock across a new inode), so
+// a concurrent appendPendingEvent and FlushNostrPending in two rd processes
+// sharing one .ready dir cannot interleave and drop a just-buffered event. Returns
+// an unlock func the caller must defer.
+func lockPending(pendingPath string) (func(), error) {
+	lockPath := pendingPath + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := jsonl.LockFile(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = jsonl.UnlockFile(f)
+		_ = f.Close()
+	}, nil
+}
 
 // FlushResult summarises a pending-buffer flush.
 type FlushResult struct {
@@ -59,6 +86,14 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
 	}
+
+	// Serialize the read+publish+rewrite against concurrent appends so a buffered
+	// event added mid-flush is never clobbered by the rewrite (ready review [6]).
+	unlock, err := lockPending(pendingPath)
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
 
 	events, corrupt, err := readPendingEvents(pendingPath)
 	if err != nil {

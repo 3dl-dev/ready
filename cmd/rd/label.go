@@ -35,8 +35,9 @@ Commands:
 }
 
 var labelDefineCmd = &cobra.Command{
-	Use:   "define <name>",
-	Short: "Define a label in the project registry",
+	Use:    "define <name>",
+	Hidden: true, // legacy non-nostr path; use 'rd label propose' on the nostr-native backend
+	Short:  "Define a label in the project registry",
 	Long: `Define a label in the per-project label registry.
 
 Only grant-holders (operator level >= 2) can define labels.

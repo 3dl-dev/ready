@@ -19,10 +19,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -343,10 +341,10 @@ func TestShow_JSON_IncludesLabels(t *testing.T) {
 
 	origJSON := jsonOutput
 	defer func() { jsonOutput = origJSON }()
-	jsonOutput = true // --json mode
 
 	tmpDir, cleanup := setupShowMutationsWithLabels(t, "show-json-labels", "JSON Label Item", []string{"bug"})
 	defer cleanup()
+	jsonOutput = true // --json mode (after setup, which resets the global)
 
 	output, err := runShowCmd(t, tmpDir, "show-json-labels")
 	if err != nil {
@@ -385,10 +383,10 @@ func TestShow_JSON_OmitsLabelsWhenEmpty(t *testing.T) {
 
 	origJSON := jsonOutput
 	defer func() { jsonOutput = origJSON }()
-	jsonOutput = true // --json mode
 
 	tmpDir, cleanup := setupShowMutationsWithLabels(t, "show-json-nolabels", "JSON No Label Item", nil)
 	defer cleanup()
+	jsonOutput = true // --json mode (after setup, which resets the global)
 
 	output, err := runShowCmd(t, tmpDir, "show-json-nolabels")
 	if err != nil {
@@ -487,80 +485,15 @@ func captureStderr(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// setupShowMutationsWithLabels creates a temp directory with a mutations.jsonl
-// that includes an item with the given labels. Returns tmpDir and cleanup func.
-// The labels are embedded directly in the work:create payload so derive-time
-// processing will set item.Labels (seed atoms like "bug" and "security" are
-// pre-registered in the label registry via declarations.LoadSeedLabels).
+// setupShowMutationsWithLabels creates a nostr-native project with a single item
+// carrying the given labels (seed atoms like "bug"/"security" are registry-valid),
+// and returns the project dir. Cleanup is handled by the shared helper.
 func setupShowMutationsWithLabels(t *testing.T, itemID, title string, labels []string) (string, func()) {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "test-show-labels")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-
-	hexID := strings.Repeat("dd", 32) // 64-char hex campfire ID
-
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-
-	origRDHome := rdHome
-	rdHome = ""
-
-	// Write alias store.
-	aliasContent, _ := json.Marshal(map[string]string{"labelproject": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
-
-	readyDir := filepath.Join(tmpDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0700); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(readyDir, "config.json"), []byte(`{"project_name":"labelproject"}`), 0600); err != nil {
-		t.Fatalf("WriteFile config.json: %v", err)
-	}
-
-	// Build the work:create payload. Labels are stored as comma-separated scalar.
-	payloadMap := map[string]interface{}{
-		"id":       itemID,
-		"title":    title,
-		"type":     "task",
-		"for":      "baron@3dl.dev",
-		"priority": "p2",
-	}
-	if len(labels) > 0 {
-		payloadMap["labels"] = strings.Join(labels, ",")
-	}
-	payloadBytes, _ := json.Marshal(payloadMap)
-
-	mutation := fmt.Sprintf(`{"msg_id":"test-msg-%s","campfire_id":"%s","timestamp":1000000000000000001,"operation":"work:create","payload":%s,"tags":["work:create"],"sender":"testsender"}`,
-		itemID, hexID, string(payloadBytes))
-
-	if err := os.WriteFile(filepath.Join(readyDir, "mutations.jsonl"), []byte(mutation+"\n"), 0600); err != nil {
-		t.Fatalf("WriteFile mutations.jsonl: %v", err)
-	}
-
-	origCwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-
-	cleanup := func() {
-		_ = os.Chdir(origCwd)
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-		rdHome = origRDHome
-		os.RemoveAll(tmpDir)
-	}
-	return tmpDir, cleanup
+	dir := setupNostrProjectWithItems(t, "labelproject", []*state.Item{
+		{ID: itemID, Title: title, Type: "task", For: "baron@3dl.dev", Priority: "p2", Labels: labels},
+	})
+	return dir, func() {}
 }
 
 // runShowCmd runs showCmd.RunE with the given item ID and captures stdout.
@@ -646,87 +579,20 @@ func resetReadyLabelFlag(t *testing.T, atoms []string) func() {
 //	"lrf-no-label"      labels: (none)
 func setupMultiItemMutations(t *testing.T) (string, func()) {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "test-list-label-rune")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-
-	hexID := strings.Repeat("aa", 32)
-
-	origCFHome := os.Getenv("CF_HOME")
-	os.Setenv("CF_HOME", tmpDir)
-
-	origRDHome := rdHome
-	rdHome = ""
-
-	aliasContent, _ := json.Marshal(map[string]string{"labelrune": hexID})
-	if err := os.WriteFile(filepath.Join(tmpDir, "aliases.json"), aliasContent, 0600); err != nil {
-		t.Fatalf("WriteFile aliases.json: %v", err)
-	}
-
-	readyDir := filepath.Join(tmpDir, ".ready")
-	if err := os.MkdirAll(readyDir, 0700); err != nil {
-		t.Fatalf("MkdirAll .ready: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(readyDir, "config.json"),
-		[]byte(`{"project_name":"labelrune"}`), 0600); err != nil {
-		t.Fatalf("WriteFile config.json: %v", err)
-	}
-
-	type spec struct {
-		id     string
-		labels string
-	}
-	specs := []spec{
-		{"lrf-bug-only", "bug"},
-		{"lrf-security-only", "security"},
-		{"lrf-both", "bug,security"},
-		{"lrf-no-label", ""},
-	}
-
-	var mutations string
-	for i, s := range specs {
-		payload := map[string]interface{}{
-			"id":       s.id,
-			"title":    "Label RunE Test " + s.id,
-			"type":     "task",
-			"for":      "baron@3dl.dev",
-			"priority": "p2",
+	mk := func(id, labels string) *state.Item {
+		it := &state.Item{ID: id, Title: "Label RunE Test " + id, Type: "task", For: "baron@3dl.dev", Priority: "p2"}
+		if labels != "" {
+			it.Labels = strings.Split(labels, ",")
 		}
-		if s.labels != "" {
-			payload["labels"] = s.labels
-		}
-		pb, _ := json.Marshal(payload)
-		ts := fmt.Sprintf("%d", 1000000000000000001+int64(i))
-		mutations += fmt.Sprintf(
-			`{"msg_id":"test-msg-%s","campfire_id":"%s","timestamp":%s,"operation":"work:create","payload":%s,"tags":["work:create"],"sender":"testsender"}`+"\n",
-			s.id, hexID, ts, string(pb),
-		)
+		return it
 	}
-	if err := os.WriteFile(filepath.Join(readyDir, "mutations.jsonl"), []byte(mutations), 0600); err != nil {
-		t.Fatalf("WriteFile mutations.jsonl: %v", err)
-	}
-
-	origCwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-
-	cleanup := func() {
-		_ = os.Chdir(origCwd)
-		if origCFHome != "" {
-			os.Setenv("CF_HOME", origCFHome)
-		} else {
-			os.Unsetenv("CF_HOME")
-		}
-		rdHome = origRDHome
-		os.RemoveAll(tmpDir)
-	}
-	return tmpDir, cleanup
+	dir := setupNostrProjectWithItems(t, "labelrune", []*state.Item{
+		mk("lrf-bug-only", "bug"),
+		mk("lrf-security-only", "security"),
+		mk("lrf-both", "bug,security"),
+		mk("lrf-no-label", ""),
+	})
+	return dir, func() {}
 }
 
 // runListCmdCapture runs listCmd.RunE and returns captured stdout, stderr, and

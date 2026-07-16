@@ -44,7 +44,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 GO="${GO:-go}"
-RELAY="${RD_NOSTR_RELAY_URL:-ws://192.168.2.40:7777}"
+RELAY="${RD_NOSTR_RELAY_URL:-ws://relay-a.internal:7777}"
 
 pass() { printf '\033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$1"; exit 1; }

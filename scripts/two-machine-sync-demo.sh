@@ -4,10 +4,10 @@
 # Proves multi-machine rd sync across TWO REAL HOSTS through the LIVE self-hosted
 # strfry relays, with NO mocks and no two-processes-on-one-host shortcut:
 #
-#   machine-1 = this workshop VM        (192.168.2.34)
-#   machine-2 = rd-node VM              (192.168.2.42, provisioned by
+#   machine-1 = this workshop VM        (node-1.internal)
+#   machine-2 = rd-node VM              (node-2.internal, provisioned by
 #               mainframe/scripts/mk-rd-node.sh)
-#   relay-a   = ws://192.168.2.40:7777  relay-b = ws://192.168.2.41:7777
+#   relay-a   = ws://relay-a.internal:7777  relay-b = ws://relay-b.internal:7777
 #
 # Both machines share ONE portfolio identity (secp256k1 key), the intended
 # multi-machine model. The rd binary under test is built from THIS branch on BOTH
@@ -27,7 +27,7 @@
 #            git-committed nostr-log.jsonl and `rd log merge-log` — zero relay.
 #
 # Endpoints come from pkg/rdconfig defaults; override via env below. Idempotent:
-# re-runnable (fresh item ids per run). Requires ssh baron@192.168.2.42 (workshop
+# re-runnable (fresh item ids per run). Requires ssh baron@node-2.internal (workshop
 # key authorized by mk-rd-node.sh) and sudo iptables on machine-2 (cloud-init
 # default sudo).
 #
@@ -35,10 +35,10 @@
 set -uo pipefail
 
 # ---- Config (overridable via env) -------------------------------------------
-M2_HOST="${M2_HOST:-192.168.2.42}"
+M2_HOST="${M2_HOST:-node-2.internal}"
 M2_USER="${M2_USER:-baron}"
-RELAY_A="${RELAY_A:-192.168.2.40}"
-RELAY_B="${RELAY_B:-192.168.2.41}"
+RELAY_A="${RELAY_A:-relay-a.internal}"
+RELAY_B="${RELAY_B:-relay-b.internal}"
 RELAY_A_URL="ws://${RELAY_A}:7777"
 RELAY_B_URL="ws://${RELAY_B}:7777"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=8"

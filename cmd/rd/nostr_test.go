@@ -23,20 +23,16 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 	"github.com/3dl-dev/ready/pkg/state"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 // unreachableRelayURL is a loopback address nothing listens on. nostr.Publish's
@@ -63,23 +59,14 @@ func setupNostrCmdTest(t *testing.T) string {
 	t.Cleanup(func() { _ = os.Chdir(origCwd) })
 
 	base := t.TempDir()
-	cfHome := filepath.Join(base, ".cf")
-	if err := os.MkdirAll(cfHome, 0700); err != nil {
-		t.Fatalf("mkdir .cf: %v", err)
-	}
 	projectDir := filepath.Join(base, "project")
 	if err := os.MkdirAll(filepath.Join(projectDir, ".ready"), 0700); err != nil {
 		t.Fatalf("mkdir .ready: %v", err)
 	}
 
-	origRdHome := rdHome
-	rdHome = cfHome
-	t.Cleanup(func() { rdHome = origRdHome })
-
-	// Isolate RDHome() (where nostrKey now reads/writes the nostr identity) to a
+	// Isolate RDHome() (where nostrKey reads/writes the nostr identity) to a
 	// per-test dir under $TMPDIR — outside any git work tree, so the key-path
-	// guard accepts it — distinct from cfHome. cfHome (the legacy .cf) starts
-	// empty, so no migration fires and a fresh key is generated under RD_HOME.
+	// guard accepts it. A fresh key is generated under RD_HOME on first use.
 	rdHomeDir := filepath.Join(base, "rdhome")
 	if err := os.MkdirAll(rdHomeDir, 0o700); err != nil {
 		t.Fatalf("mkdir rdhome: %v", err)
@@ -104,6 +91,38 @@ func setupNostrCmdTest(t *testing.T) string {
 	return projectDir
 }
 
+// setupNostrProjectWithItems creates an isolated nostr-native project (Public
+// board so title/label tags project in the clear) named projectName and publishes
+// each item as a signed card, returning the project dir. This is the nostr-native
+// replacement for the retired mutations.jsonl test fixtures. Cleanup is handled by
+// setupNostrCmdTest via t.Cleanup / t.TempDir.
+func setupNostrProjectWithItems(t *testing.T, projectName string, items []*state.Item) string {
+	t.Helper()
+	dir := setupNostrCmdTest(t)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+	boardD := projectPrefix(dir)
+	if boardD == "" {
+		t.Fatalf("projectPrefix(%q) is empty; test dir must have a >=2-char name", dir)
+	}
+	coord := rdSync.BoardCoord(owner, boardD)
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: projectName, Board: coord, Public: true}); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+	for _, it := range items {
+		if it.Status == "" {
+			it.Status = state.StatusInbox
+		}
+		if err := publishItemFullCreateNostr(dir, owner, it); err != nil {
+			t.Fatalf("publish %s: %v", it.ID, err)
+		}
+	}
+	return dir
+}
+
 // tagVal returns the first value of the first tag named `name`, and whether it
 // was found. Mirrors pkg/sync's private tagValue for use from cmd/rd tests.
 func tagVal(tags [][]string, name string) (string, bool) {
@@ -126,57 +145,6 @@ func tagVals(tags [][]string, name string) []string {
 	return out
 }
 
-// mutationFixture is one work:create fixture item for writeCreateMutations.
-type mutationFixture struct {
-	id, title, forParty, priority, context string
-}
-
-// writeCreateMutations writes one work:create mutation per fixture into
-// <dir>/.ready/mutations.jsonl -- the exact on-disk shape pkg/state's JSONL
-// derive path (DeriveFromJSONLWithCampfire) expects, mirroring the format
-// already proven in list_test.go's setupMutationsDir. Every item lands with
-// status=inbox and history length 1 (the synthetic "created" entry Derive
-// always appends) -- the same shape `rd nostr migrate` faithfully reproduces.
-func writeCreateMutations(t *testing.T, dir string, items []mutationFixture) {
-	t.Helper()
-	campfireHex := strings.Repeat("ab", 32)
-	var buf strings.Builder
-	for i, it := range items {
-		payload := map[string]any{
-			"id":       it.id,
-			"title":    it.title,
-			"type":     "task",
-			"for":      it.forParty,
-			"priority": it.priority,
-		}
-		if it.context != "" {
-			payload["context"] = it.context
-		}
-		payloadBytes, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("marshal payload: %v", err)
-		}
-		rec := map[string]any{
-			"msg_id":      fmt.Sprintf("msg-%s", it.id),
-			"campfire_id": campfireHex,
-			"timestamp":   1700000000000000000 + int64(i)*1_000_000_000,
-			"operation":   "work:create",
-			"payload":     json.RawMessage(payloadBytes),
-			"tags":        []string{"work:create"},
-			"sender":      "testsender",
-		}
-		line, err := json.Marshal(rec)
-		if err != nil {
-			t.Fatalf("marshal mutation record: %v", err)
-		}
-		buf.Write(line)
-		buf.WriteByte('\n')
-	}
-	path := filepath.Join(dir, ".ready", "mutations.jsonl")
-	if err := os.WriteFile(path, []byte(buf.String()), 0600); err != nil {
-		t.Fatalf("write mutations.jsonl: %v", err)
-	}
-}
 
 // captureStderrPipe replaces os.Stderr with a pipe, calls fn, then returns the
 // captured output. Mirrors list_test.go's captureStdoutPipe for stderr.
@@ -317,183 +285,6 @@ func TestNostrHooks_LabelAdd_CardCarriesLabelTag(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// Group C -- `rd nostr migrate` + `rd nostr parity` CLI: exit codes + output
-// ===========================================================================
-
-// resetStringSliceFlag clears a StringSlice-typed flag back to empty AND resets
-// its "changed" bookkeeping. This is necessary because pflag's stringSliceValue
-// APPENDS on every Set() call once changed=true (see spf13/pflag/string_slice.go),
-// so Set(name, "") after a prior non-empty Set is a no-op, not a reset.
-func resetStringSliceFlag(t *testing.T, cmd *cobra.Command, name string) {
-	t.Helper()
-	f := cmd.Flags().Lookup(name)
-	if f == nil {
-		t.Fatalf("flag %q not found on %s", name, cmd.Name())
-	}
-	if sv, ok := f.Value.(pflag.SliceValue); ok {
-		if err := sv.Replace(nil); err != nil {
-			t.Fatalf("reset flag %q: %v", name, err)
-		}
-	}
-	f.Changed = false
-}
-
-func resetMigrateFlags(t *testing.T) {
-	t.Helper()
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	must(nostrMigrateCmd.Flags().Set("local-only", "false"))
-	must(nostrMigrateCmd.Flags().Set("limit", "0"))
-	resetStringSliceFlag(t, nostrMigrateCmd, "only")
-	must(nostrMigrateCmd.Flags().Set("all", "true"))
-}
-
-func resetParityFlags(t *testing.T) {
-	t.Helper()
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	must(nostrParityCmd.Flags().Set("verbose", "false"))
-	must(nostrParityCmd.Flags().Set("sample", "false"))
-}
-
-// runJSONNostrMigrate runs nostrMigrateCmd.RunE with --json and returns the
-// decoded result map plus the RunE error (callers assert on both).
-func runJSONNostrMigrate(t *testing.T) (map[string]any, error) {
-	t.Helper()
-	origJSON := jsonOutput
-	jsonOutput = true
-	defer func() { jsonOutput = origJSON }()
-	var runErr error
-	out := captureStdoutPipe(t, func() {
-		runErr = nostrMigrateCmd.RunE(nostrMigrateCmd, nil)
-	})
-	if runErr != nil {
-		return nil, runErr
-	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &result); err != nil {
-		t.Fatalf("unmarshal migrate output: %v\noutput:\n%s", err, out)
-	}
-	return result, nil
-}
-
-// runJSONNostrParity runs nostrParityCmd.RunE with --json and returns the
-// decoded ParityReport plus the RunE error (a non-nil error IS the CLI's
-// exit-code-1 contract: cobra's Execute() would os.Exit(1) on this same error).
-func runJSONNostrParity(t *testing.T) (rdSync.ParityReport, error) {
-	t.Helper()
-	origJSON := jsonOutput
-	jsonOutput = true
-	defer func() { jsonOutput = origJSON }()
-	var runErr error
-	out := captureStdoutPipe(t, func() {
-		runErr = nostrParityCmd.RunE(nostrParityCmd, nil)
-	})
-	var rep rdSync.ParityReport
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rep); err != nil {
-		t.Fatalf("unmarshal parity output: %v\noutput:\n%s", err, out)
-	}
-	return rep, runErr
-}
-
-// TestNostrMigrateAndParity_CLI_PassAndFail exercises the ready-d65/ready-187
-// CLI surface end to end:
-//  1. `rd nostr migrate --local-only --only <2 of 3>` migrates a deliberate subset.
-//  2. `rd nostr parity` WITHOUT --sample must FAIL (non-nil error, exit 1
-//     equivalent) and flag the un-migrated item as LOST -- an undercount can
-//     never be silently masked.
-//  3. `rd nostr parity --sample` on that SAME subset must PASS -- the operator
-//     explicitly asserted the subset was intentional.
-//  4. After completing the migration, `rd nostr parity` (no --sample) must PASS.
-func TestNostrMigrateAndParity_CLI_PassAndFail(t *testing.T) {
-	dir := setupNostrCmdTest(t)
-	_ = dir
-
-	writeCreateMutations(t, dir, []mutationFixture{
-		{id: "ready-mp01", title: "Migrate item one", forParty: "agent@test", priority: "p1"},
-		{id: "ready-mp02", title: "Migrate item two", forParty: "agent@test", priority: "p2"},
-		{id: "ready-mp03", title: "Migrate item three", forParty: "agent@test", priority: "p0"},
-	})
-
-	// --- 1. partial migration: only 2 of 3 items (forces an undercount) ---
-	resetMigrateFlags(t)
-	if err := nostrMigrateCmd.Flags().Set("local-only", "true"); err != nil {
-		t.Fatal(err)
-	}
-	if err := nostrMigrateCmd.Flags().Set("only", "ready-mp01,ready-mp02"); err != nil {
-		t.Fatal(err)
-	}
-	migrateResult, err := runJSONNostrMigrate(t)
-	if err != nil {
-		t.Fatalf("nostr migrate --only (partial): %v", err)
-	}
-	if got, want := migrateResult["migrated_items"], float64(2); got != want {
-		t.Errorf("migrated_items = %v, want %v (migrate output: %+v)", got, want, migrateResult)
-	}
-	resetMigrateFlags(t)
-
-	// --- 2. parity WITHOUT --sample must FAIL: ready-mp03 was never migrated ---
-	resetParityFlags(t)
-	rep, err := runJSONNostrParity(t)
-	if err == nil {
-		t.Error("nostr parity without --sample should return a non-nil error (CLI exit-1 equivalent) on an undercounted projection")
-	}
-	if rep.AllMatch() {
-		t.Error("parity report reported AllMatch=true despite the undercounted projection")
-	}
-	foundLost := false
-	for _, ip := range rep.Items {
-		if ip.ItemID == "ready-mp03" && !ip.Match() {
-			foundLost = true
-		}
-	}
-	if !foundLost {
-		t.Errorf("parity report did not flag ready-mp03 as LOST: %+v", rep.Items)
-	}
-
-	// --- 3. parity WITH --sample must PASS on the intentionally-migrated subset ---
-	if err := nostrParityCmd.Flags().Set("sample", "true"); err != nil {
-		t.Fatal(err)
-	}
-	sampleRep, err := runJSONNostrParity(t)
-	if err != nil {
-		t.Errorf("nostr parity --sample should return nil error on the intentional subset, got: %v (report=%+v)", err, sampleRep)
-	}
-	if !sampleRep.AllMatch() {
-		t.Errorf("nostr parity --sample should report AllMatch=true on the intentional subset, got %+v", sampleRep)
-	}
-	resetParityFlags(t)
-
-	// --- 4. complete the migration, then default parity (no --sample) must PASS ---
-	if err := nostrMigrateCmd.Flags().Set("local-only", "true"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runJSONNostrMigrate(t); err != nil {
-		t.Fatalf("nostr migrate (complete): %v", err)
-	}
-	resetMigrateFlags(t)
-
-	finalRep, err := runJSONNostrParity(t)
-	if err != nil {
-		t.Errorf("nostr parity should return nil error after full migration, got: %v (report=%+v)", err, finalRep)
-	}
-	if !finalRep.AllMatch() {
-		t.Errorf("nostr parity should report AllMatch=true after full migration, got %+v", finalRep)
-	}
-	if finalRep.SourceCount != 3 || finalRep.ProjectedCount != 3 {
-		t.Errorf("expected source=projected=3 after full migration, got source=%d projected=%d", finalRep.SourceCount, finalRep.ProjectedCount)
-	}
-	resetParityFlags(t)
-}
 
 // ===========================================================================
 // ready-be1 — nostrNextCreatedAt future-drift -> cross-machine lost update.

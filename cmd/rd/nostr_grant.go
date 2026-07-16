@@ -169,8 +169,9 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 // operator levels for THIS board. Default owner = the loaded owner key; default
 // boardD = the project prefix.
 var nostrPinBoardCmd = &cobra.Command{
-	Use:   "pin-board",
-	Short: "Pin this project's authoritative board coordinate (30301:<owner>:<boardD>) in .ready/config.json",
+	Use:    "pin-board",
+	Hidden: true, // 'rd init' pins the board automatically; manual repin is a rare recovery op
+	Short:  "Pin this project's authoritative board coordinate (30301:<owner>:<boardD>) in .ready/config.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, ok := readyProjectDir()
 		if !ok {
@@ -436,6 +437,10 @@ dry-run diff before applying.`,
 			return err
 		}
 		fmt.Printf("\nwrote %s (%d keys)\n", file, len(plan.Final))
+		if len(relays) == 0 {
+			fmt.Println("no --relays given: wrote the local file only, pushed to nothing.")
+			return nil
+		}
 		var pushErrs []string
 		for _, r := range relays {
 			if perr := pushAllowlist(user, r, file, remotePath); perr != nil {
@@ -480,7 +485,7 @@ func init() {
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")
-	nostrSyncAllowlistCmd.Flags().String("relays", "192.168.2.40,192.168.2.41", "comma-separated relay hosts to fetch baseline from and push to")
+	nostrSyncAllowlistCmd.Flags().String("relays", "", "comma-separated relay hosts to fetch baseline from and push to (required to push; empty = regenerate the local file only)")
 	nostrSyncAllowlistCmd.Flags().String("relay-user", "baron", "ssh user for the relay VMs")
 	nostrSyncAllowlistCmd.Flags().String("remote-path", "/etc/strfry/write-allowlist.json", "path the strfry writePolicy plugin reads on each relay")
 	nostrSyncAllowlistCmd.Flags().Bool("no-fetch", false, "do not fetch the live relay allowlist for the baseline; use the on-disk --file instead")

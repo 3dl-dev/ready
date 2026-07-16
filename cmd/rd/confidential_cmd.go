@@ -12,8 +12,9 @@ import (
 )
 
 var confidentialCmd = &cobra.Command{
-	Use:   "confidential",
-	Short: "Manage confidential mode for the current board (new boards are confidential by default)",
+	Use:    "confidential",
+	Hidden: true, // boards are confidential by default at init; this is a rare retrofit/status op
+	Short:  "Manage confidential mode for the current board (new boards are confidential by default)",
 }
 
 var confidentialEnableCmd = &cobra.Command{

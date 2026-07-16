@@ -20,8 +20,9 @@ import (
 // the offline-buffer flush). These act on the replaceable relay caches — the local
 // signed-event log stays authoritative.
 var relayCmd = &cobra.Command{
-	Use:   "relay",
-	Short: "Relay-facing operations (write-allowlist sync, offline-buffer flush)",
+	Use:    "relay",
+	Hidden: true, // substrate/ops plumbing — not part of the work-management surface
+	Short:  "Relay-facing operations (write-allowlist sync, offline-buffer flush)",
 	Long: `Operate on the replaceable relay caches that back rd's nostr transport.
 
 The local append-only signed-event log (.ready/nostr-log.jsonl) is the source of
@@ -33,8 +34,9 @@ write-allowlist and drain the offline publish buffer to the relays.`,
 // another machine's committed log (the relay-free degrade floor), re-publishing an
 // item's current state, and the put-by-id primitive the two-machine sync demos drive.
 var logCmd = &cobra.Command{
-	Use:   "log",
-	Short: "Local authoritative-log operations (merge-log, publish, put)",
+	Use:    "log",
+	Hidden: true, // low-level log escape hatches (merge/publish/put) — automatic or debug-only
+	Short:  "Local authoritative-log operations (merge-log, publish, put)",
 	Long: `Operate directly on the local append-only signed-event log
 (.ready/nostr-log.jsonl) — the source of truth. Relays are replaceable caches.
 

@@ -71,7 +71,7 @@ func setupNostrNativeProject(t *testing.T) (string, string) {
 func assertNoDotCf(t *testing.T) {
 	t.Helper()
 	roots := map[string]bool{}
-	if h := CFHome(); h != "" {
+	if h := RDHome(); h != "" {
 		roots[h] = true
 		roots[filepath.Dir(h)] = true
 	}
@@ -109,14 +109,12 @@ func walkAssertNoCampfireIdentity(t *testing.T, root string) {
 	})
 }
 
-// assertNoCampfireStore fails if a campfire store.db exists under CFHome — the
-// point-blank proof that the `rd show` native path no longer opens a campfire
-// store (ready-6ef #4). Scoped to the show path: list/ready still touch store.db
-// transitionally (see assertNoDotCf's note), so this is asserted only in tests
-// that drive exactly the show path in an otherwise store-free project.
+// assertNoCampfireStore fails if a campfire store.db exists under the rd home —
+// the point-blank proof that the `rd show` native path never opens a campfire
+// store (ready-6ef #4).
 func assertNoCampfireStore(t *testing.T) {
 	t.Helper()
-	storePath := filepath.Join(CFHome(), "store.db")
+	storePath := filepath.Join(RDHome(), "store.db")
 	if _, err := os.Stat(storePath); err == nil {
 		t.Fatalf("FAIL: a campfire store.db was provisioned at %s — the nostr-native `rd show` path must not open a campfire store", storePath)
 	} else if !os.IsNotExist(err) {
@@ -579,7 +577,7 @@ func sliceContains(s []string, v string) bool {
 // resolves items from the nostr projection by DEFAULT. A create publishes to the
 // nostr log only (never JSONL/store), so if the default read still went through
 // the campfire/JSONL backend, list would be empty. Reading it back via the shared
-// allItemsFromJSONLOrStore(openStore) path — exactly what `rd list` does — proves
+// allProjectItems(openStore) path — exactly what `rd list` does — proves
 // reads default to nostr. No .cf is provisioned.
 func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 	setupNostrNativeProject(t)
@@ -595,9 +593,9 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 		t.Fatalf("runCreateNostr: %v", err)
 	}
 
-	items, err := allItemsFromJSONLOrStore()
+	items, err := allProjectItems()
 	if err != nil {
-		t.Fatalf("allItemsFromJSONLOrStore: %v", err)
+		t.Fatalf("allProjectItems: %v", err)
 	}
 	var found *state.Item
 	for _, it := range items {
@@ -613,13 +611,13 @@ func TestNostrNative_ReadActive_DefaultReadsProjection(t *testing.T) {
 		t.Fatalf("read title = %q; want %q", found.Title, "Read me back")
 	}
 
-	// byIDFromJSONLOrStore (the `rd show` path) must resolve from nostr too.
-	byID, err := byIDFromJSONLOrStore(id)
+	// itemByID (the `rd show` path) must resolve from nostr too.
+	byID, err := itemByID(id)
 	if err != nil {
-		t.Fatalf("byIDFromJSONLOrStore: %v", err)
+		t.Fatalf("itemByID: %v", err)
 	}
 	if byID == nil || byID.ID != id {
-		t.Fatalf("byIDFromJSONLOrStore(%s) = %+v; want the projected item", id, byID)
+		t.Fatalf("itemByID(%s) = %+v; want the projected item", id, byID)
 	}
 
 	assertNoDotCf(t)

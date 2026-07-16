@@ -22,10 +22,11 @@ type Config struct {
 	// ReadyCampfireID is the hex campfire ID of the cf://<org>.ready namespace campfire.
 	ReadyCampfireID string `json:"ready_campfire_id,omitempty"`
 
-	// RelayEndpoints lists the self-hosted nostr relays (strfry) the portfolio
-	// identity reads/writes for the nostr migration. When empty, DefaultRelays()
-	// is used. See relay.go and docs/relay-runbook.md. The relays are a cache /
-	// always-available copy, NEVER the source of truth.
+	// RelayEndpoints lists the nostr relays the identity reads/writes. These are
+	// chosen by the user (at 'rd init' via --relay, or by editing this file) —
+	// BYOR, no topology is baked into the binary. When empty the project is
+	// local-only. See relay.go. The relays are a cache / always-available copy,
+	// NEVER the source of truth.
 	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
 
 	// TrustedPubkeys is the nostr web-of-trust allowlist (ready-d53): the hex
@@ -188,6 +189,34 @@ type SyncConfig struct {
 	// `rd init --public` sets this; existing plaintext cards are grandfathered when a
 	// board first becomes confidential.
 	Public bool `json:"public,omitempty"`
+
+	// RelayEndpoints are THIS project's nostr relays (BYOR), chosen at `rd init`
+	// (--relay / interactive prompt) or by editing this file. Per-project so that a
+	// `--local` project never inherits another project's relays. Empty = local-only:
+	// the signed log is authoritative and a project works with no reachable relay.
+	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
+}
+
+// WriteRelayURLs returns the URLs of this project's write-flagged relays.
+func (c *SyncConfig) WriteRelayURLs() []string {
+	var out []string
+	for _, r := range c.RelayEndpoints {
+		if r.Write {
+			out = append(out, r.URL)
+		}
+	}
+	return out
+}
+
+// ReadRelayURLs returns the URLs of this project's read-flagged relays.
+func (c *SyncConfig) ReadRelayURLs() []string {
+	var out []string
+	for _, r := range c.RelayEndpoints {
+		if r.Read {
+			out = append(out, r.URL)
+		}
+	}
+	return out
 }
 
 // SyncConfigPath returns the path to the project-local sync config file.

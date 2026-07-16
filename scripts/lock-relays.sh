@@ -2,7 +2,7 @@
 # lock-relays.sh — install the rd write-allowlist writePolicy on the live strfry
 # relays (ready-266). Reproducible from scratch: re-runnable, idempotent.
 #
-# Locks relay-a (192.168.2.40) and relay-b (192.168.2.41) so that only ADMITTED
+# Locks relay-a (relay-a.internal) and relay-b (relay-b.internal) so that only ADMITTED
 # portfolio pubkeys may WRITE. Reads stay open (writePolicy governs the write path
 # only). Enforcement is by the event's author pubkey — strfry verifies the schnorr
 # signature before the plugin runs, so an allowlisted pubkey field proves key
@@ -23,7 +23,7 @@
 # Usage: scripts/lock-relays.sh [relay-ip ...]   (default: both relays)
 set -uo pipefail
 
-RELAYS=("${@:-192.168.2.40 192.168.2.41}")
+RELAYS=("${@:-relay-a.internal relay-b.internal}")
 # shellcheck disable=SC2206
 RELAYS=(${RELAYS[@]})
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
