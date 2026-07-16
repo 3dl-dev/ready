@@ -263,6 +263,74 @@ func TestRelayPublish_Accepted_NeitherFile(t *testing.T) {
 	}
 }
 
+// TestRelayPublish_AutoDrainsBacklogOnConnectedWrite proves the automatic flush:
+// an event a prior offline write buffered is drained from the pending queue as
+// soon as ANY later write reaches a relay — no manual flush command needed.
+func TestRelayPublish_AutoDrainsBacklogOnConnectedWrite(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, _ := readyPaths(dir)
+
+	// Seed the offline backlog: an event an earlier disconnected write buffered.
+	backlog := signedEvent(t, k, "ok-backlog")
+	if err := appendPendingEvent(pending, backlog); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+	if !fileHasID(t, pending, backlog.ID) {
+		t.Fatalf("precondition: backlog should be buffered in pending")
+	}
+
+	// A later write that reaches an accepting relay.
+	pub := &Publisher{
+		Key:         k,
+		Log:         NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile)),
+		WriteRelays: []string{contentRelay(t)},
+		PendingPath: pending,
+		Timeout:     3 * time.Second,
+	}
+	fresh := signedEvent(t, k, "ok-fresh")
+	if _, err := pub.PublishEvents(context.Background(), []*nostr.Event{fresh}); err != nil {
+		t.Fatalf("PublishEvents: %v", err)
+	}
+
+	if fileHasID(t, pending, backlog.ID) {
+		t.Errorf("connected write must auto-drain the buffered backlog event %s", backlog.ID)
+	}
+	if fileHasID(t, pending, fresh.ID) {
+		t.Errorf("accepted fresh event must not be buffered")
+	}
+}
+
+// TestRelayPublish_NoAutoDrainWhenOffline is the control: a write that reaches NO
+// relay does not touch the backlog — connectivity was never proven, so the queue
+// stays intact for a later successful write to drain.
+func TestRelayPublish_NoAutoDrainWhenOffline(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, _ := readyPaths(dir)
+
+	backlog := signedEvent(t, k, "ok-backlog")
+	if err := appendPendingEvent(pending, backlog); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	pub := &Publisher{
+		Key:         k,
+		Log:         NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile)),
+		WriteRelays: []string{fixedRelay(t, false, "", true)}, // hangs up -> transient, no connectivity
+		PendingPath: pending,
+		Timeout:     3 * time.Second,
+	}
+	fresh := signedEvent(t, k, "ok-fresh")
+	if _, err := pub.PublishEvents(context.Background(), []*nostr.Event{fresh}); err != nil {
+		t.Fatalf("PublishEvents: %v", err)
+	}
+
+	if !fileHasID(t, pending, backlog.ID) {
+		t.Errorf("offline write must NOT drain the backlog; it should remain buffered for a later flush")
+	}
+}
+
 // TestRelayPublish_OkFalseDuplicate_CountsAsAccepted guards the verifier's
 // finding-1: a nonstandard relay that replies OK,false,"duplicate:" nonetheless
 // holds the event, so it must count as accepted — AnyRelay true, neither buffered

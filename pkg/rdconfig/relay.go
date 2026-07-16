@@ -11,7 +11,7 @@ package rdconfig
 // from and/or write to. This mirrors the NIP-65 (kind:10002) outbox model: a
 // relay can be write-only, read-only, or both.
 type RelayEndpoint struct {
-	// URL is the websocket endpoint, e.g. "ws://192.168.2.40:7777".
+	// URL is the websocket endpoint, e.g. "wss://relay.example.com".
 	URL string `json:"url"`
 
 	// Read is true when the identity reads events from this relay.
@@ -21,20 +21,18 @@ type RelayEndpoint struct {
 	Write bool `json:"write"`
 }
 
-// DefaultRelays returns the self-hosted strfry relay topology stood up for
-// ready-efe (relay-a and relay-b on the mainframe LAN). Both are read+write so
-// that either relay going offline still serves the full set (proven by
-// scripts/relay-demo.sh). Callers may override via Config.Relays.
+// DefaultRelays returns no relays. The ship default is LOCAL-ONLY: the
+// append-only signed-event log (.ready/nostr-log.jsonl) is the source of truth
+// and a project works standalone with no reachable relay. Relays are opt-in —
+// chosen at 'rd init' (interactively or via --relay/--local) or added later by
+// editing rd.json. The binary bakes in no infrastructure of its own.
 func DefaultRelays() []RelayEndpoint {
-	return []RelayEndpoint{
-		{URL: "ws://192.168.2.40:7777", Read: true, Write: true},
-		{URL: "ws://192.168.2.41:7777", Read: true, Write: true},
-	}
+	return nil
 }
 
-// Relays returns the configured relay endpoints, falling back to DefaultRelays
-// when none are set in the config. This is the single accessor downstream code
-// (e.g. ready-a13 rd event mapping) should use to discover relay endpoints.
+// Relays returns the configured relay endpoints. When none are set the result
+// is empty (local-only). This is the single accessor downstream code should use
+// to discover relay endpoints.
 func (c *Config) Relays() []RelayEndpoint {
 	if len(c.RelayEndpoints) > 0 {
 		return c.RelayEndpoints

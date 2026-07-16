@@ -22,10 +22,11 @@ type Config struct {
 	// ReadyCampfireID is the hex campfire ID of the cf://<org>.ready namespace campfire.
 	ReadyCampfireID string `json:"ready_campfire_id,omitempty"`
 
-	// RelayEndpoints lists the self-hosted nostr relays (strfry) the portfolio
-	// identity reads/writes for the nostr migration. When empty, DefaultRelays()
-	// is used. See relay.go and docs/relay-runbook.md. The relays are a cache /
-	// always-available copy, NEVER the source of truth.
+	// RelayEndpoints lists the nostr relays the identity reads/writes. These are
+	// chosen by the user (at 'rd init' via --relay, or by editing this file) —
+	// BYOR, no topology is baked into the binary. When empty the project is
+	// local-only. See relay.go. The relays are a cache / always-available copy,
+	// NEVER the source of truth.
 	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
 
 	// TrustedPubkeys is the nostr web-of-trust allowlist (ready-d53): the hex

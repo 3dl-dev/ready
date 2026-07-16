@@ -58,7 +58,7 @@ func TestReadAllowlistFile_MissingIsEmpty(t *testing.T) {
 
 func TestSplitCSV(t *testing.T) {
 	cases := map[string][]string{
-		"192.168.2.40,192.168.2.41": {"192.168.2.40", "192.168.2.41"},
+		"relay-a,relay-b": {"relay-a", "relay-b"},
 		" a , b ,,c ":               {"a", "b", "c"},
 		"":                          nil,
 		"only":                      {"only"},
