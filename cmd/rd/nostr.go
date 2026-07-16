@@ -28,7 +28,10 @@ func nostrWriteRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	var cfg rdconfig.Config
+	cfg, err := rdconfig.Load(RDHome())
+	if err != nil || cfg == nil {
+		return nil // local-only: no reachable relays, the local log is authoritative
+	}
 	return cfg.WriteRelayURLs()
 }
 
@@ -36,7 +39,10 @@ func nostrReadRelays() []string {
 	if u := os.Getenv("RD_NOSTR_RELAY_URL"); u != "" {
 		return []string{u}
 	}
-	var cfg rdconfig.Config
+	cfg, err := rdconfig.Load(RDHome())
+	if err != nil || cfg == nil {
+		return nil // local-only: no reachable relays, the local log is authoritative
+	}
 	return cfg.ReadRelayURLs()
 }
 
