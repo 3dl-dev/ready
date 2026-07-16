@@ -195,6 +195,32 @@ func appendRejectedEvent(path string, rec RejectedRecord) error {
 	return f.Sync()
 }
 
+// corruptPathFor returns the quarantine file path for unparseable pending lines,
+// adjacent to the pending path (both live directly under .ready/).
+func corruptPathFor(pendingPath string) string {
+	return filepath.Join(filepath.Dir(pendingPath), NostrCorruptFile)
+}
+
+// appendCorruptLine quarantines a raw, unparseable pending-buffer line to
+// nostr-corrupt.jsonl for operator forensics (ready-e52). The line is written
+// verbatim (it is not valid JSON, so it cannot be re-marshaled). Like
+// dead-lettering, this fsyncs before the caller drops the line from the buffer,
+// so a crash in the window re-quarantines rather than losing the line.
+func appendCorruptLine(path string, raw []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(append([]byte{}, raw...), '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
 // relayLabel formats a relay+message pair for a dead-letter reason string.
 func relayLabel(relay, message string) string {
 	return fmt.Sprintf("%s: %s", relay, message)

@@ -325,7 +325,7 @@ func TestPendingBufferMechanics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := readPendingEvents(path)
+	got, _, err := readPendingEvents(path)
 	if err != nil || len(got) != 3 {
 		t.Fatalf("read pending: n=%d err=%v", len(got), err)
 	}
@@ -334,7 +334,7 @@ func TestPendingBufferMechanics(t *testing.T) {
 	if err := rewritePendingEvents(path, []*nostr.Event{e2}); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = readPendingEvents(path)
+	got, _, _ = readPendingEvents(path)
 	if len(got) != 1 || got[0].ID != e2.ID {
 		t.Fatalf("expected only e2 to remain, got %d", len(got))
 	}
@@ -343,7 +343,7 @@ func TestPendingBufferMechanics(t *testing.T) {
 	if err := rewritePendingEvents(path, nil); err != nil {
 		t.Fatal(err)
 	}
-	got, err = readPendingEvents(path)
+	got, _, err = readPendingEvents(path)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("expected empty buffer, n=%d err=%v", len(got), err)
 	}

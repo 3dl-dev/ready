@@ -37,6 +37,13 @@ const (
 	// re-publishing forever; retained here for operator diagnosis. Still durable
 	// in the authoritative log.
 	NostrRejectedFile = "nostr-rejected.jsonl"
+	// NostrCorruptFile quarantines pending-buffer lines that could not be parsed
+	// as a nostr event at all (truncated/garbled JSON). Such a line can never be
+	// published, so it is skipped and moved here (ready-e52) rather than aborting
+	// the whole flush — one malformed line must not wedge the retry queue. The
+	// events themselves remain durable in the authoritative log; this is only the
+	// relay-retry buffer.
+	NostrCorruptFile = "nostr-corrupt.jsonl"
 
 	// ReadyDir is the project-state directory name under the project root. It is
 	// the parent of the authoritative log, the pending buffer, and the
