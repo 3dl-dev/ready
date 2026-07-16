@@ -188,7 +188,7 @@
           slice by status, owner, and time.</p>
           <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="comment"># ready, work, pending, overdue, delegated, my-work</span>
 <span class="cmd">rd ready --view overdue</span>
-<span class="cmd">rd list --status active --priority p0,p1</span>
+<span class="cmd">rd list --status active --priority p0</span>
 <span class="cmd">rd list --by atlas/worker-3 --all --json</span></div>
         </div>
         <div>
@@ -208,7 +208,7 @@
           Stop rebuilding the same tree by hand.</p>
           <div class="ds-code-block" style="margin-top: var(--ds-space-sm);"><span class="cmd">rd playbook list</span>
 <span class="cmd">rd engage release-checklist --project api</span>
-<span class="output">engaged release-checklist &rarr; 6 items (deps wired)</span></div>
+<span class="output">engaged playbook release-checklist &rarr; 6 items</span></div>
         </div>
         <div>
           <h3>The log is the API</h3>
@@ -318,7 +318,7 @@
           </ul>
           <div class="ds-code-block tier-code"><span class="comment"># Invite a teammate or spin up an agent</span>
 <span class="cmd">TOKEN=$(rd invite)</span>
-<span class="output">rdx1_eyJ2Ijox...  (one-use, 2h)</span>
+<span class="output">rd1_eyJ2Ijox...  (one-use, 2h)</span>
 
 <span class="comment"># They run one command. Items sync.</span>
 <span class="cmd">rd join $TOKEN</span>
@@ -582,7 +582,7 @@ work:close        close with a reason</span></div>
       <div style="margin-top: var(--ds-space-xl);">
         <h3>Plain open nostr</h3>
         <p style="color: var(--ds-text-secondary); max-width: 640px; line-height: 1.6;">
-          Boards and cards, NIP-34 status, NIP-22 comments, NIP-44 encryption, NIP-77 sync. No custom protocol.
+          Boards and cards, NIP-34 status, NIP-44 encryption, NIP-77 sync. No custom protocol.
           Any nostr client already speaks it, and the events are the API.
         </p>
         <div class="ecosystem-links">
