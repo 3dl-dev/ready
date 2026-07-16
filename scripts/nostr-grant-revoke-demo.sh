@@ -3,7 +3,7 @@
 #
 # ONE SIGNED ACT admits/revokes an actor across BOTH rd's client trust set and the
 # LIVE relay write-allowlist. Proven end-to-end against the real locked strfry relays
-# (relay-a 192.168.2.40, relay-b 192.168.2.41):
+# (relay-a relay-a.internal, relay-b relay-b.internal):
 #
 #   (a) create a fresh agent key
 #   (b) its write is REJECTED at the relay (not yet granted)
@@ -21,7 +21,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAK="$HOME/go/bin/nak"
 GO="${GO:-/usr/local/go/bin/go}"
-RELAYS=(192.168.2.40 192.168.2.41)
+RELAYS=(relay-a.internal relay-b.internal)
 RELAY_USER=baron
 REMOTE_PATH=/etc/strfry/write-allowlist.json
 SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=8)

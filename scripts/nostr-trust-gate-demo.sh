@@ -62,7 +62,7 @@ WORK="$(mktemp -d)"
 
 # ---- relay write-allowlist safety net (mirrors scripts/nostr-grant-revoke-demo.sh) --
 RELAY_USER="baron"
-RELAYS=(192.168.2.40 192.168.2.41)
+RELAYS=(relay-a.internal relay-b.internal)
 REMOTE_PATH=/etc/strfry/write-allowlist.json
 SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=8)
 declare -A ORIG

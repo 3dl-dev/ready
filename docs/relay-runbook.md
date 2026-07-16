@@ -14,8 +14,8 @@ backs the rd→nostr migration.
 
 | Role    | VMID | Host                | LAN IP        | ws:// endpoint          |
 |---------|------|---------------------|---------------|-------------------------|
-| relay-a | 210  | mainframe (Proxmox) | 192.168.2.40  | `ws://192.168.2.40:7777` |
-| relay-b | 211  | mainframe (Proxmox) | 192.168.2.41  | `ws://192.168.2.41:7777` |
+| relay-a | 210  | mainframe (Proxmox) | relay-a.internal  | `ws://relay-a.internal:7777` |
+| relay-b | 211  | mainframe (Proxmox) | relay-b.internal  | `ws://relay-b.internal:7777` |
 
 Both VMs: Ubuntu 24.04 (Proxmox template 9000), 2 cores / 4 GB / 20 GB disk,
 `--onboot 1` (survive host reboots). strfry built from source (`v1-b80cda3`),
@@ -48,8 +48,8 @@ Run on the Proxmox host (`ssh root@mainframe.stealth.baron.local`):
 
 ```bash
 cd /root/mainframe
-bash scripts/mk-relay.sh 210 relay-a 192.168.2.40
-bash scripts/mk-relay.sh 211 relay-b 192.168.2.41
+bash scripts/mk-relay.sh 210 relay-a relay-a.internal
+bash scripts/mk-relay.sh 211 relay-b relay-b.internal
 ```
 
 `mk-relay.sh` authorizes three SSH keys on each VM: `baron.pub` (operator),
@@ -150,8 +150,8 @@ lowercase-hex x-only pubkey to a human label:
 
 ```json
 {
-  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (192.168.2.42, $RD_HOME/nostr-identity.json)",
-  "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (192.168.2.42 ~/.dontguess/nostr-operator.key)",
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (node-2.internal, $RD_HOME/nostr-identity.json)",
+  "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (node-2.internal ~/.dontguess/nostr-operator.key)",
   "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, $RD_HOME/nostr-identity.json)"
 }
 ```
@@ -243,7 +243,7 @@ is admitted; a second `rd grant ... --claim <same-nonce>` for a different pubkey
 ```bash
 # From the workshop VM (needs ssh baron@<relay> + passwordless sudo on the relays):
 scripts/lock-relays.sh                 # both relays (default)
-scripts/lock-relays.sh 192.168.2.40    # a single relay
+scripts/lock-relays.sh relay-a.internal    # a single relay
 ```
 
 `mk-relay.sh` (mainframe repo) also installs the plugin + a seed allowlist at
@@ -304,7 +304,7 @@ Run on **relay-b**, pulling from **relay-a** (runs as `baron`, who owns the LMDB
 db — do NOT use sudo, which would create root-owned db files):
 
 ```bash
-strfry --config=/etc/strfry.conf sync ws://192.168.2.40:7777 --dir=down
+strfry --config=/etc/strfry.conf sync ws://relay-a.internal:7777 --dir=down
 ```
 
 `--dir=both` reconciles in both directions. For continuous reconciliation, wrap
@@ -318,9 +318,9 @@ hardcoded hub:
 
 ```bash
 nak event -k 10002 \
-  -t "r=ws://192.168.2.40:7777;write" \
-  -t "r=ws://192.168.2.41:7777;read" \
-  ws://192.168.2.40:7777 ws://192.168.2.41:7777
+  -t "r=ws://relay-a.internal:7777;write" \
+  -t "r=ws://relay-b.internal:7777;read" \
+  ws://relay-a.internal:7777 ws://relay-b.internal:7777
 ```
 
 (The demo uses a throwaway key; the real portfolio identity/key is handled by

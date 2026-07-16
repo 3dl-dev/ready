@@ -22,8 +22,8 @@
 set -euo pipefail
 
 # ---- Config (overridable via env) -------------------------------------------
-RELAY_A_HOST="${RELAY_A_HOST:-192.168.2.40}"
-RELAY_B_HOST="${RELAY_B_HOST:-192.168.2.41}"
+RELAY_A_HOST="${RELAY_A_HOST:-relay-a.internal}"
+RELAY_B_HOST="${RELAY_B_HOST:-relay-b.internal}"
 RELAY_A_URL="${RELAY_A_URL:-ws://${RELAY_A_HOST}:7777}"
 RELAY_B_URL="${RELAY_B_URL:-ws://${RELAY_B_HOST}:7777}"
 # SSH user for stopping/starting the strfry service on each relay VM.

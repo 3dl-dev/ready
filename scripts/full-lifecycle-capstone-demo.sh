@@ -7,9 +7,9 @@
 # projected state. NO mocks, no two-processes-on-one-host shortcut, Baron never
 # tests.
 #
-#   machine-1 = this workshop VM        (192.168.2.34), owner key P1 (a9f766ae..)
-#   machine-2 = rd-node VM              (192.168.2.42), same allowlisted key
-#   relay-a   = ws://192.168.2.40:7777  relay-b = ws://192.168.2.41:7777
+#   machine-1 = this workshop VM        (node-1.internal), owner key P1 (a9f766ae..)
+#   machine-2 = rd-node VM              (node-2.internal), same allowlisted key
+#   relay-a   = ws://relay-a.internal:7777  relay-b = ws://relay-b.internal:7777
 #
 # Both machines run rd built from THIS branch. Both sign with the SAME
 # ready-266-allowlisted portfolio key (the locked relays REJECT any other author)
@@ -40,16 +40,16 @@
 #            `rd ready --json` for views ready/work/gates matches on both.
 #
 # Endpoints come from pkg/rdconfig defaults; override via env below. Idempotent:
-# re-runnable (fresh item ids per run). Requires ssh baron@192.168.2.42.
+# re-runnable (fresh item ids per run). Requires ssh baron@node-2.internal.
 #
 # Usage: scripts/full-lifecycle-capstone-demo.sh
 set -uo pipefail
 
 # ---- Config (overridable via env) -------------------------------------------
-M2_HOST="${M2_HOST:-192.168.2.42}"
+M2_HOST="${M2_HOST:-node-2.internal}"
 M2_USER="${M2_USER:-baron}"
-RELAY_A="${RELAY_A:-192.168.2.40}"
-RELAY_B="${RELAY_B:-192.168.2.41}"
+RELAY_A="${RELAY_A:-relay-a.internal}"
+RELAY_B="${RELAY_B:-relay-b.internal}"
 RELAY_A_URL="ws://${RELAY_A}:7777"
 RELAY_B_URL="ws://${RELAY_B}:7777"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=8"

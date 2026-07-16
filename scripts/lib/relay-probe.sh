@@ -16,11 +16,11 @@
 #   if relay_reachable; then ...live leg...; else info "SKIP (relay unreachable)"; fi
 #
 # Resolution: explicit arg > $RD_NOSTR_RELAY_URL > the pkg/rdconfig default
-# relay-a (ws://192.168.2.40:7777). Only a TCP connect is attempted — a full
+# relay-a (ws://relay-a.internal:7777). Only a TCP connect is attempted — a full
 # websocket/strfry handshake is out of scope for a cheap reachability gate.
 
 relay_reachable() {  # relay_reachable [ws-url]
-  local url="${1:-${RD_NOSTR_RELAY_URL:-ws://192.168.2.40:7777}}"
+  local url="${1:-${RD_NOSTR_RELAY_URL:-ws://relay-a.internal:7777}}"
   local hostport="${url#*://}"; hostport="${hostport%%/*}"
   local host="${hostport%:*}" port="${hostport##*:}"
   [ "$port" = "$host" ] && port=7777

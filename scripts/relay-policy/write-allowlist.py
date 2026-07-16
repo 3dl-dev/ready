@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """strfry writePolicy plugin — rd trusted-portfolio-pubkey write-allowlist (ready-266).
 
-Locks the mainframe strfry relays (relay-a @ 192.168.2.40, relay-b @ 192.168.2.41)
+Locks the mainframe strfry relays (relay-a @ relay-a.internal, relay-b @ relay-b.internal)
 so that only ADMITTED portfolio identities may WRITE (publish events). Reads stay
 open — strfry's writePolicy only governs the write path (incoming EVENTs); REQ/read
 subscriptions are unaffected, so the relays remain a public read cache.

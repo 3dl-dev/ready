@@ -591,4 +591,3 @@ rd create "Quarterly review" --priority p2 --eta "2026-04-15T09:00"
 - Convention spec: `docs/convention/work-management.md` — full operation declarations, field validation, compaction policy
 - Named view predicates: `pkg/views/` — S-expression predicates for each built-in view
 - Identity model: [`docs/design/nostr-identity-model.md`](design/nostr-identity-model.md) — `$RD_HOME`, per-actor keys, kind-39301 grants
-- Migration runbook: [`docs/nostr-migration.md`](nostr-migration.md) — re-emit a legacy project's item set as signed nostr events, with a parity check

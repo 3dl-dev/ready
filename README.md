@@ -182,27 +182,6 @@ no manual sync step.
 
 ---
 
-## Migrating an existing campfire project
-
-If your project still runs on the retired campfire backend (`.campfire/`),
-migrate it to the nostr-native log without losing history:
-
-```bash
-rd migrate            # re-emits the legacy item set as nostr events —
-                       # ids and full status history are preserved; the
-                       # legacy source is left intact (non-destructive)
-
-rd migrate --parity   # verifies item-for-item field equality between the
-                       # legacy source and the nostr projection; exits
-                       # non-zero on any mismatch — run this before trusting
-                       # the migration
-
-rm -rf .campfire      # once parity passes, drop the legacy store
-```
-
-`rd migrate` is idempotent by event id, so it is safe to re-run. See
-`docs/nostr-migration.md` for the full migration + dual-read design.
-
 ---
 
 - [docs/getting-started.md](docs/getting-started.md) — full walkthrough
