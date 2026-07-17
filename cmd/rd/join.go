@@ -10,17 +10,21 @@ import (
 var joinCmd = &cobra.Command{
 	Use:   "join <rd1_token>",
 	Short: "Join a project via an invite token",
-	Long: `Join a project via a one-use invite (claim) token.
+	Long: `Join a project via a one-use invite (claim) token from the project owner.
 
-'rd join rd1_...' SELF-MINTS a fresh secp256k1 identity, pins the board, adopts the
-project's relays, and syncs the project's items READ-ONLY — 'rd ready' works
-immediately. It writes NOTHING to the relays. It then prints your pubkey and the
+'rd join rd1_...' mints a fresh identity for THIS machine, pins the board, adopts
+the project's relays, and syncs the project's items READ-ONLY — 'rd ready' works
+immediately. It writes nothing to the relays. It then prints your pubkey and the
 claim-nonce; send those to the owner, who grants write access with
-'rd grant <pubkey> contributor --claim <claim-nonce>'. An invite token is the only
-join path. Re-joining the same token on this machine needs --force.
+'rd grant <pubkey> contributor --claim <claim-nonce>'. Re-joining the same token on
+this machine needs --force.
+
+Joining one of YOUR OWN other machines, not a teammate's project? Skip the token —
+run 'rd follow <you@email>' instead: it keeps this machine's existing identity and
+pulls in every board you own, with no coordinate to copy.
 
 EXAMPLES
-  rd join rd1_...                     # join read-only via a one-use invite token`,
+  rd join rd1_...                     # join a teammate's project via invite token`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -38,7 +42,7 @@ EXAMPLES
 			return joinViaNostrInviteToken(nameOrID, force, ownerKeyForce)
 		}
 
-		return fmt.Errorf("only invite tokens (rd1_...) are supported — campfire open-join (by name or ID) was retired with the campfire backend")
+		return fmt.Errorf("only invite tokens (rd1_...) are supported — get one from the project owner (they run 'rd invite'), or if you're adding one of your own machines, run 'rd follow <you@email>' instead")
 	},
 }
 
