@@ -115,6 +115,91 @@ func TestJoin_ForceRefusesToOverwriteOwnerKey(t *testing.T) {
 	_ = ownerPub
 }
 
+// TestJoin_ForceRefusesOwnerKeyFromUnrelatedDir is the ready-23d done-condition
+// (edge #1, machine-global): the identity key at DefaultKeyPath is MACHINE-GLOBAL, so
+// the guard must fire based on that key's ownership across EVERY board the machine
+// knows — not just the project dir the join is run from. With the owner key owning a
+// board pinned in project A (a sibling under the projects root), `rd join --force` run
+// from an UNRELATED sibling dir B still HARD-STOPS (key on disk unchanged) and points
+// at `rd follow`; only the explicit --force-replace-owner-key naming A's board may
+// proceed. Before the fix keyOwnedBoard() inspected only dir B, returned "", and the
+// join silently orphaned the global owner key.
+func TestJoin_ForceRefusesOwnerKeyFromUnrelatedDir(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	// Projects root with two SIBLING repos: A owns a board, B is unrelated.
+	root := filepath.Join(base, "projects")
+	dirA := filepath.Join(root, "project-a")
+	dirB := filepath.Join(root, "project-b")
+	if err := os.MkdirAll(dirB, 0o755); err != nil {
+		t.Fatalf("mkdir dirB: %v", err)
+	}
+	// Plant the global identity key + pin an owned board in A ONLY.
+	_, ownedBoard := writeOwnerBoardKey(t, home, dirA)
+
+	keyPath := nostr.DefaultKeyPath(home)
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key before: %v", err)
+	}
+
+	// A DIFFERENT board's invite token, redeemed from the UNRELATED dir B.
+	otherOwner, _ := nostr.GenerateKey()
+	now := time.Now().Unix()
+	token, err := buildNostrClaimToken(
+		rdSync.BoardCoord(otherOwner.PubKeyHex(), "other"),
+		[]string{"ws://127.0.0.1:1"}, "claim-23d", now, now+7200, otherOwner.PubKeyHex())
+	if err != nil {
+		t.Fatalf("buildNostrClaimToken: %v", err)
+	}
+	p, err := decodeNostrClaimToken(token)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	backupDir := filepath.Join(base, "backups")
+	medium := &logInviteMedium{log: rdSync.NewNostrLog(filepath.Join(base, "relay.jsonl"))}
+
+	// Plain --force from dir B MUST still be refused — the guard is machine-global.
+	_, err = redeemNostrClaimToken(p, home, dirB, backupDir, medium, true /*force*/, "")
+	if err == nil {
+		t.Fatalf("join --force from an unrelated dir must ERROR when the global key owns a board, got nil")
+	}
+	if !strings.Contains(err.Error(), "OWNS board") || !strings.Contains(err.Error(), "rd follow") {
+		t.Fatalf("error must explain the owner-key stop and point at `rd follow`: %v", err)
+	}
+	if !strings.Contains(err.Error(), ownedBoard) {
+		t.Fatalf("error must name the owned board %s pinned in a sibling repo: %v", ownedBoard, err)
+	}
+
+	// Key on disk is UNCHANGED, and nothing was backed up.
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("global owner key on disk was modified by a refused cross-dir join")
+	}
+	if entries, _ := os.ReadDir(backupDir); len(entries) != 0 {
+		t.Fatalf("a refused join must not create backups; found %d", len(entries))
+	}
+
+	// The explicit escape hatch naming A's board authorizes the replace (with backup).
+	minted, err := redeemNostrClaimToken(p, home, dirB, backupDir, medium, true, ownedBoard)
+	if err != nil {
+		t.Fatalf("naming the owned board via --force-replace-owner-key must authorize the replace: %v", err)
+	}
+	if minted == "" {
+		t.Fatalf("replace must self-mint a new key")
+	}
+	// The old owner key was backed up before replacement.
+	if entries, _ := os.ReadDir(backupDir); len(entries) == 0 {
+		t.Fatalf("owner key must be backed up before an authorized replace")
+	}
+}
+
 // TestJoin_ReplacedKeyIsBackedUp is done-condition (b): a legitimately replaced key
 // (here: a non-owner key overwritten with --force) is first copied under the backups
 // dir, byte-identical to the original. Also exercises the board-naming escape hatch.
