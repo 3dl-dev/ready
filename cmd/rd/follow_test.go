@@ -244,6 +244,175 @@ func TestDecodeNpub_CanonicalVector(t *testing.T) {
 	}
 }
 
+// TestImportFollowedBoard_DropsForeignAndForgedEvents is the ready-50c fail-closed
+// pin on importFollowedBoard's admit loop (~line 337-353): a hostile relay can
+// serve (a) a validly-signed event authored by a FOREIGN key that is neither the
+// board owner nor granted any role, and (b) a FORGED event whose pubkey field
+// claims the owner's identity but whose signature does not verify against it.
+// Both must be dropped before AppendUnique — Verify() catches the forgery,
+// trusted[e.PubKey] (derived from DeriveReadTrust) catches the foreign key — so
+// neither ever lands in the bound board's authoritative log. A legit owner-signed
+// card in the same snapshot IS admitted, proving the loop is selective rather than
+// accidentally dropping everything.
+func TestImportFollowedBoard_DropsForeignAndForgedEvents(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("RD_HOME", filepath.Join(base, "rdhome"))
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	owner, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	attacker, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey attacker: %v", err)
+	}
+	ownerHex := owner.PubKeyHex()
+	const boardD = "proj1"
+	coord := rdSync.BoardCoord(ownerHex, boardD)
+
+	// (a) LEGIT: owner-signed, board-scoped card. Must be admitted — the control
+	// that proves the admit loop isn't just dropping everything.
+	legit, err := rdSync.BuildCardEvent(owner, rdSync.CardSpec{
+		ItemID: "ready-legit", Title: "legit", Status: state.StatusActive, Type: "task",
+		BoardD: boardD, BoardAuthor: ownerHex,
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildCardEvent legit: %v", err)
+	}
+
+	// (b) FOREIGN KEY: validly signed by the ATTACKER (Verify() passes — nothing
+	// wrong with the signature itself), board-scoped via BoardAuthor=owner so it
+	// clears eventBelongsToFollowedBoard — but the attacker holds no board-owner
+	// status and no role grant, so trusted[e.PubKey] must reject it.
+	foreign, err := rdSync.BuildCardEvent(attacker, rdSync.CardSpec{
+		ItemID: "ready-foreign", Title: "foreign", Status: state.StatusActive, Type: "task",
+		BoardD: boardD, BoardAuthor: ownerHex,
+	}, 1001)
+	if err != nil {
+		t.Fatalf("BuildCardEvent foreign: %v", err)
+	}
+	if err := foreign.Verify(); err != nil {
+		t.Fatalf("foreign event must verify (it IS validly signed, just untrusted): %v", err)
+	}
+
+	// (c) FORGED: signed by the attacker, then the pubkey field is overwritten to
+	// claim the OWNER's identity and the id recomputed to match the new canonical
+	// form — but the signature is still the attacker's, over the ORIGINAL
+	// (attacker-pubkey) id. An id-only check would be fooled; Verify() must reject
+	// it because the schnorr signature does not verify against the claimed owner
+	// pubkey.
+	forged, err := rdSync.BuildCardEvent(attacker, rdSync.CardSpec{
+		ItemID: "ready-forged", Title: "forged", Status: state.StatusActive, Type: "task",
+		BoardD: boardD, BoardAuthor: ownerHex,
+	}, 1002)
+	if err != nil {
+		t.Fatalf("BuildCardEvent forged: %v", err)
+	}
+	forged.PubKey = ownerHex
+	forged.ID = forged.ComputeID()
+	if err := forged.Verify(); err == nil {
+		t.Fatal("forged event unexpectedly verifies — test fixture is not actually forged")
+	}
+
+	snapshot := []*nostr.Event{legit, foreign, forged}
+
+	dir := filepath.Join(base, "board")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir board dir: %v", err)
+	}
+
+	// relays=nil: followFetch's board-scoped re-fetch and the best-effort
+	// PublishBoard backfill both no-op on an empty relay set (no network, no
+	// extra events reach the log) — see followFetch's empty-loop return and the
+	// offline-Publisher pattern used elsewhere in this package.
+	if err := importFollowedBoard(context.Background(), dir, coord, ownerHex, boardD, snapshot, nil); err != nil {
+		t.Fatalf("importFollowedBoard: %v", err)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, e := range events {
+		ids[e.ID] = true
+	}
+	if !ids[legit.ID] {
+		t.Error("legit owner-signed card was NOT admitted — admit loop is over-dropping")
+	}
+	if ids[foreign.ID] {
+		t.Error("FOREIGN-key event was admitted into the bound board log — a hostile relay's untrusted-signer events must be dropped fail-closed")
+	}
+	if ids[forged.ID] {
+		t.Error("FORGED event was admitted into the bound board log — a hostile relay's tampered-signature events must be dropped fail-closed")
+	}
+	if len(events) != 1 {
+		t.Errorf("bound board log holds %d events, want exactly 1 (only the legit card): %+v", len(events), ids)
+	}
+}
+
+// TestResolveFollowTarget_HostileAliasNeverResolvesEmail is the ready-50c email-case
+// fail-closed pin (~line 263-272): a hostile relay serves a person-alias event
+// mapping the owner's email to an ATTACKER pubkey, signed by the ATTACKER, not by
+// self. Because identity.Resolve's trust root is self ALONE (v1 single-operator
+// trust — package doc, pkg/identity/alias.go), an alias signed by any other key
+// contributes nothing to the party graph, so resolveFollowTarget must refuse to
+// resolve the email at all rather than silently binding to the attacker's boards
+// under the owner's own email handle.
+func TestResolveFollowTarget_HostileAliasNeverResolvesEmail(t *testing.T) {
+	self, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey self: %v", err)
+	}
+	attacker, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey attacker: %v", err)
+	}
+	const email = "baron@3dl.dev"
+
+	hostile, err := identity.BuildAliasEvent(attacker, identity.AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{attacker.PubKeyHex()},
+		Emails:  []string{email},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent hostile: %v", err)
+	}
+	if err := hostile.Verify(); err != nil {
+		t.Fatalf("hostile alias must verify (it IS validly signed by the attacker): %v", err)
+	}
+
+	keys, _, err := resolveFollowTarget(email, email, []*nostr.Event{hostile}, self.PubKeyHex())
+	if err == nil {
+		t.Fatalf("resolveFollowTarget resolved %q to %v via a HOSTILE relay-served alias signed by an untrusted attacker key — trust root must be self only", email, keys)
+	}
+	if len(keys) != 0 {
+		t.Errorf("resolveFollowTarget returned owner keys %v on the error path; want none", keys)
+	}
+
+	// Control: the SAME email, with a LEGIT alias signed by self ALSO present (as
+	// well as the hostile one), resolves to self's key only — proving the rejection
+	// above is genuinely about trust (attacker excluded), not a broken email lookup.
+	legit, err := identity.BuildAliasEvent(self, identity.AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{self.PubKeyHex()},
+		Emails:  []string{email},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent legit: %v", err)
+	}
+	keys, _, err = resolveFollowTarget(email, email, []*nostr.Event{hostile, legit}, self.PubKeyHex())
+	if err != nil {
+		t.Fatalf("resolveFollowTarget with a legit self-signed alias present: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != self.PubKeyHex() {
+		t.Errorf("resolveFollowTarget = %v, want [%s] (self only, attacker excluded)", keys, self.PubKeyHex())
+	}
+}
+
 // TestResolveFollowTarget_TokenAndHex covers the non-email identity forms: an rd1_
 // token resolves to its board owner, and a bare 64-hex pubkey is taken verbatim.
 func TestResolveFollowTarget_TokenAndHex(t *testing.T) {
