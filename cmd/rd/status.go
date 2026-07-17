@@ -87,19 +87,15 @@ func computeStatus() (*statusReport, error) {
 	}
 
 	// Identity: resolve this key's party from its own trust closure (kind 39302).
+	// The pubkey+email fold itself is the SAME shared helper `rd ready`/`rd list`
+	// use (cmd/rd/party.go addPartyIdentities, ready-99d) — one implementation of
+	// "what identities does this token's party carry", not a local reimplementation.
 	r := identity.Resolve(events, []string{self})
 	partySet := map[string]bool{self: true}
-	if p, ok := r.PartyForPubkey(self); ok {
-		for _, pk := range p.Pubkeys {
-			partySet[pk] = true
-		}
-		for _, em := range p.Emails {
-			partySet[em] = true
-		}
-		if len(p.Emails) > 0 {
-			rep.Party = p.Emails[0]
-			rep.HasAlias = true
-		}
+	addPartyIdentities(partySet, r, self)
+	if p, ok := r.PartyForPubkey(self); ok && len(p.Emails) > 0 {
+		rep.Party = p.Emails[0]
+		rep.HasAlias = true
 	}
 
 	// No board linked here — but distinguish "you already own one" (don't fork a
