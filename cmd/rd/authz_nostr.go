@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -62,8 +65,23 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 
 // surfaceAllowlistRegen regenerates the local relay write-allowlist from the signed
 // grants and prints the diff. Best-effort (see runNostrGrantRevoke).
+//
+// ready-0df: this is a SIDE EFFECT of publishing a grant — it fires on every `rd
+// grant`/`rd revoke`/`rd kill` and, via --all-boards, in EVERY scanned sibling repo.
+// The grant EVENT (the durable, authoritative kind-39301 act) is separable from the
+// relay ALLOWLIST FILE regen (an ops step `rd relay sync-allowlist --apply` owns): if
+// the target file has UNCOMMITTED git changes — the operator mid-edit, e.g. a
+// hand-relabeled key — silently overwriting it destroys that work with no warning or
+// diff. So when the file is dirty this SKIPS the regen and warns instead of writing;
+// a clean (or absent) file regenerates exactly as before. The explicit `rd relay
+// sync-allowlist [--apply]` path is UNAFFECTED by this guard — it is a deliberate
+// operator act, not an automatic side effect, so it may overwrite a dirty file.
 func surfaceAllowlistRegen(dir string) {
 	file := defaultAllowlistFile()
+	if writeAllowlistDirty(file) {
+		fmt.Fprintf(os.Stderr, "warning: %s has uncommitted changes; skipped regen — run 'rd relay sync-allowlist' to refresh\n", file)
+		return
+	}
 	baseline, err := readAllowlistFile(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not read current relay write-allowlist %s: %v\n", file, err)
@@ -80,6 +98,22 @@ func surfaceAllowlistRegen(dir string) {
 	printKeyList("REMOVE", plan.Removed, baseline)
 	printKeyList("PRESERVE (admitted, no rd grant — kept)", plan.Preserved, baseline)
 	fmt.Println("  next: 'rd relay sync-allowlist --apply' to push the update to the relays")
+}
+
+// writeAllowlistDirty reports whether file has UNCOMMITTED git changes (staged,
+// unstaged, or untracked) — the ready-0df guard that stops the automatic grant-time
+// regen from clobbering an operator's in-progress edit. Best-effort: if file is not
+// inside a git work tree, or git is unavailable, or the file does not exist yet, it
+// reports NOT dirty — a bare regen target with no git history (e.g. a fresh project,
+// or an isolated test dir) is written as before; this only guards the version-controlled
+// case the bug report is about.
+func writeAllowlistDirty(file string) bool {
+	dir := filepath.Dir(file)
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", filepath.Base(file)).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 // regenerateAllowlistLocal derives the relay write-allowlist from the signed grants
