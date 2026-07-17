@@ -48,8 +48,8 @@ func errNotNostrProject() error {
 	if dir, ok := readyProjectDir(); ok {
 		if nostrPinnedBoard(dir) == "" {
 			return fmt.Errorf("this project predates the nostr backend (.ready/config.json has no pinned board): " +
-				"link the authoritative board this project's history belongs to with 'rd link', " +
-				"or adopt a teammate's already-pinned board coordinate with 'rd follow <coord>'")
+				"link the authoritative board this project's history belongs to with 'rd link <coord>', " +
+				"or join a teammate's boards from another machine with 'rd follow <their-email>'")
 		}
 	}
 	return fmt.Errorf("not a ready project: run 'rd init --name <project>' to create one")

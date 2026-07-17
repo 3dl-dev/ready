@@ -72,6 +72,16 @@ func TestClaim_LegacyProjectWithoutPinnedBoard_GetsPinFollowGuidance(t *testing.
 	if !strings.Contains(msg, "predates the nostr backend") {
 		t.Errorf("legacy-project error %q does not explain the project predates the nostr backend", msg)
 	}
+	// ready-c73: 'rd follow' takes an identity (email/npub/rd1_/pubkey), NOT a board
+	// coordinate — telling the user 'rd follow <coord>' is a non-runnable dead end.
+	// A coordinate remedy must route through 'rd link'; the follow remedy must name
+	// the identity form.
+	if strings.Contains(msg, "rd follow <coord>") {
+		t.Errorf("legacy-project error %q sends a board coordinate to 'rd follow', which rejects coordinates (use 'rd link <coord>')", msg)
+	}
+	if !strings.Contains(msg, "rd link <coord>") {
+		t.Errorf("legacy-project error %q does not pair the coordinate remedy with 'rd link <coord>'", msg)
+	}
 }
 
 // TestClaim_GenuinelyUninitializedDir_StillGetsInitGuidance verifies a directory
