@@ -156,6 +156,101 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	return nil
 }
 
+// --- ready-58f: `rd grant --all-boards` (fan one grant across every local board) ---
+
+// localBoard is a locally-pinned board this machine owns: the project directory whose
+// .ready/config.json pins it, plus the board coordinate (30301:<owner>:<boardD>).
+type localBoard struct {
+	dir   string
+	coord string
+}
+
+// discoverLocalOwnedBoards enumerates the boards this machine owns/has pinned locally
+// by scanning the immediate subdirectories of projectsRoot for a .ready/config.json
+// that pins a board coordinate OWNED by ownerPubkey. There is no separate board
+// registry — the pin in each repo's SyncConfig IS the enumeration source. Dirs with no
+// pinned board, or a board owned by a foreign key (which the escalation cap would
+// reject anyway), are skipped. Results are sorted by dir for a stable grant order.
+func discoverLocalOwnedBoards(projectsRoot, ownerPubkey string) ([]localBoard, error) {
+	entries, err := os.ReadDir(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	var out []localBoard
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(projectsRoot, e.Name())
+		cfg, cerr := rdconfig.LoadSyncConfig(dir)
+		if cerr != nil || cfg.Board == "" {
+			continue
+		}
+		owner, _, ok := rdSync.ParseBoardCoord(cfg.Board)
+		if !ok || owner != ownerPubkey {
+			continue
+		}
+		out = append(out, localBoard{dir: dir, coord: cfg.Board})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
+	return out, nil
+}
+
+// runGrantAllBoards fans the SAME owner-signed grant across EVERY board this machine
+// owns/has pinned locally (onboarding a key to N repos in ONE act, vs. N per-board
+// grants). projectsRoot defaults to the parent of the current project dir (its sibling
+// repos). Each board is granted by chdir'ing into its repo and reusing the full
+// single-board pipeline (runNostrGrantRevoke): the grant is published into THAT repo's
+// authoritative log + write relays and its relay write-allowlist is regenerated —
+// behaviour identical to running `rd grant` in each repo. A per-board failure is
+// collected and reported without aborting the remaining boards; the grant is durable in
+// every repo whose publish succeeded regardless.
+func runGrantAllBoards(projectsRoot, grantee, role, label string, from int64, claim string) error {
+	if projectsRoot == "" {
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("--all-boards needs a projects root: run inside a project (its parent directory is scanned) or pass --projects-root")
+		}
+		projectsRoot = filepath.Dir(dir)
+	}
+	k, err := nostrKey()
+	if err != nil {
+		return err
+	}
+	owner := k.PubKeyHex()
+	boards, err := discoverLocalOwnedBoards(projectsRoot, owner)
+	if err != nil {
+		return fmt.Errorf("discovering local boards under %s: %w", projectsRoot, err)
+	}
+	if len(boards) == 0 {
+		return fmt.Errorf("no locally-pinned boards owned by %s found under %s", shortKey(owner), projectsRoot)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Chdir(origCwd) }()
+
+	granted := 0
+	var failures []string
+	for _, b := range boards {
+		if err := os.Chdir(b.dir); err != nil {
+			failures = append(failures, fmt.Sprintf("%s (%s): chdir: %v", b.coord, b.dir, err))
+			continue
+		}
+		if err := runNostrGrantRevoke(b.dir, grantee, role, label, from, claim); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", b.coord, err))
+			continue
+		}
+		granted++
+	}
+	fmt.Printf("\n--all-boards: granted role %q to %s on %d/%d local board(s)\n", role, grantee, granted, len(boards))
+	if len(failures) > 0 {
+		return fmt.Errorf("grant failed on %d of %d board(s): %s", len(failures), len(boards), strings.Join(failures, "; "))
+	}
+	return nil
+}
+
 // ready-f58: `rd nostr grant` / `rd nostr revoke` are GONE — they duplicated the
 // canonical top-level `rd grant` / `rd revoke` (ready-477, cmd/rd/authz_nostr.go and
 // cmd/rd/revoke.go), which publish the same owner-signed kind-39301 role-grant and
