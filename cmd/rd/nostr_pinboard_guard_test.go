@@ -75,11 +75,18 @@ func TestPinBoard_RefusesOnCampfireBackedProject(t *testing.T) {
 	if err == nil {
 		t.Fatal("pin-board on a campfire-backed project succeeded; want refusal")
 	}
-	if !strings.Contains(err.Error(), "rd migrate") {
-		t.Errorf("refusal error %q does not point to 'rd migrate'", err.Error())
-	}
+	// ready-24a: the guard must advise a FOLLOWER to --force pin (adopt the
+	// existing board), NOT to `rd migrate` — migrate re-emits this project's
+	// items signed under the follower's own key, which forks a new board
+	// instead of joining the existing one.
 	if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("refusal error %q does not mention --force escape hatch", err.Error())
+	}
+	if !strings.Contains(err.Error(), "follower") {
+		t.Errorf("refusal error %q does not name --force as the follower path", err.Error())
+	}
+	if strings.Contains(err.Error(), "Run 'rd migrate'") || strings.Contains(err.Error(), "run 'rd migrate' to move history") {
+		t.Errorf("refusal error %q still steers a follower to 'rd migrate' (forks the board)", err.Error())
 	}
 
 	// No history orphaned: the pre-existing sync config (campfire identity)
@@ -96,6 +103,15 @@ func TestPinBoard_RefusesOnCampfireBackedProject(t *testing.T) {
 	}
 	if got.ProjectName != "guardtest" {
 		t.Errorf("ProjectName = %q after refused pin-board; want unchanged %q", got.ProjectName, "guardtest")
+	}
+}
+
+// TestPinBoardCmd_NotHidden verifies `rd pin-board` appears in `rd --help`
+// (ready-24a): it is the follower's normal path to adopt an existing board,
+// not a rare recovery op, so it must not be Hidden.
+func TestPinBoardCmd_NotHidden(t *testing.T) {
+	if nostrPinBoardCmd.Hidden {
+		t.Error("nostrPinBoardCmd.Hidden = true; want false so 'rd pin-board' is listed in 'rd --help'")
 	}
 }
 
