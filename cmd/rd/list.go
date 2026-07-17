@@ -72,8 +72,20 @@ Example:
 			return fmt.Errorf("loading items: %w", err)
 		}
 
-		// Apply filters.
-		filtered := applyListFilters(items, statusFilters, forFilter, byFilter, projectFilter, priorityFilter, typeFilter, all)
+		// Apply filters. The 'for' filter is party-aware (ready-99d, edge #6): an
+		// explicit --for <pubkey|email> matches items whose For is ANY pubkey or email
+		// in that identity's party, not just the verbatim value. Expansion happens here
+		// (not inside applyListFilters, whose exact-match signature many tests pin), so
+		// applyListFilters is called with the For predicate lifted out. A --for that
+		// resolves to no party collapses to {forFilter}, i.e. the prior exact match.
+		// --for "" / unset stays show-all (no For scoping), preserving list semantics.
+		filtered := applyListFilters(items, statusFilters, "", byFilter, projectFilter, priorityFilter, typeFilter, all)
+		if forFilter != "" {
+			idset := nostrPartyIdentitySet(forFilter)
+			filtered = views.Apply(filtered, func(item *state.Item) bool {
+				return idset[item.For]
+			})
+		}
 
 		// Apply label filters (AND semantics: item must carry all requested atoms).
 		if len(labelFilters) > 0 {
