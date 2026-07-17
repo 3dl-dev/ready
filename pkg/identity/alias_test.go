@@ -216,6 +216,136 @@ func TestAlias_StoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAlias_SupersedeEvictsDroppedKey is the load-bearing SECURITY done-condition
+// (ready-998, found missing by ready-9f3): resolution is latest-wins per addressable
+// (signer, d) slot, NOT a union across versions. A republished alias that OMITS a
+// previously-bound key EVICTS it — so a compromised key removed from the party is no
+// longer a valid confidential-write recipient. Signer A first binds {A, B}, then
+// republishes (higher created_at) binding only {A}; B must be gone from BOTH
+// KeysForParty and PartyForPubkey. Real signatures on both events, no mock.
+func TestAlias_SupersedeEvictsDroppedKey(t *testing.T) {
+	a := mustKey(t)
+	b := mustKey(t)
+	aPub, bPub := a.PubKeyHex(), b.PubKeyHex()
+	const email = "baron@3dl.dev"
+
+	evOld, err := BuildAliasEvent(a, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{aPub, bPub},
+		Emails:  []string{email},
+	}, 1_700_000_000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent old: %v", err)
+	}
+	// Republish the SAME (signer, d=email) slot with a higher created_at, dropping B.
+	evNew, err := BuildAliasEvent(a, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{aPub},
+		Emails:  []string{email},
+	}, 1_700_000_100)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent new: %v", err)
+	}
+
+	r := Resolve([]*nostr.Event{evOld, evNew}, []string{aPub})
+
+	keys, ok := r.KeysForParty(email)
+	if !ok {
+		t.Fatalf("KeysForParty(%s) not found after supersede; the surviving alias still binds A", email)
+	}
+	if contains(keys, bPub) {
+		t.Fatalf("KeysForParty(%s) = %v still contains dropped key B — supersede did NOT evict (union bug)", email, keys)
+	}
+	if !contains(keys, aPub) {
+		t.Fatalf("KeysForParty(%s) = %v lost A; the newest alias still binds A", email, keys)
+	}
+	if _, ok := r.PartyForPubkey(bPub); ok {
+		t.Fatalf("PartyForPubkey(B) still resolves after B was dropped — a removed key stays a confidential-write recipient forever")
+	}
+}
+
+// TestAlias_StaleReplayIgnored encodes the replay half of the done condition: an
+// OLDER (lower created_at) alias for the same (signer, d) slot is IGNORED even when
+// ingested AFTER the newer one — order of arrival must not matter, only created_at.
+// A stale, replayed alias cannot re-bind a key the current alias removed.
+func TestAlias_StaleReplayIgnored(t *testing.T) {
+	a := mustKey(t)
+	b := mustKey(t)
+	aPub, bPub := a.PubKeyHex(), b.PubKeyHex()
+	const email = "baron@3dl.dev"
+
+	// The CURRENT alias (higher created_at) binds only {A}.
+	evNew, err := BuildAliasEvent(a, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{aPub},
+		Emails:  []string{email},
+	}, 1_700_000_100)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent new: %v", err)
+	}
+	// A STALE alias (lower created_at) binding {A, B} — an attacker replays it late.
+	evStale, err := BuildAliasEvent(a, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{aPub, bPub},
+		Emails:  []string{email},
+	}, 1_700_000_000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent stale: %v", err)
+	}
+
+	// Ingest order: newest first, stale replayed AFTER — the stale one must lose.
+	r := Resolve([]*nostr.Event{evNew, evStale}, []string{aPub})
+
+	if _, ok := r.PartyForPubkey(bPub); ok {
+		t.Fatalf("a stale replayed alias re-bound removed key B — latest-wins breached by ingest order")
+	}
+	keys, _ := r.KeysForParty(email)
+	if contains(keys, bPub) {
+		t.Fatalf("KeysForParty(%s) = %v re-admitted B from a stale replay", email, keys)
+	}
+}
+
+// TestAlias_SupersedeIsPerSlot ensures supersede is scoped to (signer, d): a newer
+// alias in ONE slot does not evict keys bound by a DIFFERENT signer's alias for the
+// same party (that is the transitive-closure union across signers, which is correct).
+func TestAlias_SupersedeIsPerSlot(t *testing.T) {
+	a := mustKey(t)
+	b := mustKey(t)
+	c := mustKey(t)
+	const email = "baron@3dl.dev"
+
+	// A binds {A, B}.
+	evA, err := BuildAliasEvent(a, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{a.PubKeyHex(), b.PubKeyHex()},
+		Emails:  []string{email},
+	}, 1_700_000_000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent A: %v", err)
+	}
+	// B (trusted transitively) binds {B, C} in a DIFFERENT (signer=B) slot.
+	evB, err := BuildAliasEvent(b, AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{b.PubKeyHex(), c.PubKeyHex()},
+		Emails:  []string{email},
+	}, 1_700_000_050)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent B: %v", err)
+	}
+
+	r := Resolve([]*nostr.Event{evA, evB}, []string{a.PubKeyHex()})
+	keys, ok := r.KeysForParty(email)
+	if !ok {
+		t.Fatalf("KeysForParty(%s) not found", email)
+	}
+	// All three survive: different signers = different slots, unioned by the closure.
+	for _, want := range []string{a.PubKeyHex(), b.PubKeyHex(), c.PubKeyHex()} {
+		if !contains(keys, want) {
+			t.Fatalf("per-slot supersede wrongly evicted a cross-signer key: keys=%v missing %s", keys, want)
+		}
+	}
+}
+
 func sortedStrings(in []string) []string {
 	out := append([]string(nil), in...)
 	// tiny insertion sort to avoid importing sort in the test twice

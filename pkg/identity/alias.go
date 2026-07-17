@@ -102,11 +102,16 @@ type Party struct {
 	Emails  []string
 }
 
-// alias is the parsed view of a verified 39302 event.
+// alias is the parsed view of a verified 39302 event. d/createdAt/id drive the
+// latest-wins-per-(signer,d) supersede (Resolve), exactly like roleGrant does for
+// its (board,grantee) slot.
 type alias struct {
-	signer  string
-	pubkeys []string
-	emails  []string
+	signer    string
+	d         string // the "d" tag = the addressable slot handle (its primary email)
+	pubkeys   []string
+	emails    []string
+	createdAt int64  // NIP-01 seconds — newer supersedes older for the same (signer,d)
+	id        string // event id — deterministic tiebreak on a created_at tie
 }
 
 // parseAlias extracts an alias from a kind-39302 event. ok=false when it is not a
@@ -124,7 +129,25 @@ func parseAlias(e *nostr.Event) (alias, bool) {
 	// The signer is always part of the party it declares.
 	pubkeys = append(pubkeys, e.PubKey)
 	emails := tagValues(e, "email")
-	return alias{signer: e.PubKey, pubkeys: dedup(pubkeys), emails: dedup(emails)}, true
+	return alias{
+		signer:    e.PubKey,
+		d:         tagValue(e, "d"),
+		pubkeys:   dedup(pubkeys),
+		emails:    dedup(emails),
+		createdAt: e.CreatedAt,
+		id:        e.ID,
+	}, true
+}
+
+// newerAlias reports whether alias a should SUPERSEDE alias b for the same (signer,
+// d) slot, under the deterministic latest-wins order shared with role-grants
+// (rolegrant.go newerGrant / nostrproject.go newerThan): newer created_at wins; on a
+// created_at TIE the LOWEST id wins.
+func newerAlias(a, b alias) bool {
+	if a.createdAt != b.createdAt {
+		return a.createdAt > b.createdAt
+	}
+	return a.id < b.id
 }
 
 // Resolver answers party membership queries over a fixed set of alias events. Build
@@ -162,6 +185,36 @@ func Resolve(events []*nostr.Event, trustRoots []string) *Resolver {
 		}
 		aliases = append(aliases, a)
 	}
+
+	// SUPERSEDE — latest-wins per addressable (signer, d) slot, exactly like
+	// rolegrant.go keeps the newest grant per (board, grantee). Before this, Resolve
+	// UNIONED the keys/emails of every 39302 event a signer ever published, so a
+	// republished alias that DROPPED a key never evicted it and party membership only
+	// grew — a compromised key stayed a valid confidential-write recipient forever,
+	// and a replayed stale alias could re-bind a removed key. Keeping only the newest
+	// event per (signer, d) makes revocation/supersede real: dropping a key removes
+	// it, and an older alias for the same slot loses regardless of ingest order.
+	type slotKey struct{ signer, d string }
+	newest := make(map[slotKey]alias, len(aliases))
+	for _, a := range aliases {
+		k := slotKey{a.signer, a.d}
+		if cur, ok := newest[k]; !ok || newerAlias(a, cur) {
+			newest[k] = a
+		}
+	}
+	aliases = aliases[:0]
+	for _, a := range newest {
+		aliases = append(aliases, a)
+	}
+	// Deterministic iteration for the closure below (map order is randomized). The
+	// fixpoint's admitted set is order-independent, but a stable order keeps the whole
+	// resolution reproducible run-to-run.
+	sort.Slice(aliases, func(i, j int) bool {
+		if aliases[i].signer != aliases[j].signer {
+			return aliases[i].signer < aliases[j].signer
+		}
+		return aliases[i].d < aliases[j].d
+	})
 
 	trusted := map[string]bool{}
 	for _, r := range trustRoots {
@@ -271,6 +324,16 @@ func (r *Resolver) KeysForParty(email string) ([]string, bool) {
 }
 
 // --- small helpers (identity-local; the sync package's tag helpers are unexported) ---
+
+// tagValue returns the first value of the first tag named name, or "" if absent.
+func tagValue(e *nostr.Event, name string) string {
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == name {
+			return t[1]
+		}
+	}
+	return ""
+}
 
 func tagValues(e *nostr.Event, name string) []string {
 	var out []string
