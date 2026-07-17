@@ -14,6 +14,7 @@ package main
 //   - healthy (owner / granted member)    -> all good + item count
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/3dl-dev/ready/pkg/rdconfig"
 	"github.com/3dl-dev/ready/pkg/state"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // statusEnv pins RD_HOME into a fresh sandbox and restores cwd on cleanup — the
@@ -123,16 +125,25 @@ func grantEvent(t *testing.T, ownerKey *nostr.Key, boardD, grantee, role string,
 // forParty. env non-nil seals the free text (confidential board).
 func appendItem(t *testing.T, dir string, ownerKey *nostr.Key, boardD, itemID, forParty string, env *rdSync.Envelope) {
 	t.Helper()
+	appendItemWithStatus(t, dir, ownerKey, boardD, itemID, forParty, state.StatusActive, env)
+}
+
+// appendItemWithStatus is appendItem with an explicit rd status — used to seed
+// terminal-status items (done/cancelled) alongside open ones, e.g. to prove the
+// status item count matches `rd ready`'s open/actionable set, not an all-status
+// total (ready-273).
+func appendItemWithStatus(t *testing.T, dir string, ownerKey *nostr.Key, boardD, itemID, forParty, status string, env *rdSync.Envelope) {
+	t.Helper()
 	owner := ownerKey.PubKeyHex()
 	coord := rdSync.BoardCoord(owner, boardD)
 	card, err := rdSync.BuildCardEvent(ownerKey, rdSync.CardSpec{
-		ItemID: itemID, Title: itemID, Status: state.StatusActive, Type: "task",
+		ItemID: itemID, Title: itemID, Status: status, Type: "task",
 		BoardD: boardD, BoardAuthor: owner, For: forParty, Enc: env,
 	}, 3000)
 	if err != nil {
 		t.Fatalf("BuildCardEvent: %v", err)
 	}
-	st, err := rdSync.BuildStatusEventWithIssueRoot(ownerKey, itemID, state.StatusActive, card.ID, "", coord, "", 3000, env)
+	st, err := rdSync.BuildStatusEventWithIssueRoot(ownerKey, itemID, status, card.ID, "", coord, "", 3000, env)
 	if err != nil {
 		t.Fatalf("BuildStatusEvent: %v", err)
 	}
@@ -269,6 +280,28 @@ func TestStatus_RemediesPerState(t *testing.T) {
 			wantSubstr: []string{"all good", "2 items"},
 		},
 		{
+			name: "readable public board, no write grant -> grant remedy, not all good",
+			setup: func(t *testing.T) {
+				base := statusEnv(t)
+				me, err := nostrKey()
+				if err != nil {
+					t.Fatalf("nostrKey: %v", err)
+				}
+				owner, err := nostr.GenerateKey()
+				if err != nil {
+					t.Fatalf("owner key: %v", err)
+				}
+				dir, _ := buildBoardProject(t, base, owner, "open", true /* public: reads fine */)
+				// Item scoped directly to my pubkey (not an email) so the no-alias
+				// state does NOT fire — the ONLY problem here is the missing grant.
+				appendItem(t, dir, owner, "open", "open-1", me.PubKeyHex(), nil)
+				chdir(t, dir)
+			},
+			wantState:  statusNoWriteGrant,
+			wantSubstr: []string{"rd grant --all-boards", "write"},
+			notSubstr:  []string{"all good"},
+		},
+		{
 			name: "healthy granted member on a confidential board reads the sealed items",
 			setup: func(t *testing.T) {
 				base := statusEnv(t)
@@ -323,7 +356,7 @@ func TestStatus_RemediesPerState(t *testing.T) {
 			}
 			// No hex identifier without --debug, EXCEPT the pubkey the owner must copy
 			// into the `rd grant --all-boards <pubkey>` remedy (load-bearing).
-			if rep.State != statusNoReadKey && rep.State != statusOwnsUnlinked {
+			if rep.State != statusNoReadKey && rep.State != statusOwnsUnlinked && rep.State != statusNoWriteGrant {
 				if strings.Contains(out, "30301:") || strings.Contains(out, rep.Pubkey) {
 					t.Errorf("output leaked a raw hex identifier without --debug:\n%s", out)
 				}
@@ -369,7 +402,7 @@ func TestStatus_DebugShowsHex(t *testing.T) {
 // computeStatus performs that same fold, not a narrower local one.
 func TestStatus_PartyAlias_MyCountFoldsSiblingPubkey(t *testing.T) {
 	base := statusEnv(t)
-	_, err := nostrKey() // mint THIS machine's key first
+	me, err := nostrKey() // mint THIS machine's key first
 	if err != nil {
 		t.Fatalf("nostrKey: %v", err)
 	}
@@ -383,6 +416,17 @@ func TestStatus_PartyAlias_MyCountFoldsSiblingPubkey(t *testing.T) {
 	}
 	dir, _ := buildBoardProject(t, base, owner, "team", true /* public */)
 	appendSelfSignedAlias(t, dir, sibling.PubKeyHex(), []string{"baron@3dl.dev"})
+	// A plain (unencrypted — public board) contributor grant for THIS machine's
+	// key: this test's concern is party-alias MyCount folding, not write
+	// authority, so give "me" a grant to keep the state statusHealthy (ready-273
+	// made a missing grant its own dominant statusNoWriteGrant state).
+	grantEv, err := rdSync.BuildRoleGrantEvent(owner, rdSync.RoleGrantSpec{
+		BoardD: "team", BoardAuthor: owner.PubKeyHex(), Grantee: me.PubKeyHex(), Role: rdSync.RoleContributor,
+	}, 1500)
+	if err != nil {
+		t.Fatalf("BuildRoleGrantEvent: %v", err)
+	}
+	appendEvents(t, dir, grantEv)
 	// Item is scoped to the SIBLING pubkey, never this machine's own key.
 	appendItem(t, dir, owner, "team", "team-1", sibling.PubKeyHex(), nil)
 	chdir(t, dir)
@@ -396,6 +440,105 @@ func TestStatus_PartyAlias_MyCountFoldsSiblingPubkey(t *testing.T) {
 	}
 	if rep.MyCount != 1 {
 		t.Errorf("MyCount = %d, want 1 (sibling pubkey's item folded via shared party helper)", rep.MyCount)
+	}
+}
+
+// TestStatus_ItemCountMatchesReadyNotAllStatusTotal is the ready-273 done
+// condition: the status item count must equal the open/actionable set `rd
+// ready` counts (not blocked, not scheduled, not terminal) — NOT an all-status
+// total. Seeds one item in each of active/done/cancelled for the SAME identity;
+// only the active one is "in the queue".
+func TestStatus_ItemCountMatchesReadyNotAllStatusTotal(t *testing.T) {
+	base := statusEnv(t)
+	me, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	dir, _ := buildBoardProject(t, base, me, "work", true /* public */)
+	appendItemWithStatus(t, dir, me, "work", "work-open", me.PubKeyHex(), state.StatusActive, nil)
+	appendItemWithStatus(t, dir, me, "work", "work-done", me.PubKeyHex(), state.StatusDone, nil)
+	appendItemWithStatus(t, dir, me, "work", "work-cancelled", me.PubKeyHex(), state.StatusCancelled, nil)
+	chdir(t, dir)
+
+	rep, err := computeStatus()
+	if err != nil {
+		t.Fatalf("computeStatus: %v", err)
+	}
+	if rep.State != statusHealthy {
+		t.Fatalf("state = %v, want statusHealthy", rep.State)
+	}
+	// The board carries 3 items ever addressed to me across all statuses, but
+	// only 1 is open/actionable — the count `rd ready` would show.
+	if rep.ItemCount != 3 {
+		t.Fatalf("ItemCount = %d, want 3 (board total, all statuses)", rep.ItemCount)
+	}
+	readyCount := len(views.Apply(items(t, dir), views.ReadyFilter()))
+	if readyCount != 1 {
+		t.Fatalf("test setup sanity: expected 1 ready item, computed %d via views.ReadyFilter", readyCount)
+	}
+	if rep.MyCount != 1 {
+		t.Errorf("MyCount = %d, want 1 (matches rd ready's open/actionable count, not the 3-item all-status total)", rep.MyCount)
+	}
+}
+
+// items re-projects the local log for a direct views.ReadyFilter comparison —
+// the same projection nostrProjectAllItems uses, called independently so the
+// test doesn't just re-assert computeStatus's own arithmetic against itself.
+func items(t *testing.T, dir string) []*state.Item {
+	t.Helper()
+	its, _, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("nostrProjectAllItems: %v", err)
+	}
+	return its
+}
+
+// TestStatus_JSON is the ready-273 done condition for `rd status --json`: the
+// flag must be honored (not silently ignored in favor of human text), emitting
+// a parseable structured object whose item_count matches the SAME
+// open/actionable count TestStatus_ItemCountMatchesReadyNotAllStatusTotal
+// proves against `rd ready`'s semantics.
+func TestStatus_JSON(t *testing.T) {
+	base := statusEnv(t)
+	me, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	dir, _ := buildBoardProject(t, base, me, "work", true /* public */)
+	appendItemWithStatus(t, dir, me, "work", "work-open", me.PubKeyHex(), state.StatusActive, nil)
+	appendItemWithStatus(t, dir, me, "work", "work-done", me.PubKeyHex(), state.StatusDone, nil)
+	chdir(t, dir)
+
+	origJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	out := captureStdoutPipe(t, func() {
+		if err := statusCmd.RunE(statusCmd, nil); err != nil {
+			t.Fatalf("status --json: %v", err)
+		}
+	})
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("--json output did not parse as JSON: %v\nstdout=%s", err, out)
+	}
+	// Must NOT be the human "rd status" banner — proves --json is honored, not
+	// silently ignored in favor of the text printer.
+	if strings.Contains(out, "rd status\n") || strings.Contains(out, "all good") {
+		t.Errorf("--json emitted human text instead of a structured object:\n%s", out)
+	}
+	count, ok := got["item_count"]
+	if !ok {
+		t.Fatalf("--json output missing item_count field:\n%s", out)
+	}
+	if n, ok := count.(float64); !ok || n != 1 {
+		t.Errorf("item_count = %v, want 1 (open/actionable count, not the 2-item all-status total)", count)
+	}
+	for _, field := range []string{"identity", "board", "read", "write"} {
+		if _, ok := got[field]; !ok {
+			t.Errorf("--json output missing %q field:\n%s", field, out)
+		}
 	}
 }
 
