@@ -59,8 +59,12 @@ func TestClaim_LegacyProjectWithoutPinnedBoard_GetsPinFollowGuidance(t *testing.
 	if strings.Contains(msg, "rd init") {
 		t.Errorf("legacy-project error %q suggests 'rd init' — this mints a competing board (edge #7)", msg)
 	}
-	if !strings.Contains(msg, "pin-board") {
-		t.Errorf("legacy-project error %q does not mention 'rd pin-board'", msg)
+	// ready-8ff: the binding command is 'rd link' now, not 'rd pin-board'.
+	if !strings.Contains(msg, "rd link") {
+		t.Errorf("legacy-project error %q does not mention 'rd link'", msg)
+	}
+	if strings.Contains(msg, "pin-board") {
+		t.Errorf("legacy-project error %q still mentions the deprecated 'rd pin-board'", msg)
 	}
 	if !strings.Contains(msg, "follow") {
 		t.Errorf("legacy-project error %q does not mention 'rd follow'", msg)
@@ -103,7 +107,7 @@ func TestClaim_GenuinelyUninitializedDir_StillGetsInitGuidance(t *testing.T) {
 	if !strings.Contains(msg, "rd init") {
 		t.Errorf("uninitialized-dir error %q does not suggest 'rd init'", msg)
 	}
-	if strings.Contains(msg, "pin-board") || strings.Contains(msg, "follow") {
-		t.Errorf("uninitialized-dir error %q wrongly suggests pin-board/follow — nothing to pin/adopt yet", msg)
+	if strings.Contains(msg, "pin-board") || strings.Contains(msg, "rd link") || strings.Contains(msg, "follow") {
+		t.Errorf("uninitialized-dir error %q wrongly suggests link/pin-board/follow — nothing to link/adopt yet", msg)
 	}
 }

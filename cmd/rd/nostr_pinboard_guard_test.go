@@ -88,6 +88,14 @@ func TestPinBoard_RefusesOnCampfireBackedProject(t *testing.T) {
 	if strings.Contains(err.Error(), "Run 'rd migrate'") || strings.Contains(err.Error(), "run 'rd migrate' to move history") {
 		t.Errorf("refusal error %q still steers a follower to 'rd migrate' (forks the board)", err.Error())
 	}
+	// ready-8ff: the binding command is 'rd link' now, not 'rd pin-board' —
+	// the guard's escape-hatch guidance must name the current command.
+	if !strings.Contains(err.Error(), "rd link") {
+		t.Errorf("refusal error %q does not mention 'rd link'", err.Error())
+	}
+	if strings.Contains(err.Error(), "'rd pin-board'") {
+		t.Errorf("refusal error %q still names the deprecated 'rd pin-board'", err.Error())
+	}
 
 	// No history orphaned: the pre-existing sync config (campfire identity)
 	// must be untouched, and Board must remain unset.
@@ -106,12 +114,14 @@ func TestPinBoard_RefusesOnCampfireBackedProject(t *testing.T) {
 	}
 }
 
-// TestPinBoardCmd_NotHidden verifies `rd pin-board` appears in `rd --help`
-// (ready-24a): it is the follower's normal path to adopt an existing board,
-// not a rare recovery op, so it must not be Hidden.
-func TestPinBoardCmd_NotHidden(t *testing.T) {
-	if nostrPinBoardCmd.Hidden {
-		t.Error("nostrPinBoardCmd.Hidden = true; want false so 'rd pin-board' is listed in 'rd --help'")
+// TestPinBoardCmd_Hidden verifies `rd pin-board` is HIDDEN (ready-8ff
+// supersedes ready-24a's unhide): the binding command is now `rd link`, and
+// pin-board is a deprecated alias — still runnable, but no longer advertised
+// in `rd --help`. See cmd/rd/nostr_link_test.go for the `rd link` visibility
+// and bare-status-print coverage.
+func TestPinBoardCmd_Hidden(t *testing.T) {
+	if !nostrPinBoardCmd.Hidden {
+		t.Error("nostrPinBoardCmd.Hidden = false; want true — pin-board is now a hidden deprecated alias for 'rd link' (ready-8ff)")
 	}
 }
 
