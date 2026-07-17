@@ -539,3 +539,273 @@ func TestResolveFollowTarget_TokenAndHex(t *testing.T) {
 		t.Errorf("token relays = %v, want [wss://r.example]", relays)
 	}
 }
+
+// aliasesBySigner returns every self-signed (PubKey==signer) kind-39302 alias in
+// dir's bound log — the write-side of `rd follow`'s person-alias refresh.
+func aliasesBySigner(t *testing.T, dir, signer string) []*nostr.Event {
+	t.Helper()
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll %s: %v", dir, err)
+	}
+	var out []*nostr.Event
+	for _, e := range events {
+		if e.Kind == identity.KindPersonAlias && e.PubKey == signer {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func aliasEmails(e *nostr.Event) []string {
+	var out []string
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == "email" {
+			out = append(out, t[1])
+		}
+	}
+	return out
+}
+
+// seedFollowerAndOwner mints a fresh follower key in a scratch RD_HOME and seeds a
+// SEPARATE owner key that published one board plus an owner-signed alias binding
+// baron@3dl.dev to the OWNER key. It injects the seeded snapshot as followFetch and
+// returns (self follower pubkey, owner pubkey, projects root). This is the cold
+// non-owner setup: the follower has never run `rd identify`, and the only
+// baron@3dl.dev alias in the snapshot is signed by a key the follower does NOT
+// trust.
+func seedFollowerAndOwner(t *testing.T) (self, owner, root string) {
+	t.Helper()
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self = fk.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner = ownerKey.PubKeyHex()
+
+	var seeded []*nostr.Event
+	// Owner-signed alias binding baron@3dl.dev -> OWNER key. The follower must never
+	// reuse this handle: it is signed by a key outside the follower's trust closure.
+	ownerAlias, err := identity.BuildAliasEvent(ownerKey, identity.AliasSpec{
+		Handle:  "baron@3dl.dev",
+		Pubkeys: []string{owner},
+		Emails:  []string{"baron@3dl.dev"},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent owner: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded = append(seeded, ownerAlias, be)
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root = filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	return self, owner, root
+}
+
+// TestFollow_NoEmailNeverClaimsOwnerHandle is the ready-57d SECURITY done
+// condition. A FRESH (never-identified) key running `rd follow <owner-pubkey>` with
+// NO --email must publish a KEY-ONLY person-alias: it binds THIS machine's key to
+// NO email at all, and specifically never to baron@3dl.dev. Before the fix, follow
+// defaulted --email to a hardcoded owner handle baked into the binary, so any
+// non-owner auto-claimed baron@3dl.dev and polluted the email->key trust map.
+func TestFollow_NoEmailNeverClaimsOwnerHandle(t *testing.T) {
+	self, owner, root := seedFollowerAndOwner(t)
+
+	rep, err := runFollow(followOpts{
+		who:    owner, // 64-hex owner pubkey
+		email:  "",    // the vulnerable path: no --email given
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	if rep.MintedKey {
+		// follower key was minted at seedFollowerAndOwner via nostrKey(); follow keeps it.
+		t.Error("rd follow re-minted the follower key; it must keep the existing key")
+	}
+
+	dir := rep.BoardDirs["proj1"]
+	if dir == "" {
+		t.Fatalf("proj1 not bound: %+v", rep.BoardDirs)
+	}
+	selfAliases := aliasesBySigner(t, dir, self)
+	if len(selfAliases) != 1 {
+		t.Fatalf("follower published %d self-aliases, want exactly 1", len(selfAliases))
+	}
+	emails := aliasEmails(selfAliases[0])
+	if len(emails) != 0 {
+		t.Errorf("KEY-ONLY alias must claim NO email, got %v — a cold non-owner must never invent an email handle", emails)
+	}
+	for _, e := range emails {
+		if e == "baron@3dl.dev" {
+			t.Errorf("SECURITY: follower's alias claims the owner handle baron@3dl.dev without --email")
+		}
+	}
+	// The follower key must NOT resolve to the owner's baron@3dl.dev party.
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	r := identity.Resolve(events, []string{self})
+	if keys, ok := r.KeysForParty("baron@3dl.dev"); ok {
+		for _, k := range keys {
+			if k == self {
+				t.Errorf("SECURITY: follower key %s resolved into the baron@3dl.dev party", self)
+			}
+		}
+	}
+}
+
+// TestFollow_ExplicitEmailBindsThatEmail proves the legitimate path still works:
+// `rd follow <owner> --email you@x` binds this machine's key to you@x (and only
+// you@x).
+func TestFollow_ExplicitEmailBindsThatEmail(t *testing.T) {
+	self, owner, root := seedFollowerAndOwner(t)
+
+	const mine = "you@example.com"
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  mine,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	dir := rep.BoardDirs["proj1"]
+	selfAliases := aliasesBySigner(t, dir, self)
+	if len(selfAliases) != 1 {
+		t.Fatalf("follower published %d self-aliases, want exactly 1", len(selfAliases))
+	}
+	emails := aliasEmails(selfAliases[0])
+	if len(emails) != 1 || emails[0] != mine {
+		t.Errorf("alias emails = %v, want [%s]", emails, mine)
+	}
+	events, _ := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	r := identity.Resolve(events, []string{self})
+	keys, ok := r.KeysForParty(mine)
+	if !ok {
+		t.Fatalf("email %s did not resolve to any party", mine)
+	}
+	found := false
+	for _, k := range keys {
+		if k == self {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("follower key %s not in party for %s (keys=%v)", self, mine, keys)
+	}
+}
+
+// TestFollow_NoEmailReusesPriorIdentify proves the reuse policy: a follower that
+// already ran `rd identify --add-email me@x` (a self-signed alias present in the
+// snapshot) and then runs `rd follow <owner>` with NO --email REUSES me@x rather
+// than going key-only or inventing a handle.
+func TestFollow_NoEmailReusesPriorIdentify(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self := fk.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner := ownerKey.PubKeyHex()
+
+	const mine = "me@example.com"
+	// Prior `rd identify`: a self-signed alias binding the follower key to me@x.
+	priorAlias, err := identity.BuildAliasEvent(fk, identity.AliasSpec{
+		Handle:  mine,
+		Pubkeys: []string{self},
+		Emails:  []string{mine},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent prior: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded := []*nostr.Event{priorAlias, be}
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  "", // no --email: must REUSE the prior identify handle
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	dir := rep.BoardDirs["proj1"]
+	selfAliases := aliasesBySigner(t, dir, self)
+	// There may be more than one (the prior alias imported + the refreshed one);
+	// assert EVERY self-alias with an email carries me@x and none invents another.
+	sawEmail := false
+	for _, a := range selfAliases {
+		for _, e := range aliasEmails(a) {
+			sawEmail = true
+			if e != mine {
+				t.Errorf("follow published/kept an alias with email %q, want reuse of %q", e, mine)
+			}
+		}
+	}
+	if !sawEmail {
+		t.Errorf("no self-alias carried an email; the prior identify handle %q was not reused", mine)
+	}
+	events, _ := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	r := identity.Resolve(events, []string{self})
+	if _, ok := r.KeysForParty(mine); !ok {
+		t.Errorf("email %s did not resolve after follow — reuse failed", mine)
+	}
+}

@@ -42,10 +42,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultFollowEmail is the party handle registered for this machine's key when
-// --email is not given. It matches the operator this rd install belongs to.
-const defaultFollowEmail = "baron@3dl.dev"
-
 // followFetch fetches events matching filter from relays, merged across relays and
 // de-duplicated by event id. It is a package-level var so the deterministic
 // integration test replaces it with a local seeded-log reader — the same
@@ -86,7 +82,7 @@ var followFetch = func(ctx context.Context, relays []string, filter map[string]a
 type followOpts struct {
 	who    string   // owner-identity token: email | npub1 | rd1_ | 64-hex
 	boardD string   // "" = discover all boards; non-empty = single board
-	email  string   // party handle to (re)register for this machine's key
+	email  string   // party handle to register for this key; "" = reuse a prior self-alias's email, else key-only (NEVER a hardcoded default — ready-57d)
 	root   string   // projects root under which one dir per board is created
 	relays []string // relays to discover/import/backfill through
 }
@@ -133,9 +129,6 @@ ever printed for you to retype.
 				return fmt.Errorf("resolving working directory: %w", err)
 			}
 			root = cwd
-		}
-		if email == "" {
-			email = defaultFollowEmail
 		}
 		rep, err := runFollow(followOpts{
 			who:    args[0],
@@ -226,7 +219,14 @@ func runFollow(opts followOpts) (*followReport, error) {
 	// (6) Refresh this machine's person-alias ONCE (published into the primary
 	// board's log/relays). This is the write side of email->party resolution: it
 	// lets the owner map this pubkey back to the operator.
-	aliasID, err := publishFollowAlias(ctx, primaryDir, k, opts.email, relays)
+	//
+	// SECURITY (ready-57d): NEVER default the email to a hardcoded owner handle. When
+	// --email is omitted, reuse an email this key ALREADY self-asserted (a prior `rd
+	// identify`, resolved from the snapshot under this key's own trust root); if there
+	// is none, publish a KEY-ONLY alias (no email claim). A cold non-owner therefore
+	// never auto-claims someone else's handle and never pollutes the email->key map.
+	email := resolveFollowEmail(opts.email, snapshot, self)
+	aliasID, err := publishFollowAlias(ctx, primaryDir, k, email, relays)
 	if err != nil {
 		return nil, fmt.Errorf("publishing person-alias: %w", err)
 	}
@@ -363,21 +363,50 @@ func importFollowedBoard(ctx context.Context, dir, coord, owner, boardD string, 
 	return nil
 }
 
-// publishFollowAlias publishes ONE kind-39302 person-alias for this machine's key
-// under handle email, into dir's log + the relays. It reuses the same monotonic
-// created_at slot logic as `rd identify` so a re-follow supersedes rather than
-// ties the prior alias. Returns the published event id.
+// resolveFollowEmail decides which email handle this machine's follow-alias should
+// carry (ready-57d). Order: an explicit --email wins; otherwise reuse an email this
+// key ALREADY self-asserted (a prior `rd identify`, resolved from snapshot under
+// this key's OWN trust root); otherwise "" — a KEY-ONLY alias with no email claim.
+// It NEVER invents an email, so a cold non-owner can never auto-claim a handle.
+func resolveFollowEmail(explicit string, snapshot []*nostr.Event, self string) string {
+	if explicit != "" {
+		return explicit
+	}
+	party, ok := identity.Resolve(snapshot, []string{self}).PartyForPubkey(self)
+	if ok && len(party.Emails) > 0 {
+		return party.Emails[0]
+	}
+	return ""
+}
+
+// publishFollowAlias publishes ONE kind-39302 person-alias for this machine's key,
+// into dir's log + the relays. When email is non-empty the alias binds the key to
+// that handle; when email is "" it publishes a KEY-ONLY alias (d = the key's own
+// pubkey, no email tag) so the key is announced for granting without claiming any
+// handle (ready-57d). It reuses the same monotonic created_at slot logic as `rd
+// identify` so a re-follow supersedes rather than ties the prior alias. Returns the
+// published event id.
 func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email string, relays []string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no board bound — cannot anchor the person-alias")
 	}
 	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-	spec := identity.AliasSpec{
-		Handle:  email,
-		Pubkeys: []string{k.PubKeyHex()},
-		Emails:  []string{email},
+	self := k.PubKeyHex()
+	// KEY-ONLY alias: BuildAliasEvent requires a non-empty handle for the addressable
+	// slot, so use the key's own pubkey as the handle and assert NO email.
+	handle := email
+	var emails []string
+	if email != "" {
+		emails = []string{email}
+	} else {
+		handle = self
 	}
-	ev, err := identity.BuildAliasEvent(k, spec, nextAliasCreatedAt(log, email))
+	spec := identity.AliasSpec{
+		Handle:  handle,
+		Pubkeys: []string{self},
+		Emails:  emails,
+	}
+	ev, err := identity.BuildAliasEvent(k, spec, nextAliasCreatedAt(log, handle))
 	if err != nil {
 		return "", err
 	}
@@ -451,7 +480,7 @@ func dedupStrings(in []string) []string {
 
 func init() {
 	followCmd.Flags().String("board", "", "follow only the board with this d identifier (default: all of the owner's boards)")
-	followCmd.Flags().String("email", "", "party handle to register for this machine's key (default: "+defaultFollowEmail+")")
+	followCmd.Flags().String("email", "", "party handle to register for this machine's key (default: reuse a prior 'rd identify' email, else publish a key-only alias claiming no handle)")
 	followCmd.Flags().String("root", "", "projects root under which one directory per board is created (default: current directory)")
 	rootCmd.AddCommand(followCmd)
 }
