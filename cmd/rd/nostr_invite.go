@@ -505,26 +505,64 @@ func existingKeyPubkey(keyPath string) (string, error) {
 	return k.PubKeyHex(), nil
 }
 
-// keyOwnedBoard reports the board coordinate (30301:<owner>:<boardD>) that pubkey
-// OWNS for the project at projectDir, or "" if it owns none. Ownership is any of:
-//   - pubkey is the owner in the PINNED board coordinate (.ready/config.json);
-//   - pubkey authored a 30301 board event in the local log;
-//   - pubkey authored a 39301 role-grant in the local log (only an owner/maintainer
-//     signs grants) — the grant's "a" tag names the board.
+// keyOwnedBoard reports a board coordinate (30301:<owner>:<boardD>) that pubkey OWNS
+// on THIS MACHINE, or "" if it owns none. The identity key at DefaultKeyPath is
+// machine-GLOBAL, so ownership must be detected no matter WHERE `rd join` is run —
+// otherwise a plain `rd join --force` from a fresh cwd or an unrelated project dodges
+// the guard and silently orphans the global owner key (ready-23d, edge #1). Detection
+// therefore spans every board the machine knows:
+//   - the project at projectDir itself (its pinned board + local log), and
+//   - every SIBLING project under the projects root (filepath.Dir(projectDir)) — the
+//     same enumeration source discoverLocalOwnedBoards uses; there is no separate
+//     board registry, each repo's pin + local log IS the source of truth.
 //
-// This is the ready-b32 detector that turns a plain `rd join --force` on an owner
-// box into a hard stop (edge #1). A concrete coordinate is returned so the operator
+// Per project dir, ownership is any of: pubkey is the owner in the PINNED board
+// coordinate; pubkey authored a 30301 board event in the local log; or pubkey authored
+// a 39301 role-grant in the local log (only an owner/maintainer signs grants — the
+// grant's "a" tag names the board). A concrete coordinate is returned so the operator
 // can echo it back via --force-replace-owner-key.
 func keyOwnedBoard(pubkey, projectDir string) string {
 	if pubkey == "" {
 		return ""
 	}
-	if pin := nostrPinnedBoard(projectDir); pin != "" {
+	// (1) The project dir itself — cheapest, and the only reachable source for a fresh
+	// joiner whose cwd is not under a scannable projects root.
+	if coord := keyOwnsBoardInDir(pubkey, projectDir); coord != "" {
+		return coord
+	}
+	// (2) Machine-global scan across sibling projects, so the guard cannot be dodged by
+	// where the operator stands. A dir already covered in (1) is skipped; an unreadable
+	// root (e.g. projectDir has no parent we can list) degrades to (1)-only.
+	root := filepath.Dir(projectDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sib := filepath.Join(root, e.Name())
+		if sib == projectDir {
+			continue
+		}
+		if coord := keyOwnsBoardInDir(pubkey, sib); coord != "" {
+			return coord
+		}
+	}
+	return ""
+}
+
+// keyOwnsBoardInDir reports the board coordinate pubkey OWNS for the SINGLE project at
+// dir (its pinned board, or a 30301 board / 39301 grant it authored in dir's local
+// log), or "" if none. keyOwnedBoard calls this per-dir across the whole machine.
+func keyOwnsBoardInDir(pubkey, dir string) string {
+	if pin := nostrPinnedBoard(dir); pin != "" {
 		if owner, _, ok := rdSync.ParseBoardCoord(pin); ok && owner == pubkey {
 			return pin
 		}
 	}
-	log := rdSync.NewNostrLog(rdSync.NostrLogPath(projectDir))
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
 	events, err := log.ReadAll()
 	if err != nil {
 		return ""
