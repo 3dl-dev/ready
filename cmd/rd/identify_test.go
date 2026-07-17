@@ -72,6 +72,100 @@ func TestNextAliasCreatedAt_MonotonicPerHandle(t *testing.T) {
 	}
 }
 
+// TestIdentify_AddKeyRejectsMalformedKey is ready-e50 coverage: `--add-key` must
+// REJECT a key that is not exactly 64 hex characters (identify.go's
+// `len(pk) != 64 || !isHex(pk)` guard) — both a too-short/non-hex string and a
+// full-length string containing a non-hex character are refused, and critically
+// NO person-alias is published on the rejected path (a malformed --add-key must
+// never silently publish a party binding minus the bad key).
+func TestIdentify_AddKeyRejectsMalformedKey(t *testing.T) {
+	dir, owner := setupNostrNativeProject(t)
+	_ = owner
+
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"too short", "deadbeef"},
+		{"right length but non-hex", strings.Repeat("z", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "identify"}
+			cmd.Flags().StringArray("add-email", nil, "")
+			cmd.Flags().StringArray("add-key", nil, "")
+			cmd.Flags().String("label", "", "")
+			if err := cmd.Flags().Set("add-email", "baron@3dl.dev"); err != nil {
+				t.Fatalf("set add-email: %v", err)
+			}
+			if err := cmd.Flags().Set("add-key", tc.key); err != nil {
+				t.Fatalf("set add-key: %v", err)
+			}
+
+			err := identifyCmd.RunE(cmd, nil)
+			if err == nil {
+				t.Fatalf("identify --add-key %q succeeded; want refusal (malformed pubkey)", tc.key)
+			}
+			if !strings.Contains(err.Error(), "add-key") {
+				t.Errorf("refusal error %q does not mention --add-key", err.Error())
+			}
+
+			events, rerr := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+			if rerr != nil {
+				t.Fatalf("ReadAll: %v", rerr)
+			}
+			for _, e := range events {
+				if e.Kind == identity.KindPersonAlias {
+					t.Errorf("a person-alias was published despite the malformed --add-key %q", tc.key)
+				}
+			}
+		})
+	}
+}
+
+// TestIdentify_LabelLandsInPublishedAlias verifies `--label` rides through to the
+// published person-alias event's content field (identity.AliasSpec.Label ->
+// BuildAliasEvent's Content, pkg/identity/alias.go). Drives the real `rd identify`
+// RunE and reads the event back off the real NostrLog (no mock of the code under
+// test), matching the sibling AddKeyNormalizedToLowercase test's approach.
+func TestIdentify_LabelLandsInPublishedAlias(t *testing.T) {
+	dir, owner := setupNostrNativeProject(t)
+	_ = owner
+
+	const wantLabel = "Baron's Laptop"
+	cmd := &cobra.Command{Use: "identify"}
+	cmd.Flags().StringArray("add-email", nil, "")
+	cmd.Flags().StringArray("add-key", nil, "")
+	cmd.Flags().String("label", "", "")
+	if err := cmd.Flags().Set("add-email", "baron@3dl.dev"); err != nil {
+		t.Fatalf("set add-email: %v", err)
+	}
+	if err := cmd.Flags().Set("label", wantLabel); err != nil {
+		t.Fatalf("set label: %v", err)
+	}
+
+	if err := identifyCmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("identify RunE: %v", err)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	var found *nostr.Event
+	for _, e := range events {
+		if e.Kind == identity.KindPersonAlias {
+			found = e
+		}
+	}
+	if found == nil {
+		t.Fatal("no person-alias event was published")
+	}
+	if found.Content != wantLabel {
+		t.Fatalf("published alias content = %q, want the --label value %q", found.Content, wantLabel)
+	}
+}
+
 // TestIdentify_AddKeyNormalizedToLowercase is the ready-b66 hardening (2): a
 // pubkey supplied via --add-key in mixed/upper case (e.g. pasted from a UI that
 // upper-cases hex) must be normalized to lowercase before it lands in the
