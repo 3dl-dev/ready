@@ -27,6 +27,7 @@ package main
 //   - an `npub1...` bech32 pubkey, or a bare 64-hex pubkey.
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -42,6 +43,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// followConfirmThreshold is the discovered-board-count above which a
+// no-`--board` `rd follow` REQUIRES an explicit confirmation before binding
+// (ready-4c9c). Below or at the threshold, following is left frictionless.
+// Above it — the "followed 88 throwaway fixture boards over 6 minutes with no
+// preview" footgun this const fixes — the operator must see the count+names and
+// either confirm interactively or pass --all/--yes.
+const followConfirmThreshold = 3
 // followFetch fetches events matching filter from relays, merged across relays and
 // de-duplicated by event id. It is a package-level var so the deterministic
 // integration test replaces it with a local seeded-log reader — the same
@@ -77,6 +85,30 @@ var followFetch = func(ctx context.Context, relays []string, filter map[string]a
 	return out, nil
 }
 
+// followConfirm previews the discovered board names and asks the operator to
+// confirm before binding all of them. It is a package-level var (same seam
+// pattern as followFetch) so the unit test can assert the >threshold gate
+// blocks without a real stdin/tty, and so a future interactive test could
+// inject a scripted "yes". Non-interactive stdin (scripts, CI, this test
+// harness) never auto-approves — isInteractive() gates the prompt itself, so
+// the only way to bind >threshold boards without a live human at a tty is
+// --all/--yes.
+var followConfirm = func(names []string) bool {
+	if !isInteractive() {
+		return false
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "rd follow discovered %d boards:\n", len(names))
+	for _, n := range names {
+		fmt.Fprintf(os.Stderr, "  %s\n", n)
+	}
+	fmt.Fprint(os.Stderr, "Bind ALL of these boards into subdirectories? [y/N] ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
+}
+
 // followOpts are the resolved inputs to runFollow. The command RunE fills them
 // from flags + config; the integration test constructs them directly.
 type followOpts struct {
@@ -85,6 +117,7 @@ type followOpts struct {
 	email  string   // party handle to register for this key; "" = reuse a prior self-alias's email, else key-only (NEVER a hardcoded default — ready-57d)
 	root   string   // projects root under which one dir per board is created
 	relays []string // relays to discover/import/backfill through
+	all    bool     // --all/--yes: skip the >threshold confirmation, bind non-interactively
 }
 
 // followReport is the outcome runFollow returns for the command to print (and the
@@ -112,8 +145,14 @@ board its key is kept unchanged. It prints your pubkey with the exact
 'rd grant --all-boards <pubkey>' line to send the owner. No board coordinate is
 ever printed for you to retype.
 
+If the owner published more than a few boards, follow previews the discovered
+count and names and asks you to confirm before binding any of them — pass
+--all (or --yes) to skip that prompt for scripts/CI. --board always binds one
+named board immediately with no prompt.
+
   rd follow baron@3dl.dev                 # all of the owner's boards
   rd follow baron@3dl.dev --board ready   # just one board
+  rd follow baron@3dl.dev --all           # skip the confirmation prompt
   rd follow npub1... | rd follow rd1_...  # by pubkey or invite token`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -123,6 +162,8 @@ ever printed for you to retype.
 		boardD, _ := cmd.Flags().GetString("board")
 		email, _ := cmd.Flags().GetString("email")
 		root, _ := cmd.Flags().GetString("root")
+		allFlag, _ := cmd.Flags().GetBool("all")
+		yesFlag, _ := cmd.Flags().GetBool("yes")
 		if root == "" {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -136,6 +177,7 @@ ever printed for you to retype.
 			email:  email,
 			root:   root,
 			relays: nostrReadRelays(),
+			all:    allFlag || yesFlag,
 		})
 		if err != nil {
 			return err
@@ -194,15 +236,40 @@ func runFollow(opts followOpts) (*followReport, error) {
 	}
 	sort.Strings(boards)
 
+	// (4b) CONFIRMATION GATE (ready-4c9c): a bare `rd follow <owner>` with no
+	// --board discovers and binds EVERY board the owner published. Left
+	// unguarded this silently dumped 88 throwaway fixture boards into cwd over
+	// ~6 minutes with no preview, no count, and no progress output — it looked
+	// hung. `--board <name>` names exactly one board and is scoped by
+	// DiscoverOwnerBoards above already, so it never reaches this gate. Above
+	// followConfirmThreshold boards, preview the count+names and REQUIRE
+	// confirmation (interactive y/N via followConfirm, or --all/--yes to skip
+	// it for scripts) before binding anything.
+	if opts.boardD == "" && len(boards) > followConfirmThreshold && !opts.all {
+		names := make([]string, 0, len(boards))
+		for _, coord := range boards {
+			if _, d, ok := rdSync.ParseBoardCoord(coord); ok {
+				names = append(names, d)
+			}
+		}
+		if !followConfirm(names) {
+			return nil, fmt.Errorf("rd follow: discovered %d boards for %q — refusing to bind without confirmation:\n  %s\n"+
+				"pass --all (or --yes) to bind all of them non-interactively, or --board <name> to bind just one",
+				len(boards), opts.who, strings.Join(names, "\n  "))
+		}
+	}
+
 	rep := &followReport{Pubkey: self, MintedKey: minted, BoardDirs: map[string]string{}, Boards: boards}
 
 	// (5) For each board: bind (committed board.json) + pull full history + backfill.
 	var primaryDir string
-	for _, coord := range boards {
+	total := len(boards)
+	for i, coord := range boards {
 		owner, boardD, ok := rdSync.ParseBoardCoord(coord)
 		if !ok {
 			continue
 		}
+		fmt.Fprintf(os.Stderr, "[%d/%d] binding %s...\n", i+1, total, boardD)
 		dir := filepath.Join(opts.root, boardD)
 		if err := bindFollowedBoard(dir, coord, boardD, relays); err != nil {
 			return nil, fmt.Errorf("binding board %s: %w", boardD, err)
@@ -482,6 +549,8 @@ func init() {
 	followCmd.Flags().String("board", "", "follow only the board with this d identifier (default: all of the owner's boards)")
 	followCmd.Flags().String("email", "", "party handle to register for this machine's key (default: reuse a prior 'rd identify' email, else publish a key-only alias claiming no handle)")
 	followCmd.Flags().String("root", "", "projects root under which one directory per board is created (default: current directory)")
+	followCmd.Flags().Bool("all", false, "skip the confirmation prompt when more than a few boards are discovered (non-interactive/scripted use)")
+	followCmd.Flags().Bool("yes", false, "alias for --all")
 	rootCmd.AddCommand(followCmd)
 }
 
