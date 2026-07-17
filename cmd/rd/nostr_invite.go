@@ -202,7 +202,19 @@ func (m *relayInviteMedium) Events() ([]*nostr.Event, error) {
 // sends to the owner. medium abstracts the relay/log source so the deterministic test
 // drives it locally. force overrides both the local re-join guard and an existing
 // $RD_HOME identity.
-func redeemNostrClaimToken(p *nostrClaimPayload, rdHome, projectDir string, medium inviteMedium, force bool) (mintedPub string, err error) {
+//
+// ready-b32 (edge #1, the moot-board near-miss): overwriting the machine key is
+// SECURITY-CRITICAL. Two guards apply before any replace:
+//   - If the existing key OWNS a board (it is the owner in the pinned board, or it
+//     authored a 30301 board / 39301 grant in the local log), a plain --force is
+//     NOT enough — self-minting a new key would orphan that board's only owner key.
+//     The join HARD-STOPS and points at `rd follow` (keep identity) unless the
+//     operator explicitly names that board via ownerKeyForce.
+//   - ANY key that is legitimately replaced is first COPIED to backupDir
+//     (~/.config/rd-backups/<pubkey>-<n>) so a key is never lost silently. backupDir
+//     is passed in (the production caller resolves keyBackupDir(); a test passes a
+//     temp dir) so this never touches the real ~/.config.
+func redeemNostrClaimToken(p *nostrClaimPayload, rdHome, projectDir, backupDir string, medium inviteMedium, force bool, ownerKeyForce string) (mintedPub string, err error) {
 	if time.Now().Unix() > p.ExpiresAt {
 		return "", fmt.Errorf("invite token expired at %s", time.Unix(p.ExpiresAt, 0).UTC().Format(time.RFC3339))
 	}
@@ -225,12 +237,39 @@ func redeemNostrClaimToken(p *nostrClaimPayload, rdHome, projectDir string, medi
 		}
 	}
 
-	// (2) Identity guard: join SELF-MINTS a fresh key. Overwriting an existing
-	// $RD_HOME identity requires --force (mirrors the pre-cutover guard).
+	// (2) Identity guard: join SELF-MINTS a fresh key. Before overwriting an
+	// existing $RD_HOME identity we (a) REFUSE if that key OWNS a board — plain
+	// --force is deliberately NOT enough, since self-minting would orphan that
+	// board's only owner key (edge #1) — unless the operator explicitly NAMES that
+	// board via ownerKeyForce; and (b) BACK UP any key we are about to replace so a
+	// key is never lost (SECURITY-CRITICAL).
 	keyPath := nostr.DefaultKeyPath(rdHome)
-	hadKey := fileExists(keyPath)
-	if hadKey && !force {
-		return "", fmt.Errorf("identity already exists at %s — use --force to overwrite (self-mint a new key for this board)", keyPath)
+	if fileExists(keyPath) {
+		existingPub, perr := existingKeyPubkey(keyPath)
+		if perr != nil {
+			return "", fmt.Errorf("inspecting existing identity at %s: %w", keyPath, perr)
+		}
+		if owned := keyOwnedBoard(existingPub, projectDir); owned != "" {
+			if ownerKeyForce != owned {
+				return "", fmt.Errorf(
+					"refusing to overwrite this machine's identity: the key %s OWNS board %s. "+
+						"Joining would self-mint a NEW key and orphan that board's owner. "+
+						"To sync this board WITHOUT giving up your identity, use `rd follow`. "+
+						"If you really mean to replace the owner key, re-run with "+
+						"--force-replace-owner-key %s (the old key is backed up first).",
+					shortHex(existingPub), owned, owned)
+			}
+			// Explicit board-naming force: fall through to overwrite (with backup).
+		} else if !force {
+			return "", fmt.Errorf("identity already exists at %s — use --force to overwrite (self-mint a new key for this board)", keyPath)
+		}
+		// Back up the key we are about to replace. Never lose a key silently.
+		if backupDir == "" {
+			backupDir = keyBackupDir()
+		}
+		if _, berr := backupKeyFile(keyPath, backupDir, existingPub); berr != nil {
+			return "", fmt.Errorf("backing up the identity before replacing it: %w", berr)
+		}
 	}
 	minted, err := nostr.GenerateKey()
 	if err != nil {
@@ -388,7 +427,7 @@ func runNostrInvite(ttl time.Duration) (string, error) {
 // pubkey + claim-nonce the joiner sends to the owner for a write grant. It creates a
 // .ready/ directory in the cwd if none exists, so a truly fresh joiner works without a
 // separate `rd init`.
-func joinViaNostrInviteToken(token string, force bool) error {
+func joinViaNostrInviteToken(token string, force bool, ownerKeyForce string) error {
 	p, err := decodeNostrClaimToken(token)
 	if err != nil {
 		return fmt.Errorf("invalid invite token: %w", err)
@@ -407,7 +446,7 @@ func joinViaNostrInviteToken(token string, force bool) error {
 		dir = cwd
 	}
 	medium := &relayInviteMedium{relays: p.Relays, board: p.Board, timeout: nostr.DefaultTimeout}
-	mintedPub, err := redeemNostrClaimToken(p, RDHome(), dir, medium, force)
+	mintedPub, err := redeemNostrClaimToken(p, RDHome(), dir, keyBackupDir(), medium, force, ownerKeyForce)
 	if err != nil {
 		return err
 	}
@@ -448,6 +487,117 @@ func randomNonce() (string, error) {
 		return "", fmt.Errorf("generating nonce: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// existingKeyPubkey resolves the pubkey of the identity currently on disk at
+// keyPath. It prefers the recorded pubkey_hex field (cheap, no secp math) and
+// falls back to re-deriving from the secret when the field is absent. Used by the
+// ready-b32 owner-key guard to decide whether the key we are about to replace owns
+// a board and to name the backup file.
+func existingKeyPubkey(keyPath string) (string, error) {
+	if pub, err := nostr.StoredPubKeyHex(keyPath); err == nil && pub != "" {
+		return pub, nil
+	}
+	k, err := nostr.LoadKeyFile(keyPath)
+	if err != nil {
+		return "", err
+	}
+	return k.PubKeyHex(), nil
+}
+
+// keyOwnedBoard reports the board coordinate (30301:<owner>:<boardD>) that pubkey
+// OWNS for the project at projectDir, or "" if it owns none. Ownership is any of:
+//   - pubkey is the owner in the PINNED board coordinate (.ready/config.json);
+//   - pubkey authored a 30301 board event in the local log;
+//   - pubkey authored a 39301 role-grant in the local log (only an owner/maintainer
+//     signs grants) — the grant's "a" tag names the board.
+//
+// This is the ready-b32 detector that turns a plain `rd join --force` on an owner
+// box into a hard stop (edge #1). A concrete coordinate is returned so the operator
+// can echo it back via --force-replace-owner-key.
+func keyOwnedBoard(pubkey, projectDir string) string {
+	if pubkey == "" {
+		return ""
+	}
+	if pin := nostrPinnedBoard(projectDir); pin != "" {
+		if owner, _, ok := rdSync.ParseBoardCoord(pin); ok && owner == pubkey {
+			return pin
+		}
+	}
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(projectDir))
+	events, err := log.ReadAll()
+	if err != nil {
+		return ""
+	}
+	for _, e := range events {
+		if e == nil || e.PubKey != pubkey {
+			continue
+		}
+		switch e.Kind {
+		case rdSync.KindBoard:
+			if d := eventTagValue(e, "d"); d != "" {
+				return rdSync.BoardCoord(pubkey, d)
+			}
+		case rdSync.KindRoleGrant:
+			if a := eventTagValue(e, "a"); a != "" {
+				if _, _, ok := rdSync.ParseBoardCoord(a); ok {
+					return a
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// eventTagValue returns the first value of the first tag named name, or "".
+func eventTagValue(e *nostr.Event, name string) string {
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == name {
+			return t[1]
+		}
+	}
+	return ""
+}
+
+// keyBackupDir resolves the directory replaced machine keys are copied into,
+// ~/.config/rd-backups (honoring $XDG_CONFIG_HOME), a SIBLING of the rd home so a
+// backup survives even a full ~/.config/rd wipe. Tests pass an explicit backupDir
+// into redeemNostrClaimToken instead, so this never touches the real ~/.config
+// under test.
+func keyBackupDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "rd-backups")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".config", "rd-backups")
+	}
+	return filepath.Join(RDHome(), "rd-backups")
+}
+
+// backupKeyFile copies the key file at keyPath into backupDir as <pubkey>-<n>,
+// choosing the lowest n≥1 whose file does not yet exist so repeated replacements
+// never clobber an earlier backup. Returns the backup path written. This is the
+// SECURITY-CRITICAL "never lose a key without a backup" invariant (ready-b32).
+func backupKeyFile(keyPath, backupDir, pubkey string) (string, error) {
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("reading key to back up: %w", err)
+	}
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating backup dir %s: %w", backupDir, err)
+	}
+	if pubkey == "" {
+		pubkey = "unknown-pubkey"
+	}
+	for n := 1; ; n++ {
+		dest := filepath.Join(backupDir, fmt.Sprintf("%s-%d", pubkey, n))
+		if _, statErr := os.Stat(dest); os.IsNotExist(statErr) {
+			if err := os.WriteFile(dest, data, 0o600); err != nil {
+				return "", fmt.Errorf("writing key backup %s: %w", dest, err)
+			}
+			return dest, nil
+		}
+	}
 }
 
 // shortHex abbreviates a hex id for human output.
