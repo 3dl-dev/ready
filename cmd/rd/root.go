@@ -51,9 +51,10 @@ RESUMING WORK (for agents and humans returning to a project)
   to find your in-progress item. Run rd show <id> to read the full spec.
   The item description is self-contained — it has everything you need.
 
-SETUP
-  rd init --name myproject        create a project (one-time)
-  rd invite                       mint a one-use token for a teammate to join
+SETUP (three real paths — pick the one that matches you)
+  Start a new project:                        rd init
+  Join boards from another of your machines:  rd follow <you@email>
+  Invite a teammate:                          rd invite
 
 Work items live in your project's local signed-event log, synced over nostr
 relays. No database, no server.

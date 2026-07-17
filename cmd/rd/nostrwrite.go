@@ -32,8 +32,26 @@ import (
 // ============================================================================
 
 // errNotNostrProject is returned by every write command when the current directory
-// is not a ready project. The local signed-event log is the only write path.
+// is not a nostr-native ready project. The local signed-event log is the only write
+// path. Two distinct cases share this call site, and MUST NOT share guidance
+// (ready-eaa, edge #7 in ready-615):
+//
+//   - No .ready/ project at all (genuinely uninitialized): the real 'rd init'
+//     guidance applies.
+//   - A .ready/ project exists but has no pinned board (a campfire-era project
+//     that predates the nostr backend, or a legacy .ready/config.json with no
+//     Board coordinate). Telling this user to 'rd init' mints a COMPETING board
+//     signed by a fresh key — a second, unrelated project shadowing the first —
+//     instead of pinning/adopting the one authoritative board this project's
+//     history already belongs to.
 func errNotNostrProject() error {
+	if dir, ok := readyProjectDir(); ok {
+		if nostrPinnedBoard(dir) == "" {
+			return fmt.Errorf("this project predates the nostr backend (.ready/config.json has no pinned board): " +
+				"link the authoritative board this project's history belongs to with 'rd link <coord>', " +
+				"or join a teammate's boards from another machine with 'rd follow <their-email>'")
+		}
+	}
 	return fmt.Errorf("not a ready project: run 'rd init --name <project>' to create one")
 }
 

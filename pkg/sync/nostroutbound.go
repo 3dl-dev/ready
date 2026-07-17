@@ -209,6 +209,71 @@ func (p *Publisher) PublishCardEdit(ctx context.Context, card CardSpec, createdA
 	return p.publishEvents(ctx, res, []*nostr.Event{ce})
 }
 
+// PublishBoard re-publishes EVERY event already durable in the local
+// authoritative log — scoped to boardCoord when non-empty — to the write relays
+// (ready-866, ready-615 edge #4: a project can accumulate many local-log-only
+// events — created while a relay was unreachable, unset, or added after the
+// fact — that the live per-mutation publish hooks never had a chance to send).
+// `rd log publish` republishes ONE item at a time; PublishBoard is the
+// board-level counterpart so a fresh box can converge from relays ALONE, with no
+// scp of nostr-log.jsonl.
+//
+// Unlike PublishItem/PublishEvents, this does NOT append to the log (phase 1) —
+// the events are already there by construction (they were read FROM the log).
+// It only runs phase 2 (best-effort relay publish, buffer-on-failure), so a
+// board publish is safe to re-run: every event is idempotent by nostr event id,
+// and a relay that already holds an event answers OK,true (duplicate acceptance,
+// not an error).
+//
+// boardCoord == "" publishes the WHOLE log unscoped (mirrors ReconcileAll's
+// unscoped fallback for an unpinned project). A non-empty boardCoord selects:
+//   - the 30301 board event itself, when its own coordinate (BoardCoord(author,
+//     "d" tag)) equals boardCoord; and
+//   - every other event (card, status, role-grant, ...) whose "a" tag equals
+//     boardCoord — the same board-membership tag ReconcileBoard filters relay
+//     queries by, so what this publishes is exactly what a board-scoped
+//     reconcile on another machine will later fetch.
+func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (PublishResult, error) {
+	events, err := p.Log.ReadAll()
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("sync: reading log for board publish: %w", err)
+	}
+	scoped := make([]*nostr.Event, 0, len(events))
+	for _, e := range events {
+		if boardCoord == "" || EventBelongsToBoard(e, boardCoord) {
+			scoped = append(scoped, e)
+		}
+	}
+	var res PublishResult
+	p.relayPublish(ctx, &res, scoped)
+	return res, nil
+}
+
+// EventBelongsToBoard reports whether e is a member of the board named by
+// boardCoord ("30301:<author>:<boardD>"): either e IS that board's own 30301
+// event, or e carries an "a" tag equal to boardCoord.
+//
+// Checks EVERY "a" tag (tagValues), not just the first: a NIP-34 status event
+// carries the card's OWN coordinate as its FIRST "a" tag and the board
+// coordinate as a SECOND, additive "a" tag (ready-7ec, BuildStatusEventWithIssueRoot)
+// — the same any-match semantics BoardSyncFilter's relay-side "#a" filter uses
+// (a relay matches ANY tag with that name, not just the first). Using tagValue
+// (first-only) here would silently drop every status event from a board publish.
+//
+// EXPORTED (ready-54e) so cmd/rd/follow.go can call this ONE implementation
+// instead of reimplementing the any-"a"-tag membership check locally.
+func EventBelongsToBoard(e *nostr.Event, boardCoord string) bool {
+	if e.Kind == KindBoard {
+		return BoardCoord(e.PubKey, tagValue(e, "d")) == boardCoord
+	}
+	for _, a := range tagValues(e, "a") {
+		if a == boardCoord {
+			return true
+		}
+	}
+	return false
+}
+
 // PublishEvents appends a pre-built signed-event slice to the authoritative log
 // and best-effort publishes it to the write relays — the low-level primitive the
 // ready-d65 migration drives (board + per-item card + history status events built

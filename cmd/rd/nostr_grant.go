@@ -43,7 +43,7 @@ func resolveBoardAuthorD(dir, signerPubkey string) (boardAuthor, boardD string, 
 	}
 	d := projectPrefix(dir)
 	if d == "" {
-		return "", "", fmt.Errorf("cannot resolve board d from project dir %q; pin a board with 'rd pin-board'", dir)
+		return "", "", fmt.Errorf("cannot resolve board d from project dir %q — run: rd link <coord>", dir)
 	}
 	return signerPubkey, d, nil
 }
@@ -156,6 +156,106 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	return nil
 }
 
+// --- ready-58f: `rd grant --all-boards` (fan one grant across every local board) ---
+
+// localBoard is a locally-pinned board this machine owns: the project directory whose
+// .ready/config.json pins it, plus the board coordinate (30301:<owner>:<boardD>).
+type localBoard struct {
+	dir   string
+	coord string
+}
+
+// discoverLocalOwnedBoards enumerates the boards this machine owns/has pinned locally
+// by scanning the immediate subdirectories of projectsRoot for a board coordinate
+// OWNED by ownerPubkey. Each dir is resolved through nostrPinnedBoard(dir) — the SAME
+// resolution the rest of the CLI uses — which reads the COMMITTED .ready/board.json
+// binding FIRST and falls back to the machine-local .ready/config.json pin (ready-8f3).
+// Reading only config.json would silently OMIT a FRESH GIT CLONE, which carries the
+// tracked board.json but no gitignored config.json until a command writes one — exactly
+// the committed-binding case (ready-f12) this fan-out must include. There is no separate
+// board registry — the resolved pin in each repo IS the enumeration source. Dirs with no
+// pinned board, or a board owned by a foreign key (which the escalation cap would reject
+// anyway), are skipped. Results are sorted by dir for a stable grant order.
+func discoverLocalOwnedBoards(projectsRoot, ownerPubkey string) ([]localBoard, error) {
+	entries, err := os.ReadDir(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	var out []localBoard
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(projectsRoot, e.Name())
+		coord := nostrPinnedBoard(dir)
+		if coord == "" {
+			continue
+		}
+		owner, _, ok := rdSync.ParseBoardCoord(coord)
+		if !ok || owner != ownerPubkey {
+			continue
+		}
+		out = append(out, localBoard{dir: dir, coord: coord})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
+	return out, nil
+}
+
+// runGrantAllBoards fans the SAME owner-signed grant across EVERY board this machine
+// owns/has pinned locally (onboarding a key to N repos in ONE act, vs. N per-board
+// grants). projectsRoot defaults to the parent of the current project dir (its sibling
+// repos). Each board is granted by chdir'ing into its repo and reusing the full
+// single-board pipeline (runNostrGrantRevoke): the grant is published into THAT repo's
+// authoritative log + write relays and its relay write-allowlist is regenerated —
+// behaviour identical to running `rd grant` in each repo. A per-board failure is
+// collected and reported without aborting the remaining boards; the grant is durable in
+// every repo whose publish succeeded regardless.
+func runGrantAllBoards(projectsRoot, grantee, role, label string, from int64, claim string) error {
+	if projectsRoot == "" {
+		dir, ok := readyProjectDir()
+		if !ok {
+			return fmt.Errorf("--all-boards needs a projects root: run inside a project (its parent directory is scanned) or pass --projects-root")
+		}
+		projectsRoot = filepath.Dir(dir)
+	}
+	k, err := nostrKey()
+	if err != nil {
+		return err
+	}
+	owner := k.PubKeyHex()
+	boards, err := discoverLocalOwnedBoards(projectsRoot, owner)
+	if err != nil {
+		return fmt.Errorf("discovering local boards under %s: %w", projectsRoot, err)
+	}
+	if len(boards) == 0 {
+		return fmt.Errorf("no locally-pinned boards owned by %s found under %s — run: rd link <coord> in each board's repo first (or pass --projects-root)", shortKey(owner), projectsRoot)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Chdir(origCwd) }()
+
+	granted := 0
+	var failures []string
+	for _, b := range boards {
+		if err := os.Chdir(b.dir); err != nil {
+			failures = append(failures, fmt.Sprintf("%s (%s): chdir: %v", b.coord, b.dir, err))
+			continue
+		}
+		if err := runNostrGrantRevoke(b.dir, grantee, role, label, from, claim); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", b.coord, err))
+			continue
+		}
+		granted++
+	}
+	fmt.Printf("\n--all-boards: granted role %q to %s on %d/%d local board(s)\n", role, grantee, granted, len(boards))
+	if len(failures) > 0 {
+		return fmt.Errorf("grant failed on %d of %d board(s): %s", len(failures), len(boards), strings.Join(failures, "; "))
+	}
+	return nil
+}
+
 // ready-f58: `rd nostr grant` / `rd nostr revoke` are GONE — they duplicated the
 // canonical top-level `rd grant` / `rd revoke` (ready-477, cmd/rd/authz_nostr.go and
 // cmd/rd/revoke.go), which publish the same owner-signed kind-39301 role-grant and
@@ -163,60 +263,154 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 // `--from` (and `--label`) that used to be unique to `rd nostr revoke` were migrated
 // onto the top-level `rd revoke`. The shared body is publishRoleGrant (above).
 
-// nostrPinBoardCmd establishes the pinned authoritative board coordinate in
-// .ready/config.json (BP-3's pin, activated for this project — design DONE#3). Once
-// pinned, the nostr projection rejects foreign-board cards and derives graded
-// operator levels for THIS board. Default owner = the loaded owner key; default
-// boardD = the project prefix.
-var nostrPinBoardCmd = &cobra.Command{
-	Use:    "pin-board",
-	Hidden: true, // 'rd init' pins the board automatically; manual repin is a rare recovery op
-	Short:  "Pin this project's authoritative board coordinate (30301:<owner>:<boardD>) in .ready/config.json",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		dir, ok := readyProjectDir()
+// runLinkOrPinBoard is the shared body of `rd link` and its hidden deprecated
+// alias `rd pin-board` (ready-8ff: the binding command is 'rd link' now — do
+// NOT delete pin-board this release, teammates' muscle-memory/scripts still
+// call it). Both commands register the SAME flags (--owner, --board-d,
+// --force) and point their RunE at this one function, so the two names are
+// guaranteed to behave identically — there is no drift between them.
+//
+// Bare invocation (no positional board-coord, no --owner/--board-d flag
+// VALUES) PRINTS the currently-linked board instead of erroring or re-linking
+// — a no-arg `rd link` is a status query, not a mutation. Otherwise it binds
+// this repo to a board coordinate (from the positional arg, or from --owner/
+// --board-d, or a bare owner-key default), same as pin-board always did.
+//
+// "Bare" is judged by flag VALUE (empty string), not cobra's Changed() bit:
+// Changed() latches true the first time a flag is ever Set() (including
+// resetting it back to "" in test cleanup) and never un-latches, which would
+// make a later bare invocation of this SAME long-lived *cobra.Command
+// wrongly skip the status-print path. A real CLI invocation is a fresh
+// process per call so this only matters for tests reusing the package-level
+// command vars, but checking the value keeps both cases correct.
+func runLinkOrPinBoard(cmd *cobra.Command, args []string) error {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return fmt.Errorf("no .ready project directory found — run: rd init")
+	}
+
+	ownerFlag, _ := cmd.Flags().GetString("owner")
+	boardDFlag, _ := cmd.Flags().GetString("board-d")
+	if len(args) == 0 && ownerFlag == "" && boardDFlag == "" {
+		return printLinkedBoard(dir)
+	}
+
+	force, _ := cmd.Flags().GetBool("force")
+	if !force {
+		if _, _, campfireOK := projectRoot(); campfireOK {
+			return fmt.Errorf(".campfire/root exists — this project is campfire-backed. " +
+				"If you are a follower adopting an existing nostr board (an owner or " +
+				"teammate already linked it and invited you), pass --force to 'rd link' and " +
+				"adopt that board — this is the normal follower path here, not a rare " +
+				"recovery op. --force does not touch or orphan the campfire history; it " +
+				"only switches this project's reads/writes to the linked nostr board " +
+				"coordinate. Do not run 'rd migrate' to join someone else's board: migrate " +
+				"re-emits this project's items signed under YOUR key, which forks a new " +
+				"board instead of joining the existing one")
+		}
+	}
+	owner, boardD := ownerFlag, boardDFlag
+	if len(args) == 1 {
+		o, d, ok := rdSync.ParseBoardCoord(args[0])
 		if !ok {
-			return fmt.Errorf("no .ready project directory found")
+			return fmt.Errorf("board coordinate %q is malformed (want 30301:<owner>:<boardD>)", args[0])
 		}
-		force, _ := cmd.Flags().GetBool("force")
-		if !force {
-			if _, _, campfireOK := projectRoot(); campfireOK {
-				return fmt.Errorf(".campfire/root exists — this project is campfire-backed; " +
-					"pinning a nostr board here would silently orphan the existing campfire " +
-					"history (all future reads/writes would resolve only from the nostr " +
-					"projection). Run 'rd migrate' to move history to nostr instead, or pass " +
-					"--force to pin anyway (existing campfire history will become invisible)")
-			}
-		}
-		owner, _ := cmd.Flags().GetString("owner")
-		boardD, _ := cmd.Flags().GetString("board-d")
-		if owner == "" {
-			k, err := nostrKey()
-			if err != nil {
-				return err
-			}
-			owner = k.PubKeyHex()
-		}
-		if len(owner) != 64 || !isHex(owner) {
-			return fmt.Errorf("owner %q is not a valid pubkey (64 hex chars)", owner)
-		}
-		if boardD == "" {
-			boardD = projectPrefix(dir)
-		}
-		if boardD == "" {
-			return fmt.Errorf("cannot resolve board d; pass --board-d")
-		}
-		coord := rdSync.BoardCoord(owner, boardD)
-		cfg, err := rdconfig.LoadSyncConfig(dir)
+		owner, boardD = o, d
+	}
+	if owner == "" {
+		k, err := nostrKey()
 		if err != nil {
 			return err
 		}
-		cfg.Board = coord
-		if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
-			return err
-		}
-		fmt.Printf("pinned board: %s\n  (.ready/config.json)\n", coord)
+		owner = k.PubKeyHex()
+	}
+	if len(owner) != 64 || !isHex(owner) {
+		return fmt.Errorf("owner %q is not a valid pubkey (64 hex chars)", owner)
+	}
+	if boardD == "" {
+		boardD = projectPrefix(dir)
+	}
+	if boardD == "" {
+		return fmt.Errorf("cannot resolve board d; pass --board-d")
+	}
+	coord := rdSync.BoardCoord(owner, boardD)
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		return err
+	}
+	cfg.Board = coord
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		return err
+	}
+	// ready-f12: rd link is the follow/link fallback — it too WRITES the
+	// committed binding so a follower who adopts a board leaves a tracked
+	// .ready/board.json for the next clone. Carry the project name + relays
+	// forward from the existing config when the binding does not already set them.
+	binding, err := rdconfig.LoadBoardBinding(dir)
+	if err != nil {
+		return err
+	}
+	binding.Board = coord
+	if binding.ProjectName == "" {
+		binding.ProjectName = cfg.ProjectName
+	}
+	if len(binding.RelayEndpoints) == 0 {
+		binding.RelayEndpoints = cfg.RelayEndpoints
+	}
+	if err := rdconfig.SaveBoardBinding(dir, binding); err != nil {
+		return err
+	}
+	fmt.Printf("linked board: %s\n  (.ready/config.json + .ready/board.json)\n", coord)
+	return nil
+}
+
+// printLinkedBoard reports the board coordinate currently pinned in
+// .ready/config.json for `rd link` with no arguments — a status query.
+func printLinkedBoard(dir string) error {
+	pin := nostrPinnedBoard(dir)
+	if pin == "" {
+		fmt.Println("not linked — run rd follow <owner>")
 		return nil
-	},
+	}
+	owner, boardD, ok := rdSync.ParseBoardCoord(pin)
+	if !ok {
+		fmt.Printf("this repo is linked to board: %s\n", pin)
+		return nil
+	}
+	fmt.Printf("this repo is linked to board: %s (owner %s)\n", boardD, owner[:8])
+	return nil
+}
+
+// nostrLinkCmd is the top-level `rd link` — the binding command that establishes
+// the pinned authoritative board coordinate in .ready/config.json (BP-3's pin,
+// activated for this project — design DONE#3; renamed from pin-board by
+// ready-8ff). Once linked, the nostr projection rejects foreign-board cards and
+// derives graded operator levels for THIS board. Default owner = the loaded
+// owner key; default boardD = the project prefix. With no arguments, prints the
+// currently-linked board instead of mutating anything.
+var nostrLinkCmd = &cobra.Command{
+	Use:   "link [board-coord]",
+	Short: "Link this repo to its authoritative board (30301:<owner>:<boardD>), or print the currently-linked board",
+	Long: `With a board-coord argument (or --owner/--board-d), binds this repo's
+.ready/config.json to that board coordinate — the nostr projection then rejects
+foreign-board cards and derives graded operator levels for THIS board.
+
+With NO arguments, prints the board this repo is currently linked to (or
+'not linked' if none) instead of mutating anything.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runLinkOrPinBoard,
+}
+
+// nostrPinBoardCmd is the HIDDEN deprecated alias for `rd link` (ready-8ff).
+// pin-board was the original name; it is not deleted this release — existing
+// scripts/muscle-memory keep working — but 'rd link' is now the documented,
+// visible command.
+var nostrPinBoardCmd = &cobra.Command{
+	Use:    "pin-board [board-coord]",
+	Hidden: true,
+	Short:  "Deprecated alias for 'rd link'",
+	Args:   cobra.MaximumNArgs(1),
+	RunE:   runLinkOrPinBoard,
 }
 
 // --- relay write-allowlist regeneration + push (sync-allowlist) ---
@@ -479,9 +673,17 @@ func splitCSV(s string) []string {
 }
 
 func init() {
+	// ready-8ff: `rd link` and its hidden deprecated alias `rd pin-board` share
+	// runLinkOrPinBoard, so both need the SAME flags registered on their OWN
+	// flag sets (cobra flags are per-command; RunE reads whichever command was
+	// actually invoked via its `cmd` parameter).
+	linkForceHelp := "link the board even though a legacy project root exists — the follower path for adopting an existing nostr board (does not touch or orphan the legacy history; do not run 'rd migrate' to join someone else's board, it forks a new one under your key)"
+	nostrLinkCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
+	nostrLinkCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
+	nostrLinkCmd.Flags().Bool("force", false, linkForceHelp)
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
-	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists (orphans existing legacy history — prefer 'rd migrate')")
+	nostrPinBoardCmd.Flags().Bool("force", false, linkForceHelp)
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")
@@ -489,8 +691,11 @@ func init() {
 	nostrSyncAllowlistCmd.Flags().String("relay-user", "baron", "ssh user for the relay VMs")
 	nostrSyncAllowlistCmd.Flags().String("remote-path", "/etc/strfry/write-allowlist.json", "path the strfry writePolicy plugin reads on each relay")
 	nostrSyncAllowlistCmd.Flags().Bool("no-fetch", false, "do not fetch the live relay allowlist for the baseline; use the on-disk --file instead")
-	// ready-f58: pin-board promoted to top-level `rd pin-board`; sync-allowlist moved
-	// under the new `rd relay` namespace. Both `rd nostr` hosts are gone.
+	// ready-8ff: `rd link` is the primary binding command; `rd pin-board` stays
+	// registered as a HIDDEN deprecated alias (not deleted this release).
+	// sync-allowlist lives under the `rd relay` namespace. Both `rd nostr` hosts
+	// are gone (ready-f58).
+	rootCmd.AddCommand(nostrLinkCmd)
 	rootCmd.AddCommand(nostrPinBoardCmd)
 	relayCmd.AddCommand(nostrSyncAllowlistCmd)
 }

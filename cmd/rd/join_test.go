@@ -88,7 +88,7 @@ func TestJoin_NoDotCfNoLock(t *testing.T) {
 	}
 	joinHome := filepath.Join(base, "joiner-home")
 	joinDir := filepath.Join(base, "joiner-project")
-	if _, err := redeemNostrClaimToken(p, joinHome, joinDir, medium, false); err != nil {
+	if _, err := redeemNostrClaimToken(p, joinHome, joinDir, filepath.Join(base, "backups"), medium, false, ""); err != nil {
 		t.Fatalf("redeem (join): %v", err)
 	}
 

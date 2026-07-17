@@ -67,9 +67,30 @@ Example:
 			if viewName == "" {
 				viewName = views.ViewReady
 			}
-			filter := views.Named(viewName, forFilter)
-			if filter == nil {
-				return fmt.Errorf("unknown view %q: choose from %v", viewName, views.AllNames())
+			var filter views.Filter
+			switch viewName {
+			case views.ViewMyWork, views.ViewDelegated:
+				// Party-aware identity scoping (ready-f0b, extends ready-99d edge #6
+				// to my-work/delegated): resolve forFilter's party ONCE here, then
+				// match items whose By/For is ANY pubkey or email in that party —
+				// not raw string equality. On a box with no person-alias the set
+				// collapses to {forFilter}, preserving the pre-ready-f0b single-
+				// identity behaviour. An empty forFilter yields an empty set, which
+				// matches nothing (same as before).
+				idset := map[string]bool{}
+				if forFilter != "" {
+					idset = nostrPartyIdentitySet(forFilter)
+				}
+				if viewName == views.ViewMyWork {
+					filter = views.MyWorkFilterSet(idset)
+				} else {
+					filter = views.DelegatedFilterSet(idset)
+				}
+			default:
+				filter = views.Named(viewName, forFilter)
+				if filter == nil {
+					return fmt.Errorf("unknown view %q: choose from %v", viewName, views.AllNames())
+				}
 			}
 			items = views.Apply(items, filter)
 
@@ -82,8 +103,13 @@ Example:
 				// Already filtered by identity in the view function.
 			default:
 				if forFilter != "" {
+					// Party-aware identity scoping (ready-99d, edge #6): an item is
+					// "mine" if its For/By is ANY pubkey or email in forFilter's party,
+					// not just forFilter verbatim. On a box with no person-alias the set
+					// collapses to {forFilter}, preserving the raw-pubkey behaviour.
+					idset := nostrPartyIdentitySet(forFilter)
 					items = views.Apply(items, func(item *state.Item) bool {
-						return item.For == forFilter || item.By == forFilter
+						return idset[item.For] || idset[item.By]
 					})
 				}
 			}

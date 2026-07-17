@@ -160,7 +160,7 @@ func roleForLevel(pubkey, owner string, level int) string {
 func runSessionsNostr(dir string, jsonOut bool) error {
 	owner, boardD, ok := rdSync.ParseBoardCoord(nostrPinnedBoard(dir))
 	if !ok {
-		return fmt.Errorf("no pinned board coordinate in .ready/config.json; pin one with 'rd pin-board'")
+		return fmt.Errorf("no pinned board coordinate in .ready/config.json — run: rd link <coord>")
 	}
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
@@ -208,13 +208,21 @@ This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
 		default:
 			return fmt.Errorf("invalid role %q: choose owner|maintainer|contributor", role)
 		}
-		dir, native := nostrNativeProject()
-		if !native {
-			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants); pin a board with 'rd pin-board' first")
-		}
 		label, _ := cmd.Flags().GetString("label")
 		from, _ := cmd.Flags().GetInt64("from")
 		claim, _ := cmd.Flags().GetString("claim")
+		// ready-58f: --all-boards fans the SAME owner-signed grant across EVERY board
+		// this machine owns/has pinned locally — onboarding a key to N repos in ONE
+		// act instead of N per-board grants. It does not require the CURRENT dir to be
+		// a pinned board (you may run it from a projects umbrella dir).
+		if allBoards, _ := cmd.Flags().GetBool("all-boards"); allBoards {
+			projectsRoot, _ := cmd.Flags().GetString("projects-root")
+			return runGrantAllBoards(projectsRoot, grantee, role, label, from, claim)
+		}
+		dir, native := nostrNativeProject()
+		if !native {
+			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants) — run: rd link <coord> first")
+		}
 		return runNostrGrantRevoke(dir, grantee, role, label, from, claim)
 	},
 }
@@ -223,5 +231,8 @@ func init() {
 	grantCmd.Flags().String("label", "", "human label carried in the grant content (used as the relay allowlist label)")
 	grantCmd.Flags().Int64("from", 0, "effective-from unix seconds (0 = prospective / effective now)")
 	grantCmd.Flags().String("claim", "", "one-use invite claim-nonce this grant consumes (from the joiner's `rd join` output); binds the nonce to this pubkey (single-use)")
+	// ready-58f: onboard a key to many repos in one act.
+	grantCmd.Flags().Bool("all-boards", false, "grant the role on EVERY board this machine owns/has pinned locally (default: only this project's board)")
+	grantCmd.Flags().String("projects-root", "", "directory whose immediate subdirectories are scanned for locally-pinned boards (default: the parent of the current project dir); used with --all-boards")
 	rootCmd.AddCommand(grantCmd)
 }

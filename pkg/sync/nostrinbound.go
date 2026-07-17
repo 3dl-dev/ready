@@ -86,6 +86,29 @@ func ReconcileBoard(ctx context.Context, relays []string, log *NostrLog, boardCo
 	return reconcile(ctx, relays, log, filter, "", trusted, timeout)
 }
 
+// ReconcileSelfGrants is the tightly-scoped self-heal fetch behind the
+// confidential-write key check (edge #5, ready-bd0). The per-board read key (CEK+LTK)
+// rides INSIDE an owner-signed kind-39301 grant addressed to the reader (keydist.go),
+// so when a confidential write finds no local read key the cause is often that a valid
+// grant for THIS pubkey exists on a relay but never reached the local log. This queries
+// the read relays for owner-signed 39301 grants scoped to boardCoord (#a) AND addressed
+// to selfPubkey (#p) and merges the trusted+verified ones, so the caller can re-derive
+// the keyring and seal instead of erroring "ask the owner to grant your pubkey" (the
+// owner already did). It is a SINGLE fetch — the caller retries the key derivation at
+// most once, so there is no reconcile loop. Security: the merge only fills the local
+// log; DeriveBoardKeyring still re-checks that any usable key came from a grant signed
+// by the board OWNER, addressed to this key, and openable by it — a permissive/hostile
+// relay cannot inject a usable key here. The #p scope is a relay-side hint only; a relay
+// that ignores it serves extra grants, which the same downstream checks discard.
+func ReconcileSelfGrants(ctx context.Context, relays []string, log *NostrLog, boardCoord, selfPubkey string, trusted map[string]bool, timeout time.Duration) (ReconcileResult, error) {
+	filter := map[string]any{
+		"kinds": []int{KindRoleGrant},
+		"#a":    []string{boardCoord},
+		"#p":    []string{selfPubkey},
+	}
+	return reconcile(ctx, relays, log, filter, "", trusted, timeout)
+}
+
 // reconcile is the shared fetch+verify+authorize+merge core for
 // ReconcileItem/ReconcileAll. wantItemID, when non-empty, is a defensive
 // post-filter (relays may honor tag filters loosely) restricting merged events to

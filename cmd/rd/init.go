@@ -40,6 +40,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 		public, _ := cmd.Flags().GetBool("public")
 		relays, _ := cmd.Flags().GetStringArray("relay")
 		local, _ := cmd.Flags().GetBool("local")
+		noCommitBinding, _ := cmd.Flags().GetBool("no-commit-binding")
 
 		if len(relays) > 0 && local {
 			return fmt.Errorf("--local and --relay are mutually exclusive")
@@ -59,7 +60,7 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		return initNostr(cwd, name, description, public, relays, local)
+		return initNostr(cwd, name, description, public, relays, local, noCommitBinding)
 	},
 }
 
@@ -75,7 +76,12 @@ To let a teammate join, run 'rd invite' to mint a one-use token, then they run
 // It writes NO .campfire/ and NO .cf/ — the default post-cutover path provisions
 // no campfire identity. boardD equals the project prefix so item ids (create.go)
 // and published cards bind to the same pinned board.
-func initNostr(cwd, name, description string, public bool, relays []string, local bool) error {
+//
+// ready-f12: unless noCommitBinding is set, init ALSO writes the COMMITTED binding
+// .ready/board.json (board coordinate + project name + relays — no secrets) so the
+// coordinate travels with the repo and a fresh clone resolves its board with no
+// link/follow step. --no-commit-binding opts out (config.json still pins locally).
+func initNostr(cwd, name, description string, public bool, relays []string, local, noCommitBinding bool) error {
 	// Reject double-init.
 	if _, _, ok := projectRoot(); ok {
 		return fmt.Errorf(".campfire/root already exists — this project is already initialized")
@@ -127,6 +133,20 @@ func initNostr(cwd, name, description string, public bool, relays []string, loca
 	}
 	if err := rdconfig.SaveSyncConfig(cwd, syncCfg); err != nil {
 		return fmt.Errorf("writing .ready/config.json: %w", err)
+	}
+
+	// ready-f12: write the COMMITTED binding so the board coordinate travels with the
+	// repo. It carries ONLY the non-secret coordinate + project name + relays — never
+	// the signing key (RD_HOME), read keys, or tokens. --no-commit-binding opts out.
+	if !noCommitBinding {
+		binding := &rdconfig.BoardBinding{
+			Board:          coord,
+			ProjectName:    name,
+			RelayEndpoints: eps,
+		}
+		if err := rdconfig.SaveBoardBinding(cwd, binding); err != nil {
+			return fmt.Errorf("writing .ready/board.json: %w", err)
+		}
 	}
 
 	// Build + append the signed 30301 board event to the authoritative log.
@@ -277,5 +297,6 @@ func init() {
 	initCmd.Flags().Bool("public", false, "create a PUBLIC board (free text stays plaintext); confidential is the default")
 	initCmd.Flags().StringArray("relay", nil, "relay URL to sync through (repeatable); omit for local-only. BYOR — no relay is baked in")
 	initCmd.Flags().Bool("local", false, "local-only: configure no relays (skips the interactive prompt)")
+	initCmd.Flags().Bool("no-commit-binding", false, "do NOT write the tracked .ready/board.json binding; pin the board only in the machine-local config.json")
 	rootCmd.AddCommand(initCmd)
 }
