@@ -29,12 +29,13 @@ EXAMPLES
 
 		nameOrID := args[0]
 		force, _ := cmd.Flags().GetBool("force")
+		ownerKeyForce, _ := cmd.Flags().GetString("force-replace-owner-key")
 
 		// A nostr mint-and-ship token (rd1_ prefix) is the SOLE join path: it
 		// imports the minted secp256k1 key, pins the board, adopts relays, and
 		// syncs (ready-a49).
 		if strings.HasPrefix(nameOrID, nostrInviteTokenPrefix) {
-			return joinViaNostrInviteToken(nameOrID, force)
+			return joinViaNostrInviteToken(nameOrID, force, ownerKeyForce)
 		}
 
 		return fmt.Errorf("only invite tokens (rd1_...) are supported — campfire open-join (by name or ID) was retired with the campfire backend")
@@ -53,6 +54,7 @@ func isHex(s string) bool {
 }
 
 func init() {
-	joinCmd.Flags().Bool("force", false, "overwrite existing identity when joining via invite token")
+	joinCmd.Flags().Bool("force", false, "overwrite existing identity when joining via invite token (REFUSED if that key owns a board — see --force-replace-owner-key)")
+	joinCmd.Flags().String("force-replace-owner-key", "", "board coordinate (30301:owner:d) of the board this machine's key owns — REQUIRED to replace an owner key; plain --force will not. The old key is backed up first.")
 	rootCmd.AddCommand(joinCmd)
 }

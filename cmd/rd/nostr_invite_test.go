@@ -102,7 +102,7 @@ func TestNostrClaim_TwoActor_SelfMintReadOnlyThenGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode token (B): %v", err)
 	}
-	mintedPubB, err := redeemNostrClaimToken(pB, bHome, bDir, medium, false)
+	mintedPubB, err := redeemNostrClaimToken(pB, bHome, bDir, t.TempDir(), medium, false, "")
 	if err != nil {
 		t.Fatalf("Joiner B redeem: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestNostrClaim_TwoActor_SelfMintReadOnlyThenGrant(t *testing.T) {
 	cHome := t.TempDir()
 	cDir := t.TempDir()
 	pC, _ := decodeNostrClaimToken(token)
-	mintedPubC, err := redeemNostrClaimToken(pC, cHome, cDir, medium, false)
+	mintedPubC, err := redeemNostrClaimToken(pC, cHome, cDir, t.TempDir(), medium, false, "")
 	if err != nil {
 		t.Fatalf("Joiner C redeem: %v", err)
 	}
@@ -211,18 +211,18 @@ func TestNostrClaim_ReJoinLocalIdempotency(t *testing.T) {
 	dir := t.TempDir()
 
 	p, _ := decodeNostrClaimToken(token)
-	if _, err := redeemNostrClaimToken(p, home, dir, medium, false); err != nil {
+	if _, err := redeemNostrClaimToken(p, home, dir, t.TempDir(), medium, false, ""); err != nil {
 		t.Fatalf("first join: %v", err)
 	}
 	// Second join, same home, no force → refused.
 	p2, _ := decodeNostrClaimToken(token)
-	if _, err := redeemNostrClaimToken(p2, home, dir, medium, false); err == nil ||
+	if _, err := redeemNostrClaimToken(p2, home, dir, t.TempDir(), medium, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "already joined on this machine") {
 		t.Fatalf("re-join without --force = %v, want 'already joined on this machine'", err)
 	}
 	// With --force → allowed (self-mints again).
 	p3, _ := decodeNostrClaimToken(token)
-	if _, err := redeemNostrClaimToken(p3, home, dir, medium, true); err != nil {
+	if _, err := redeemNostrClaimToken(p3, home, dir, t.TempDir(), medium, true, ""); err != nil {
 		t.Fatalf("re-join with --force: %v", err)
 	}
 }
@@ -289,7 +289,7 @@ func TestNostrClaim_LateFailure_FullRollback(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
 
-	_, err = redeemNostrClaimToken(p, home, dir, failEventsMedium{}, false)
+	_, err = redeemNostrClaimToken(p, home, dir, t.TempDir(), failEventsMedium{}, false, "")
 	if err == nil || !strings.Contains(err.Error(), "forced medium read failure") {
 		t.Fatalf("redeem = %v, want the forced late failure surfaced", err)
 	}
