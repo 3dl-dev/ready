@@ -82,8 +82,13 @@ Example:
 				// Already filtered by identity in the view function.
 			default:
 				if forFilter != "" {
+					// Party-aware identity scoping (ready-99d, edge #6): an item is
+					// "mine" if its For/By is ANY pubkey or email in forFilter's party,
+					// not just forFilter verbatim. On a box with no person-alias the set
+					// collapses to {forFilter}, preserving the raw-pubkey behaviour.
+					idset := nostrPartyIdentitySet(forFilter)
 					items = views.Apply(items, func(item *state.Item) bool {
-						return item.For == forFilter || item.By == forFilter
+						return idset[item.For] || idset[item.By]
 					})
 				}
 			}
