@@ -160,7 +160,7 @@ func roleForLevel(pubkey, owner string, level int) string {
 func runSessionsNostr(dir string, jsonOut bool) error {
 	owner, boardD, ok := rdSync.ParseBoardCoord(nostrPinnedBoard(dir))
 	if !ok {
-		return fmt.Errorf("no pinned board coordinate in .ready/config.json; pin one with 'rd pin-board'")
+		return fmt.Errorf("no pinned board coordinate in .ready/config.json — run: rd link <coord>")
 	}
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
@@ -221,7 +221,7 @@ This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
 		}
 		dir, native := nostrNativeProject()
 		if !native {
-			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants); pin a board with 'rd pin-board' first")
+			return fmt.Errorf("rd grant operates on a nostr-native project (kind-39301 role-grants) — run: rd link <coord> first")
 		}
 		return runNostrGrantRevoke(dir, grantee, role, label, from, claim)
 	},
