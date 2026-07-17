@@ -166,11 +166,16 @@ type localBoard struct {
 }
 
 // discoverLocalOwnedBoards enumerates the boards this machine owns/has pinned locally
-// by scanning the immediate subdirectories of projectsRoot for a .ready/config.json
-// that pins a board coordinate OWNED by ownerPubkey. There is no separate board
-// registry — the pin in each repo's SyncConfig IS the enumeration source. Dirs with no
-// pinned board, or a board owned by a foreign key (which the escalation cap would
-// reject anyway), are skipped. Results are sorted by dir for a stable grant order.
+// by scanning the immediate subdirectories of projectsRoot for a board coordinate
+// OWNED by ownerPubkey. Each dir is resolved through nostrPinnedBoard(dir) — the SAME
+// resolution the rest of the CLI uses — which reads the COMMITTED .ready/board.json
+// binding FIRST and falls back to the machine-local .ready/config.json pin (ready-8f3).
+// Reading only config.json would silently OMIT a FRESH GIT CLONE, which carries the
+// tracked board.json but no gitignored config.json until a command writes one — exactly
+// the committed-binding case (ready-f12) this fan-out must include. There is no separate
+// board registry — the resolved pin in each repo IS the enumeration source. Dirs with no
+// pinned board, or a board owned by a foreign key (which the escalation cap would reject
+// anyway), are skipped. Results are sorted by dir for a stable grant order.
 func discoverLocalOwnedBoards(projectsRoot, ownerPubkey string) ([]localBoard, error) {
 	entries, err := os.ReadDir(projectsRoot)
 	if err != nil {
@@ -182,15 +187,15 @@ func discoverLocalOwnedBoards(projectsRoot, ownerPubkey string) ([]localBoard, e
 			continue
 		}
 		dir := filepath.Join(projectsRoot, e.Name())
-		cfg, cerr := rdconfig.LoadSyncConfig(dir)
-		if cerr != nil || cfg.Board == "" {
+		coord := nostrPinnedBoard(dir)
+		if coord == "" {
 			continue
 		}
-		owner, _, ok := rdSync.ParseBoardCoord(cfg.Board)
+		owner, _, ok := rdSync.ParseBoardCoord(coord)
 		if !ok || owner != ownerPubkey {
 			continue
 		}
-		out = append(out, localBoard{dir: dir, coord: cfg.Board})
+		out = append(out, localBoard{dir: dir, coord: coord})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
 	return out, nil
