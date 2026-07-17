@@ -915,6 +915,133 @@ func TestFollow_NoEmailNeverClaimsOwnerHandle(t *testing.T) {
 	}
 }
 
+// TestFollow_NoEmailPreservesSiblingKeys is the ready-104 SECURITY/correctness
+// done condition. Setup: the follower already co-asserted a SECOND machine key
+// via `rd identify --add-key <sibling>` — a self-signed (signer=self, d=me@x)
+// person-alias whose p-tags are BOTH self AND sibling. Running a no-`--email`
+// `rd follow <owner>` reuses the me@x handle (ready-57d reuse policy) and
+// republishes that same (self, me@x) addressable slot. Before the ready-104
+// fix, that republish asserted ONLY self, so latest-wins supersede (ready-998)
+// EVICTED sibling from the party — silently dropping that machine from
+// KeysForParty / PartyForPubkey and from `rd grant --all-boards` discovery. The
+// fix republishes the UNION (existing asserted keys + self), so sibling STILL
+// resolves after the follow. This test FAILS on the narrowing behavior (sibling
+// evicted) and passes once the union is preserved.
+func TestFollow_NoEmailPreservesSiblingKeys(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self := fk.PubKeyHex()
+
+	// A SECOND machine key the operator co-asserted via `rd identify --add-key`.
+	// It has no key material here — it only ever appears as a p-tag the follower's
+	// own self-signed alias asserts.
+	siblingKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey sibling: %v", err)
+	}
+	sibling := siblingKey.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner := ownerKey.PubKeyHex()
+
+	const mine = "me@example.com"
+	// Prior `rd identify --add-key <sibling>`: ONE self-signed alias for the
+	// (self, me@x) slot that asserts BOTH self and sibling.
+	priorAlias, err := identity.BuildAliasEvent(fk, identity.AliasSpec{
+		Handle:  mine,
+		Pubkeys: []string{self, sibling},
+		Emails:  []string{mine},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent prior: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded := []*nostr.Event{priorAlias, be}
+
+	// Sanity: BEFORE follow, the seeded snapshot already resolves both keys into
+	// the me@x party — so any post-follow eviction is caused by follow, not setup.
+	if keys, ok := identity.Resolve(seeded, []string{self}).KeysForParty(mine); !ok || !containsKey(keys, sibling) {
+		t.Fatalf("fixture invalid: sibling %s not in me@x party before follow (keys=%v, ok=%v)", sibling, keys, ok)
+	}
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  "", // no --email: reuses me@x, MUST preserve the sibling key
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+
+	dir := rep.BoardDirs["proj1"]
+	if dir == "" {
+		t.Fatalf("proj1 not bound: %+v", rep.BoardDirs)
+	}
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	r := identity.Resolve(events, []string{self})
+
+	// CORE ASSERTION: sibling must STILL be in the me@x party after follow — the
+	// no-email republish must not narrow (self, me@x) down to self alone.
+	keys, ok := r.KeysForParty(mine)
+	if !ok {
+		t.Fatalf("me@x resolved to no party after follow — the reuse republish broke resolution")
+	}
+	if !containsKey(keys, sibling) {
+		t.Errorf("SECURITY/correctness (ready-104): sibling key %s was EVICTED from the me@x party by a no-email follow; want it preserved. keys=%v", sibling, keys)
+	}
+	if !containsKey(keys, self) {
+		t.Errorf("self key %s missing from me@x party after follow; keys=%v", self, keys)
+	}
+
+	// And PartyForPubkey must still map the sibling machine back to this operator
+	// (what `rd grant --all-boards` discovery relies on).
+	if party, ok := r.PartyForPubkey(sibling); !ok || !containsKey(party.Pubkeys, self) {
+		t.Errorf("PartyForPubkey(sibling) lost the operator binding after follow: party=%+v ok=%v", party, ok)
+	}
+}
+
+func containsKey(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestFollow_ExplicitEmailBindsThatEmail proves the legitimate path still works:
 // `rd follow <owner> --email you@x` binds this machine's key to you@x (and only
 // you@x).
