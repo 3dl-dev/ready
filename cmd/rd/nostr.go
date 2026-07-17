@@ -438,11 +438,38 @@ func nostrReconcileItemIntoLog(itemID string) (string, error) {
 // nostrPublishCmd re-publishes an existing rd item's CURRENT state (read from the
 // campfire/JSONL projection) as board+card+status events. Useful for migrating
 // items created before nostr was enabled, and for the demo's status-change path.
+//
+// --board (ready-866, ready-615 edge #4) switches this command to the BOARD-LEVEL
+// primitive: instead of re-materializing one item's current state, it re-publishes
+// EVERY event already durable in the local authoritative log for the pinned board
+// — verbatim, unmodified — to the write relays. This is the fix for "3dl had 547
+// cards locally but ~12 on relays": the live per-mutation publish hooks only ever
+// push the event THEY just built, so any item mutated while a relay was
+// unreachable, or created before a relay was configured at all, never reaches the
+// relay until something explicitly re-sends it. `--board` is that explicit
+// re-send, scoped to the whole board in one call, so a fresh box can converge
+// from relays alone (no scp of nostr-log.jsonl).
 var nostrPublishCmd = &cobra.Command{
-	Use:   "publish <item-id>",
+	Use:   "publish [item-id]",
 	Short: "Publish an existing rd item's current state to the nostr log + relays",
-	Args:  cobra.ExactArgs(1),
+	Long: `Publish an existing rd item's current state to the nostr log + relays.
+
+  rd log publish <item-id>   Re-publish ONE item's current state (board+card+status).
+  rd log publish --board     Re-publish EVERY local-log event for the pinned board —
+                              the whole append-only history, not just current state —
+                              so a fresh box can converge from relays alone.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		boardFlag, _ := cmd.Flags().GetBool("board")
+		if boardFlag {
+			if len(args) != 0 {
+				return fmt.Errorf("--board takes no item-id argument (it publishes every event for the pinned board)")
+			}
+			return runPublishBoard()
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("publish requires an item-id argument, or --board to publish the whole board")
+		}
 		itemID := args[0]
 		dir, ok := readyProjectDir()
 		if !ok {
@@ -519,6 +546,54 @@ func lastStatusReason(item *state.Item) string {
 		}
 	}
 	return ""
+}
+
+// runPublishBoard is `rd log publish --board` (ready-866): it re-publishes EVERY
+// event already durable in the local authoritative log for the pinned board to
+// the write relays, via the low-level Publisher.PublishBoard primitive. Unlike
+// the per-item publish path above, this does not re-derive or re-sign anything —
+// it sends exactly what is already in nostr-log.jsonl, so a fresh box that
+// reconciles against the relays afterward converges to the SAME state this
+// machine's local log holds, with no scp required.
+//
+// Board scope: the PINNED board coordinate (.ready/config.json's SyncConfig.Board)
+// when set; an unpinned project falls back to publishing the WHOLE local log
+// unscoped, mirroring nostrReconcileBoardIntoLog's ReconcileBoard fallback for the
+// same unpinned case (ready-7ec) — an unpinned install has no board scope to
+// filter by, so "the board" is trivially "everything this identity has written".
+func runPublishBoard() error {
+	dir, ok := readyProjectDir()
+	if !ok {
+		return fmt.Errorf("no .ready project directory found")
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no project dir for publisher")
+	}
+	boardCoord := nostrPinnedBoard(dir)
+	res, err := pub.PublishBoard(context.Background(), boardCoord)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+	fmt.Printf("publish --board: %d event(s) for board %q\n", len(res.Events), boardCoord)
+	for _, ev := range res.Events {
+		fmt.Printf("published kind %d id %s relay-accepted=%v\n", ev.Kind, ev.EventID, ev.AnyRelay)
+	}
+	if res.Buffered {
+		fmt.Println("(some events reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
+	}
+	if res.Rejected {
+		fmt.Fprintln(os.Stderr, "WARNING: some events were permanently rejected by a relay (malformed/disallowed) and dead-lettered to nostr-rejected.jsonl — they will NOT be retried; inspect and fix.")
+	}
+	return nil
 }
 
 // nostrReconcileBoardIntoLog cache-fills the WHOLE pinned board from the read relays
@@ -843,6 +918,8 @@ func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
 
 
 func init() {
+	nostrPublishCmd.Flags().Bool("board", false, "publish EVERY local-log event for the pinned board (fresh-box relay convergence, ready-866) instead of one item's current state")
+
 	nostrPutCmd.Flags().String("title", "", "item title")
 	nostrPutCmd.Flags().String("status", "", "rd status (default active)")
 	nostrPutCmd.Flags().String("priority", "", "priority (p0..p3)")
