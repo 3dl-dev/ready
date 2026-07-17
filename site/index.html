@@ -232,8 +232,12 @@
               <tr><td><code>rd done &lt;id&gt; --reason "..."</code></td><td>Close it. The reason lands in history.</td></tr>
               <tr><td><code>rd gate &lt;id&gt; --gate-type design</code></td><td>Kick a decision to a human.</td></tr>
               <tr><td><code>rd approve &lt;id&gt; --reason "..."</code></td><td>Answer a gate.</td></tr>
-              <tr><td><code>rd invite</code> / <code>rd join &lt;token&gt;</code></td><td>One-use invite / join. Items auto-sync.</td></tr>
-              <tr><td><code>rd grant &lt;pubkey&gt; &lt;role&gt;</code> / <code>rd revoke</code></td><td>Add a member / drop one (rotates the key).</td></tr>
+              <tr><td><code>rd follow &lt;owner&gt;</code></td><td>Join an owner's boards from another machine &mdash; one command, keeps your key.</td></tr>
+              <tr><td><code>rd grant &lt;pubkey&gt;</code></td><td>Add a member; they can read + write. Role is optional, defaults to contributor.</td></tr>
+              <tr><td><code>rd revoke &lt;pubkey&gt;</code></td><td>Drop a member. Confidential boards rotate the board key.</td></tr>
+              <tr><td><code>rd status</code></td><td>What state am I in, and the one command to fix it.</td></tr>
+              <tr><td><code>rd link &lt;board&gt;</code></td><td>Bind this repo to a board.</td></tr>
+              <tr><td><code>rd invite</code> / <code>rd join &lt;token&gt;</code></td><td>One-use invite token &mdash; if you'd rather not share an email or npub.</td></tr>
               <tr><td><code>rd engage &lt;playbook&gt;</code></td><td>Stamp a template into wired-up items.</td></tr>
             </tbody>
           </table>
@@ -316,15 +320,17 @@
             <li>Gates &amp; approvals</li>
             <li>Confidential boards, real members</li>
           </ul>
-          <div class="ds-code-block tier-code"><span class="comment"># Invite a teammate or spin up an agent</span>
-<span class="cmd">TOKEN=$(rd invite)</span>
-<span class="output">rd1_eyJ2Ijox...  (one-use, 2h)</span>
+          <div class="ds-code-block tier-code"><span class="comment"># Teammate follows you from their own machine, keeps their key</span>
+<span class="cmd">rd follow baron@3dl.dev</span>
+<span class="output">found 2 boards owned by baron@3dl.dev: backend, frontend</span>
+<span class="output">your pubkey: 7f3a9c...  send it to the owner</span>
 
-<span class="comment"># They run one command. Items sync.</span>
-<span class="cmd">rd join $TOKEN</span>
+<span class="comment"># Owner runs ONE command. Role defaults to contributor.</span>
+<span class="cmd">rd grant --all-boards 7f3a9c...</span>
 <span class="cmd">rd ready</span>
 <span class="output">  backend-a1b  p1  inbox  3h  Build auth API</span></div>
-          <p class="tier-note">A teammate or a swarm of agents, same board. No key exchange, no manual pull.</p>
+          <p class="tier-note">A teammate or a swarm of agents, same board. No key exchange, no manual pull.
+          Prefer a one-use token instead? <code>rd invite</code> / <code>rd join &lt;token&gt;</code> still works.</p>
         </div>
 
         <div class="tier-card">
@@ -408,8 +414,8 @@ rd is on PATH and auto-detects the project.
 <span class="cmd">rd create "Build API"   --priority p1 --type task</span>
 <span class="cmd">rd create "Write tests" --priority p1 --type task</span>
 
-<span class="comment"># Each agent joins from its own worktree and pulls</span>
-<span class="cmd">rd join $(rd invite)</span>
+<span class="comment"># Each agent follows the owner from its own worktree, keeps its key</span>
+<span class="cmd">rd follow baron@3dl.dev --board api</span>
 <span class="cmd">ITEM=$(rd ready | head -1)</span>
 <span class="cmd">rd claim $ITEM &amp;&amp; rd done $ITEM --reason "Auth done"</span></div>
         </div>
@@ -562,8 +568,8 @@ work:close        close with a reason</span></div>
           <h3>Federated, no mothership</h3>
           <p>Each project is its own nostr board (kind 30301) with its own local log as the authority. Relays
           sync boards between machines. No central server to go down or hold your data.</p>
-          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Relays (self-hosted, 2+ so nothing is a SPOF)
-  &boxvr; write-allowlist: owner-rooted grants
+          <div class="ds-code-block" style="margin-top: var(--ds-space-sm); font-size: 12px;"><span class="output">Relays (self-hosted, 2+ so nothing is a SPOF, untrusted by design)
+  &boxvr; authz: signed owner-rooted grants, checked at projection
   &boxvr; Board: api      (local log = truth)
   &boxvr; Board: frontend (local log = truth)
   &boxur; Board: infra    (local log = truth)</span></div>
