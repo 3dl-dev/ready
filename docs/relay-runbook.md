@@ -115,6 +115,16 @@ relay {
 
 ## Write-allowlist (ready-266)
 
+> **This whole section is OPTIONAL and advanced.** It only applies to
+> operators who run their OWN locked relay (like relay-a/relay-b below).
+> `rd grant <pubkey>` alone is **not required** to touch this section — it
+> authorizes the grantee on **any public relay**, because rd enforces
+> write-authz app-side (reconcile drops any author outside the fail-closed
+> trusted set = self + signed kind-39301 grants). Inviting a teammate is
+> `rd grant <pubkeyHex>` and nothing else; `rd relay sync-allowlist` is an
+> extra step that only matters if you additionally lock down your own relay's
+> write path at the transport layer, in addition to rd's app-side gate.
+
 Both relays are LOCKED so that only ADMITTED portfolio identities may **write**
 (publish events). **Reads stay open** — strfry's `writePolicy` governs only the
 write path, so the relays remain a public read cache.
@@ -187,10 +197,11 @@ drift this runbook warns about: the client trust set and the relay file now deri
 from the same signed log (design `docs/design/nostr-identity-model.md` §4/§6, A3).
 
 ```bash
-# One signed act admits an actor across BOTH the client trust set and the relay:
-rd grant <pubkeyHex> contributor --label "machine-3 rd-node"   # owner-signed 39301
-rd relay sync-allowlist                                              # DRY RUN: prints the diff
-rd relay sync-allowlist --apply                                     # writes the file + scp/ssh to both relays
+# One signed act admits an actor across BOTH the client trust set and the relay.
+# role is OPTIONAL — omit it and it defaults to contributor:
+rd grant <pubkeyHex> --label "machine-3 rd-node"                    # owner-signed 39301
+rd relay sync-allowlist                                              # OPTIONAL, advanced — DRY RUN: prints the diff
+rd relay sync-allowlist --apply                                     # OPTIONAL, advanced — writes the file + scp/ssh to both relays
 
 # Revoke (prospective by default — past authoritative events stay honored):
 rd revoke <pubkeyHex>
@@ -208,7 +219,7 @@ added/removed/preserved diff for review before anyone is removed.
 
 Only the **board author (owner)** may grant `maintainer`/`owner` (the escalation
 cap); a maintainer may grant only `contributor`/`revoked`. The board must be pinned
-first with `rd pin-board` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
+first with `rd link` (writes `SyncConfig.Board = 30301:<owner>:<boardD>`
 to `.ready/config.json`).
 
 **Admitting an invited teammate (self-mint claim model, ready-ce0).** `rd invite`
@@ -219,8 +230,8 @@ The recipient runs `rd join <token>`, which **self-mints** a key and joins
 act, plus the `--claim` flag:
 
 ```bash
-rd grant <joiner-pubkey> contributor --claim <claim-nonce>   # binds nonce → pubkey
-rd relay sync-allowlist --apply                              # admits the key on locked relays
+rd grant <joiner-pubkey> --claim <claim-nonce>   # role optional (defaults to contributor); binds nonce → pubkey
+rd relay sync-allowlist --apply                  # OPTIONAL, advanced — only if this relay is locked
 ```
 
 **Single-use is owner-enforced:** a claim-nonce binds to **exactly one** pubkey.
