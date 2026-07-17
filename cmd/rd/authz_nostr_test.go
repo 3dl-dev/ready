@@ -4,9 +4,9 @@ package main
 // nostr-native default path (ready-477). These tests prove:
 //
 //   - `rd grant`/`rd revoke`/`rd kill` on a nostr-native project publish an
-//     owner-signed kind-39301 role-grant (NOT a cf-authority delegation grant) AND
-//     regenerate the relay write-allowlist from the signed log, surfacing the diff —
-//     with ZERO campfire .cf provisioning (assertNoDotCf).
+//     owner-signed kind-39301 role-grant (NOT a cf-authority delegation grant) and do
+//     NOT touch the relay write-allowlist file (ready-dc2) — with ZERO campfire .cf
+//     provisioning (assertNoDotCf).
 //   - `rd sessions` lists grant-holders derived from the signed log (owner +
 //     non-revoked grantees), excluding revoked keys.
 //   - fail-closed ingestion at the cmd wiring: nostrTrustSet admits an owner-GRANTED
@@ -16,26 +16,13 @@ package main
 // the derivation; assertions check derived authz state, never err==nil.
 
 import (
-	"os/exec"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
-
-// gitCmdForTest runs `git -C dir <args>`, failing the test on error. Shared by tests
-// below that need a REAL git work tree (ready-a76: checkAllowlistGitStatus's clean/
-// dirty distinction is only meaningful inside one — see
-// TestSurfaceAllowlistRegen_GitStatusUndetermined_* in
-// nostr_grant_undetermined_allowlist_test.go for the outside-a-work-tree case).
-func gitCmdForTest(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
 
 // readGrantEventsForTest returns every kind-39301 role-grant in the project's local
 // authoritative log whose "p" (grantee) tag equals grantee.
@@ -57,18 +44,21 @@ func readGrantEventsForTest(t *testing.T, dir, grantee string) []*nostr.Event {
 	return out
 }
 
-// defaultAllowlistPathForTest resolves the same file the grant-time regeneration
-// writes, relative to the (chdir'd) project dir — CWD is the temp project, which is
-// not a git repo, so defaultAllowlistFile() falls back to the repo-relative path.
+// defaultAllowlistPathForTest resolves the same file `rd relay sync-allowlist` would
+// write, relative to the (chdir'd) project dir — CWD is the temp project, which is not
+// a git repo, so defaultAllowlistFile() falls back to the repo-relative path. Grant
+// and revoke must NEVER create this file (ready-dc2), which these tests assert.
 func defaultAllowlistPathForTest(dir string) string {
 	return filepath.Join(dir, "scripts", "relay-policy", "write-allowlist.json")
 }
 
-// TestGrantNative_PublishesGrantAndRegeneratesAllowlist proves `rd grant` on a
+// TestGrantNative_PublishesGrantDoesNotTouchAllowlist proves `rd grant` on a
 // nostr-native project (1) publishes an owner-signed kind-39301 grant into the local
-// authoritative log and (2) regenerates the relay write-allowlist from that signed
-// log so the grantee is admitted — WITHOUT provisioning any campfire .cf state.
-func TestGrantNative_PublishesGrantAndRegeneratesAllowlist(t *testing.T) {
+// authoritative log and (2) does NOT create or modify the relay write-allowlist file
+// (ready-dc2 — grant is a complete invite via the signed 39301 alone; the app-layer
+// trusted set is the authorization gate, so there is no relay-file dependency) —
+// WITHOUT provisioning any campfire .cf state.
+func TestGrantNative_PublishesGrantDoesNotTouchAllowlist(t *testing.T) {
 	dir, _ := setupNostrNativeProject(t)
 
 	gk, err := nostr.GenerateKey()
@@ -93,41 +83,31 @@ func TestGrantNative_PublishesGrantAndRegeneratesAllowlist(t *testing.T) {
 		t.Fatalf("published grant does not verify: %v", err)
 	}
 
-	// (2) The relay write-allowlist was regenerated and now admits the grantee.
-	file := defaultAllowlistPathForTest(dir)
-	allow, err := readAllowlistFile(file)
-	if err != nil {
-		t.Fatalf("readAllowlistFile: %v", err)
-	}
-	if _, ok := allow[grantee]; !ok {
-		t.Fatalf("grantee %s absent from regenerated allowlist %v — grant did not feed the relay allowlist", grantee, allow)
-	}
-	if allow[grantee] != "agent-pm" {
-		t.Fatalf("allowlist label = %q, want the grant label 'agent-pm'", allow[grantee])
+	// (2) The relay write-allowlist file must NOT have been created or modified.
+	if _, statErr := os.Stat(defaultAllowlistPathForTest(dir)); !os.IsNotExist(statErr) {
+		t.Fatalf("grant created/modified write-allowlist.json (stat err=%v); grant must not touch it at all", statErr)
 	}
 
 	// The whole flow must never touch campfire .cf state.
 	assertNoDotCf(t)
 }
 
-// TestRevokeNative_UnifiedRevocationPrunesAllowlist proves `rd revoke`/`rd kill` on a
+// TestRevokeNative_DropsFromTrustSetNoAllowlist proves `rd revoke`/`rd kill` on a
 // nostr-native project publish a role=revoked kind-39301 grant that (1) drops the key
-// to operator level 0 in the derived levels and (2) prunes it from the regenerated
-// relay write-allowlist — the unified "revocation = publish role=revoked" model, with
-// no cf-authority delegation path invoked.
-func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
+// to operator level 0 in the derived levels and removes it from the active
+// grant-holder ("trusted") set nostrSessionHolders reports — so it is no longer an
+// authorized writer — and (2) does NOT touch the relay write-allowlist file
+// (ready-dc2), the unified "revocation = publish role=revoked" model with no
+// cf-authority delegation path invoked.
+//
+// NOTE on read-trust: prospective (default) revocation deliberately KEEPS the key in
+// the read-ingest trust set (nostrTrustSet) so its PRE-revocation items still project
+// — past authoritative events stay honored. The write-side authority (operator level
+// 0 / excluded from active holders) is what denies it NEW winning writes; that is the
+// "removed from the trusted set" the done condition means, asserted below.
+func TestRevokeNative_DropsFromTrustSetNoAllowlist(t *testing.T) {
 	dir, owner := setupNostrNativeProject(t)
-
-	// ready-a76: setupNostrNativeProject's project dir is NOT itself a git work
-	// tree, so checkAllowlistGitStatus can no longer determine cleanliness there —
-	// and once the allowlist file has content (after the grant below), an
-	// undeterminable status now conservatively SKIPS the regen rather than
-	// fail-opening to "clean" as it used to. Put dir under a real git repo and
-	// commit the allowlist after each regen so both regens in this test hit the
-	// "normal in-repo clean" path the fix leaves unchanged, letting the assertions
-	// below test revoke-pruning rather than the git-status guard.
-	gitCmdForTest(t, dir, "init", "-q")
-	gitCmdForTest(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-q", "-m", "init")
+	boardD := projectPrefix(dir)
 
 	gk, err := nostr.GenerateKey()
 	if err != nil {
@@ -138,42 +118,50 @@ func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
 	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-pm", 0, ""); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
-	file := defaultAllowlistPathForTest(dir)
-	if allow, _ := readAllowlistFile(file); allow[grantee] == "" {
-		t.Fatalf("precondition: grantee should be admitted after grant, allowlist=%v", allow)
-	}
-
-	relFile, err := filepath.Rel(dir, file)
+	// Precondition: the granted key is an active holder (authorized writer) after grant.
+	preEvents, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
-		t.Fatalf("filepath.Rel: %v", err)
+		t.Fatal(err)
 	}
-	gitCmdForTest(t, dir, "add", "--", relFile)
-	gitCmdForTest(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "-m", "commit allowlist after grant")
+	if !holderPresent(nostrSessionHolders(preEvents, owner, boardD), grantee) {
+		t.Fatalf("precondition: grantee should be an active grant-holder after grant")
+	}
 
 	// Now revoke (the same primitive kill uses on the native path).
 	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleRevoked, "", 0, ""); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
-	// (1) Derived operator level for the grantee is 0 (revoked).
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	levels, _ := rdSync.DeriveLevels(events, owner, projectPrefix(dir))
+	// (1a) Derived operator level for the grantee is 0 (revoked): no longer an
+	// authorized writer.
+	levels, _ := rdSync.DeriveLevels(events, owner, boardD)
 	if lvl, ok := levels[grantee]; !ok || lvl != rdSync.LevelRevoked {
 		t.Fatalf("grantee level after revoke = (%d, present=%v), want 0/revoked", levels[grantee], ok)
 	}
-
-	// (2) The grantee is pruned from the regenerated allowlist.
-	allow, err := readAllowlistFile(file)
-	if err != nil {
-		t.Fatal(err)
+	// (1b) The revoked key is removed from the active grant-holder ("trusted") set.
+	if holderPresent(nostrSessionHolders(events, owner, boardD), grantee) {
+		t.Fatalf("revoked grantee still listed as an active grant-holder — revoke did not remove its write authority")
 	}
-	if _, ok := allow[grantee]; ok {
-		t.Fatalf("revoked grantee still in allowlist %v — revoke did not prune the relay admission", allow)
+
+	// (2) The relay write-allowlist file must NOT have been created or modified.
+	if _, statErr := os.Stat(defaultAllowlistPathForTest(dir)); !os.IsNotExist(statErr) {
+		t.Fatalf("revoke created/modified write-allowlist.json (stat err=%v); revoke must not touch it at all", statErr)
 	}
 	assertNoDotCf(t)
+}
+
+// holderPresent reports whether pubkey appears in the active grant-holder list.
+func holderPresent(holders []nostrHolder, pubkey string) bool {
+	for _, h := range holders {
+		if h.Pubkey == pubkey {
+			return true
+		}
+	}
+	return false
 }
 
 // TestNostrSessionHolders_OwnerAndNonRevoked proves the `rd sessions` derivation lists
@@ -285,6 +273,77 @@ func TestNostrTrustSetNative_AdmitsGrantedDropsUngranted(t *testing.T) {
 	}
 	if set[ungranted] {
 		t.Fatalf("fail-closed violated: ungranted foreign key %s is in the read-trust set", ungranted)
+	}
+	assertNoDotCf(t)
+}
+
+// TestGrantNative_NoRole_DefaultsContributor_NoAllowlistWrite is the ready-dc2 done
+// condition: `rd grant <pubkey>` with NO role arg is a COMPLETE invite in one command.
+// It (1) is accepted by the Args validator (no "accepts 2 arg(s)" error), (2) defaults
+// the role to contributor and publishes a valid signed kind-39301 grant, (3) does NOT
+// create or modify scripts/relay-policy/write-allowlist.json AT ALL (the relay-file
+// regen footgun is gone), and (4) lands the granted key in nostrTrustSet while an
+// ungranted key stays out — the load-bearing app-layer trusted-set gate that
+// authorization now rests on entirely. Exercises the real grantCmd Args + RunE wiring.
+func TestGrantNative_NoRole_DefaultsContributor_NoAllowlistWrite(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
+
+	// grantCmd is a package-global cobra command that sibling tests mutate flags on;
+	// reset the flags this path reads to their defaults so leftover state can't leak.
+	for name, def := range map[string]string{
+		"label": "", "claim": "", "projects-root": "", "all-boards": "false", "from": "0",
+	} {
+		if err := grantCmd.Flags().Set(name, def); err != nil {
+			t.Fatalf("reset flag %s: %v", name, err)
+		}
+	}
+
+	gk, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	grantee := gk.PubKeyHex()
+
+	// `rd grant <pubkey>` — ONE positional arg, no role.
+	if err := grantCmd.Args(grantCmd, []string{grantee}); err != nil {
+		t.Fatalf("grant with one arg rejected by Args validator: %v — `rd grant <pubkey>` must no longer error", err)
+	}
+	if err := grantCmd.RunE(grantCmd, []string{grantee}); err != nil {
+		t.Fatalf("grant <pubkey> (no role): %v", err)
+	}
+
+	// (2) A real signed kind-39301 contributor grant is now in the log.
+	grants := readGrantEventsForTest(t, dir, grantee)
+	if len(grants) != 1 {
+		t.Fatalf("expected exactly 1 kind-39301 grant, got %d", len(grants))
+	}
+	if role, _ := tagVal(grants[0].Tags, "role"); role != rdSync.RoleContributor {
+		t.Fatalf("defaulted grant role = %q, want contributor", role)
+	}
+	if err := grants[0].Verify(); err != nil {
+		t.Fatalf("grant does not verify: %v", err)
+	}
+
+	// (3) grant MUST NOT create or modify the relay write-allowlist file at all.
+	if _, statErr := os.Stat(defaultAllowlistPathForTest(dir)); !os.IsNotExist(statErr) {
+		t.Fatalf("grant created/modified write-allowlist.json (stat err=%v); grant must not touch it at all", statErr)
+	}
+
+	// (4) Load-bearing app-layer gate: granted key admitted, ungranted foreign key dropped.
+	self, err := nostrSelfPubkey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := nostrTrustSet(dir, self)
+	if !set[grantee] {
+		t.Fatalf("granted key absent from nostrTrustSet — ingestion would drop a legit contributor's items")
+	}
+	fk, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set[fk.PubKeyHex()] {
+		t.Fatalf("fail-closed violated: ungranted foreign key admitted to nostrTrustSet — its items would project")
 	}
 	assertNoDotCf(t)
 }
