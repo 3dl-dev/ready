@@ -103,6 +103,26 @@ func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, b
 	}
 
 	signer := pub.Key.PubKeyHex()
+	// Edge #5 self-heal (ready-bd0): I (a non-owner) hold no readable CEK, yet a valid
+	// owner-signed grant carrying my read key may already exist on a relay and simply
+	// not have reached the local log. Before erroring "ask the owner to grant your
+	// pubkey" — which tells me to do what the owner already did — do ONE targeted
+	// reconcile of owner-signed 39301 grants addressed to me, re-read the log, and
+	// retry the key derivation. Bounded to a single fetch (no loop): if no valid grant
+	// exists, the original error below still fires. Only for a non-owner: the owner
+	// bootstraps its own key and never needs to fetch a grant for itself.
+	if signer != boardAuthor {
+		if env, healed := reconcileSelfGrantEnvelope(dir, pub, boardAuthor, boardD, coord); healed {
+			return env, nil
+		}
+		// The reconcile may have merged the owner self-grant (which establishes the
+		// board cutover) even when no key-bearing grant for me arrived; re-read so the
+		// cutover/error decision below reflects anything the fetch pulled in.
+		if evs, rerr := pub.Log.ReadAll(); rerr == nil {
+			events = evs
+			kr = rdSync.DeriveBoardKeyring(events, pub.Key, boardAuthor, boardD)
+		}
+	}
 	if _, alreadyConfidential := kr.Cutover(coord); alreadyConfidential {
 		// Board is confidential but I have no readable CEK.
 		if signer != boardAuthor {
@@ -133,6 +153,37 @@ func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, b
 	}
 	l := ltk
 	return &rdSync.Envelope{CEK: cek, Epoch: 1, LTK: &l}, nil
+}
+
+// reconcileSelfGrantEnvelope is the edge #5 self-heal (ready-bd0): on the
+// confidential-write path, when the local log yields no read key, it does ONE targeted
+// reconcile of owner-signed 39301 grants addressed to THIS pubkey (the read key rides
+// in the grant — pkg/sync/keydist.go), merges them into the local log, and returns the
+// sealing Envelope if a valid grant now yields the current-epoch CEK. It is bounded to
+// a single relay fetch (no recursion/loop), so a genuinely-absent grant returns
+// healed=false and the caller's original "ask the owner to grant" error still fires. On
+// a local-only project (no read relays) it is a no-op returning healed=false. Security:
+// rdSync.DeriveBoardKeyring re-checks that any usable key came from a grant signed by
+// the board OWNER, addressed to (and openable by) this key — a hostile relay cannot
+// inject a usable key here.
+func reconcileSelfGrantEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, boardD, coord string) (*rdSync.Envelope, bool) {
+	relays := nostrReadRelays()
+	if len(relays) == 0 {
+		return nil, false // local-only: nothing to fetch, the original error stands
+	}
+	self := pub.Key.PubKeyHex()
+	if _, err := rdSync.ReconcileSelfGrants(context.Background(), relays, pub.Log, coord, self, nostrTrustSet(dir, self), autoReconcileTimeout); err != nil {
+		return nil, false // relay error is non-fatal: fall back to the original error
+	}
+	events, err := pub.Log.ReadAll()
+	if err != nil {
+		return nil, false
+	}
+	kr := rdSync.DeriveBoardKeyring(events, pub.Key, boardAuthor, boardD)
+	if env := envelopeFromKeyring(kr, coord); env != nil {
+		return env, true
+	}
+	return nil, false
 }
 
 // wrapEpochToMembers publishes an owner-signed grant carrying the (cek, ltk, epoch)
