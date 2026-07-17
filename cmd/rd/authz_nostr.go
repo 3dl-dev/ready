@@ -3,10 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -37,11 +34,14 @@ import (
 const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 
 // runNostrGrantRevoke is the shared body of `rd grant`/`rd revoke`/`rd kill` on the
-// nostr-native path: it publishes the owner-signed kind-39301 grant (the durable
-// authoritative act) and then regenerates the relay write-allowlist from the signed
-// log, surfacing the add/remove/preserve diff. A regeneration failure WARNS but never
-// fails the command — the grant is already durable in the log; the allowlist is a
-// derived artifact the operator can re-emit with `rd relay sync-allowlist`.
+// nostr-native path: it publishes the owner-signed kind-39301 grant — the durable
+// authoritative act AND the SOLE authorization artifact. It does NOT touch the relay
+// write-allowlist (ready-dc2): the relays are public/outside our control, so rd
+// enforces write-authz app-side (the fail-closed trusted set = self + kind-39301
+// grants, applied on every read/sync/merge path), which makes the signed grant alone
+// sufficient on any relay. Regenerating a relay allowlist file is now ONLY the
+// standalone, optional `rd relay sync-allowlist` (for operators running their own
+// locked relay) — never an automatic side effect of a grant.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
 	if err := publishRoleGrant(grantee, role, label, from, claim); err != nil {
 		return err
@@ -59,129 +59,20 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 			}
 		}
 	}
-	surfaceAllowlistRegen(dir)
-	return nil
-}
-
-// surfaceAllowlistRegen regenerates the local relay write-allowlist from the signed
-// grants and prints the diff. Best-effort (see runNostrGrantRevoke).
-//
-// ready-0df: this is a SIDE EFFECT of publishing a grant — it fires on every `rd
-// grant`/`rd revoke`/`rd kill` and, via --all-boards, in EVERY scanned sibling repo.
-// The grant EVENT (the durable, authoritative kind-39301 act) is separable from the
-// relay ALLOWLIST FILE regen (an ops step `rd relay sync-allowlist --apply` owns): if
-// the target file has UNCOMMITTED git changes — the operator mid-edit, e.g. a
-// hand-relabeled key — silently overwriting it destroys that work with no warning or
-// diff. So when the file is dirty this SKIPS the regen and warns instead of writing;
-// a clean (or absent) file regenerates exactly as before. The explicit `rd relay
-// sync-allowlist [--apply]` path is UNAFFECTED by this guard — it is a deliberate
-// operator act, not an automatic side effect, so it may overwrite a dirty file.
-//
-// ready-a76: cleanliness cannot always be DETERMINED — git binary absent, or the file
-// living outside any git work tree — and the original guard fail-opened that case to
-// "not dirty", silently overwriting an existing hand-edit it just couldn't see. Now an
-// undeterminable status is treated the same as dirty WHEN the file exists with
-// non-empty content (skip + warn); an undeterminable status on an absent/empty file
-// still regenerates, since there is nothing to lose there.
-func surfaceAllowlistRegen(dir string) {
-	file := defaultAllowlistFile()
-	switch checkAllowlistGitStatus(file) {
-	case allowlistStatusDirty:
-		fmt.Fprintf(os.Stderr, "warning: %s has uncommitted changes; skipped regen — run 'rd relay sync-allowlist' to refresh\n", file)
-		return
-	case allowlistStatusUnknown:
-		// ready-a76: cleanliness could not be determined at all (git binary
-		// absent, or file outside any git work tree) — do NOT fail-open to "not
-		// dirty" when there is something an overwrite could destroy. An existing
-		// non-empty file might be an operator's uncommitted hand-edit we simply
-		// can't see; skip + warn instead of silently clobbering it. An absent or
-		// empty file has nothing to lose, so it still falls through and
-		// regenerates below.
-		if info, statErr := os.Stat(file); statErr == nil && info.Size() > 0 {
-			fmt.Fprintf(os.Stderr, "warning: cannot determine git status of %s; skipped regen to avoid clobbering — run 'rd relay sync-allowlist' to refresh\n", file)
-			return
+	// Simple human summary. The grant/revoke event above is the complete act — no
+	// "next: rd relay sync-allowlist" step, because there is no relay-file dependency.
+	board := ""
+	if pub, ok, perr := nostrPublisher(); perr == nil && ok {
+		if boardAuthor, boardD, berr := resolveBoardAuthorD(dir, pub.Key.PubKeyHex()); berr == nil {
+			board = rdSync.BoardCoord(boardAuthor, boardD)
 		}
 	}
-	baseline, err := readAllowlistFile(file)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read current relay write-allowlist %s: %v\n", file, err)
-		return
+	if role == rdSync.RoleRevoked {
+		fmt.Printf("revoked %s on %s — they can no longer read or write.\n", shortKey(grantee), board)
+	} else {
+		fmt.Printf("granted %s to %s on %s — they can read and write.\n", role, shortKey(grantee), board)
 	}
-	plan, err := regenerateAllowlistLocal(dir, file, baseline)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: relay write-allowlist NOT regenerated: %v\n", err)
-		fmt.Fprintln(os.Stderr, "  run 'rd relay sync-allowlist' once resolved")
-		return
-	}
-	fmt.Printf("regenerated relay write-allowlist %s (%d key(s) admitted)\n", file, len(plan.Final))
-	printKeyList("ADD", plan.Added, plan.Final)
-	printKeyList("REMOVE", plan.Removed, baseline)
-	printKeyList("PRESERVE (admitted, no rd grant — kept)", plan.Preserved, baseline)
-	fmt.Println("  next: 'rd relay sync-allowlist --apply' to push the update to the relays")
-}
-
-// allowlistGitStatus is the tri-state result of checking whether the allowlist file
-// has uncommitted git changes: clean, dirty, or genuinely undeterminable.
-type allowlistGitStatus int
-
-const (
-	allowlistStatusClean allowlistGitStatus = iota
-	allowlistStatusDirty
-	// allowlistStatusUnknown means the git check itself could not run — git binary
-	// absent, or file is not inside a git work tree — so cleanliness is unknown,
-	// NOT "clean" (ready-a76: this used to fail-open to clean, silently enabling
-	// an overwrite of a file whose git state we simply couldn't see).
-	allowlistStatusUnknown
-)
-
-// checkAllowlistGitStatus reports whether file has UNCOMMITTED git changes (staged,
-// unstaged, or untracked) — the ready-0df guard that stops the automatic grant-time
-// regen from clobbering an operator's in-progress edit. When the check itself cannot
-// run (git unavailable, or file outside any git work tree) it reports
-// allowlistStatusUnknown rather than silently claiming clean — the caller (
-// surfaceAllowlistRegen) decides how to treat "don't know" based on whether the file
-// has anything worth protecting.
-func checkAllowlistGitStatus(file string) allowlistGitStatus {
-	dir := filepath.Dir(file)
-	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", filepath.Base(file)).Output()
-	if err != nil {
-		return allowlistStatusUnknown
-	}
-	if strings.TrimSpace(string(out)) != "" {
-		return allowlistStatusDirty
-	}
-	return allowlistStatusClean
-}
-
-// regenerateAllowlistLocal derives the relay write-allowlist from the signed grants
-// for this project's pinned board, reconciles it against baseline under the
-// no-lockout invariant (PlanAllowlist), writes the resulting file, and returns the
-// plan. It writes NOTHING and errors when the no-lockout guard trips, so a bad
-// derivation can never lock a currently-admitted writer out of the relays. Pure of
-// relay I/O — the caller supplies the baseline and file path — so it is unit-testable
-// without a relay.
-func regenerateAllowlistLocal(dir, file string, baseline map[string]string) (rdSync.AllowlistPlan, error) {
-	var zero rdSync.AllowlistPlan
-	k, err := nostrKey()
-	if err != nil {
-		return zero, err
-	}
-	boardAuthor, boardD, err := resolveBoardAuthorD(dir, k.PubKeyHex())
-	if err != nil {
-		return zero, err
-	}
-	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
-	if err != nil {
-		return zero, err
-	}
-	plan := rdSync.PlanAllowlist(events, boardAuthor, boardD, ownerBootstrapLabel, baseline)
-	if len(plan.LockoutViolations) > 0 {
-		return plan, fmt.Errorf("no-lockout guard tripped: %d key(s) would be locked out without a revoke grant", len(plan.LockoutViolations))
-	}
-	if err := writeAllowlistFile(file, plan.Final); err != nil {
-		return plan, err
-	}
-	return plan, nil
+	return nil
 }
 
 // nostrHolder is one active authz principal shown by `rd sessions` on the
@@ -259,19 +150,31 @@ func runSessionsNostr(dir string, jsonOut bool) error {
 // regenerates the relay write-allowlist. It is nostr-native only: campfire-backed
 // projects admit members with `rd admit`, not `rd grant`.
 var grantCmd = &cobra.Command{
-	Use:   "grant <pubkeyHex> <role>",
-	Short: "Grant a role (owner|maintainer|contributor) via an owner-signed kind-39301 role-grant",
-	Long: `Publish an owner-signed kind-39301 role-grant assigning <role> to <pubkeyHex>
-for this project's pinned board, then regenerate the relay write-allowlist from the
-signed grants so the grantee is admitted in ONE act. role is one of
-owner|maintainer|contributor. Only the board author (owner) may grant maintainer or
+	Use:   "grant <pubkeyHex> [role]",
+	Short: "Grant a role (default contributor) via an owner-signed kind-39301 role-grant",
+	Long: `Publish an owner-signed kind-39301 role-grant assigning a role to <pubkeyHex>
+for this project's pinned board — a COMPLETE invite in ONE command. The role
+argument is OPTIONAL and defaults to contributor, so 'rd grant <pubkeyHex>' onboards
+a writer with no further steps: no allowlist edit, no relay sync. The signed grant
+alone is sufficient authorization on any relay because rd enforces write-authz
+app-side (the fail-closed trusted set = self + kind-39301 grants drops any ungranted
+author on every read/sync/merge path). role, when given, is one of
+owner|maintainer|contributor; only the board author (owner) may grant maintainer or
 owner (the escalation cap).
 
-This is the nostr-native authz path: it provisions no legacy .cf. Revoke with
-'rd revoke <pubkeyHex>'.`,
-	Args: cobra.ExactArgs(2),
+This is the nostr-native authz path: it provisions no legacy .cf and does NOT touch
+scripts/relay-policy/write-allowlist.json. Operators who run their own locked relay
+can still regenerate that file with the standalone 'rd relay sync-allowlist'. Revoke
+with 'rd revoke <pubkeyHex>'.`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		grantee, role := args[0], args[1]
+		grantee := args[0]
+		// ready-dc2: role is optional and defaults to contributor — `rd grant <pubkey>`
+		// is a complete invite in one command (no role arg, no allowlist, no sync step).
+		role := rdSync.RoleContributor
+		if len(args) == 2 {
+			role = args[1]
+		}
 		switch role {
 		case rdSync.RoleOwner, rdSync.RoleMaintainer, rdSync.RoleContributor:
 		case rdSync.RoleRevoked:
