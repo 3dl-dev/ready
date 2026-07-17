@@ -322,3 +322,154 @@ func TestConfidentialWriteStillErrorsWhenNoGrantExists(t *testing.T) {
 		t.Fatalf("self-heal must issue exactly one reconcile fetch, relay saw %d REQs", got)
 	}
 }
+
+// TestConfidentialWriteSelfHealRejectsHostileGrants is the ready-b66 hardening
+// (3): a hostile or merely-permissive relay (storingRelay deliberately ignores
+// filters, exactly like one) can serve MORE than the one genuine owner-signed
+// grant for this pubkey+board in response to the self-heal reconcile fetch. Three
+// hostile grants are seeded alongside the one valid grant:
+//
+//  1. ATTACKER-signed — a real signature, but from a key that is NEITHER the board
+//     owner NOR anywhere in the member's trust closure. This must be rejected at
+//     the RECONCILE TRUST GATE (nostrinbound.go reconcile()) — the self-heal SEAM
+//     — and so must never even be merged into the member's local log. Proving this
+//     at the seam (not just "DeriveBoardKeyring ignores non-owner signers") is the
+//     point of this test: a relay-injection defense that only worked downstream
+//     would still let an attacker bloat the local log with junk it can never use.
+//  2. OWNER-signed, valid, but addressed to a DIFFERENT MEMBER on the SAME board —
+//     a genuine grant for someone else that a permissive relay serves anyway.
+//  3. OWNER-signed, valid, but for a DIFFERENT BOARD entirely (still addressed to
+//     THIS member) — a genuine grant that must not leak its board's key into this
+//     board's derivation.
+//
+// Grants #2 and #3 pass the trust gate (owner IS trusted) and so are expected to
+// land in the local log — reconcile() admits any trusted-signer role-grant
+// unconditionally (nostrinbound.go: role-grants carry no item id and are
+// authoritative regardless of addressee/board, by design). Their rejection must
+// happen at DeriveBoardKeyring's grantee/board-coordinate checks instead. Each
+// hostile grant carries a CEK at a deliberately distinct, easy-to-recognize epoch
+// (99, 2, 5) so a leak is unambiguous: the final envelope/keyring must reflect
+// ONLY the genuine owner epoch-1 CEK from fixture bootstrap.
+func TestConfidentialWriteSelfHealRejectsHostileGrants(t *testing.T) {
+	f := newSelfHealFixture(t)
+
+	member, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("member key: %v", err)
+	}
+	f.grantMemberToRelayOnly(t, member.PubKeyHex())
+
+	// Hostile #1: ATTACKER-signed, claiming a CEK for member on THIS board.
+	attacker, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("attacker key: %v", err)
+	}
+	var attackerCEK [32]byte
+	copy(attackerCEK[:], []byte("attacker-controlled-malicious-cek"))
+	wAttackerCEK, err := rdSync.WrapKey(attacker, member.PubKeyHex(), attackerCEK)
+	if err != nil {
+		t.Fatalf("wrap attacker cek: %v", err)
+	}
+	attackerEv, err := rdSync.BuildRoleGrantEvent(attacker, rdSync.RoleGrantSpec{
+		BoardD: f.boardD, BoardAuthor: f.owner.PubKeyHex(), Grantee: member.PubKeyHex(),
+		Role: rdSync.RoleContributor, Label: "hostile: attacker-signed",
+		WrappedCEK: wAttackerCEK, CEKEpoch: 99,
+	}, time.Now().Unix()+1)
+	if err != nil {
+		t.Fatalf("build attacker grant: %v", err)
+	}
+	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), attackerEv); perr != nil || !accepted {
+		t.Fatalf("publish attacker grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
+	}
+
+	// Hostile #2: OWNER-signed, valid — but addressed to a DIFFERENT member, same board.
+	otherMember, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("other member key: %v", err)
+	}
+	var otherMemberCEK [32]byte
+	copy(otherMemberCEK[:], []byte("owner-cek-for-a-different-member"))
+	wOtherMemberCEK, err := rdSync.WrapKey(f.owner, otherMember.PubKeyHex(), otherMemberCEK)
+	if err != nil {
+		t.Fatalf("wrap other-member cek: %v", err)
+	}
+	retargetedMemberEv, err := rdSync.BuildRoleGrantEvent(f.owner, rdSync.RoleGrantSpec{
+		BoardD: f.boardD, BoardAuthor: f.owner.PubKeyHex(), Grantee: otherMember.PubKeyHex(),
+		Role: rdSync.RoleContributor, Label: "hostile: owner-signed, wrong member",
+		WrappedCEK: wOtherMemberCEK, CEKEpoch: 2,
+	}, time.Now().Unix()+2)
+	if err != nil {
+		t.Fatalf("build retargeted-member grant: %v", err)
+	}
+	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), retargetedMemberEv); perr != nil || !accepted {
+		t.Fatalf("publish retargeted-member grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
+	}
+
+	// Hostile #3: OWNER-signed, valid — addressed to THIS member, but for a DIFFERENT board.
+	var otherBoardCEK [32]byte
+	copy(otherBoardCEK[:], []byte("owner-cek-for-a-different-board"))
+	wOtherBoardCEK, err := rdSync.WrapKey(f.owner, member.PubKeyHex(), otherBoardCEK)
+	if err != nil {
+		t.Fatalf("wrap other-board cek: %v", err)
+	}
+	retargetedBoardEv, err := rdSync.BuildRoleGrantEvent(f.owner, rdSync.RoleGrantSpec{
+		BoardD: "other-board", BoardAuthor: f.owner.PubKeyHex(), Grantee: member.PubKeyHex(),
+		Role: rdSync.RoleContributor, Label: "hostile: owner-signed, wrong board",
+		WrappedCEK: wOtherBoardCEK, CEKEpoch: 5,
+	}, time.Now().Unix()+3)
+	if err != nil {
+		t.Fatalf("build retargeted-board grant: %v", err)
+	}
+	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), retargetedBoardEv); perr != nil || !accepted {
+		t.Fatalf("publish retargeted-board grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
+	}
+
+	memberDir, memberPub := f.newMemberMachine(t, "D", member)
+
+	env, err := boardConfidentialEnvelope(memberDir, memberPub, f.owner.PubKeyHex(), f.boardD)
+	if err != nil {
+		t.Fatalf("confidential write did not self-heal amid hostile grants — errored instead: %v", err)
+	}
+	if env == nil {
+		t.Fatal("self-heal returned a nil envelope amid hostile grants; the write would fall through to plaintext on a confidential board")
+	}
+	// Only the ONE valid grant may contribute: genuine owner epoch-1 CEK, never a
+	// hostile epoch (99, 2, 5) or a hostile CEK value.
+	if env.Epoch != f.ownerEpoch {
+		t.Fatalf("self-healed epoch = %d, want owner epoch %d (a hostile grant's epoch leaked in)", env.Epoch, f.ownerEpoch)
+	}
+	if env.CEK != f.ownerCEK {
+		t.Fatal("self-healed CEK does not match the owner's genuine CEK — a hostile grant's key leaked in")
+	}
+
+	// SEAM ASSERTION: the attacker-signed event must never have been merged into
+	// the member's local log — proving relay-injection rejection at the reconcile
+	// trust gate itself, not merely a downstream DeriveBoardKeyring filter.
+	afterEvents, err := memberPub.Log.ReadAll()
+	if err != nil {
+		t.Fatalf("read member log: %v", err)
+	}
+	for _, e := range afterEvents {
+		if e.ID == attackerEv.ID {
+			t.Fatalf("attacker-signed grant (id=%s) was merged into the member's local log by self-heal — relay-injection rejection failed at the seam", e.ID)
+		}
+	}
+
+	// The owner-signed-but-wrong-target grants MAY legitimately land in the log
+	// (reconcile admits any trusted-signer role-grant unconditionally) — what must
+	// NOT happen is either one yielding usable key material for THIS member on
+	// THIS board. Re-derive independently and check each hostile epoch is absent.
+	afterKR := rdSync.DeriveBoardKeyring(afterEvents, member, f.owner.PubKeyHex(), f.boardD)
+	if _, ok := afterKR.CEK(f.coord, 99); ok {
+		t.Fatal("attacker-signed grant's epoch 99 yielded a usable CEK — hostile injection succeeded")
+	}
+	if _, ok := afterKR.CEK(f.coord, 2); ok {
+		t.Fatal("owner-signed grant retargeted to a DIFFERENT MEMBER (epoch 2) yielded a usable CEK for this member")
+	}
+	if _, ok := afterKR.CEK(f.coord, 5); ok {
+		t.Fatal("owner-signed grant retargeted to a DIFFERENT BOARD (epoch 5) yielded a usable CEK for this board coordinate")
+	}
+	if epoch, cek, ok := afterKR.CurrentEpoch(f.coord); !ok || epoch != f.ownerEpoch || cek != f.ownerCEK {
+		t.Fatalf("CurrentEpoch = (%d, ok=%v), want ONLY the genuine owner epoch %d", epoch, ok, f.ownerEpoch)
+	}
+}

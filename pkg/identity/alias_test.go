@@ -3,6 +3,7 @@ package identity
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -342,6 +343,66 @@ func TestAlias_SupersedeIsPerSlot(t *testing.T) {
 	for _, want := range []string{a.PubKeyHex(), b.PubKeyHex(), c.PubKeyHex()} {
 		if !contains(keys, want) {
 			t.Fatalf("per-slot supersede wrongly evicted a cross-signer key: keys=%v missing %s", keys, want)
+		}
+	}
+}
+
+// TestAlias_JunkPTagPubkeyDropped is the ready-b66 hardening (1): a p-tag read off
+// the wire that is not a well-formed 64-char LOWERCASE hex pubkey (too short, non-
+// hex garbage, or uppercase — nostr PubKeyHex() is always lowercase, so uppercase
+// can never legitimately match a real key) must be dropped by parseAlias rather
+// than unioned into the party. The event is built and signed by hand (bypassing
+// BuildAliasEvent's own validation, which would refuse to construct this on the
+// write path) to exercise the READ path exactly as a malicious/buggy relay would
+// serve it — the signature is real and verifies; only the p-tag content is junk.
+func TestAlias_JunkPTagPubkeyDropped(t *testing.T) {
+	a := mustKey(t)
+	const email = "baron@3dl.dev"
+
+	junkShort := "deadbeef"                                                // too short
+	junkNonHex := "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" // 64 chars, not hex
+	junkUpper := strings.Repeat("AB", 32)                                  // 64-char hex, but uppercase
+
+	ev := &nostr.Event{
+		Kind:      KindPersonAlias,
+		CreatedAt: 1_700_000_000,
+		Tags: [][]string{
+			{"d", email},
+			{"p", junkShort},
+			{"p", junkNonHex},
+			{"p", junkUpper},
+			{"email", email},
+		},
+	}
+	if err := ev.Sign(a); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if err := ev.Verify(); err != nil {
+		t.Fatalf("hand-built event does not verify: %v", err)
+	}
+
+	r := Resolve([]*nostr.Event{ev}, []string{a.PubKeyHex()})
+
+	// None of the junk p-tags may resolve as party members.
+	for _, junk := range []string{junkShort, junkNonHex, junkUpper} {
+		if _, ok := r.PartyForPubkey(junk); ok {
+			t.Fatalf("PartyForPubkey(%q) resolved a junk p-tag pubkey — malformed wire data polluted membership", junk)
+		}
+	}
+	// The signer's own party still resolves (junk tags don't break the whole event);
+	// it just has no email co-members besides the signer itself, so PartyForPubkey
+	// on the signer's OWN key is expected to report ok=false per the "bare trust
+	// root" rule — assert via KeysForParty instead, which reports the resolved party.
+	keys, ok := r.KeysForParty(email)
+	if !ok {
+		t.Fatalf("KeysForParty(%s) not found; the alias itself (minus junk p-tags) should still resolve", email)
+	}
+	if !contains(keys, a.PubKeyHex()) {
+		t.Fatalf("KeysForParty(%s) = %v, want to include signer %s", email, keys, a.PubKeyHex())
+	}
+	for _, junk := range []string{junkShort, junkNonHex, junkUpper} {
+		if contains(keys, junk) {
+			t.Fatalf("KeysForParty(%s) = %v still contains junk pubkey %q", email, keys, junk)
 		}
 	}
 }
