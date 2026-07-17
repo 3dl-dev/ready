@@ -2,9 +2,24 @@
 
 **WG:** (new — proposed WG-4, Work)
 **Version:** 0.3
-**Status:** Draft
+**Status:** Draft — **RETIRED / HISTORICAL substrate.** This spec describes
+work operations as `convention:operation` declarations executed by the
+campfire runtime (`cf work ...`, `cf await`, `cf view ...`). Campfire was
+fully retired 2026-07; there is no `cf` runtime to execute these
+declarations anymore. **The rd CLI is nostr-native today** and implements
+these same operations directly as real subcommands over signed nostr
+events — `rd create`, `rd claim`, `rd status`, `rd delegate`,
+`rd dep add`/`rd dep remove`, `rd gate`, `rd close`/`rd done`, `rd playbook
+create`, `rd engage` — with no generic convention executor in between. The
+field semantics, tag vocabulary, compaction policy, and state-derivation
+rules below are still the design intent rd's nostr backend implements; only
+the `cf`-CLI examples throughout are archival — read them as "what the
+original campfire-native reference implementation looked like," not as
+commands you can run. For the current, runnable command surface see
+`rd --help` and [`docs/getting-started.md`](../getting-started.md).
 **Date:** 2026-03-25
-**Target repo:** campfire/docs/conventions/work-management.md
+**Target repo:** campfire/docs/conventions/work-management.md (historical —
+campfire repo is dormant)
 
 ---
 
