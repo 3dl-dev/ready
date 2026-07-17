@@ -8,7 +8,6 @@ package main
 // help_campfire_test.go (same package).
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -66,23 +65,25 @@ func TestFollowHelp_ShortHonestCopyPasteableExample(t *testing.T) {
 	}
 }
 
-// rdCmdRemedy matches an 'rd <word>' command token anywhere in an error
-// string — the shape every dead-end error's remedy must carry.
-var rdCmdRemedy = regexp.MustCompile(`\brd [a-z][a-z-]*`)
-
 // TestDeadEndErrors_NameTheirRemedy is the snapshot test for (4): every
 // dead-end error on the join/follow/link/confidential-write/legacy-config
-// paths must contain an `rd <cmd>` remedy — the exact next command to run.
-// Each case below drives the real error-producing code path (not a copy of
-// the string), so a future edit that drops the remedy fails this test.
+// paths must name its OWN exact remedy command — not just any `rd <cmd>`
+// token. A loose `\brd [a-z][a-z-]*` regex matches stale 'rd pin-board' as
+// readily as the current 'rd link', so it does not guard the pin-board ->
+// link rename; each case below pins the specific post-rename command that
+// path's error must contain. Each case drives the real error-producing code
+// path (not a copy of the string), so a future edit that drops or reverts
+// the remedy fails this test.
 func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
+		name       string
+		err        error
+		wantRemedy string // exact command token the error message must contain
 	}{
 		{
-			name: "join: non-token argument",
-			err:  joinCmd.RunE(joinCmd, []string{"not-a-token"}),
+			name:       "join: non-token argument",
+			err:        joinCmd.RunE(joinCmd, []string{"not-a-token"}),
+			wantRemedy: "rd follow",
 		},
 		{
 			name: "resolveBoardAuthorD: unresolvable board d",
@@ -90,6 +91,7 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				_, _, err := resolveBoardAuthorD("/x", "deadbeef")
 				return err
 			}(),
+			wantRemedy: "rd link",
 		},
 		{
 			name: "rd grant: not a nostr-native project",
@@ -98,6 +100,7 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				_ = dir
 				return grantCmd.RunE(grantCmd, []string{strings.Repeat("ab", 32), "contributor"})
 			}(),
+			wantRemedy: "rd link",
 		},
 		{
 			name: "rd sessions: no pinned board",
@@ -105,6 +108,7 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				dir := isolateTempDir(t)
 				return runSessionsNostr(dir, false)
 			}(),
+			wantRemedy: "rd link",
 		},
 		{
 			name: "rd invite: not a nostr-native project",
@@ -113,6 +117,7 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				_, err := runNostrInvite(0)
 				return err
 			}(),
+			wantRemedy: "rd link",
 		},
 		{
 			name: "rd link: no .ready project directory",
@@ -120,6 +125,7 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				isolateTempDir(t)
 				return runLinkOrPinBoard(nostrLinkCmd, nil)
 			}(),
+			wantRemedy: "rd init",
 		},
 	}
 
@@ -129,8 +135,11 @@ func TestDeadEndErrors_NameTheirRemedy(t *testing.T) {
 				t.Fatalf("%s: expected an error, got nil", tc.name)
 			}
 			msg := tc.err.Error()
-			if !rdCmdRemedy.MatchString(msg) {
-				t.Errorf("%s: error does not name an `rd <cmd>` remedy: %q", tc.name, msg)
+			if !strings.Contains(msg, tc.wantRemedy) {
+				t.Errorf("%s: error does not name the expected remedy %q: %q", tc.name, tc.wantRemedy, msg)
+			}
+			if strings.Contains(msg, "pin-board") {
+				t.Errorf("%s: error still names the stale 'pin-board' command: %q", tc.name, msg)
 			}
 		})
 	}
