@@ -312,7 +312,25 @@ var nostrPinBoardCmd = &cobra.Command{
 		if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
 			return err
 		}
-		fmt.Printf("pinned board: %s\n  (.ready/config.json)\n", coord)
+		// ready-f12: pin-board is the follow/link fallback — it too WRITES the
+		// committed binding so a follower who adopts a board leaves a tracked
+		// .ready/board.json for the next clone. Carry the project name + relays
+		// forward from the existing config when the binding does not already set them.
+		binding, err := rdconfig.LoadBoardBinding(dir)
+		if err != nil {
+			return err
+		}
+		binding.Board = coord
+		if binding.ProjectName == "" {
+			binding.ProjectName = cfg.ProjectName
+		}
+		if len(binding.RelayEndpoints) == 0 {
+			binding.RelayEndpoints = cfg.RelayEndpoints
+		}
+		if err := rdconfig.SaveBoardBinding(dir, binding); err != nil {
+			return err
+		}
+		fmt.Printf("pinned board: %s\n  (.ready/config.json + .ready/board.json)\n", coord)
 		return nil
 	},
 }

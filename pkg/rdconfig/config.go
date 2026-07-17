@@ -226,6 +226,68 @@ func (c *SyncConfig) ReadRelayURLs() []string {
 	return out
 }
 
+// BoardBinding is the COMMITTED, version-controlled project→board binding written
+// to <project>/.ready/board.json (ready-f12). Unlike SyncConfig — which is
+// machine-local / volatile (buffers, invite/beacon tokens, durability, encryption
+// intent) and stays git-ignored — this file carries ONLY the non-secret coordinate
+// a fresh clone needs to resolve its board with NO link/follow step: the pinned
+// board coordinate, the project name, and the relay endpoints (URLs + read/write
+// flags — no secret material). It NEVER holds a signing key (that lives in RD_HOME),
+// read keys, invite/beacon tokens, or any buffer. It is the ONLY .ready/ file tracked
+// by git (see .gitignore: '.ready/*' followed by '!.ready/board.json').
+type BoardBinding struct {
+	// Board is the PINNED authoritative nostr board coordinate
+	// "30301:<ownerPubkey>:<boardD>" for this project — the same value SyncConfig.Board
+	// carries, but committed so the coordinate travels with the repo.
+	Board string `json:"board,omitempty"`
+
+	// ProjectName is the human-readable project name.
+	ProjectName string `json:"project_name,omitempty"`
+
+	// RelayEndpoints are THIS project's nostr relays (BYOR). URLs + read/write flags
+	// only — no secret material — so a fresh clone can reach the relays that cache the
+	// board without a separate config step.
+	RelayEndpoints []RelayEndpoint `json:"relay_endpoints,omitempty"`
+}
+
+// BoardBindingPath returns the path to the project-local COMMITTED board binding.
+func BoardBindingPath(projectDir string) string {
+	return filepath.Join(projectDir, ".ready", "board.json")
+}
+
+// LoadBoardBinding reads the committed board binding. Returns a zero BoardBinding
+// if the file does not exist (a legacy install that predates ready-f12 carries none
+// and resolves via the SyncConfig fallback instead).
+func LoadBoardBinding(projectDir string) (*BoardBinding, error) {
+	data, err := os.ReadFile(BoardBindingPath(projectDir))
+	if os.IsNotExist(err) {
+		return &BoardBinding{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading board binding: %w", err)
+	}
+	var b BoardBinding
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, fmt.Errorf("parsing board binding: %w", err)
+	}
+	return &b, nil
+}
+
+// SaveBoardBinding writes the committed board binding. It is 0644 (not 0600 like the
+// machine-local config) because it is non-secret and version-controlled — the whole
+// point is that it is shared through the repo.
+func SaveBoardBinding(projectDir string, b *BoardBinding) error {
+	dir := filepath.Join(projectDir, ".ready")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating .ready dir: %w", err)
+	}
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding board binding: %w", err)
+	}
+	return os.WriteFile(BoardBindingPath(projectDir), data, 0644)
+}
+
 // SyncConfigPath returns the path to the project-local sync config file.
 func SyncConfigPath(projectDir string) string {
 	return filepath.Join(projectDir, ".ready", "config.json")
