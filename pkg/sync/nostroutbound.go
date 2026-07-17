@@ -240,7 +240,7 @@ func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (Publis
 	}
 	scoped := make([]*nostr.Event, 0, len(events))
 	for _, e := range events {
-		if boardCoord == "" || eventBelongsToBoard(e, boardCoord) {
+		if boardCoord == "" || EventBelongsToBoard(e, boardCoord) {
 			scoped = append(scoped, e)
 		}
 	}
@@ -249,7 +249,7 @@ func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (Publis
 	return res, nil
 }
 
-// eventBelongsToBoard reports whether e is a member of the board named by
+// EventBelongsToBoard reports whether e is a member of the board named by
 // boardCoord ("30301:<author>:<boardD>"): either e IS that board's own 30301
 // event, or e carries an "a" tag equal to boardCoord.
 //
@@ -259,7 +259,10 @@ func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (Publis
 // — the same any-match semantics BoardSyncFilter's relay-side "#a" filter uses
 // (a relay matches ANY tag with that name, not just the first). Using tagValue
 // (first-only) here would silently drop every status event from a board publish.
-func eventBelongsToBoard(e *nostr.Event, boardCoord string) bool {
+//
+// EXPORTED (ready-54e) so cmd/rd/follow.go can call this ONE implementation
+// instead of reimplementing the any-"a"-tag membership check locally.
+func EventBelongsToBoard(e *nostr.Event, boardCoord string) bool {
 	if e.Kind == KindBoard {
 		return BoardCoord(e.PubKey, tagValue(e, "d")) == boardCoord
 	}

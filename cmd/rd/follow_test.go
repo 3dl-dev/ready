@@ -190,6 +190,106 @@ func TestFollow_BindsAllOwnerBoardsKeepingKey(t *testing.T) {
 	}
 }
 
+// TestFollow_BoardFlagScopesToOneBoard is ready-e50 CLI/runFollow-level coverage
+// for `rd follow <owner> --board <name>` (followOpts.boardD, wired through
+// runFollow -> rdSync.DiscoverOwnerBoards(snapshot, ownerPubkeys, opts.boardD)):
+// given an owner who published MULTIPLE boards, passing --board must bind EXACTLY
+// the named board — no sibling board gets a bound dir or a committed board.json.
+// Mirrors TestFollow_BindsAllOwnerBoardsKeepingKey's seeded-snapshot / no-network
+// setup (followFetch injection) but asserts the single-board scope instead of the
+// bind-everything default.
+func TestFollow_BoardFlagScopesToOneBoard(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+
+	const email = "baron@3dl.dev"
+	boardNames := []string{"proj1", "proj2", "proj3"}
+
+	var seeded []*nostr.Event
+	alias, err := identity.BuildAliasEvent(k, identity.AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{owner},
+		Emails:  []string{email},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent: %v", err)
+	}
+	seeded = append(seeded, alias)
+
+	for i, name := range boardNames {
+		ts := int64(1000 + i)
+		be, err := rdSync.BuildBoardEvent(k, rdSync.BoardSpec{BoardD: name, Title: name, Maintainers: []string{owner}}, ts)
+		if err != nil {
+			t.Fatalf("BuildBoardEvent %s: %v", name, err)
+		}
+		seeded = append(seeded, be)
+	}
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	const wantBoard = "proj2"
+	rep, err := runFollow(followOpts{
+		who:    email,
+		boardD: wantBoard,
+		email:  email,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+
+	if len(rep.BoardDirs) != 1 {
+		t.Fatalf("bound %d boards with --board %s, want exactly 1: %+v", len(rep.BoardDirs), wantBoard, rep.BoardDirs)
+	}
+	if _, ok := rep.BoardDirs[wantBoard]; !ok {
+		t.Fatalf("BoardDirs = %+v, want the named board %q bound", rep.BoardDirs, wantBoard)
+	}
+	for _, name := range boardNames {
+		if name == wantBoard {
+			continue
+		}
+		if _, ok := rep.BoardDirs[name]; ok {
+			t.Errorf("sibling board %q was bound; --board %s must scope to ONLY the named board", name, wantBoard)
+		}
+		if _, err := os.Stat(rdconfig.BoardBindingPath(filepath.Join(root, name))); err == nil {
+			t.Errorf("sibling board %q got a committed board.json on disk despite --board %s scoping", name, wantBoard)
+		}
+	}
+
+	dir := filepath.Join(root, wantBoard)
+	b, err := rdconfig.LoadBoardBinding(dir)
+	if err != nil {
+		t.Fatalf("LoadBoardBinding: %v", err)
+	}
+	wantCoord := rdSync.BoardCoord(owner, wantBoard)
+	if b.Board != wantCoord {
+		t.Errorf("board.json.Board = %q, want %q", b.Board, wantCoord)
+	}
+}
+
 // TestFollow_NeverPrintsARawCoordinate asserts the human output uses the
 // `rd grant --all-boards <pubkey>` line and never emits a 30301:<hex>:<d> board
 // coordinate the operator would have to copy — the whole point of `rd follow`.

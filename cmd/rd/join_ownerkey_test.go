@@ -54,6 +54,220 @@ func writeOwnerBoardKey(t *testing.T, home, dir string) (pub, board string) {
 	return pub, board
 }
 
+// writeOwnerBoardKeyViaLogScan plants a real key at DefaultKeyPath(home) and
+// records its ownership ONLY via an authored-but-UNPINNED 30301 board event in
+// dir's local log — NO board is pinned in .ready/config.json. This exercises the
+// KindBoard branch of keyOwnsBoardInDir's log-scan fallback (nostr_invite.go
+// ~570-578), distinct from writeOwnerBoardKey's pinned-board fast path. Returns
+// the key's pubkey and the board coordinate the log-scan fallback must recover.
+func writeOwnerBoardKeyViaLogScan(t *testing.T, home, dir string) (pub, board string) {
+	t.Helper()
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := nostr.SaveKeyFile(nostr.DefaultKeyPath(home), k, home); err != nil {
+		t.Fatalf("SaveKeyFile: %v", err)
+	}
+	pub = k.PubKeyHex()
+	const boardD = "ready"
+	board = rdSync.BoardCoord(pub, boardD)
+	be, err := rdSync.BuildBoardEvent(k, rdSync.BoardSpec{BoardD: boardD, Title: "ready"}, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ready"), 0o755); err != nil {
+		t.Fatalf("mkdir .ready: %v", err)
+	}
+	if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{be}); err != nil {
+		t.Fatalf("append board event: %v", err)
+	}
+	// Deliberately NO cfg.Board pin — ownership must be discovered purely by the
+	// log-scan fallback, not the pinned-board fast path.
+	return pub, board
+}
+
+// writeOwnerRoleGrantKeyViaLogScan plants a real key at DefaultKeyPath(home) and
+// records its ownership ONLY via a 39301 role-grant event the key AUTHORED in
+// dir's local log — no board pin, no 30301 board event either. This exercises the
+// KindRoleGrant branch of keyOwnsBoardInDir's log-scan fallback (nostr_invite.go
+// ~579-585): only an owner/maintainer signs grants, and the grant's "a" tag names
+// the board it binds into. Returns the key's pubkey and that board coordinate.
+func writeOwnerRoleGrantKeyViaLogScan(t *testing.T, home, dir string) (pub, board string) {
+	t.Helper()
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := nostr.SaveKeyFile(nostr.DefaultKeyPath(home), k, home); err != nil {
+		t.Fatalf("SaveKeyFile: %v", err)
+	}
+	pub = k.PubKeyHex()
+	const boardD = "ready"
+	board = rdSync.BoardCoord(pub, boardD)
+	grantee, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey grantee: %v", err)
+	}
+	grant, err := rdSync.BuildRoleGrantEvent(k, rdSync.RoleGrantSpec{
+		BoardD:      boardD,
+		BoardAuthor: pub,
+		Grantee:     grantee.PubKeyHex(),
+		Role:        rdSync.RoleMaintainer,
+	}, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildRoleGrantEvent: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ready"), 0o755); err != nil {
+		t.Fatalf("mkdir .ready: %v", err)
+	}
+	if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{grant}); err != nil {
+		t.Fatalf("append role-grant event: %v", err)
+	}
+	// Deliberately NO cfg.Board pin and NO 30301 board event — ownership must be
+	// discovered purely from the authored 39301 grant.
+	return pub, board
+}
+
+// TestJoin_ForceRefusesOwnerKey_LogScanBoardEvent is ready-e50 coverage for a
+// SECURITY path with zero prior coverage: keyOwnsBoardInDir's log-scan fallback
+// for an authored-but-UNPINNED 30301 board event (nostr_invite.go ~570-578, the
+// KindBoard case). If that fallback were removed (ownership collapsed to the
+// pinned-board fast path only), keyOwnedBoard would report no owned board for this
+// fixture, the guard would never fire, and redeemNostrClaimToken would proceed to
+// self-mint — so this test would FAIL (err == nil) instead of asserting the stop.
+func TestJoin_ForceRefusesOwnerKey_LogScanBoardEvent(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	dir := filepath.Join(base, "project")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	_, ownedBoard := writeOwnerBoardKeyViaLogScan(t, home, dir)
+
+	// Sanity: the board is genuinely UNPINNED here — a passing test below can only
+	// be explained by the log-scan fallback, not the pinned-board fast path.
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if cfg.Board != "" {
+		t.Fatalf("test fixture pinned a board (%q); this test must exercise the UNPINNED log-scan path only", cfg.Board)
+	}
+
+	keyPath := nostr.DefaultKeyPath(home)
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key before: %v", err)
+	}
+
+	otherOwner, _ := nostr.GenerateKey()
+	now := time.Now().Unix()
+	token, err := buildNostrClaimToken(
+		rdSync.BoardCoord(otherOwner.PubKeyHex(), "other"),
+		[]string{"ws://127.0.0.1:1"}, "claim-e50a", now, now+7200, otherOwner.PubKeyHex())
+	if err != nil {
+		t.Fatalf("buildNostrClaimToken: %v", err)
+	}
+	p, err := decodeNostrClaimToken(token)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	backupDir := filepath.Join(base, "backups")
+	medium := &logInviteMedium{log: rdSync.NewNostrLog(filepath.Join(base, "relay.jsonl"))}
+
+	_, err = redeemNostrClaimToken(p, home, dir, backupDir, medium, true /*force*/, "")
+	if err == nil {
+		t.Fatalf("join --force on a box whose key authored an UNPINNED board event must ERROR (log-scan fallback), got nil")
+	}
+	if !strings.Contains(err.Error(), "OWNS board") || !strings.Contains(err.Error(), "rd follow") {
+		t.Fatalf("error must explain the owner-key stop and point at `rd follow`: %v", err)
+	}
+	if !strings.Contains(err.Error(), ownedBoard) {
+		t.Fatalf("error must name the owned board %s: %v", ownedBoard, err)
+	}
+
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("owner key on disk was modified by a refused join")
+	}
+	if entries, _ := os.ReadDir(backupDir); len(entries) != 0 {
+		t.Fatalf("a refused join must not create backups; found %d", len(entries))
+	}
+}
+
+// TestJoin_ForceRefusesOwnerKey_LogScanRoleGrantEvent is ready-e50 coverage for
+// keyOwnsBoardInDir's OTHER log-scan branch: a 39301 role-grant the key authored
+// (nostr_invite.go ~579-585, the KindRoleGrant case), with NO board pinned and NO
+// 30301 board event in the log at all — ownership is recovered purely from the
+// grant's "a" tag. If this branch were removed, keyOwnedBoard would report no
+// owned board and the guard would not fire, so this test would FAIL.
+func TestJoin_ForceRefusesOwnerKey_LogScanRoleGrantEvent(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	dir := filepath.Join(base, "project")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	_, ownedBoard := writeOwnerRoleGrantKeyViaLogScan(t, home, dir)
+
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if cfg.Board != "" {
+		t.Fatalf("test fixture pinned a board (%q); this test must exercise the role-grant log-scan path only", cfg.Board)
+	}
+
+	keyPath := nostr.DefaultKeyPath(home)
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key before: %v", err)
+	}
+
+	otherOwner, _ := nostr.GenerateKey()
+	now := time.Now().Unix()
+	token, err := buildNostrClaimToken(
+		rdSync.BoardCoord(otherOwner.PubKeyHex(), "other"),
+		[]string{"ws://127.0.0.1:1"}, "claim-e50b", now, now+7200, otherOwner.PubKeyHex())
+	if err != nil {
+		t.Fatalf("buildNostrClaimToken: %v", err)
+	}
+	p, err := decodeNostrClaimToken(token)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	backupDir := filepath.Join(base, "backups")
+	medium := &logInviteMedium{log: rdSync.NewNostrLog(filepath.Join(base, "relay.jsonl"))}
+
+	_, err = redeemNostrClaimToken(p, home, dir, backupDir, medium, true /*force*/, "")
+	if err == nil {
+		t.Fatalf("join --force on a box whose key authored a role-grant must ERROR (log-scan fallback), got nil")
+	}
+	if !strings.Contains(err.Error(), "OWNS board") || !strings.Contains(err.Error(), "rd follow") {
+		t.Fatalf("error must explain the owner-key stop and point at `rd follow`: %v", err)
+	}
+	if !strings.Contains(err.Error(), ownedBoard) {
+		t.Fatalf("error must name the owned board %s: %v", ownedBoard, err)
+	}
+
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("owner key on disk was modified by a refused join")
+	}
+	if entries, _ := os.ReadDir(backupDir); len(entries) != 0 {
+		t.Fatalf("a refused join must not create backups; found %d", len(entries))
+	}
+}
+
 // TestJoin_ForceRefusesToOverwriteOwnerKey is done-condition (a): a plain --force
 // join on an owner box ERRORS and leaves the on-disk key byte-identical.
 func TestJoin_ForceRefusesToOverwriteOwnerKey(t *testing.T) {

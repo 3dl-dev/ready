@@ -360,6 +360,45 @@ func TestStatus_DebugShowsHex(t *testing.T) {
 	}
 }
 
+// TestStatus_PartyAlias_MyCountFoldsSiblingPubkey is ready-54e's regression lock
+// for duplication (3): computeStatus's party-membership fold must route through
+// the SAME shared helper `rd ready`/`rd list` use (cmd/rd/party.go
+// addPartyIdentities, ready-99d) rather than a private reimplementation. An item
+// scoped to a SIBLING machine's pubkey — not this machine's own key — only counts
+// toward MyCount once both keys are aliased into one party; this proves
+// computeStatus performs that same fold, not a narrower local one.
+func TestStatus_PartyAlias_MyCountFoldsSiblingPubkey(t *testing.T) {
+	base := statusEnv(t)
+	_, err := nostrKey() // mint THIS machine's key first
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("owner key: %v", err)
+	}
+	sibling, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("sibling key: %v", err)
+	}
+	dir, _ := buildBoardProject(t, base, owner, "team", true /* public */)
+	appendSelfSignedAlias(t, dir, sibling.PubKeyHex(), []string{"baron@3dl.dev"})
+	// Item is scoped to the SIBLING pubkey, never this machine's own key.
+	appendItem(t, dir, owner, "team", "team-1", sibling.PubKeyHex(), nil)
+	chdir(t, dir)
+
+	rep, err := computeStatus()
+	if err != nil {
+		t.Fatalf("computeStatus: %v", err)
+	}
+	if rep.State != statusHealthy {
+		t.Fatalf("state = %v, want statusHealthy", rep.State)
+	}
+	if rep.MyCount != 1 {
+		t.Errorf("MyCount = %d, want 1 (sibling pubkey's item folded via shared party helper)", rep.MyCount)
+	}
+}
+
 func chdir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.Chdir(dir); err != nil {
