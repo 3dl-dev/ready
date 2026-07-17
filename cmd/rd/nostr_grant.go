@@ -317,7 +317,7 @@ func runLinkOrPinBoard(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-	owner = k.PubKeyHex()
+		owner = k.PubKeyHex()
 	}
 	if len(owner) != 64 || !isHex(owner) {
 		return fmt.Errorf("owner %q is not a valid pubkey (64 hex chars)", owner)

@@ -676,7 +676,6 @@ func autoReconcileItemBestEffort(itemID string, offline bool) {
 	_, _ = nostrReconcileItemIntoLog(itemID)
 }
 
-
 // nostrPutCmd creates-or-updates an rd item directly on the nostr backend: it
 // materializes the item as board+card+status events, appends them to the local
 // authoritative log (always durable), and publishes to the write relays
@@ -946,7 +945,6 @@ func nostrDualReadByID(itemID string) (*state.Item, bool, error) {
 	}
 	return it, true, nil
 }
-
 
 func init() {
 	nostrPublishCmd.Flags().Bool("board", false, "publish EVERY local-log event for the pinned board (fresh-box relay convergence, ready-866) instead of one item's current state")

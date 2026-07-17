@@ -10,8 +10,8 @@ import (
 	"github.com/3dl-dev/ready/pkg/identity"
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
-	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // TestFollow_BindsAllOwnerBoardsKeepingKey is the ready-636 DONE condition, driven
@@ -439,4 +439,3 @@ func TestResolveFollowTarget_TokenAndHex(t *testing.T) {
 		t.Errorf("token relays = %v, want [wss://r.example]", relays)
 	}
 }
-

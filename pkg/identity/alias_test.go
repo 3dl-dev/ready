@@ -359,9 +359,9 @@ func TestAlias_JunkPTagPubkeyDropped(t *testing.T) {
 	a := mustKey(t)
 	const email = "baron@3dl.dev"
 
-	junkShort := "deadbeef"                                                // too short
+	junkShort := "deadbeef"                                                          // too short
 	junkNonHex := "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" // 64 chars, not hex
-	junkUpper := strings.Repeat("AB", 32)                                  // 64-char hex, but uppercase
+	junkUpper := strings.Repeat("AB", 32)                                            // 64-char hex, but uppercase
 
 	ev := &nostr.Event{
 		Kind:      KindPersonAlias,
