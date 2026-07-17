@@ -293,7 +293,24 @@ func runFollow(opts followOpts) (*followReport, error) {
 	// is none, publish a KEY-ONLY alias (no email claim). A cold non-owner therefore
 	// never auto-claims someone else's handle and never pollutes the email->key map.
 	email := resolveFollowEmail(opts.email, snapshot, self)
-	aliasID, err := publishFollowAlias(ctx, primaryDir, k, email, relays)
+
+	// SECURITY/correctness (ready-104): a no-`--email` follow REUSES a prior
+	// self-asserted email and republishes the SAME (signer=self, d=email)
+	// addressable slot. Publishing self ALONE there would let latest-wins
+	// supersede (ready-998) EVICT any sibling keys the operator co-asserted via
+	// `rd identify --add-key` — silently dropping those machines from
+	// KeysForParty/PartyForPubkey and from `rd grant --all-boards` discovery. So
+	// when we are reusing (email came from a prior alias, NOT from an explicit
+	// --email), preserve that slot's FULL key set: republish the UNION of the
+	// party's already-resolved keys + self. The explicit --email path and the
+	// key-only (email=="") path are untouched — they still assert self alone.
+	preserveKeys := []string{self}
+	if opts.email == "" && email != "" {
+		if party, ok := identity.Resolve(snapshot, []string{self}).PartyForPubkey(self); ok {
+			preserveKeys = party.Pubkeys
+		}
+	}
+	aliasID, err := publishFollowAlias(ctx, primaryDir, k, email, preserveKeys, relays)
 	if err != nil {
 		return nil, fmt.Errorf("publishing person-alias: %w", err)
 	}
@@ -452,8 +469,11 @@ func resolveFollowEmail(explicit string, snapshot []*nostr.Event, self string) s
 // pubkey, no email tag) so the key is announced for granting without claiming any
 // handle (ready-57d). It reuses the same monotonic created_at slot logic as `rd
 // identify` so a re-follow supersedes rather than ties the prior alias. Returns the
-// published event id.
-func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email string, relays []string) (string, error) {
+// published event id. preserveKeys is the set of party pubkeys this alias must
+// keep asserting (ready-104): republishing a REUSED (self,email) slot with self
+// alone would supersede-and-evict sibling keys the operator co-asserted, so the
+// caller passes the full set to preserve; self is always folded in regardless.
+func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email string, preserveKeys, relays []string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no board bound — cannot anchor the person-alias")
 	}
@@ -468,9 +488,12 @@ func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email str
 	} else {
 		handle = self
 	}
+	// self is always part of the party it declares; dedup keeps the p-tag set clean
+	// even if preserveKeys already contains self (it normally does).
+	pubkeys := dedupStrings(append(append([]string{}, preserveKeys...), self))
 	spec := identity.AliasSpec{
 		Handle:  handle,
-		Pubkeys: []string{self},
+		Pubkeys: pubkeys,
 		Emails:  emails,
 	}
 	ev, err := identity.BuildAliasEvent(k, spec, nextAliasCreatedAt(log, handle))
