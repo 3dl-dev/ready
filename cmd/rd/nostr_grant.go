@@ -169,9 +169,8 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 // operator levels for THIS board. Default owner = the loaded owner key; default
 // boardD = the project prefix.
 var nostrPinBoardCmd = &cobra.Command{
-	Use:    "pin-board",
-	Hidden: true, // 'rd init' pins the board automatically; manual repin is a rare recovery op
-	Short:  "Pin this project's authoritative board coordinate (30301:<owner>:<boardD>) in .ready/config.json",
+	Use:   "pin-board",
+	Short: "Pin this project's authoritative board coordinate (30301:<owner>:<boardD>) in .ready/config.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, ok := readyProjectDir()
 		if !ok {
@@ -180,11 +179,15 @@ var nostrPinBoardCmd = &cobra.Command{
 		force, _ := cmd.Flags().GetBool("force")
 		if !force {
 			if _, _, campfireOK := projectRoot(); campfireOK {
-				return fmt.Errorf(".campfire/root exists — this project is campfire-backed; " +
-					"pinning a nostr board here would silently orphan the existing campfire " +
-					"history (all future reads/writes would resolve only from the nostr " +
-					"projection). Run 'rd migrate' to move history to nostr instead, or pass " +
-					"--force to pin anyway (existing campfire history will become invisible)")
+				return fmt.Errorf(".campfire/root exists — this project is campfire-backed. " +
+					"If you are a follower adopting an existing nostr board (an owner or " +
+					"teammate already pinned it and invited you), pass --force to pin and " +
+					"adopt that board — this is the normal follower path here, not a rare " +
+					"recovery op. --force does not touch or orphan the campfire history; it " +
+					"only switches this project's reads/writes to the pinned nostr board " +
+					"coordinate. Do not run 'rd migrate' to join someone else's board: migrate " +
+					"re-emits this project's items signed under YOUR key, which forks a new " +
+					"board instead of joining the existing one")
 			}
 		}
 		owner, _ := cmd.Flags().GetString("owner")
@@ -481,7 +484,7 @@ func splitCSV(s string) []string {
 func init() {
 	nostrPinBoardCmd.Flags().String("owner", "", "owner pubkey hex (default: the loaded owner key)")
 	nostrPinBoardCmd.Flags().String("board-d", "", "board d identifier (default: the project prefix)")
-	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists (orphans existing legacy history — prefer 'rd migrate')")
+	nostrPinBoardCmd.Flags().Bool("force", false, "pin the board even though a legacy project root exists — the follower path for adopting an existing nostr board (does not touch or orphan the legacy history; do not run 'rd migrate' to join someone else's board, it forks a new one under your key)")
 	nostrSyncAllowlistCmd.Flags().Bool("apply", false, "write the file and push it to the relays (default: dry-run diff only)")
 	nostrSyncAllowlistCmd.Flags().String("file", "", "local allowlist json to (re)generate (default: <repo>/scripts/relay-policy/write-allowlist.json)")
 	nostrSyncAllowlistCmd.Flags().String("owner-label", "", "label for the bootstrap owner key")
