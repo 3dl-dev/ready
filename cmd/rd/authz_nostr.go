@@ -76,11 +76,31 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 // a clean (or absent) file regenerates exactly as before. The explicit `rd relay
 // sync-allowlist [--apply]` path is UNAFFECTED by this guard — it is a deliberate
 // operator act, not an automatic side effect, so it may overwrite a dirty file.
+//
+// ready-a76: cleanliness cannot always be DETERMINED — git binary absent, or the file
+// living outside any git work tree — and the original guard fail-opened that case to
+// "not dirty", silently overwriting an existing hand-edit it just couldn't see. Now an
+// undeterminable status is treated the same as dirty WHEN the file exists with
+// non-empty content (skip + warn); an undeterminable status on an absent/empty file
+// still regenerates, since there is nothing to lose there.
 func surfaceAllowlistRegen(dir string) {
 	file := defaultAllowlistFile()
-	if writeAllowlistDirty(file) {
+	switch checkAllowlistGitStatus(file) {
+	case allowlistStatusDirty:
 		fmt.Fprintf(os.Stderr, "warning: %s has uncommitted changes; skipped regen — run 'rd relay sync-allowlist' to refresh\n", file)
 		return
+	case allowlistStatusUnknown:
+		// ready-a76: cleanliness could not be determined at all (git binary
+		// absent, or file outside any git work tree) — do NOT fail-open to "not
+		// dirty" when there is something an overwrite could destroy. An existing
+		// non-empty file might be an operator's uncommitted hand-edit we simply
+		// can't see; skip + warn instead of silently clobbering it. An absent or
+		// empty file has nothing to lose, so it still falls through and
+		// regenerates below.
+		if info, statErr := os.Stat(file); statErr == nil && info.Size() > 0 {
+			fmt.Fprintf(os.Stderr, "warning: cannot determine git status of %s; skipped regen to avoid clobbering — run 'rd relay sync-allowlist' to refresh\n", file)
+			return
+		}
 	}
 	baseline, err := readAllowlistFile(file)
 	if err != nil {
@@ -100,20 +120,37 @@ func surfaceAllowlistRegen(dir string) {
 	fmt.Println("  next: 'rd relay sync-allowlist --apply' to push the update to the relays")
 }
 
-// writeAllowlistDirty reports whether file has UNCOMMITTED git changes (staged,
+// allowlistGitStatus is the tri-state result of checking whether the allowlist file
+// has uncommitted git changes: clean, dirty, or genuinely undeterminable.
+type allowlistGitStatus int
+
+const (
+	allowlistStatusClean allowlistGitStatus = iota
+	allowlistStatusDirty
+	// allowlistStatusUnknown means the git check itself could not run — git binary
+	// absent, or file is not inside a git work tree — so cleanliness is unknown,
+	// NOT "clean" (ready-a76: this used to fail-open to clean, silently enabling
+	// an overwrite of a file whose git state we simply couldn't see).
+	allowlistStatusUnknown
+)
+
+// checkAllowlistGitStatus reports whether file has UNCOMMITTED git changes (staged,
 // unstaged, or untracked) — the ready-0df guard that stops the automatic grant-time
-// regen from clobbering an operator's in-progress edit. Best-effort: if file is not
-// inside a git work tree, or git is unavailable, or the file does not exist yet, it
-// reports NOT dirty — a bare regen target with no git history (e.g. a fresh project,
-// or an isolated test dir) is written as before; this only guards the version-controlled
-// case the bug report is about.
-func writeAllowlistDirty(file string) bool {
+// regen from clobbering an operator's in-progress edit. When the check itself cannot
+// run (git unavailable, or file outside any git work tree) it reports
+// allowlistStatusUnknown rather than silently claiming clean — the caller (
+// surfaceAllowlistRegen) decides how to treat "don't know" based on whether the file
+// has anything worth protecting.
+func checkAllowlistGitStatus(file string) allowlistGitStatus {
 	dir := filepath.Dir(file)
 	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", filepath.Base(file)).Output()
 	if err != nil {
-		return false
+		return allowlistStatusUnknown
 	}
-	return strings.TrimSpace(string(out)) != ""
+	if strings.TrimSpace(string(out)) != "" {
+		return allowlistStatusDirty
+	}
+	return allowlistStatusClean
 }
 
 // regenerateAllowlistLocal derives the relay write-allowlist from the signed grants
