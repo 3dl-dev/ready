@@ -118,6 +118,14 @@ type alias struct {
 // well-formed person-alias. It does NOT verify the signature — Resolve does that
 // before calling. The signer's own key is folded into pubkeys so an alias that
 // omits its own p tag still binds the signer to the party it declares.
+//
+// p-tag pubkeys are read straight off the wire (ready-b66): an untrusted relay (or
+// a signed-but-sloppy publisher) can serve tags the SIGNATURE covers but that are
+// not well-formed pubkeys. A junk p-tag (wrong length, non-hex, or wrong case — a
+// real nostr pubkey from PubKeyHex() is always 64-char LOWERCASE hex) is dropped
+// here rather than unioned into the party: it can never legitimately match another
+// key's canonical form, so admitting it can't cause a false positive, but dropping
+// it early keeps party membership exactly the set of keys that could ever resolve.
 func parseAlias(e *nostr.Event) (alias, bool) {
 	if e == nil || e.Kind != KindPersonAlias {
 		return alias{}, false
@@ -125,7 +133,13 @@ func parseAlias(e *nostr.Event) (alias, bool) {
 	if e.PubKey == "" {
 		return alias{}, false
 	}
-	pubkeys := tagValues(e, "p")
+	rawPubkeys := tagValues(e, "p")
+	pubkeys := rawPubkeys[:0]
+	for _, pk := range rawPubkeys {
+		if len(pk) == 64 && isLowerHex(pk) {
+			pubkeys = append(pubkeys, pk)
+		}
+	}
 	// The signer is always part of the party it declares.
 	pubkeys = append(pubkeys, e.PubKey)
 	emails := tagValues(e, "email")
@@ -362,6 +376,22 @@ func isHex(s string) bool {
 	for _, c := range s {
 		switch {
 		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// isLowerHex reports whether s is entirely LOWERCASE hex — nostr.Key.PubKeyHex()
+// always returns lowercase, so this is the exact wire form a legitimate pubkey
+// takes. Used on the READ path (parseAlias) to reject a p-tag pubkey read off the
+// wire that is technically hex but wrong-case (or otherwise malformed) and can
+// therefore never match a real key.
+func isLowerHex(s string) bool {
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
 		default:
 			return false
 		}

@@ -391,7 +391,7 @@ func adoptInviteRelays(rdHome string, relays []string) error {
 func runNostrInvite(ttl time.Duration) (string, error) {
 	dir, native := nostrNativeProject()
 	if !native {
-		return "", fmt.Errorf("rd invite requires a nostr-native project (a pinned board); run 'rd pin-board' first")
+		return "", fmt.Errorf("rd invite requires a nostr-native project (a pinned board) — run: rd link <coord> first")
 	}
 	board := nostrPinnedBoard(dir)
 	owner, _, okBoard := rdSync.ParseBoardCoord(board)

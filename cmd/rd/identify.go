@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/identity"
@@ -100,7 +101,13 @@ TRUST: readers honor this alias only if this key is already in their trust closu
 			if len(pk) != 64 || !isHex(pk) {
 				return fmt.Errorf("--add-key %q is not a valid pubkey: must be a 64-character hex string", pk)
 			}
-			pubkeys = append(pubkeys, pk)
+			// Normalize to lowercase (ready-b66): nostr.Key.PubKeyHex() always returns
+			// lowercase, so a mixed/upper-case --add-key (e.g. pasted from a UI that
+			// upper-cases hex) would otherwise land in the alias's p tag in the wrong
+			// case — that key's OWN future signed alias signs with its canonical
+			// lowercase PubKeyHex(), so an uppercase p tag here can never match it,
+			// silently locking that key out of the trust closure it was meant to join.
+			pubkeys = append(pubkeys, strings.ToLower(pk))
 		}
 
 		spec := identity.AliasSpec{

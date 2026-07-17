@@ -111,25 +111,61 @@ func OverdueFilter() Filter {
 // DelegatedFilter returns items where for=identity, by!=identity, status=active.
 // These are items the identity delegated to someone else that are in progress.
 func DelegatedFilter(identity string) Filter {
+	return DelegatedFilterSet(identitySet(identity))
+}
+
+// DelegatedFilterSet is the party-aware form of DelegatedFilter (ready-f0b): idset
+// is a set of identities (pubkeys/emails) all belonging to ONE party — pass a
+// single-element set for plain identity equality (what DelegatedFilter does), or a
+// party-expanded set (cmd/rd/party.go nostrPartyIdentitySet) so a follower aliased
+// into the party matches an item whose For/By is ANY member of that party, not
+// just the literal caller token.
+//
+// An item matches when For is a member of idset AND By is a non-empty identity
+// OUTSIDE idset — i.e. genuinely delegated to someone who is not "the same
+// person" under any of their aliases — and status is active. An item By'd to
+// another member of the SAME party is self-work under a different key, not a
+// delegation, and is excluded. An empty idset (identity == "" on the
+// single-string path) always returns false.
+func DelegatedFilterSet(idset map[string]bool) Filter {
 	return func(item *state.Item) bool {
-		if identity == "" {
+		if len(idset) == 0 {
 			return false
 		}
-		return item.For == identity &&
-			item.By != identity &&
+		return idset[item.For] &&
 			item.By != "" &&
+			!idset[item.By] &&
 			item.Status == state.StatusActive
 	}
 }
 
 // MyWorkFilter returns items assigned to identity that are not terminal.
 func MyWorkFilter(identity string) Filter {
+	return MyWorkFilterSet(identitySet(identity))
+}
+
+// MyWorkFilterSet is the party-aware form of MyWorkFilter (ready-f0b): idset is a
+// set of identities (pubkeys/emails) all belonging to ONE party. An item matches
+// when By is a member of idset and the item is not terminal. An empty idset
+// (identity == "" on the single-string path) always returns false.
+func MyWorkFilterSet(idset map[string]bool) Filter {
 	return func(item *state.Item) bool {
-		if identity == "" {
+		if len(idset) == 0 {
 			return false
 		}
-		return item.By == identity && !state.IsTerminal(item)
+		return idset[item.By] && !state.IsTerminal(item)
 	}
+}
+
+// identitySet wraps a single identity string as a one-element set, or an empty
+// (nil) set when identity is "" — preserving "empty identity always excludes"
+// for DelegatedFilter/MyWorkFilter callers that pass a raw string instead of a
+// pre-resolved party set.
+func identitySet(identity string) map[string]bool {
+	if identity == "" {
+		return nil
+	}
+	return map[string]bool{identity: true}
 }
 
 // GatesFilter returns items that have an unfulfilled gate (status=waiting with

@@ -43,7 +43,7 @@ func resolveBoardAuthorD(dir, signerPubkey string) (boardAuthor, boardD string, 
 	}
 	d := projectPrefix(dir)
 	if d == "" {
-		return "", "", fmt.Errorf("cannot resolve board d from project dir %q; pin a board with 'rd pin-board'", dir)
+		return "", "", fmt.Errorf("cannot resolve board d from project dir %q — run: rd link <coord>", dir)
 	}
 	return signerPubkey, d, nil
 }
@@ -223,7 +223,7 @@ func runGrantAllBoards(projectsRoot, grantee, role, label string, from int64, cl
 		return fmt.Errorf("discovering local boards under %s: %w", projectsRoot, err)
 	}
 	if len(boards) == 0 {
-		return fmt.Errorf("no locally-pinned boards owned by %s found under %s", shortKey(owner), projectsRoot)
+		return fmt.Errorf("no locally-pinned boards owned by %s found under %s — run: rd link <coord> in each board's repo first (or pass --projects-root)", shortKey(owner), projectsRoot)
 	}
 	origCwd, err := os.Getwd()
 	if err != nil {
@@ -281,7 +281,7 @@ func runGrantAllBoards(projectsRoot, grantee, role, label string, from int64, cl
 func runLinkOrPinBoard(cmd *cobra.Command, args []string) error {
 	dir, ok := readyProjectDir()
 	if !ok {
-		return fmt.Errorf("no .ready project directory found")
+		return fmt.Errorf("no .ready project directory found — run: rd init")
 	}
 
 	ownerFlag, _ := cmd.Flags().GetString("owner")
