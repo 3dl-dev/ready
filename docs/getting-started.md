@@ -231,8 +231,18 @@ pubkey. The lifecycle is four steps:
    board, adopts the relays, and syncs. `rd ready` works immediately. The joiner
    **writes nothing to the relays** yet. It prints its `pubkey` and the `claim`.
 3. **Recipient sends the owner `pubkey` + `claim`**.
-4. **Owner grants + admits** — `rd grant <pubkey> contributor --claim <claim>`
-   (then `rd relay sync-allowlist --apply` on locked relays).
+4. **Owner grants + admits** — `rd grant <pubkey> --claim <claim>` — one
+   command, and they can read and write.
+
+That's the whole invite: no role argument (it defaults to `contributor`), no
+write-allowlist edit, no relay sync.
+
+**Relays are untrusted** — rd decides who can write via signed grants, checked when it builds your board, so any public relay works; you never configure a relay.
+
+(Operators who choose to run their own locked relay can add an optional
+extra layer — see
+[Advanced: running your own locked relay](#advanced-running-your-own-locked-relay)
+below.)
 
 **Security model.** The token is a **TTL-bounded claim, not a bearer secret**: a
 leaked token yields only the right to self-mint and *request* a grant the owner may
@@ -268,9 +278,8 @@ rd ready   # already synced — items are visible read-only
 ### Owner: grant write access (consumes the claim, single-use)
 
 ```bash
-rd grant <joiner-pubkey> contributor --claim <claim-nonce>
-# On locked relays, push the updated allowlist:
-rd relay sync-allowlist --apply
+rd grant <joiner-pubkey> --claim <claim-nonce>
+# they can read and write now — no allowlist edit, no relay sync required
 ```
 
 ### Delegate work to a teammate
@@ -287,6 +296,28 @@ rd update <item-id> --status active
 # Teammate closes it
 rd done <item-id> --reason "API complete"
 ```
+
+---
+
+### Advanced: running your own locked relay
+
+**This is optional — the invite flow above never requires it.** rd enforces
+write authorization app-side from the signed grant log alone, so a plain
+public relay (the default) is already safe: an ungranted author's writes are
+dropped on every read/sync/merge path regardless of what the relay itself
+will accept.
+
+If you additionally choose to run your own **locked** relay (one that
+rejects unrecognized writers at the relay layer, as defense-in-depth on top
+of app-side enforcement), regenerate its write-allowlist from the same
+signed grants and push it:
+
+```bash
+rd relay sync-allowlist --apply
+```
+
+This is a standalone operator command, separate from `rd grant` — nothing
+in the onboarding flow depends on it.
 
 ---
 
@@ -323,7 +354,7 @@ git worktree add worktree-b
 
 # Each agent joins with its own $RD_HOME — join self-mints a fresh key into that
 # $RD_HOME (read-only), so no separate bootstrap step is needed. The owner then
-# grants each agent's printed pubkey: rd grant <pubkey> contributor --claim <claim>.
+# grants each agent's printed pubkey: rd grant <pubkey> --claim <claim>.
 cd ~/projects/myproject && RD_HOME=worktree-a/.rd rd join rd1_<token-for-agent-a>
 cd ~/projects/myproject && RD_HOME=worktree-b/.rd rd join rd1_<token-for-agent-b>
 ```
@@ -684,7 +715,7 @@ rd create "Quarterly review" --priority p2 --eta "2026-04-15T09:00"
 | `rd follow <owner-identity>` | Join every board an owner published, keeping this machine's identity (email, npub, or `rd1_` token) |
 | `rd invite` | Mint a one-use claim token for a teammate to `rd join` |
 | `rd join <token>` | Join a teammate's project read-only via a claim token |
-| `rd grant <pubkeyHex> <role> [--all-boards]` | Owner-signed role-grant; `--all-boards` fans it across every locally-pinned board |
+| `rd grant <pubkeyHex> [role] [--all-boards]` | Owner-signed role-grant; role defaults to `contributor`; `--all-boards` fans it across every locally-pinned board |
 | `rd identify --add-email <you@email>` | Publish a signed person-alias binding this machine's key to your email |
 | `rd status` | Diagnose identity, board link, and read/write reachability; prints the next remedy command |
 | `rd link [board-coord]` | Bind/rebind this repo to a board coordinate; with no args, prints the currently-linked board |
