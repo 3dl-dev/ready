@@ -27,6 +27,7 @@ package main
 //   - an `npub1...` bech32 pubkey, or a bare 64-hex pubkey.
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -42,10 +43,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultFollowEmail is the party handle registered for this machine's key when
-// --email is not given. It matches the operator this rd install belongs to.
-const defaultFollowEmail = "baron@3dl.dev"
-
+// followConfirmThreshold is the discovered-board-count above which a
+// no-`--board` `rd follow` REQUIRES an explicit confirmation before binding
+// (ready-4c9c). Below or at the threshold, following is left frictionless.
+// Above it — the "followed 88 throwaway fixture boards over 6 minutes with no
+// preview" footgun this const fixes — the operator must see the count+names and
+// either confirm interactively or pass --all/--yes.
+const followConfirmThreshold = 3
 // followFetch fetches events matching filter from relays, merged across relays and
 // de-duplicated by event id. It is a package-level var so the deterministic
 // integration test replaces it with a local seeded-log reader — the same
@@ -81,14 +85,39 @@ var followFetch = func(ctx context.Context, relays []string, filter map[string]a
 	return out, nil
 }
 
+// followConfirm previews the discovered board names and asks the operator to
+// confirm before binding all of them. It is a package-level var (same seam
+// pattern as followFetch) so the unit test can assert the >threshold gate
+// blocks without a real stdin/tty, and so a future interactive test could
+// inject a scripted "yes". Non-interactive stdin (scripts, CI, this test
+// harness) never auto-approves — isInteractive() gates the prompt itself, so
+// the only way to bind >threshold boards without a live human at a tty is
+// --all/--yes.
+var followConfirm = func(names []string) bool {
+	if !isInteractive() {
+		return false
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "rd follow discovered %d boards:\n", len(names))
+	for _, n := range names {
+		fmt.Fprintf(os.Stderr, "  %s\n", n)
+	}
+	fmt.Fprint(os.Stderr, "Bind ALL of these boards into subdirectories? [y/N] ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
+}
+
 // followOpts are the resolved inputs to runFollow. The command RunE fills them
 // from flags + config; the integration test constructs them directly.
 type followOpts struct {
 	who    string   // owner-identity token: email | npub1 | rd1_ | 64-hex
 	boardD string   // "" = discover all boards; non-empty = single board
-	email  string   // party handle to (re)register for this machine's key
+	email  string   // party handle to register for this key; "" = reuse a prior self-alias's email, else key-only (NEVER a hardcoded default — ready-57d)
 	root   string   // projects root under which one dir per board is created
 	relays []string // relays to discover/import/backfill through
+	all    bool     // --all/--yes: skip the >threshold confirmation, bind non-interactively
 }
 
 // followReport is the outcome runFollow returns for the command to print (and the
@@ -116,8 +145,14 @@ board its key is kept unchanged. It prints your pubkey with the exact
 'rd grant --all-boards <pubkey>' line to send the owner. No board coordinate is
 ever printed for you to retype.
 
+If the owner published more than a few boards, follow previews the discovered
+count and names and asks you to confirm before binding any of them — pass
+--all (or --yes) to skip that prompt for scripts/CI. --board always binds one
+named board immediately with no prompt.
+
   rd follow baron@3dl.dev                 # all of the owner's boards
   rd follow baron@3dl.dev --board ready   # just one board
+  rd follow baron@3dl.dev --all           # skip the confirmation prompt
   rd follow npub1... | rd follow rd1_...  # by pubkey or invite token`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -127,6 +162,8 @@ ever printed for you to retype.
 		boardD, _ := cmd.Flags().GetString("board")
 		email, _ := cmd.Flags().GetString("email")
 		root, _ := cmd.Flags().GetString("root")
+		allFlag, _ := cmd.Flags().GetBool("all")
+		yesFlag, _ := cmd.Flags().GetBool("yes")
 		if root == "" {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -134,15 +171,13 @@ ever printed for you to retype.
 			}
 			root = cwd
 		}
-		if email == "" {
-			email = defaultFollowEmail
-		}
 		rep, err := runFollow(followOpts{
 			who:    args[0],
 			boardD: boardD,
 			email:  email,
 			root:   root,
 			relays: nostrReadRelays(),
+			all:    allFlag || yesFlag,
 		})
 		if err != nil {
 			return err
@@ -201,15 +236,40 @@ func runFollow(opts followOpts) (*followReport, error) {
 	}
 	sort.Strings(boards)
 
+	// (4b) CONFIRMATION GATE (ready-4c9c): a bare `rd follow <owner>` with no
+	// --board discovers and binds EVERY board the owner published. Left
+	// unguarded this silently dumped 88 throwaway fixture boards into cwd over
+	// ~6 minutes with no preview, no count, and no progress output — it looked
+	// hung. `--board <name>` names exactly one board and is scoped by
+	// DiscoverOwnerBoards above already, so it never reaches this gate. Above
+	// followConfirmThreshold boards, preview the count+names and REQUIRE
+	// confirmation (interactive y/N via followConfirm, or --all/--yes to skip
+	// it for scripts) before binding anything.
+	if opts.boardD == "" && len(boards) > followConfirmThreshold && !opts.all {
+		names := make([]string, 0, len(boards))
+		for _, coord := range boards {
+			if _, d, ok := rdSync.ParseBoardCoord(coord); ok {
+				names = append(names, d)
+			}
+		}
+		if !followConfirm(names) {
+			return nil, fmt.Errorf("rd follow: discovered %d boards for %q — refusing to bind without confirmation:\n  %s\n"+
+				"pass --all (or --yes) to bind all of them non-interactively, or --board <name> to bind just one",
+				len(boards), opts.who, strings.Join(names, "\n  "))
+		}
+	}
+
 	rep := &followReport{Pubkey: self, MintedKey: minted, BoardDirs: map[string]string{}, Boards: boards}
 
 	// (5) For each board: bind (committed board.json) + pull full history + backfill.
 	var primaryDir string
-	for _, coord := range boards {
+	total := len(boards)
+	for i, coord := range boards {
 		owner, boardD, ok := rdSync.ParseBoardCoord(coord)
 		if !ok {
 			continue
 		}
+		fmt.Fprintf(os.Stderr, "[%d/%d] binding %s...\n", i+1, total, boardD)
 		dir := filepath.Join(opts.root, boardD)
 		if err := bindFollowedBoard(dir, coord, boardD, relays); err != nil {
 			return nil, fmt.Errorf("binding board %s: %w", boardD, err)
@@ -226,7 +286,31 @@ func runFollow(opts followOpts) (*followReport, error) {
 	// (6) Refresh this machine's person-alias ONCE (published into the primary
 	// board's log/relays). This is the write side of email->party resolution: it
 	// lets the owner map this pubkey back to the operator.
-	aliasID, err := publishFollowAlias(ctx, primaryDir, k, opts.email, relays)
+	//
+	// SECURITY (ready-57d): NEVER default the email to a hardcoded owner handle. When
+	// --email is omitted, reuse an email this key ALREADY self-asserted (a prior `rd
+	// identify`, resolved from the snapshot under this key's own trust root); if there
+	// is none, publish a KEY-ONLY alias (no email claim). A cold non-owner therefore
+	// never auto-claims someone else's handle and never pollutes the email->key map.
+	email := resolveFollowEmail(opts.email, snapshot, self)
+
+	// SECURITY/correctness (ready-104): a no-`--email` follow REUSES a prior
+	// self-asserted email and republishes the SAME (signer=self, d=email)
+	// addressable slot. Publishing self ALONE there would let latest-wins
+	// supersede (ready-998) EVICT any sibling keys the operator co-asserted via
+	// `rd identify --add-key` — silently dropping those machines from
+	// KeysForParty/PartyForPubkey and from `rd grant --all-boards` discovery. So
+	// when we are reusing (email came from a prior alias, NOT from an explicit
+	// --email), preserve that slot's FULL key set: republish the UNION of the
+	// party's already-resolved keys + self. The explicit --email path and the
+	// key-only (email=="") path are untouched — they still assert self alone.
+	preserveKeys := []string{self}
+	if opts.email == "" && email != "" {
+		if party, ok := identity.Resolve(snapshot, []string{self}).PartyForPubkey(self); ok {
+			preserveKeys = party.Pubkeys
+		}
+	}
+	aliasID, err := publishFollowAlias(ctx, primaryDir, k, email, preserveKeys, relays)
 	if err != nil {
 		return nil, fmt.Errorf("publishing person-alias: %w", err)
 	}
@@ -363,21 +447,56 @@ func importFollowedBoard(ctx context.Context, dir, coord, owner, boardD string, 
 	return nil
 }
 
-// publishFollowAlias publishes ONE kind-39302 person-alias for this machine's key
-// under handle email, into dir's log + the relays. It reuses the same monotonic
-// created_at slot logic as `rd identify` so a re-follow supersedes rather than
-// ties the prior alias. Returns the published event id.
-func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email string, relays []string) (string, error) {
+// resolveFollowEmail decides which email handle this machine's follow-alias should
+// carry (ready-57d). Order: an explicit --email wins; otherwise reuse an email this
+// key ALREADY self-asserted (a prior `rd identify`, resolved from snapshot under
+// this key's OWN trust root); otherwise "" — a KEY-ONLY alias with no email claim.
+// It NEVER invents an email, so a cold non-owner can never auto-claim a handle.
+func resolveFollowEmail(explicit string, snapshot []*nostr.Event, self string) string {
+	if explicit != "" {
+		return explicit
+	}
+	party, ok := identity.Resolve(snapshot, []string{self}).PartyForPubkey(self)
+	if ok && len(party.Emails) > 0 {
+		return party.Emails[0]
+	}
+	return ""
+}
+
+// publishFollowAlias publishes ONE kind-39302 person-alias for this machine's key,
+// into dir's log + the relays. When email is non-empty the alias binds the key to
+// that handle; when email is "" it publishes a KEY-ONLY alias (d = the key's own
+// pubkey, no email tag) so the key is announced for granting without claiming any
+// handle (ready-57d). It reuses the same monotonic created_at slot logic as `rd
+// identify` so a re-follow supersedes rather than ties the prior alias. Returns the
+// published event id. preserveKeys is the set of party pubkeys this alias must
+// keep asserting (ready-104): republishing a REUSED (self,email) slot with self
+// alone would supersede-and-evict sibling keys the operator co-asserted, so the
+// caller passes the full set to preserve; self is always folded in regardless.
+func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email string, preserveKeys, relays []string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no board bound — cannot anchor the person-alias")
 	}
 	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
-	spec := identity.AliasSpec{
-		Handle:  email,
-		Pubkeys: []string{k.PubKeyHex()},
-		Emails:  []string{email},
+	self := k.PubKeyHex()
+	// KEY-ONLY alias: BuildAliasEvent requires a non-empty handle for the addressable
+	// slot, so use the key's own pubkey as the handle and assert NO email.
+	handle := email
+	var emails []string
+	if email != "" {
+		emails = []string{email}
+	} else {
+		handle = self
 	}
-	ev, err := identity.BuildAliasEvent(k, spec, nextAliasCreatedAt(log, email))
+	// self is always part of the party it declares; dedup keeps the p-tag set clean
+	// even if preserveKeys already contains self (it normally does).
+	pubkeys := dedupStrings(append(append([]string{}, preserveKeys...), self))
+	spec := identity.AliasSpec{
+		Handle:  handle,
+		Pubkeys: pubkeys,
+		Emails:  emails,
+	}
+	ev, err := identity.BuildAliasEvent(k, spec, nextAliasCreatedAt(log, handle))
 	if err != nil {
 		return "", err
 	}
@@ -451,8 +570,10 @@ func dedupStrings(in []string) []string {
 
 func init() {
 	followCmd.Flags().String("board", "", "follow only the board with this d identifier (default: all of the owner's boards)")
-	followCmd.Flags().String("email", "", "party handle to register for this machine's key (default: "+defaultFollowEmail+")")
+	followCmd.Flags().String("email", "", "party handle to register for this machine's key (default: reuse a prior 'rd identify' email, else publish a key-only alias claiming no handle)")
 	followCmd.Flags().String("root", "", "projects root under which one directory per board is created (default: current directory)")
+	followCmd.Flags().Bool("all", false, "skip the confirmation prompt when more than a few boards are discovered (non-interactive/scripted use)")
+	followCmd.Flags().Bool("yes", false, "alias for --all")
 	rootCmd.AddCommand(followCmd)
 }
 

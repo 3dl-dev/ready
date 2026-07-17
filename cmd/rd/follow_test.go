@@ -290,6 +290,238 @@ func TestFollow_BoardFlagScopesToOneBoard(t *testing.T) {
 	}
 }
 
+// seedFollowFixture builds an owner key plus a signed person-alias + one
+// signed 30301 board event per name in boardNames, mirroring the setup in
+// TestFollow_BindsAllOwnerBoardsKeepingKey but factored out so the
+// ready-4c9c confirmation-gate tests can seed an arbitrary board count.
+func seedFollowFixture(t *testing.T, base string, boardNames []string) (owner string, seeded []*nostr.Event) {
+	t.Helper()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner = k.PubKeyHex()
+
+	const email = "baron@3dl.dev"
+	alias, err := identity.BuildAliasEvent(k, identity.AliasSpec{
+		Handle:  email,
+		Pubkeys: []string{owner},
+		Emails:  []string{email},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent: %v", err)
+	}
+	seeded = append(seeded, alias)
+
+	for i, name := range boardNames {
+		ts := int64(1000 + i)
+		be, err := rdSync.BuildBoardEvent(k, rdSync.BoardSpec{BoardD: name, Title: name, Maintainers: []string{owner}}, ts)
+		if err != nil {
+			t.Fatalf("BuildBoardEvent %s: %v", name, err)
+		}
+		seeded = append(seeded, be)
+	}
+	return owner, seeded
+}
+
+// TestFollow_ManyBoardsRequireConfirmation is the ready-4c9c done condition: a
+// bare `rd follow <owner>` (no --board) that discovers MORE than
+// followConfirmThreshold boards must NOT bind anything without confirmation.
+// followConfirm is overridden (same package-level-var seam as followFetch) to
+// deterministically report "declined" — exactly what a real non-interactive
+// script sees (followConfirm's own isInteractive() gate) — WITHOUT this test
+// touching real stdin/tty, so it cannot block if `go test` is ever run from an
+// actual terminal. This proves the fix's core promise: no --all/--yes and no
+// confirmation means NOTHING gets bound, no matter how many boards were
+// discovered. Reproduces the reported footgun (88 boards silently bound over
+// ~6 minutes with no preview/confirmation) at a small, deterministic N.
+func TestFollow_ManyBoardsRequireConfirmation(t *testing.T) {
+	base := t.TempDir()
+	boardNames := []string{"proj1", "proj2", "proj3", "proj4", "proj5", "proj6"}
+	if len(boardNames) <= followConfirmThreshold {
+		t.Fatalf("fixture has %d boards, must exceed followConfirmThreshold=%d to exercise the gate", len(boardNames), followConfirmThreshold)
+	}
+	_, seeded := seedFollowFixture(t, base, boardNames)
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	origConfirm := followConfirm
+	confirmCalledWith := []string(nil)
+	followConfirm = func(names []string) bool {
+		confirmCalledWith = names
+		return false // declined, deterministically — no real stdin involved
+	}
+	t.Cleanup(func() { followConfirm = origConfirm })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	const email = "baron@3dl.dev"
+	rep, err := runFollow(followOpts{
+		who:    email,
+		email:  email,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+		// all: false — no --all/--yes, and no tty, so the >threshold gate must
+		// refuse rather than silently binding all 6 boards.
+	})
+	if err == nil {
+		t.Fatalf("runFollow with %d boards (> threshold %d) and no --all succeeded; want a confirmation error. rep=%+v", len(boardNames), followConfirmThreshold, rep)
+	}
+	if !strings.Contains(err.Error(), "--all") {
+		t.Errorf("error %q does not mention --all as the way to skip confirmation", err.Error())
+	}
+	if !strings.Contains(err.Error(), "6") {
+		t.Errorf("error %q does not preview the discovered board count", err.Error())
+	}
+	for _, name := range boardNames {
+		if _, err := os.Stat(rdconfig.BoardBindingPath(filepath.Join(root, name))); err == nil {
+			t.Errorf("board %q got a committed board.json despite the confirmation gate refusing — nothing must bind", name)
+		}
+	}
+	if len(confirmCalledWith) != len(boardNames) {
+		t.Errorf("followConfirm called with %d names, want all %d discovered board names previewed: %v", len(confirmCalledWith), len(boardNames), confirmCalledWith)
+	}
+}
+
+// TestFollowConfirm_NonInteractiveStdinDeclinesWithoutBlocking exercises the
+// REAL followConfirm (not overridden) with os.Stdin swapped for a closed pipe
+// — guaranteed non-tty (a pipe's Stat().Mode() never sets ModeCharDevice) — so
+// isInteractive() deterministically reports false regardless of whatever tty
+// the test runner itself happens to have. Proves followConfirm's default
+// implementation never prompts/blocks for a script/CI caller with no --all.
+func TestFollowConfirm_NonInteractiveStdinDeclinesWithoutBlocking(t *testing.T) {
+	origStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	w.Close() // EOF immediately if anything ever tried to read it
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin; r.Close() })
+
+	if got := followConfirm([]string{"proj1", "proj2"}); got != false {
+		t.Errorf("followConfirm on non-interactive stdin = %v, want false (must never auto-approve)", got)
+	}
+}
+
+// TestFollow_AllFlagBindsAllAndReportsProgress is the --all/--yes escape hatch
+// for the ready-4c9c confirmation gate: with opts.all set, a >threshold
+// discovery binds every board non-interactively (no prompt, no tty needed) and
+// prints a "[i/N] binding <name>..." progress line per board to stderr so a
+// multi-minute follow no longer looks hung.
+func TestFollow_AllFlagBindsAllAndReportsProgress(t *testing.T) {
+	base := t.TempDir()
+	boardNames := []string{"proj1", "proj2", "proj3", "proj4", "proj5", "proj6"}
+	_, seeded := seedFollowFixture(t, base, boardNames)
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	const email = "baron@3dl.dev"
+	var rep *followReport
+	var runErr error
+	out := captureStderrPipe(t, func() {
+		rep, runErr = runFollow(followOpts{
+			who:    email,
+			email:  email,
+			root:   root,
+			relays: []string{"wss://seed.example.test"},
+			all:    true,
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runFollow with --all: %v", runErr)
+	}
+	if len(rep.BoardDirs) != len(boardNames) {
+		t.Fatalf("bound %d boards with --all, want all %d: %+v", len(rep.BoardDirs), len(boardNames), rep.BoardDirs)
+	}
+	for _, name := range boardNames {
+		if _, err := os.Stat(rdconfig.BoardBindingPath(filepath.Join(root, name))); err != nil {
+			t.Errorf("board %q missing committed board.json despite --all: %v", name, err)
+		}
+		wantProgress := "] binding " + name + "..."
+		if !strings.Contains(out, wantProgress) {
+			t.Errorf("stderr missing per-board progress line containing %q; got:\n%s", wantProgress, out)
+		}
+	}
+	if !strings.Contains(out, "[1/6]") || !strings.Contains(out, "[6/6]") {
+		t.Errorf("stderr missing bracketed [i/N] progress counters; got:\n%s", out)
+	}
+}
+
+// TestFollow_BoardFlagBypassesConfirmationGate is the ready-4c9c pin for
+// `rd follow <owner> --board <name>`: even when the owner has published MORE
+// boards than followConfirmThreshold, scoping to one named board must bind
+// immediately with NO confirmation prompt and no --all required — the gate
+// only applies to the discover-everything path.
+func TestFollow_BoardFlagBypassesConfirmationGate(t *testing.T) {
+	base := t.TempDir()
+	boardNames := []string{"proj1", "proj2", "proj3", "proj4", "proj5", "proj6"}
+	owner, seeded := seedFollowFixture(t, base, boardNames)
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	const email = "baron@3dl.dev"
+	const wantBoard = "proj4"
+	rep, err := runFollow(followOpts{
+		who:    email,
+		boardD: wantBoard,
+		email:  email,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+		// all: false, and the owner has 6 boards (> threshold) — must still
+		// bind with no prompt because --board scopes to exactly one.
+	})
+	if err != nil {
+		t.Fatalf("runFollow --board %s (owner has %d boards > threshold): %v", wantBoard, len(boardNames), err)
+	}
+	if len(rep.BoardDirs) != 1 {
+		t.Fatalf("bound %d boards with --board despite owner having %d, want exactly 1: %+v", len(rep.BoardDirs), len(boardNames), rep.BoardDirs)
+	}
+	wantCoord := rdSync.BoardCoord(owner, wantBoard)
+	dir := filepath.Join(root, wantBoard)
+	b, err := rdconfig.LoadBoardBinding(dir)
+	if err != nil {
+		t.Fatalf("LoadBoardBinding: %v", err)
+	}
+	if b.Board != wantCoord {
+		t.Errorf("board.json.Board = %q, want %q", b.Board, wantCoord)
+	}
+}
+
 // TestFollow_NeverPrintsARawCoordinate asserts the human output uses the
 // `rd grant --all-boards <pubkey>` line and never emits a 30301:<hex>:<d> board
 // coordinate the operator would have to copy — the whole point of `rd follow`.
@@ -537,5 +769,402 @@ func TestResolveFollowTarget_TokenAndHex(t *testing.T) {
 	}
 	if len(relays) != 1 || relays[0] != "wss://r.example" {
 		t.Errorf("token relays = %v, want [wss://r.example]", relays)
+	}
+}
+
+// aliasesBySigner returns every self-signed (PubKey==signer) kind-39302 alias in
+// dir's bound log — the write-side of `rd follow`'s person-alias refresh.
+func aliasesBySigner(t *testing.T, dir, signer string) []*nostr.Event {
+	t.Helper()
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll %s: %v", dir, err)
+	}
+	var out []*nostr.Event
+	for _, e := range events {
+		if e.Kind == identity.KindPersonAlias && e.PubKey == signer {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func aliasEmails(e *nostr.Event) []string {
+	var out []string
+	for _, t := range e.Tags {
+		if len(t) >= 2 && t[0] == "email" {
+			out = append(out, t[1])
+		}
+	}
+	return out
+}
+
+// seedFollowerAndOwner mints a fresh follower key in a scratch RD_HOME and seeds a
+// SEPARATE owner key that published one board plus an owner-signed alias binding
+// baron@3dl.dev to the OWNER key. It injects the seeded snapshot as followFetch and
+// returns (self follower pubkey, owner pubkey, projects root). This is the cold
+// non-owner setup: the follower has never run `rd identify`, and the only
+// baron@3dl.dev alias in the snapshot is signed by a key the follower does NOT
+// trust.
+func seedFollowerAndOwner(t *testing.T) (self, owner, root string) {
+	t.Helper()
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self = fk.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner = ownerKey.PubKeyHex()
+
+	var seeded []*nostr.Event
+	// Owner-signed alias binding baron@3dl.dev -> OWNER key. The follower must never
+	// reuse this handle: it is signed by a key outside the follower's trust closure.
+	ownerAlias, err := identity.BuildAliasEvent(ownerKey, identity.AliasSpec{
+		Handle:  "baron@3dl.dev",
+		Pubkeys: []string{owner},
+		Emails:  []string{"baron@3dl.dev"},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent owner: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded = append(seeded, ownerAlias, be)
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root = filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	return self, owner, root
+}
+
+// TestFollow_NoEmailNeverClaimsOwnerHandle is the ready-57d SECURITY done
+// condition. A FRESH (never-identified) key running `rd follow <owner-pubkey>` with
+// NO --email must publish a KEY-ONLY person-alias: it binds THIS machine's key to
+// NO email at all, and specifically never to baron@3dl.dev. Before the fix, follow
+// defaulted --email to a hardcoded owner handle baked into the binary, so any
+// non-owner auto-claimed baron@3dl.dev and polluted the email->key trust map.
+func TestFollow_NoEmailNeverClaimsOwnerHandle(t *testing.T) {
+	self, owner, root := seedFollowerAndOwner(t)
+
+	rep, err := runFollow(followOpts{
+		who:    owner, // 64-hex owner pubkey
+		email:  "",    // the vulnerable path: no --email given
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	if rep.MintedKey {
+		// follower key was minted at seedFollowerAndOwner via nostrKey(); follow keeps it.
+		t.Error("rd follow re-minted the follower key; it must keep the existing key")
+	}
+
+	dir := rep.BoardDirs["proj1"]
+	if dir == "" {
+		t.Fatalf("proj1 not bound: %+v", rep.BoardDirs)
+	}
+	selfAliases := aliasesBySigner(t, dir, self)
+	if len(selfAliases) != 1 {
+		t.Fatalf("follower published %d self-aliases, want exactly 1", len(selfAliases))
+	}
+	emails := aliasEmails(selfAliases[0])
+	if len(emails) != 0 {
+		t.Errorf("KEY-ONLY alias must claim NO email, got %v — a cold non-owner must never invent an email handle", emails)
+	}
+	for _, e := range emails {
+		if e == "baron@3dl.dev" {
+			t.Errorf("SECURITY: follower's alias claims the owner handle baron@3dl.dev without --email")
+		}
+	}
+	// The follower key must NOT resolve to the owner's baron@3dl.dev party.
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	r := identity.Resolve(events, []string{self})
+	if keys, ok := r.KeysForParty("baron@3dl.dev"); ok {
+		for _, k := range keys {
+			if k == self {
+				t.Errorf("SECURITY: follower key %s resolved into the baron@3dl.dev party", self)
+			}
+		}
+	}
+}
+
+// TestFollow_NoEmailPreservesSiblingKeys is the ready-104 SECURITY/correctness
+// done condition. Setup: the follower already co-asserted a SECOND machine key
+// via `rd identify --add-key <sibling>` — a self-signed (signer=self, d=me@x)
+// person-alias whose p-tags are BOTH self AND sibling. Running a no-`--email`
+// `rd follow <owner>` reuses the me@x handle (ready-57d reuse policy) and
+// republishes that same (self, me@x) addressable slot. Before the ready-104
+// fix, that republish asserted ONLY self, so latest-wins supersede (ready-998)
+// EVICTED sibling from the party — silently dropping that machine from
+// KeysForParty / PartyForPubkey and from `rd grant --all-boards` discovery. The
+// fix republishes the UNION (existing asserted keys + self), so sibling STILL
+// resolves after the follow. This test FAILS on the narrowing behavior (sibling
+// evicted) and passes once the union is preserved.
+func TestFollow_NoEmailPreservesSiblingKeys(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self := fk.PubKeyHex()
+
+	// A SECOND machine key the operator co-asserted via `rd identify --add-key`.
+	// It has no key material here — it only ever appears as a p-tag the follower's
+	// own self-signed alias asserts.
+	siblingKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey sibling: %v", err)
+	}
+	sibling := siblingKey.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner := ownerKey.PubKeyHex()
+
+	const mine = "me@example.com"
+	// Prior `rd identify --add-key <sibling>`: ONE self-signed alias for the
+	// (self, me@x) slot that asserts BOTH self and sibling.
+	priorAlias, err := identity.BuildAliasEvent(fk, identity.AliasSpec{
+		Handle:  mine,
+		Pubkeys: []string{self, sibling},
+		Emails:  []string{mine},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent prior: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded := []*nostr.Event{priorAlias, be}
+
+	// Sanity: BEFORE follow, the seeded snapshot already resolves both keys into
+	// the me@x party — so any post-follow eviction is caused by follow, not setup.
+	if keys, ok := identity.Resolve(seeded, []string{self}).KeysForParty(mine); !ok || !containsKey(keys, sibling) {
+		t.Fatalf("fixture invalid: sibling %s not in me@x party before follow (keys=%v, ok=%v)", sibling, keys, ok)
+	}
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  "", // no --email: reuses me@x, MUST preserve the sibling key
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+
+	dir := rep.BoardDirs["proj1"]
+	if dir == "" {
+		t.Fatalf("proj1 not bound: %+v", rep.BoardDirs)
+	}
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	r := identity.Resolve(events, []string{self})
+
+	// CORE ASSERTION: sibling must STILL be in the me@x party after follow — the
+	// no-email republish must not narrow (self, me@x) down to self alone.
+	keys, ok := r.KeysForParty(mine)
+	if !ok {
+		t.Fatalf("me@x resolved to no party after follow — the reuse republish broke resolution")
+	}
+	if !containsKey(keys, sibling) {
+		t.Errorf("SECURITY/correctness (ready-104): sibling key %s was EVICTED from the me@x party by a no-email follow; want it preserved. keys=%v", sibling, keys)
+	}
+	if !containsKey(keys, self) {
+		t.Errorf("self key %s missing from me@x party after follow; keys=%v", self, keys)
+	}
+
+	// And PartyForPubkey must still map the sibling machine back to this operator
+	// (what `rd grant --all-boards` discovery relies on).
+	if party, ok := r.PartyForPubkey(sibling); !ok || !containsKey(party.Pubkeys, self) {
+		t.Errorf("PartyForPubkey(sibling) lost the operator binding after follow: party=%+v ok=%v", party, ok)
+	}
+}
+
+func containsKey(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFollow_ExplicitEmailBindsThatEmail proves the legitimate path still works:
+// `rd follow <owner> --email you@x` binds this machine's key to you@x (and only
+// you@x).
+func TestFollow_ExplicitEmailBindsThatEmail(t *testing.T) {
+	self, owner, root := seedFollowerAndOwner(t)
+
+	const mine = "you@example.com"
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  mine,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	dir := rep.BoardDirs["proj1"]
+	selfAliases := aliasesBySigner(t, dir, self)
+	if len(selfAliases) != 1 {
+		t.Fatalf("follower published %d self-aliases, want exactly 1", len(selfAliases))
+	}
+	emails := aliasEmails(selfAliases[0])
+	if len(emails) != 1 || emails[0] != mine {
+		t.Errorf("alias emails = %v, want [%s]", emails, mine)
+	}
+	events, _ := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	r := identity.Resolve(events, []string{self})
+	keys, ok := r.KeysForParty(mine)
+	if !ok {
+		t.Fatalf("email %s did not resolve to any party", mine)
+	}
+	found := false
+	for _, k := range keys {
+		if k == self {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("follower key %s not in party for %s (keys=%v)", self, mine, keys)
+	}
+}
+
+// TestFollow_NoEmailReusesPriorIdentify proves the reuse policy: a follower that
+// already ran `rd identify --add-email me@x` (a self-signed alias present in the
+// snapshot) and then runs `rd follow <owner>` with NO --email REUSES me@x rather
+// than going key-only or inventing a handle.
+func TestFollow_NoEmailReusesPriorIdentify(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	fk, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey (follower): %v", err)
+	}
+	self := fk.PubKeyHex()
+
+	ownerKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey owner: %v", err)
+	}
+	owner := ownerKey.PubKeyHex()
+
+	const mine = "me@example.com"
+	// Prior `rd identify`: a self-signed alias binding the follower key to me@x.
+	priorAlias, err := identity.BuildAliasEvent(fk, identity.AliasSpec{
+		Handle:  mine,
+		Pubkeys: []string{self},
+		Emails:  []string{mine},
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildAliasEvent prior: %v", err)
+	}
+	be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{BoardD: "proj1", Title: "proj1", Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	seeded := []*nostr.Event{priorAlias, be}
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	rep, err := runFollow(followOpts{
+		who:    owner,
+		email:  "", // no --email: must REUSE the prior identify handle
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("runFollow: %v", err)
+	}
+	dir := rep.BoardDirs["proj1"]
+	selfAliases := aliasesBySigner(t, dir, self)
+	// There may be more than one (the prior alias imported + the refreshed one);
+	// assert EVERY self-alias with an email carries me@x and none invents another.
+	sawEmail := false
+	for _, a := range selfAliases {
+		for _, e := range aliasEmails(a) {
+			sawEmail = true
+			if e != mine {
+				t.Errorf("follow published/kept an alias with email %q, want reuse of %q", e, mine)
+			}
+		}
+	}
+	if !sawEmail {
+		t.Errorf("no self-alias carried an email; the prior identify handle %q was not reused", mine)
+	}
+	events, _ := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	r := identity.Resolve(events, []string{self})
+	if _, ok := r.KeysForParty(mine); !ok {
+		t.Errorf("email %s did not resolve after follow — reuse failed", mine)
 	}
 }

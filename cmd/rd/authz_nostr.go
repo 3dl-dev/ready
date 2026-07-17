@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -62,8 +65,43 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 
 // surfaceAllowlistRegen regenerates the local relay write-allowlist from the signed
 // grants and prints the diff. Best-effort (see runNostrGrantRevoke).
+//
+// ready-0df: this is a SIDE EFFECT of publishing a grant — it fires on every `rd
+// grant`/`rd revoke`/`rd kill` and, via --all-boards, in EVERY scanned sibling repo.
+// The grant EVENT (the durable, authoritative kind-39301 act) is separable from the
+// relay ALLOWLIST FILE regen (an ops step `rd relay sync-allowlist --apply` owns): if
+// the target file has UNCOMMITTED git changes — the operator mid-edit, e.g. a
+// hand-relabeled key — silently overwriting it destroys that work with no warning or
+// diff. So when the file is dirty this SKIPS the regen and warns instead of writing;
+// a clean (or absent) file regenerates exactly as before. The explicit `rd relay
+// sync-allowlist [--apply]` path is UNAFFECTED by this guard — it is a deliberate
+// operator act, not an automatic side effect, so it may overwrite a dirty file.
+//
+// ready-a76: cleanliness cannot always be DETERMINED — git binary absent, or the file
+// living outside any git work tree — and the original guard fail-opened that case to
+// "not dirty", silently overwriting an existing hand-edit it just couldn't see. Now an
+// undeterminable status is treated the same as dirty WHEN the file exists with
+// non-empty content (skip + warn); an undeterminable status on an absent/empty file
+// still regenerates, since there is nothing to lose there.
 func surfaceAllowlistRegen(dir string) {
 	file := defaultAllowlistFile()
+	switch checkAllowlistGitStatus(file) {
+	case allowlistStatusDirty:
+		fmt.Fprintf(os.Stderr, "warning: %s has uncommitted changes; skipped regen — run 'rd relay sync-allowlist' to refresh\n", file)
+		return
+	case allowlistStatusUnknown:
+		// ready-a76: cleanliness could not be determined at all (git binary
+		// absent, or file outside any git work tree) — do NOT fail-open to "not
+		// dirty" when there is something an overwrite could destroy. An existing
+		// non-empty file might be an operator's uncommitted hand-edit we simply
+		// can't see; skip + warn instead of silently clobbering it. An absent or
+		// empty file has nothing to lose, so it still falls through and
+		// regenerates below.
+		if info, statErr := os.Stat(file); statErr == nil && info.Size() > 0 {
+			fmt.Fprintf(os.Stderr, "warning: cannot determine git status of %s; skipped regen to avoid clobbering — run 'rd relay sync-allowlist' to refresh\n", file)
+			return
+		}
+	}
 	baseline, err := readAllowlistFile(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not read current relay write-allowlist %s: %v\n", file, err)
@@ -80,6 +118,39 @@ func surfaceAllowlistRegen(dir string) {
 	printKeyList("REMOVE", plan.Removed, baseline)
 	printKeyList("PRESERVE (admitted, no rd grant — kept)", plan.Preserved, baseline)
 	fmt.Println("  next: 'rd relay sync-allowlist --apply' to push the update to the relays")
+}
+
+// allowlistGitStatus is the tri-state result of checking whether the allowlist file
+// has uncommitted git changes: clean, dirty, or genuinely undeterminable.
+type allowlistGitStatus int
+
+const (
+	allowlistStatusClean allowlistGitStatus = iota
+	allowlistStatusDirty
+	// allowlistStatusUnknown means the git check itself could not run — git binary
+	// absent, or file is not inside a git work tree — so cleanliness is unknown,
+	// NOT "clean" (ready-a76: this used to fail-open to clean, silently enabling
+	// an overwrite of a file whose git state we simply couldn't see).
+	allowlistStatusUnknown
+)
+
+// checkAllowlistGitStatus reports whether file has UNCOMMITTED git changes (staged,
+// unstaged, or untracked) — the ready-0df guard that stops the automatic grant-time
+// regen from clobbering an operator's in-progress edit. When the check itself cannot
+// run (git unavailable, or file outside any git work tree) it reports
+// allowlistStatusUnknown rather than silently claiming clean — the caller (
+// surfaceAllowlistRegen) decides how to treat "don't know" based on whether the file
+// has anything worth protecting.
+func checkAllowlistGitStatus(file string) allowlistGitStatus {
+	dir := filepath.Dir(file)
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", filepath.Base(file)).Output()
+	if err != nil {
+		return allowlistStatusUnknown
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return allowlistStatusDirty
+	}
+	return allowlistStatusClean
 }
 
 // regenerateAllowlistLocal derives the relay write-allowlist from the signed grants
