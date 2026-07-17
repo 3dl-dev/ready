@@ -16,12 +16,26 @@ package main
 // the derivation; assertions check derived authz state, never err==nil.
 
 import (
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
+
+// gitCmdForTest runs `git -C dir <args>`, failing the test on error. Shared by tests
+// below that need a REAL git work tree (ready-a76: checkAllowlistGitStatus's clean/
+// dirty distinction is only meaningful inside one — see
+// TestSurfaceAllowlistRegen_GitStatusUndetermined_* in
+// nostr_grant_undetermined_allowlist_test.go for the outside-a-work-tree case).
+func gitCmdForTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
 
 // readGrantEventsForTest returns every kind-39301 role-grant in the project's local
 // authoritative log whose "p" (grantee) tag equals grantee.
@@ -104,6 +118,17 @@ func TestGrantNative_PublishesGrantAndRegeneratesAllowlist(t *testing.T) {
 func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
 	dir, owner := setupNostrNativeProject(t)
 
+	// ready-a76: setupNostrNativeProject's project dir is NOT itself a git work
+	// tree, so checkAllowlistGitStatus can no longer determine cleanliness there —
+	// and once the allowlist file has content (after the grant below), an
+	// undeterminable status now conservatively SKIPS the regen rather than
+	// fail-opening to "clean" as it used to. Put dir under a real git repo and
+	// commit the allowlist after each regen so both regens in this test hit the
+	// "normal in-repo clean" path the fix leaves unchanged, letting the assertions
+	// below test revoke-pruning rather than the git-status guard.
+	gitCmdForTest(t, dir, "init", "-q")
+	gitCmdForTest(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-q", "-m", "init")
+
 	gk, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -117,6 +142,13 @@ func TestRevokeNative_UnifiedRevocationPrunesAllowlist(t *testing.T) {
 	if allow, _ := readAllowlistFile(file); allow[grantee] == "" {
 		t.Fatalf("precondition: grantee should be admitted after grant, allowlist=%v", allow)
 	}
+
+	relFile, err := filepath.Rel(dir, file)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	gitCmdForTest(t, dir, "add", "--", relFile)
+	gitCmdForTest(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "-m", "commit allowlist after grant")
 
 	// Now revoke (the same primitive kill uses on the native path).
 	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleRevoked, "", 0, ""); err != nil {
