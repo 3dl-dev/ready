@@ -7,13 +7,14 @@ Ready is work management as a nostr convention. Items, dependencies, gates, and 
 - [Concepts](#concepts)
 - [Prerequisites](#prerequisites)
 - [Part 1: Solo (5 minutes)](#part-1-solo-5-minutes)
-- [Part 2: Team (invite tokens)](#part-2-team-invite-tokens)
-- [Part 3: Multi-agent (per-worktree `$RD_HOME`)](#part-3-multi-agent-per-worktree-rdhome)
-- [Part 4: Dependencies](#part-4-dependencies)
-- [Part 5: Playbooks (reusable work trees)](#part-5-playbooks-reusable-work-trees)
-- [Part 6: Gate escalation](#part-6-gate-escalation)
-- [Part 7: Resuming work (for agents)](#part-7-resuming-work-for-agents)
-- [Part 8: Reference](#part-8-reference)
+- [Part 2: Second machine, two commands](#part-2-second-machine-two-commands)
+- [Part 3: Team (invite tokens)](#part-3-team-invite-tokens)
+- [Part 4: Multi-agent (per-worktree `$RD_HOME`)](#part-4-multi-agent-per-worktree-rdhome)
+- [Part 5: Dependencies](#part-5-dependencies)
+- [Part 6: Playbooks (reusable work trees)](#part-6-playbooks-reusable-work-trees)
+- [Part 7: Gate escalation](#part-7-gate-escalation)
+- [Part 8: Resuming work (for agents)](#part-8-resuming-work-for-agents)
+- [Part 9: Reference](#part-9-reference)
 
 ---
 
@@ -23,9 +24,13 @@ Ready is work management as a nostr convention. Items, dependencies, gates, and 
 
 **Item** — a convention-conforming card, materialized from a `kind-30302` event plus its status history (one `NIP-34` status event per transition). Fields: `id`, `title`, `type`, `priority`, `status`, `for`, `by`, `eta`, `due`. All state transitions are signed events — the log is the audit trail.
 
-**Identity** — a secp256k1 key under `$RD_HOME` (default `~/.config/rd`). There is no separate identity file or backend to configure; the key is resolved once per process from `$RD_HOME` (or `--rd-home` / `$RD_HOME`).
+**Identity** — a secp256k1 key under `$RD_HOME` (default `~/.config/rd`). There is no separate identity file or backend to configure; the key is resolved once per process from `$RD_HOME` (or `--rd-home` / `$RD_HOME`). `rd identify --add-email <you@email>` publishes a signed `kind-39302` person-alias binding this machine's key to your email handle, so your other machines resolve as the same party (used by `rd follow` and by `--for <email>` assignment).
 
 **Authorization** — an owner-signed `kind-39301` role-grant. The board owner grants a pubkey a role; the relay write-allowlist and the client trust set are both derived from the same signed grant log.
+
+**Board binding** — `.ready/board.json`, a tracked (committed) file carrying the board coordinate, relays, and project name — no secrets. `rd init` writes it on the owner's machine; it travels with the repo, so cloning a repo that carries it puts a follower's machine on the board without retyping any coordinate. `rd link` binds or rebinds the current repo to a board coordinate directly, and with no arguments prints the board this repo is currently linked to.
+
+**Diagnosis** — `rd status` reports your identity, whether the current directory has a linked board, and whether you can read and write it, and prints the single next command to run when something's wrong (`rd follow`, `rd grant --all-boards`, or `rd identify`).
 
 **Views** — named filter predicates. `rd ready` runs the `ready` view: items that are not done, not blocked, and need attention within 4 hours. `rd list` runs `my-work`. Every read pulls the latest state from the local log — no manual sync required.
 
@@ -128,7 +133,92 @@ rd cancel <id> --reason "..."        # cancel with reason
 
 ---
 
-## Part 2: Team (invite tokens — the self-mint claim model)
+## Part 2: Second machine, two commands
+
+The most common multi-machine case is not a teammate — it's **you**, on a
+second laptop or a new agent worktree, wanting the boards you already own. No
+invite token is needed for your own machines: `rd follow` self-discovers every
+board you own from your identity alone, and `rd grant --all-boards` admits
+that machine's key to all of them in one act.
+
+### The committed-board.json story
+
+`rd init` writes `.ready/board.json` — a small, tracked file (board
+coordinate + relays + project name, no secrets) that travels with the repo in
+git. If you clone a repo that already carries `.ready/board.json`, `rd link`
+or `rd follow` in that clone can bind straight to the board named in the file
+— there's no coordinate to copy by hand.
+
+### Command 1 — on the new machine: follow
+
+```bash
+cd ~/projects/myproject   # a clone that carries .ready/board.json, or any directory
+rd follow baron@3dl.dev
+```
+
+`rd follow` resolves `baron@3dl.dev` to its owner pubkey via a published
+person-alias, discovers every board that owner published, binds each one
+(writing `.ready/board.json` if the directory doesn't already have it), pulls
+full history, and keeps THIS machine's existing key (it never re-mints).
+Output:
+
+```
+followed 2 board(s) — kept existing machine key:
+  myproject            -> /home/you/projects/myproject
+  otherproject         -> /home/you/projects/otherproject
+
+Run 'rd ready' in any board directory to see its items now.
+
+Send the owner this pubkey — they grant write access to ALL your followed boards at once:
+  rd grant --all-boards <your-pubkey>
+```
+
+`rd ready` already works read-only at this point. Follow one board only with
+`--board <d-identifier>`; register a different email handle for this
+machine's key with `--email <you@email>`.
+
+### Command 2 — on the owner's machine: grant
+
+```bash
+rd grant --all-boards <your-pubkey> contributor
+```
+
+`--all-boards` fans the same owner-signed `kind-39301` grant across every
+board this machine owns/has pinned locally — the follower's key is admitted
+to all of them in one act instead of one `rd grant` per repo. Output:
+
+```
+--all-boards: granted role "contributor" to <your-pubkey> on 2/2 local board(s)
+```
+
+Writes on the follower's machine self-heal automatically once the grant
+lands — no further command needed there.
+
+### Identity and diagnosis
+
+`rd identify --add-email <you@email>` publishes the signed person-alias `rd
+follow` relies on to resolve an email to your boards; run it once per machine
+you own if `rd follow` can't find you. `rd status` diagnoses the current
+directory at a glance — identity, linked board, read/write reachability —
+and prints the exact next command when something's wrong:
+
+```bash
+rd status
+```
+
+```
+rd status
+  you:    baron@3dl.dev
+  board:  myproject (linked)
+  read:   yes
+  write:  yes
+
+all good — 3 items (1 in your queue)
+```
+
+---
+
+## Part 3: Team (invite tokens — the self-mint claim model)
 
 Teammates join via single-use `rd1_` **claim** tokens. The token carries **no
 secret key** — only the board coordinate, the relay set, a TTL, and a one-use
@@ -200,7 +290,7 @@ rd done <item-id> --reason "API complete"
 
 ---
 
-## Part 3: Multi-agent (per-worktree `$RD_HOME`)
+## Part 4: Multi-agent (per-worktree `$RD_HOME`)
 
 Multiple agents on the same project each get their own identity. Identity is
 resolved once per process from `$RD_HOME` (default `~/.config/rd`), so
@@ -257,7 +347,7 @@ worktree uses the right identity automatically.
 
 ---
 
-## Part 4: Dependencies
+## Part 5: Dependencies
 
 ### Within a project
 
@@ -312,7 +402,7 @@ cd FRONTEND && rd ready
 
 ---
 
-## Part 5: Playbooks (reusable work trees)
+## Part 6: Playbooks (reusable work trees)
 
 A **playbook** is a template — a reusable pattern of work items with dependencies and variable substitution. `rd engage` stamps a playbook into concrete items, wires the deps, and records the engagement as an audit entry.
 
@@ -420,7 +510,7 @@ Playbooks and the `work:engage` message are fully specified in `docs/convention/
 
 ---
 
-## Part 6: Gate escalation
+## Part 7: Gate escalation
 
 Agents use `rd gate` when they hit a decision point that requires human judgment. The item transitions to `waiting`. The human runs `rd gates`, then `rd approve` or `rd reject`. Approval transitions the item back to `active`.
 
@@ -470,7 +560,7 @@ After approval, the agent checks `rd gates` — no pending entries — and conti
 
 ---
 
-## Part 7: Resuming work (for agents)
+## Part 8: Resuming work (for agents)
 
 Agents resuming after a context reset (compaction, restart) follow this pattern:
 
@@ -529,7 +619,7 @@ closed rdtestagentprojs1-2e5 (done)
 
 ---
 
-## Part 8: Reference
+## Part 9: Reference
 
 ### Status values
 
@@ -585,6 +675,19 @@ rd create "Quarterly review" --priority p2 --eta "2026-04-15T09:00"
 | `--view <name>` | `rd ready`, `rd list` | Use a named view predicate |
 | `--ttl <duration>` | `rd invite` | Invite token time-to-live (default 2h) |
 | `--rd-home <path>` | any `rd` command | Override `$RD_HOME` for this invocation |
+
+### Setup and identity commands
+
+| Command | Does |
+|---------|------|
+| `rd init` | Start a new project; writes the committed `.ready/board.json` binding |
+| `rd follow <owner-identity>` | Join every board an owner published, keeping this machine's identity (email, npub, or `rd1_` token) |
+| `rd invite` | Mint a one-use claim token for a teammate to `rd join` |
+| `rd join <token>` | Join a teammate's project read-only via a claim token |
+| `rd grant <pubkeyHex> <role> [--all-boards]` | Owner-signed role-grant; `--all-boards` fans it across every locally-pinned board |
+| `rd identify --add-email <you@email>` | Publish a signed person-alias binding this machine's key to your email |
+| `rd status` | Diagnose identity, board link, and read/write reachability; prints the next remedy command |
+| `rd link [board-coord]` | Bind/rebind this repo to a board coordinate; with no args, prints the currently-linked board |
 
 ### Further reading
 
