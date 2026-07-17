@@ -343,7 +343,7 @@ func importFollowedBoard(ctx context.Context, dir, coord, owner, boardD string, 
 		if !trusted[e.PubKey] {
 			continue
 		}
-		if !eventBelongsToFollowedBoard(e, coord) {
+		if !rdSync.EventBelongsToBoard(e, coord) {
 			continue
 		}
 		admit = append(admit, e)
@@ -361,23 +361,6 @@ func importFollowedBoard(ctx context.Context, dir, coord, owner, boardD string, 
 	}
 	_, _ = pub.PublishBoard(ctx, coord)
 	return nil
-}
-
-// eventBelongsToFollowedBoard reports whether e is a member of the board named by
-// coord: it IS that board's 30301 event, or carries an "a" tag equal to coord.
-// Mirrors pkg/sync eventBelongsToBoard (unexported there) — checks EVERY "a" tag
-// so a NIP-34 status event (board coord is its SECOND "a" tag) is not dropped.
-func eventBelongsToFollowedBoard(e *nostr.Event, coord string) bool {
-	if e.Kind == rdSync.KindBoard {
-		owner, boardD, ok := rdSync.ParseBoardCoord(coord)
-		return ok && rdSync.BoardCoord(e.PubKey, followEventTag(e, "d")) == rdSync.BoardCoord(owner, boardD)
-	}
-	for _, t := range e.Tags {
-		if len(t) >= 2 && t[0] == "a" && t[1] == coord {
-			return true
-		}
-	}
-	return false
 }
 
 // publishFollowAlias publishes ONE kind-39302 person-alias for this machine's key
@@ -451,15 +434,6 @@ func relayEndpointsFrom(relays []string) []rdconfig.RelayEndpoint {
 		eps = append(eps, rdconfig.RelayEndpoint{URL: u, Read: true, Write: true})
 	}
 	return eps
-}
-
-func followEventTag(e *nostr.Event, name string) string {
-	for _, t := range e.Tags {
-		if len(t) >= 2 && t[0] == name {
-			return t[1]
-		}
-	}
-	return ""
 }
 
 func dedupStrings(in []string) []string {
