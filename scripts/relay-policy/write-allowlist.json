@@ -1,7 +1,5 @@
 {
-  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "confidential-board key (epoch 1)",
+  "48ea98a915f44a28810c33c017c43dc7d5595f3541522c3bc8c90327ec9df497": "machine-2 rd-node portfolio key (node-2.internal, ~/.cf/nostr-identity.json)",
   "6c74c7bb0f0acb9ee4820f63b52f4209490eaef6fba7d1d2c34c2622413498f1": "dontguess exchange operator key (node-2.internal ~/.dontguess/nostr-operator.key)",
-  "780bf45d8bed0654bb2ad1758c1877b2436b4d5b019119e3617a381c22330fef": "wsl-dev",
-  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "confidential-board key (epoch 1)",
-  "d1321966aeee30f9bc09ccf005d9bfb4e76ba42099ed5229c8ed67ef33d3e0f9": "gap1-live-contributor"
+  "a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25": "workshop VM portfolio key (machine-1, ~/.cf/nostr-identity.json)"
 }

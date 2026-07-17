@@ -23,8 +23,8 @@ docs/resonant/
 # (.ready/board.json, ready-f12), the one tracked file that carries the board
 # coordinate + relays + project name (no secrets) so the coordinate travels with
 # the repo. Ignore the directory contents but re-include the binding.
-.ready/*
-!.ready/board.json
+**/.ready/*
+!**/.ready/board.json
 # rd home marker for per-worktree nostr identity isolation ($RD_HOME walk-up).
 # Also holds the nostr signing secret when a repo-local rd home is used, so it
 # must never be committed (defense-in-depth: the key-path guard also refuses to
