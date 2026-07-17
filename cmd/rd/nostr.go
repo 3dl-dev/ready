@@ -75,18 +75,13 @@ func resolveRelayConfig() []rdconfig.RelayEndpoint {
 	dir, err := os.Getwd()
 	if err == nil {
 		for {
-			cfgPath := rdconfig.SyncConfigPath(dir)
-			if fileExists(cfgPath) {
-				sc, lerr := rdconfig.LoadSyncConfig(dir)
-				if lerr != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — skipping this level of relay config\n", cfgPath, lerr)
-				} else if sc.RelaysLocalOnly {
+			if eps, localOnly, declared := relayPolicyAt(dir); declared {
+				if localOnly {
 					return nil // explicit opt-out — stop, no inheritance
-				} else if len(sc.RelayEndpoints) > 0 {
-					return sc.RelayEndpoints // declared here — wins
 				}
-				// declares neither: transparent, keep walking up
+				return eps // declared here — wins
 			}
+			// declares neither: transparent, keep walking up
 			parent := filepath.Dir(dir)
 			if parent == dir {
 				break
@@ -99,6 +94,35 @@ func resolveRelayConfig() []rdconfig.RelayEndpoint {
 		return cfg.RelayEndpoints
 	}
 	return nil
+}
+
+// relayPolicyAt reports the relay policy DECLARED at a single cascade level (dir).
+// declared=false means the level is transparent (neither the machine-local
+// config.json nor the committed board.json declares a policy) and the caller keeps
+// walking up. Within a level the machine-local config.json is consulted FIRST so a
+// local override — and the RelaysLocalOnly opt-out — wins over the committed
+// board.json; the committed .ready/board.json (ready-f12) then supplies the relays a
+// fresh clone carries, so a repo with only board.json still resolves its relays.
+func relayPolicyAt(dir string) (eps []rdconfig.RelayEndpoint, localOnly, declared bool) {
+	cfgPath := rdconfig.SyncConfigPath(dir)
+	if fileExists(cfgPath) {
+		if sc, lerr := rdconfig.LoadSyncConfig(dir); lerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — skipping this level of relay config\n", cfgPath, lerr)
+		} else if sc.RelaysLocalOnly {
+			return nil, true, true
+		} else if len(sc.RelayEndpoints) > 0 {
+			return sc.RelayEndpoints, false, true
+		}
+	}
+	bindingPath := rdconfig.BoardBindingPath(dir)
+	if fileExists(bindingPath) {
+		if b, berr := rdconfig.LoadBoardBinding(dir); berr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read %s (%v) — skipping this level of relay config\n", bindingPath, berr)
+		} else if len(b.RelayEndpoints) > 0 {
+			return b.RelayEndpoints, false, true
+		}
+	}
+	return nil, false, false
 }
 
 // rdActor resolves the DURABLE actor id this process signs as (BP-4). $RD_ACTOR
@@ -240,12 +264,19 @@ func nostrPendingPath(dir string) string {
 }
 
 // nostrPinnedBoard returns the pinned authoritative board coordinate for the
-// project rooted at dir (BP-3), read from .ready/config.json's SyncConfig. Empty
-// when unpinned (the default for existing installs) or unreadable — an empty pin
-// disables the projection's board-rejection / level-derivation gates, preserving
-// pre-BP-3 behaviour. It is passed to ProjectOptions.PinnedBoard so the nostr
-// projection rejects foreign-board cards and derives graded operator levels.
+// project rooted at dir (BP-3). Resolution reads the COMMITTED binding
+// (.ready/board.json, ready-f12) FIRST so a fresh clone / worktree that carries
+// only the tracked binding resolves its board with no link/follow step; it falls
+// back to the machine-local .ready/config.json's SyncConfig for legacy installs
+// that predate the split. Empty when unpinned (the default for existing installs)
+// or unreadable — an empty pin disables the projection's board-rejection /
+// level-derivation gates, preserving pre-BP-3 behaviour. It is passed to
+// ProjectOptions.PinnedBoard so the nostr projection rejects foreign-board cards
+// and derives graded operator levels.
 func nostrPinnedBoard(dir string) string {
+	if b, err := rdconfig.LoadBoardBinding(dir); err == nil && b.Board != "" {
+		return b.Board
+	}
 	cfg, err := rdconfig.LoadSyncConfig(dir)
 	if err != nil {
 		return ""
