@@ -127,6 +127,77 @@ func resolveDocCommand(words []string) *cobra.Command {
 	return cmd
 }
 
+// TestGettingStartedDoc_InviteFlowIsSingleGrantNoRequiredAllowlist is the
+// done-condition test for ready-a8e: the invite/onboarding flow the docs walk
+// a reader through is ONE command — `rd grant <pubkey>` (role omitted; it
+// defaults to contributor per the real --help) or `rd grant <pubkey>
+// --all-boards` — with no write-allowlist edit and no `rd relay
+// sync-allowlist` step anywhere in the REQUIRED path. Any mention of
+// sync-allowlist/write-allowlist as an actionable step must live after the
+// "Advanced: running your own locked relay" heading, clearly separated from
+// the happy path.
+func TestGettingStartedDoc_InviteFlowIsSingleGrantNoRequiredAllowlist(t *testing.T) {
+	doc := readDocOrFatal(t, gettingStartedPath)
+
+	advancedIdx := strings.Index(doc, "Advanced: running your own locked relay")
+	if advancedIdx == -1 {
+		t.Fatalf("docs/getting-started.md has no 'Advanced: running your own locked relay' aside")
+	}
+
+	requiredPath := doc[:advancedIdx]
+	lowerRequired := strings.ToLower(requiredPath)
+
+	// The required path must not tell the reader to run `rd relay
+	// sync-allowlist` or otherwise edit the write-allowlist as a step.
+	if strings.Contains(lowerRequired, "sync-allowlist") {
+		t.Errorf("docs/getting-started.md mentions sync-allowlist before the Advanced aside — it must not appear in the required invite path")
+	}
+	if strings.Contains(lowerRequired, "write-allowlist.json") {
+		t.Errorf("docs/getting-started.md mentions write-allowlist.json before the Advanced aside — it must not appear in the required invite path")
+	}
+
+	// The Advanced aside itself must reference the real command and say it's
+	// optional.
+	advancedSection := doc[advancedIdx:]
+	if !strings.Contains(advancedSection, "rd relay sync-allowlist") {
+		t.Errorf("the Advanced aside does not show `rd relay sync-allowlist`")
+	}
+	if !strings.Contains(strings.ToLower(advancedSection), "optional") {
+		t.Errorf("the Advanced aside does not say the locked-relay step is optional")
+	}
+
+	// No required example may pass an explicit role arg alongside --claim —
+	// the happy-path grant omits role (it defaults to contributor).
+	forbiddenRoleGrant := []string{
+		"rd grant <pubkey> contributor --claim",
+		"rd grant <joiner-pubkey> contributor --claim",
+	}
+	for _, s := range forbiddenRoleGrant {
+		if strings.Contains(requiredPath, s) {
+			t.Errorf("docs/getting-started.md still shows an explicit role arg in the required grant+claim flow: %q", s)
+		}
+	}
+}
+
+// TestGettingStartedDoc_UntrustedRelayNote is the done-condition test for
+// ready-a8e part (2): a short plain-language note explaining relays are
+// untrusted and rd enforces write-authz app-side via signed grants, so any
+// public relay works and the reader never configures a relay.
+func TestGettingStartedDoc_UntrustedRelayNote(t *testing.T) {
+	doc := readDocOrFatal(t, gettingStartedPath)
+	lower := strings.ToLower(doc)
+
+	for _, phrase := range []string{
+		"relays are untrusted",
+		"any public relay works",
+		"you never configure a relay",
+	} {
+		if !strings.Contains(lower, phrase) {
+			t.Errorf("docs/getting-started.md is missing the untrusted-relay note phrase %q", phrase)
+		}
+	}
+}
+
 // TestGettingStartedDoc_FlagsMatchRealHelp is the CRITICAL cross-check the
 // item calls out by name: every `--flag` shown attached to `rd follow`,
 // `rd status`, `rd link`, `rd grant`, `rd identify` in docs/getting-started.md
