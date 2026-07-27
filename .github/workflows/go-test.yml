@@ -1,0 +1,66 @@
+name: Go Test
+
+# ready-fe2: before this workflow, no CI job ran `go test ./...` — every
+# merge gate to date (PR checks and pushes to main) was CodeQL static
+# analysis only, which executes no tests. A change that broke the test
+# suite merged green. This workflow closes that gap.
+#
+# Deliberately NOT path-filtered: this is intended to become a REQUIRED
+# status check on main. A required check that is path-filtered means any
+# PR whose diff doesn't touch the filtered paths never reports the check,
+# and with the check required, that PR can never merge. It must run on
+# every pull_request and every push to main, unconditionally.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    # Once this is a REQUIRED check, a hung job blocks every merge in the
+    # repo until it times out. The GitHub default is 6 hours. The suite runs
+    # in well under a minute locally; 15m is generous headroom for a cold
+    # runner plus `npm ci`, and bounds the blast radius of a hang.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Track go.mod's required version, same idiom as release.yml.
+          go-version-file: go.mod
+
+      # web/board/dist_test.go (added by ready-2f1) shells out to npm and
+      # HARD-FAILS (not t.Skip) when npm is missing from PATH, so `go test
+      # ./...` needs a working node/npm toolchain. web/.nvmrc (also from
+      # ready-2f1) pins the version and is on main as of 470b312, so this
+      # tracks it directly — no fallback branch, which would be dead code
+      # carrying a claim about a state that no longer exists.
+      #
+      # KNOWN TRADE-OFF, recorded deliberately: because `go test ./...`
+      # transitively runs dist_test.go's `npm ci`, making this check
+      # REQUIRED makes npm-registry availability a merge dependency for the
+      # whole repo. That is tracked as the rule-11 hermeticity item carried
+      # over from ready-2f1. The owner's ruling keeps enforce_admins:false
+      # precisely so a registry outage is survivable via admin override.
+      - name: Set up Node (pinned via web/.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+
+      # No RD_NOSTR_LIVE_RELAY, RD_NOSTR_TEST_SECRET_HEX, or
+      # RD_NOSTR_TEST_KEY_PATH is set here, intentionally: those are
+      # pre-existing gates (cmd/rd/board_test.go and friends) that make
+      # live-relay/portfolio-key tests self-skip when the gate env var is
+      # absent. CI runs the hermetic suite as-is; it does not broaden any
+      # skip condition to force green, and it does not narrow one either.
+      - name: go test ./...
+        run: go test ./...
