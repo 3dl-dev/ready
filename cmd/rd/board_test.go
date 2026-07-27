@@ -43,6 +43,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -533,6 +534,49 @@ func TestBoardCmd_Help_StatesLinkConveysNoReadAccess(t *testing.T) {
 	}
 	if !strings.Contains(lower, "authorization is the grant") {
 		t.Errorf("rd board --help does not state authorization is the grant; Long =\n%s", help)
+	}
+}
+
+// TestBoardCmd_DefaultHost_EmitsRealResolvableURL covers ready-df6: `rd
+// board`, run through the REAL cobra command (boardCmd.RunE) with no --host
+// flag and no $RD_BOARD_HOST set, must print a URL anchored on
+// https://ready.3dl.dev/board — a host that actually resolves — never the
+// board.ready.3dl.dev placeholder that shipped in PR #127 and never resolved.
+// This is deliberately NOT a boardHost()-vs-defaultBoardHost constant
+// comparison (that would be a tautology the moment both sides drift
+// together); it drives the same RunE path a real `rd board` invocation takes
+// and asserts on the literal printed bytes, then independently confirms via
+// net.LookupHost that the host segment actually resolves in DNS — the exact
+// failure mode of the original bug (a syntactically fine host that was never
+// registered).
+func TestBoardCmd_DefaultHost_EmitsRealResolvableURL(t *testing.T) {
+	boardTestEnv(t)
+	t.Setenv("RD_BOARD_HOST", "")
+	if err := boardCmd.Flags().Set("host", ""); err != nil {
+		t.Fatalf("reset --host: %v", err)
+	}
+
+	out := captureStdoutPipe(t, func() {
+		if err := boardCmd.RunE(boardCmd, nil); err != nil {
+			t.Fatalf("rd board: %v", err)
+		}
+	})
+	line := strings.TrimSpace(out)
+
+	const wantPrefix = "https://ready.3dl.dev/board#"
+	if !strings.HasPrefix(line, wantPrefix) {
+		t.Fatalf("rd board (default host) printed %q, want it to start with %q", line, wantPrefix)
+	}
+	if strings.Contains(line, "board.ready.3dl.dev") {
+		t.Fatalf("rd board (default host) printed %q, which still carries the dead board.ready.3dl.dev placeholder", line)
+	}
+
+	u, err := url.Parse(line)
+	if err != nil {
+		t.Fatalf("parsing emitted URL %q: %v", line, err)
+	}
+	if _, err := net.LookupHost(u.Hostname()); err != nil {
+		t.Fatalf("default board host %q (from emitted URL %q) does not resolve in DNS: %v — this is exactly the ready-df6 bug (a placeholder host that was never registered)", u.Hostname(), line, err)
 	}
 }
 
