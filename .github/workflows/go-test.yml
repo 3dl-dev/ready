@@ -1,0 +1,70 @@
+name: Go Test
+
+# ready-fe2: before this workflow, no CI job ran `go test ./...` — every
+# merge gate to date (PR checks and pushes to main) was CodeQL static
+# analysis only, which executes no tests. A change that broke the test
+# suite merged green. This workflow closes that gap.
+#
+# Deliberately NOT path-filtered: this is intended to become a REQUIRED
+# status check on main. A required check that is path-filtered means any
+# PR whose diff doesn't touch the filtered paths never reports the check,
+# and with the check required, that PR can never merge. It must run on
+# every pull_request and every push to main, unconditionally.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Track go.mod's required version, same idiom as release.yml.
+          go-version-file: go.mod
+
+      # web/board/dist_test.go (added by ready-2f1) shells out to npm and
+      # HARD-FAILS (not t.Skip) when npm is missing from PATH, so `go test
+      # ./...` needs a working node/npm toolchain. web/.nvmrc (also added
+      # by ready-2f1) pins the exact version, but it does not exist on
+      # main yet as of this workflow landing — so we check for it and fall
+      # back to a reasonable default rather than failing the job outright.
+      - name: Check for web/.nvmrc
+        id: nvmrc
+        run: |
+          if [ -f web/.nvmrc ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node (pinned via web/.nvmrc)
+        if: steps.nvmrc.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+
+      - name: Set up Node (fallback — web/.nvmrc not present)
+        if: steps.nvmrc.outputs.exists == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # No RD_NOSTR_LIVE_RELAY, RD_NOSTR_TEST_SECRET_HEX, or
+      # RD_NOSTR_TEST_KEY_PATH is set here, intentionally: those are
+      # pre-existing gates (cmd/rd/board_test.go and friends) that make
+      # live-relay/portfolio-key tests self-skip when the gate env var is
+      # absent. CI runs the hermetic suite as-is; it does not broaden any
+      # skip condition to force green, and it does not narrow one either.
+      - name: go test ./...
+        run: go test ./...
