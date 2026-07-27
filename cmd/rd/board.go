@@ -150,7 +150,7 @@ ever bind a stranger's key to.
 ` + boardSecurityNote + `
 
 --host / $RD_BOARD_HOST overrides the hosted-board origin (default:
-https://ready.3dl.dev/board — a real, TLS-serving, DNS-resolving host that
+` + defaultBoardHost + ` — a real, TLS-serving, DNS-resolving host that
 serves a page. That page is currently a build placeholder; the browser-served
 board UI has not shipped yet, so the URL is not yet useful to open — see
 ready-1ab).`,
@@ -238,10 +238,16 @@ identity, then send you back a pubkey; complete the invite with:
 	},
 }
 
-func init() {
-	boardCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else https://ready.3dl.dev/board)")
+// hostFlagUsage is the --host flag's help text on both boardCmd and
+// boardShareCmd, DERIVED from defaultBoardHost so the two copies can never
+// drift from the constant (or each other) — the exact bug class ready-df6
+// exists to remove structurally rather than police after the fact.
+var hostFlagUsage = fmt.Sprintf("hosted-board origin override (default: $RD_BOARD_HOST, else %s)", defaultBoardHost)
 
-	boardShareCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else https://ready.3dl.dev/board)")
+func init() {
+	boardCmd.Flags().String("host", "", hostFlagUsage)
+
+	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")
 	boardShareCmd.Flags().String("role", rdSync.RoleContributor, "role to grant (owner|maintainer|contributor) — only used with a pubkey argument")
 	boardShareCmd.Flags().String("label", "", "human label carried in the grant content — only used with a pubkey argument")

@@ -46,7 +46,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -620,6 +620,22 @@ func TestBoardCmd_Help_URLShapeMatchesEmittedURL(t *testing.T) {
 // ever wanted, it belongs behind the RD_NOSTR_LIVE_RELAY-style gate used by
 // TestLiveRelay_BoardShare_GrantReadableOnRelay below, not in the default
 // hermetic suite.
+//
+// ready-df6 (round 8): the four prior rounds of this item all shipped a
+// PROSE-SCANNING predicate over --help text (regex-extract-a-URL, then
+// compare/contains/prefix it against a literal) and every one of them was
+// defeated by a help surface the predicate didn't read, or a delimiter/scheme
+// assumption baked into the regex. The structural fix is to make it
+// IMPOSSIBLE for a help string to name a host other than defaultBoardHost:
+// every help surface that names the default host now INTERPOLATES the
+// defaultBoardHost constant (board.go: boardCmd.Long, and the shared
+// hostFlagUsage both --host flags use) instead of hand-typing it. Once that
+// holds, the only thing left to check here is that the interpolation
+// actually happened — a trivial, cheap Contains(text, defaultBoardHost) — and
+// TestBoardGo_NoHardcodedHostOutsideConstant below closes the case a
+// Contains check alone cannot: it fails the build the moment ANY new
+// hardcoded "ready.3dl.dev" literal appears ANYWHERE in board.go, regardless
+// of which help surface (or non-help surface) it's hiding in.
 func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	boardTestEnv(t)
 	t.Setenv("RD_BOARD_HOST", "")
@@ -642,64 +658,80 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 		t.Fatalf("rd board (default host) printed %q, which still carries the dead board.ready.3dl.dev placeholder", line)
 	}
 
-	// ready-df6 hole 1: bind the HOST LITERAL in --help text, not just the
-	// URL SHAPE. Without this, --help can go on naming a host `rd board`
-	// has never emitted (e.g. after a copy-paste-only rename of the three
-	// literals above) while every other assertion in this file stays green.
-	//
-	// This MUST be the full origin+path literal, not the bare domain. A bare
-	// "ready.3dl.dev" is a SUBSTRING of the dead "board.ready.3dl.dev"
-	// placeholder from PR #127, so it would be satisfied by the exact
-	// regression this item exists to remove. It is also a hardcoded literal
-	// rather than defaultBoardHost, so it cannot degrade into the
-	// constant-vs-constant tautology that let the placeholder ship.
-	// And it must match EXACTLY, not by strings.Contains. Contains is
-	// satisfied by any superstring, so it binds a prefix rather than the
-	// host: "https://ready.3dl.dev/boardroom" (which 404s) and
-	// "https://ready.3dl.dev/board/" (whose trailing slash renders the stale
-	// ".../board/#board=" shape this item removed) both pass a Contains
-	// check while --help advertises a URL `rd board` never emits.
-	const wantHost = "https://ready.3dl.dev/board"
-	assertHelpNamesExactHost(t, "boardCmd.Long", boardCmd.Long, wantHost)
-	assertHelpNamesExactHost(t, "boardCmd --host flag usage", boardCmd.Flags().Lookup("host").Usage, wantHost)
-	assertHelpNamesExactHost(t, "boardShareCmd --host flag usage", boardShareCmd.Flags().Lookup("host").Usage, wantHost)
-}
-
-// helpURLRe extracts concrete URLs from help text. It deliberately stops at
-// whitespace and at the punctuation that closes a URL in prose -- ")", "]",
-// ",". It does not match the documentation placeholder
-// "https://<board-host>#board=..." because that carries no real hostname,
-// which is what lets this scan target only concrete hosts.
-var helpURLRe = regexp.MustCompile(`https?://[^\s)\],]+`)
-
-// assertHelpNamesExactHost fails unless every concrete ready.3dl.dev URL in
-// text is EXACTLY wantHost, and at least one such URL is present.
-//
-// Both halves matter, and each closes a hole a previous revision shipped:
-//   - "at least one present" catches help text that stops naming the host at
-//     all.
-//   - "every one is exactly wantHost" catches the superstring drift that
-//     strings.Contains allows -- /boardroom, a trailing slash, or any other
-//     path suffix. It also still catches the dead "board.ready.3dl.dev"
-//     placeholder from PR #127, whose URL token is not equal to wantHost.
-//
-// wantHost is a hardcoded literal rather than defaultBoardHost on purpose:
-// comparing the constant to itself is the tautology that let the dead
-// placeholder ship in the first place.
-func assertHelpNamesExactHost(t *testing.T, label, text, wantHost string) {
-	t.Helper()
-	var found bool
-	for _, u := range helpURLRe.FindAllString(text, -1) {
-		if !strings.Contains(u, "ready.3dl.dev") {
-			continue
-		}
-		found = true
-		if u != wantHost {
-			t.Fatalf("%s names the URL %q, want exactly %q -- `rd board` never emits the former", label, u, wantHost)
+	// Every help surface that names the host now derives it from
+	// defaultBoardHost (board.go), so this is a cheap containment check, not
+	// a prose scan: it merely confirms the interpolation happened, not that
+	// nothing else is wrong — TestBoardGo_NoHardcodedHostOutsideConstant is
+	// what makes "something else wrong" structurally impossible.
+	for label, text := range map[string]string{
+		"boardCmd.Long":                   boardCmd.Long,
+		"boardCmd --host flag usage":      boardCmd.Flags().Lookup("host").Usage,
+		"boardShareCmd --host flag usage": boardShareCmd.Flags().Lookup("host").Usage,
+	} {
+		if !strings.Contains(text, defaultBoardHost) {
+			t.Errorf("%s does not contain defaultBoardHost %q; text =\n%s", label, defaultBoardHost, text)
 		}
 	}
-	if !found {
-		t.Fatalf("%s does not mention the configured default host %q; text =\n%s", label, wantHost, text)
+}
+
+// TestBoardGo_NoHardcodedHostOutsideConstant is the structural fix for
+// ready-df6 rounds 3/4/6/7: every prior guard was a predicate over --help
+// PROSE (constant-vs-itself, substring, prefix, regex-extract-then-compare)
+// and every one was defeated by a help surface it didn't read or a
+// delimiter/scheme assumption it baked in. Policing prose can't close this —
+// there is always another surface (Short, Example, a new flag usage, a new
+// subcommand) a scanner doesn't cover.
+//
+// This test instead makes the DUPLICATION that caused the bug impossible:
+// it reads cmd/rd/board.go from disk and asserts the literal substring
+// "ready.3dl.dev" appears in EXACTLY the two places it is allowed to —
+// the defaultBoardHost const declaration itself, and the historical comment
+// documenting the dead board.ready.3dl.dev placeholder from PR #127 (which
+// must keep saying that literal to document what NOT to resurrect). Every
+// other help surface in the file (boardCmd.Long/Short, boardShareCmd.Long/
+// Short, both --host flag usages via hostFlagUsage, any Example, any future
+// flag or subcommand) is required to INTERPOLATE defaultBoardHost rather
+// than hardcode it — so it is structurally impossible for any of them to
+// drift from the constant, and impossible for a new one to be added already
+// wrong. It does not matter which surface an adversary edits next; a bare
+// host literal anywhere in this file fails the build.
+func TestBoardGo_NoHardcodedHostOutsideConstant(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed — cannot locate board.go relative to this test file")
+	}
+	boardGoPath := filepath.Join(filepath.Dir(thisFile), "board.go")
+	src, err := os.ReadFile(boardGoPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", boardGoPath, err)
+	}
+
+	const needle = "ready.3dl.dev"
+	const constLine = `const defaultBoardHost = "https://ready.3dl.dev/board"`
+	const placeholderSubstr = "board.ready.3dl.dev"
+
+	var violations []string
+	for i, line := range strings.Split(string(src), "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == constLine:
+			continue // the single source of truth
+		case strings.HasPrefix(trimmed, "//") && strings.Contains(line, placeholderSubstr):
+			continue // historical comment naming the dead PR #127 placeholder
+		default:
+			violations = append(violations, fmt.Sprintf("  line %d: %s", i+1, strings.TrimSpace(line)))
+		}
+	}
+	if len(violations) > 0 {
+		t.Fatalf("cmd/rd/board.go has a hardcoded %q literal outside the single defaultBoardHost "+
+			"declaration and the historical dead-placeholder comment:\n%s\n\n"+
+			"Fix: interpolate the defaultBoardHost constant instead (e.g. `+ defaultBoardHost +` "+
+			"in a Long string, or fmt.Sprintf(\"...%%s...\", defaultBoardHost) for a flag usage) — "+
+			"do not hand-type the host anywhere else in this file.",
+			needle, strings.Join(violations, "\n"))
 	}
 }
 
