@@ -152,7 +152,55 @@ func GuardedPublish(ctx context.Context, relayURL string, e *nostr.Event, produc
 	if !production && hitsReservedBoard(e) {
 		return false, "", fmt.Errorf("sync: refusing to dial %s with kind %d event addressing the reserved production board coordinate %q — not marked production (ready-6d0 chokepoint guard); use an isolated board D-tag, or thread production=true from a sanctioned CLI path if this really is a production write", relayURL, e.Kind, reservedProductionBoardD)
 	}
-	return nostr.Publish(ctx, relayURL, e)
+	return nostr.Publish(withPublishProduction(ctx, production), relayURL, e)
+}
+
+// publishProductionCtxKey is the unexported context key carrying this call's
+// production opt-in down into pkg/nostr.Publish, for nostr.PublishGuard
+// (installed below in init) to read. It is unexported and its type is defined
+// only in this package, so no caller outside pkg/sync — in particular no
+// brand-new file an adversary writes, however it imports pkg/nostr — can
+// forge a context that satisfies it; the zero value (ctx with no such key, or
+// any ctx a new file constructs itself) always reads as production=false.
+type publishProductionCtxKey struct{}
+
+// withPublishProduction stamps ctx with this call's production opt-in so
+// nostr.PublishGuard (installed in init below) can see it. Only GuardedPublish
+// calls this — every path already sanctioned to reach nostr.Publish threads
+// the SAME production bool its Publisher (or CLI command) carries.
+func withPublishProduction(ctx context.Context, production bool) context.Context {
+	return context.WithValue(ctx, publishProductionCtxKey{}, production)
+}
+
+// isPublishProductionCtx reports the production opt-in stamped on ctx by
+// withPublishProduction, defaulting to false (fail closed) for any ctx that
+// never passed through it — which is every ctx a caller builds itself instead
+// of going through GuardedPublish.
+func isPublishProductionCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(publishProductionCtxKey{}).(bool)
+	return v
+}
+
+// init installs the board semantics (hitsReservedBoard + the production
+// opt-in) into pkg/nostr's nil-able PublishGuard hook (ready-69e class fix).
+// pkg/nostr itself gains no board knowledge — it only ever sees this closure
+// as an opaque func(ctx, *Event) error — but now EVERY call to nostr.Publish
+// in the whole module is checked here, regardless of how the caller reached
+// it: through GuardedPublish (production stamped on ctx, see above), or
+// directly via an aliased import, a dot-import, or a function value taken off
+// the package (none of those can stamp publishProductionCtxKey — its type is
+// unexported here — so they all read as production=false and are refused the
+// instant the event addresses the reserved coordinate, before any dial).
+func init() {
+	nostr.PublishGuard = func(ctx context.Context, e *nostr.Event) error {
+		if isPublishProductionCtx(ctx) {
+			return nil
+		}
+		if hitsReservedBoard(e) {
+			return fmt.Errorf("nostr: refusing to publish kind %d event addressing the reserved production board coordinate %q — no production opt-in reached pkg/nostr for this call (ready-69e class guard); route through sync.GuardedPublish with production=true from a sanctioned CLI path, or use an isolated board D-tag", e.Kind, reservedProductionBoardD)
+		}
+		return nil
+	}
 }
 
 // publishEventToRelays publishes e to every relay in order and returns the

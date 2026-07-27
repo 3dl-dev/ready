@@ -47,6 +47,29 @@ func readNIP01Frame(conn *websocket.Conn) (typ string, frame []json.RawMessage, 
 	return typ, frame, nil
 }
 
+// PublishGuard, when non-nil, is consulted at the very top of Publish, before
+// any dial or network I/O. It receives the same ctx and event Publish was
+// called with; a non-nil return refuses the publish attempt outright (Publish
+// returns that error, accepted=false, zero bytes ever leave this process).
+//
+// THIS IS A NIL-ABLE FUNCTION POINTER, NOT BOARD KNOWLEDGE (ready-69e class
+// fix): pkg/nostr does not know what an "rd board" or a reserved coordinate
+// is, and this variable does not teach it — pkg/sync installs the actual
+// semantics (hitsReservedBoard + the production opt-in) in its own init()
+// (see pkg/sync/relayclass.go). pkg/nostr just holds the pointer and calls it.
+//
+// WHY THIS CLOSES THE CLASS, NOT ONE SPELLING: the check runs INSIDE this
+// function's own body, at the one place every publish attempt must pass
+// through regardless of how the caller reached it. An aliased import
+// (`nz "github.com/3dl-dev/ready/pkg/nostr"`), a dot-import, a function value
+// taken off the package (`pub := nostr.Publish; pub(...)`), or a call reached
+// through reflection all still execute this exact function body — none of
+// them can spell around a check that lives here instead of at each call site.
+// A textual scan for the literal "nostr.Publish(" (the previous control,
+// publish_chokepoint_test.go) can miss all four; this cannot, because it does
+// not look at source text at all.
+var PublishGuard func(ctx context.Context, e *Event) error
+
 // Publish opens a websocket connection to a single relay, sends the event as a
 // NIP-01 ["EVENT", <event>] message, and waits for the relay's
 // ["OK", <id>, <accepted>, <message>] reply. It returns accepted=true only when
@@ -54,6 +77,11 @@ func readNIP01Frame(conn *websocket.Conn) (typ string, frame []json.RawMessage, 
 // gate: a real strfry either accepts a well-formed signed event or rejects it
 // with a reason.
 func Publish(ctx context.Context, relayURL string, e *Event) (accepted bool, message string, err error) {
+	if PublishGuard != nil {
+		if gerr := PublishGuard(ctx, e); gerr != nil {
+			return false, "", gerr
+		}
+	}
 	conn, err := dialRelay(ctx, relayURL)
 	if err != nil {
 		return false, "", err
