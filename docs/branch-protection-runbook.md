@@ -107,9 +107,22 @@ Rationale for each field, per the repo owner's ruling (ready-fe2):
   `allow_force_pushes` is `false`. If GitHub's API silently dropped the PR
   requirement (some GitHub plans/APIs require an explicit
   `required_pull_request_reviews` object to force PR-only merges — this is
-  why it's included even with zero required approvals), test it directly:
-  attempt a trivial direct push to main from a scratch branch tip and
-  confirm it is rejected, then discard that test push.
+  why it's included even with zero required approvals), that read-only
+  assertion is the check: `required_pull_request_reviews` must be non-null.
+
+  **Do NOT verify by attempting a direct push to main.** The owner's ruling
+  is `enforce_admins: false`, and the operating identity holds repo admin
+  (`gh api repos/3dl-dev/ready --jq .permissions.admin` → `true`). An admin
+  push therefore SUCCEEDS under exactly the policy we intend, so a
+  successful push is not evidence the PR requirement was dropped — it is
+  the expected behaviour of the admin override. The test returns the
+  opposite of the truth, and it mutates `main` to do it.
+
+  If you want positive evidence that the gate bites, get it the safe way:
+  open a throwaway PR containing a deliberately failing test, confirm the
+  required check goes red and the merge button is blocked, then close the
+  PR without merging. That exercises the real path without writing to main
+  and without depending on admin semantics.
 
 - `allow_force_pushes: false`, `allow_deletions: false` — standard
   hardening, not explicitly requested but consistent with "no direct

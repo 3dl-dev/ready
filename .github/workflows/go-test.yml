@@ -23,6 +23,11 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    # Once this is a REQUIRED check, a hung job blocks every merge in the
+    # repo until it times out. The GitHub default is 6 hours. The suite runs
+    # in well under a minute locally; 15m is generous headroom for a cold
+    # runner plus `npm ci`, and bounds the blast radius of a hang.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -35,30 +40,21 @@ jobs:
 
       # web/board/dist_test.go (added by ready-2f1) shells out to npm and
       # HARD-FAILS (not t.Skip) when npm is missing from PATH, so `go test
-      # ./...` needs a working node/npm toolchain. web/.nvmrc (also added
-      # by ready-2f1) pins the exact version, but it does not exist on
-      # main yet as of this workflow landing — so we check for it and fall
-      # back to a reasonable default rather than failing the job outright.
-      - name: Check for web/.nvmrc
-        id: nvmrc
-        run: |
-          if [ -f web/.nvmrc ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
+      # ./...` needs a working node/npm toolchain. web/.nvmrc (also from
+      # ready-2f1) pins the version and is on main as of 470b312, so this
+      # tracks it directly — no fallback branch, which would be dead code
+      # carrying a claim about a state that no longer exists.
+      #
+      # KNOWN TRADE-OFF, recorded deliberately: because `go test ./...`
+      # transitively runs dist_test.go's `npm ci`, making this check
+      # REQUIRED makes npm-registry availability a merge dependency for the
+      # whole repo. That is tracked as the rule-11 hermeticity item carried
+      # over from ready-2f1. The owner's ruling keeps enforce_admins:false
+      # precisely so a registry outage is survivable via admin override.
       - name: Set up Node (pinned via web/.nvmrc)
-        if: steps.nvmrc.outputs.exists == 'true'
         uses: actions/setup-node@v4
         with:
           node-version-file: web/.nvmrc
-
-      - name: Set up Node (fallback — web/.nvmrc not present)
-        if: steps.nvmrc.outputs.exists == 'false'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       # No RD_NOSTR_LIVE_RELAY, RD_NOSTR_TEST_SECRET_HEX, or
       # RD_NOSTR_TEST_KEY_PATH is set here, intentionally: those are
