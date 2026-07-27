@@ -1,0 +1,19 @@
+{
+  "name": "ready-board",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "ready.3dl.dev/board static page — placeholder for the board UI, built with Vite + TypeScript, no runtime CDN dependencies.",
+  "engines": {
+    "node": ">=20.17.0"
+  },
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "vite": "5.4.21"
+  }
+}
