@@ -47,14 +47,13 @@ jobs:
           VITE_BUILD_STAMP: ${{ github.sha }}
 
       - name: Assemble Pages artifact
-        # site/ is the existing ready.3dl.dev root (untouched). web/board's
-        # build output is layered in at /board/ so the root site keeps
-        # serving exactly as before and /board becomes newly available.
-        run: |
-          mkdir -p _site
-          cp -r site/. _site/
-          mkdir -p _site/board
-          cp -r web/board/dist/. _site/board/
+        # site/ is the existing ready.3dl.dev root (untouched, minus
+        # *_test.go which never ships). web/board's build output is layered
+        # in at /board/ so the root site keeps serving exactly as before
+        # and /board becomes newly available. Logic lives in
+        # scripts/assemble-pages.sh so it is exercised by
+        # scripts/assemble_pages_test.go, not just this YAML comment.
+        run: scripts/assemble-pages.sh site web/board/dist _site
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

@@ -1,0 +1,50 @@
+name: Board CI
+
+# ready-2f1 rework: before this workflow, web/board's TypeScript build was
+# only exercised by .github/workflows/pages.yml, which triggers on push to
+# main and, in the SAME job, assembles and deploys the existing
+# ready.3dl.dev root site. A TypeScript error in web/board would therefore
+# first surface on main, inside the deploy job — taking the entire root
+# site's deploy down with it, a failure mode that did not exist before
+# web/board was added.
+#
+# This workflow runs the same npm ci / typecheck / build steps on every PR
+# that touches web/board, so a broken board build is caught before merge —
+# never on main, never coupled to the root site's deploy. (Chosen over
+# splitting pages.yml's single job in two: a `needs:` split would still
+# leave the root site's push-triggered deploy blocked whenever the board job
+# it depends on fails, which doesn't remove the coupling — it just moves
+# where the deploy stalls. Gating on the PR removes the failure mode
+# entirely: broken board code never reaches main.)
+on:
+  pull_request:
+    paths:
+      - 'web/board/**'
+      - 'web/.nvmrc'
+      - '.github/workflows/board-ci.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/board/package-lock.json
+
+      - name: Install board dependencies
+        working-directory: web/board
+        run: npm ci
+
+      - name: Typecheck board
+        working-directory: web/board
+        run: npm run typecheck
+
+      - name: Build board
+        working-directory: web/board
+        run: npm run build
