@@ -125,6 +125,8 @@ func Build() (*File, error) {
 		b.vFoldGateQuarantine,
 		b.vViewsLattice,
 		b.vItemTimestampEncoding,
+		b.vItemTimestampAboveFloat64SafeBound,
+		b.vItemContextContainsTimestampBytePattern,
 	} {
 		if err := fn(); err != nil {
 			return nil, err

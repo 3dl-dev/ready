@@ -238,19 +238,28 @@ func TestVectorEventsAreWellFormed(t *testing.T) {
 	}
 }
 
-// TestTimestampEncodingPreservesArbitraryNanoseconds is the ready-414
-// counterexample: a genuinely non-round int64 nanosecond value — one the live
-// fold's `sec * int64(time.Second)` derivation (spec §4.6) never produces, but
-// which state.Item.CreatedAt's declared type (arbitrary int64 unix
-// nanoseconds) does not forbid — is not exactly representable as an IEEE-754
-// double, the same type backing JavaScript's Number. A bare-number JSON
-// encoding of this value is lossy at JSON.parse time on any JS/TS client;
-// EncodeItem's decimal string is not. This is deliberately NOT a
-// foldvectors.Vector: every vector's expect.items is checked against the live
-// fold (build.go's add()), and the live fold cannot produce this value — see
-// cases_encoding.go's doc comment for why the closest fold-checked vector
-// (item_timestamp_large_nontidy_value_encoded_as_string) cannot carry this
-// proof itself.
+// TestTimestampEncodingPreservesArbitraryNanoseconds is a ready-414
+// counterexample for a genuinely non-round int64 nanosecond value — one the
+// live fold's `sec * int64(time.Second)` derivation (spec §4.6) never
+// produces (it is not a multiple of 1e9), but which state.Item.CreatedAt's
+// declared type (arbitrary int64 unix nanoseconds) does not forbid — is not
+// exactly representable as an IEEE-754 double, the same type backing
+// JavaScript's Number. A bare-number JSON encoding of this value is lossy at
+// JSON.parse time on any JS/TS client; EncodeItem's decimal string is not.
+// This is deliberately NOT a foldvectors.Vector: every vector's expect.items
+// is checked against the live fold (build.go's add()), and the live fold's
+// formula cannot produce a value that is not a multiple of 1e9.
+//
+// This is NOT the only counterexample in the suite, and is not needed to
+// prove the encoding necessary on its own: item_timestamp_above_float64_safe_bound
+// (internal/foldvectors/cases_encoding.go, committed in testdata/fold.vectors.json)
+// IS a fold-checked vector, and its created_at IS a value the live fold
+// actually produces (sec=4,611,686,019) that is also not exactly
+// representable as a float64 — see
+// TestTimestampCounterexampleVectorIsGenuinelyLossyInFloat64 below, which
+// proves that against the committed file directly. This test's job is
+// narrower: cover a value shape (not a multiple of 1e9) the live fold can
+// never emit but the field's declared type permits.
 func TestTimestampEncodingPreservesArbitraryNanoseconds(t *testing.T) {
 	const nonRound int64 = 1700000000123456789 // NOT a multiple of 1e9
 
@@ -305,6 +314,116 @@ func TestTimestampEncodingIsSelfDescribing(t *testing.T) {
 			t.Errorf("timestamp_encoding does not mention %q: %s", must, f.TimestampEncoding)
 		}
 	}
+}
+
+// vectorFileTimestampFieldPattern matches a JSON value that is a STRING
+// containing only decimal digits (optionally a leading '-'): the RAW json
+// token, quotes included, e.g. `"1700000000000000000"`. A bare number like
+// `1700000000000000000` (no quotes) does not match this, and neither does a
+// string containing anything other than digits (e.g. `"12.3"`, `"1e9"`,
+// `"abc"`).
+var vectorFileTimestampFieldPattern = regexp.MustCompile(`^"-?[0-9]+"$`)
+
+// TestVectorFileTimestampsAreDecimalDigitStrings is the DATA half of
+// ready-414's done-condition 3 (review finding: TestTimestampEncodingIsSelfDescribing,
+// below, only substring-scans the file's PROSE note — a hand-typed sentence
+// containing the words "created_at", "updated_at" and "BigInt" satisfies it
+// with no relationship to what the data actually looks like). This test
+// asserts the data itself: every expect.items[].created_at and .updated_at in
+// the COMMITTED testdata/fold.vectors.json — for every vector, not only the
+// ones ready-414 added — is a JSON string containing only decimal digits.
+func TestVectorFileTimestampsAreDecimalDigitStrings(t *testing.T) {
+	f := load(t)
+	checked := 0
+	for _, v := range f.Vectors {
+		for i, raw := range v.Expect.Items {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatalf("vector %q item %d: decode: %v", v.Name, i, err)
+			}
+			for _, key := range []string{"created_at", "updated_at"} {
+				tok, ok := fields[key]
+				if !ok {
+					t.Errorf("vector %q item %d: field %q is missing", v.Name, i, key)
+					continue
+				}
+				if !vectorFileTimestampFieldPattern.MatchString(string(tok)) {
+					t.Errorf("vector %q item %d: field %q = %s is not a decimal-digit JSON string "+
+						"(want a quoted string of digits, e.g. \"1700000000000000000\")",
+						v.Name, i, key, tok)
+					continue
+				}
+				checked++
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("checked zero timestamp fields — the vector file looks empty or malformed")
+	}
+	t.Logf("verified %d created_at/updated_at fields are decimal-digit JSON strings", checked)
+}
+
+// TestTimestampCounterexampleVectorIsGenuinelyLossyInFloat64 proves, against
+// the COMMITTED testdata/fold.vectors.json (not a fresh in-memory Build()),
+// that item_timestamp_above_float64_safe_bound really is what ready-414's
+// spec §4.8 fix claims: a value the LIVE FOLD produced (not a synthetic value
+// invented only for a unit test) whose created_at does not survive an
+// IEEE-754 double round-trip.
+//
+// This is the regeneration-proof half of the fix. build.go's add() only
+// checks that the hand-authored expectation and the live-fold output AGREE —
+// both go through EncodeItem, so a regression shared by both sides (e.g.
+// EncodeItem reverting to bare numbers) would not be caught by add(), and
+// running `go run ./internal/foldvectors/gen` after such a regression would
+// happily launder it into a new "passing" committed file. This test instead
+// decodes the COMMITTED file's raw JSON token directly, so it fails the
+// moment created_at stops being a quoted decimal string, however the file
+// came to be regenerated.
+func TestTimestampCounterexampleVectorIsGenuinelyLossyInFloat64(t *testing.T) {
+	const vectorName = "item_timestamp_above_float64_safe_bound"
+	f := load(t)
+	var v *foldvectors.Vector
+	for i := range f.Vectors {
+		if f.Vectors[i].Name == vectorName {
+			v = &f.Vectors[i]
+			break
+		}
+	}
+	if v == nil {
+		t.Fatalf("required vector %q is missing", vectorName)
+	}
+	if len(v.Expect.Items) != 1 {
+		t.Fatalf("%s: expected exactly one item, got %d", vectorName, len(v.Expect.Items))
+	}
+	var item struct {
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(v.Expect.Items[0], &item); err != nil {
+		t.Fatalf("%s: decode item: %v (created_at/updated_at must be JSON strings — see "+
+			"TestVectorFileTimestampsAreDecimalDigitStrings)", vectorName, err)
+	}
+	created, err := strconv.ParseInt(item.CreatedAt, 10, 64)
+	if err != nil {
+		t.Fatalf("%s: created_at %q does not parse as an int64: %v", vectorName, item.CreatedAt, err)
+	}
+	if item.UpdatedAt != item.CreatedAt {
+		t.Errorf("%s: updated_at %q != created_at %q", vectorName, item.UpdatedAt, item.CreatedAt)
+	}
+
+	// The actual claim: this real, fold-produced value is NOT exactly
+	// representable as a float64. If it were, this vector would prove
+	// nothing about the old bare-number encoding's defect — the whole point
+	// of the spec §4.8 fix is that a fold-checked vector CAN be a genuine
+	// counterexample (an earlier draft of the spec claimed it could not).
+	lossy := int64(float64(created))
+	if lossy == created {
+		t.Fatalf("%s: created_at=%d round-trips through float64 exactly — this vector no longer "+
+			"demonstrates the old-encoding defect it exists to pin; pick a value above spec §4.8's "+
+			"bound (sec <= 4,611,686,018) with no factor of two", vectorName, created)
+	}
+	t.Logf("%s: created_at=%d, a bare-number float64 round-trip would have produced %d (off by %d)",
+		vectorName, created, lossy, created-lossy)
 }
 
 func normalize(t *testing.T, raw json.RawMessage) any {
