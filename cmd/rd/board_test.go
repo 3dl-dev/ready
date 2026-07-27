@@ -46,6 +46,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -652,17 +653,53 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	// regression this item exists to remove. It is also a hardcoded literal
 	// rather than defaultBoardHost, so it cannot degrade into the
 	// constant-vs-constant tautology that let the placeholder ship.
+	// And it must match EXACTLY, not by strings.Contains. Contains is
+	// satisfied by any superstring, so it binds a prefix rather than the
+	// host: "https://ready.3dl.dev/boardroom" (which 404s) and
+	// "https://ready.3dl.dev/board/" (whose trailing slash renders the stale
+	// ".../board/#board=" shape this item removed) both pass a Contains
+	// check while --help advertises a URL `rd board` never emits.
 	const wantHost = "https://ready.3dl.dev/board"
-	if !strings.Contains(boardCmd.Long, wantHost) {
-		t.Fatalf("boardCmd.Long does not mention the configured default host %q; Long =\n%s", wantHost, boardCmd.Long)
+	assertHelpNamesExactHost(t, "boardCmd.Long", boardCmd.Long, wantHost)
+	assertHelpNamesExactHost(t, "boardCmd --host flag usage", boardCmd.Flags().Lookup("host").Usage, wantHost)
+	assertHelpNamesExactHost(t, "boardShareCmd --host flag usage", boardShareCmd.Flags().Lookup("host").Usage, wantHost)
+}
+
+// helpURLRe extracts concrete URLs from help text. It deliberately stops at
+// whitespace and at the punctuation that closes a URL in prose -- ")", "]",
+// ",". It does not match the documentation placeholder
+// "https://<board-host>#board=..." because that carries no real hostname,
+// which is what lets this scan target only concrete hosts.
+var helpURLRe = regexp.MustCompile(`https?://[^\s)\],]+`)
+
+// assertHelpNamesExactHost fails unless every concrete ready.3dl.dev URL in
+// text is EXACTLY wantHost, and at least one such URL is present.
+//
+// Both halves matter, and each closes a hole a previous revision shipped:
+//   - "at least one present" catches help text that stops naming the host at
+//     all.
+//   - "every one is exactly wantHost" catches the superstring drift that
+//     strings.Contains allows -- /boardroom, a trailing slash, or any other
+//     path suffix. It also still catches the dead "board.ready.3dl.dev"
+//     placeholder from PR #127, whose URL token is not equal to wantHost.
+//
+// wantHost is a hardcoded literal rather than defaultBoardHost on purpose:
+// comparing the constant to itself is the tautology that let the dead
+// placeholder ship in the first place.
+func assertHelpNamesExactHost(t *testing.T, label, text, wantHost string) {
+	t.Helper()
+	var found bool
+	for _, u := range helpURLRe.FindAllString(text, -1) {
+		if !strings.Contains(u, "ready.3dl.dev") {
+			continue
+		}
+		found = true
+		if u != wantHost {
+			t.Fatalf("%s names the URL %q, want exactly %q -- `rd board` never emits the former", label, u, wantHost)
+		}
 	}
-	hostFlagUsage := boardCmd.Flags().Lookup("host").Usage
-	if !strings.Contains(hostFlagUsage, wantHost) {
-		t.Fatalf("boardCmd --host flag usage does not mention the configured default host %q; usage = %q", wantHost, hostFlagUsage)
-	}
-	shareHostFlagUsage := boardShareCmd.Flags().Lookup("host").Usage
-	if !strings.Contains(shareHostFlagUsage, wantHost) {
-		t.Fatalf("boardShareCmd --host flag usage does not mention the configured default host %q; usage = %q", wantHost, shareHostFlagUsage)
+	if !found {
+		t.Fatalf("%s does not mention the configured default host %q; text =\n%s", label, wantHost, text)
 	}
 }
 
