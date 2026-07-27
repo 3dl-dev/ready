@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/state"
@@ -42,7 +43,93 @@ import (
 // FormatVersion is bumped when the vector file's SHAPE changes (not when
 // vectors are added). An independent client should refuse a version it does not
 // understand rather than silently mis-read a field.
-const FormatVersion = 1
+//
+// Bumped 1 -> 2 by ready-414: expect.items[].created_at / updated_at changed
+// from bare JSON numbers to decimal STRINGS (see EncodeItem, TimestampEncoding
+// and spec §4.8). A client still reading version 1 was silently losing
+// nanosecond precision on JSON.parse for any int64 value not shaped like
+// today's fold output; the version bump forces a client to notice the shape
+// changed instead of mis-parsing it.
+const FormatVersion = 2
+
+// tsFields names the two Item JSON fields that carry arbitrary int64
+// unix-nanosecond timestamps. See EncodeItem.
+var tsFields = [2]string{"created_at", "updated_at"}
+
+// EncodeItem marshals a projected item into the JSON that lands in a vector's
+// expect.items, re-encoding its two int64 unix-nanosecond fields (created_at,
+// updated_at) as decimal STRINGS instead of bare numbers.
+//
+// This operates on the DECODED top-level JSON object (a map[string]RawMessage),
+// not on the marshaled bytes: an earlier version of this function used a regex
+// over the marshaled bytes, which would have rewritten the "created_at":N byte
+// pattern WHEREVER it occurred, including inside a string field's content, had
+// such content ever produced that exact unescaped byte sequence. It cannot, in
+// fact, for state.Item's current shape -- encoding/json always backslash-escapes
+// a literal `"` inside string content, and a JSON value's closing delimiter is
+// always followed by `,` or `}`, never `:` (only a KEY position is), so no
+// user-controlled string field can ever produce an unescaped
+// `"created_at":<digits>` byte run at a non-key position. But that safety was an
+// accident of the byte-level approach happening not to be exploitable against
+// today's fixed struct, not a property the byte-level approach guaranteed -- a
+// future field of type json.RawMessage or map[string]any could reintroduce
+// exactly this risk. Decoding to {string: RawMessage} and touching only the two
+// named top-level keys removes the dependency on that accident entirely: it can
+// only ever affect the two fields it names, regardless of what any other field
+// contains. See item_context_contains_timestamp_byte_pattern in
+// cases_encoding.go, which pins a Context value containing that literal byte
+// pattern and confirms it is not touched.
+//
+// state.Item's own JSON tags are untouched by this -- rd's real JSON output
+// (CLI, wire) is not part of this change -- only the copy that lands in
+// testdata/fold.vectors.json is reshaped. That is deliberate: the fold's
+// derivation of these two fields (event created_at, unix SECONDS, times
+// int64(time.Second), spec §4.6) produces an EXACT multiple of 1e9, but
+// whether that value survives an IEEE-754 double round-trip depends on its
+// magnitude -- see spec §4.8 for the derivation of the real bound
+// (sec <= 4,611,686,018 is guaranteed exact; above that it depends on sec's
+// own factors of two) and item_timestamp_above_float64_safe_bound in
+// cases_encoding.go for a live-fold-produced value that is provably lossy.
+// The FIELD'S TYPE makes no promise either way, and JavaScript's Number
+// cannot represent an arbitrary 64-bit integer exactly
+// (Number.MAX_SAFE_INTEGER = 2^53-1 = 9007199254740991). A vector file that
+// hands a client a bare number here is correct only for values below the
+// bound; the string encoding removes the dependency on magnitude entirely.
+// See also TestTimestampEncodingPreservesArbitraryNanoseconds for a
+// synthetic (non-fold-producible) value that concretely fails under the old
+// (bare-number) encoding.
+//
+// Both places that turn a *state.Item into vector JSON -- the hand-authored
+// expectation in build.go's itemsJSON, and the live-fold comparison in Run()
+// below -- call this one function, so a case added after this fix (ready-ce8,
+// ready-882) gets the encoding for free and authoring/verification can never
+// silently disagree about it.
+func EncodeItem(it *state.Item) (json.RawMessage, error) {
+	blob, err := json.Marshal(it)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &fields); err != nil {
+		return nil, fmt.Errorf("EncodeItem: decode marshaled item: %w", err)
+	}
+	for _, key := range tsFields {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(string(raw), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("EncodeItem: field %q = %s is not a bare integer", key, raw)
+		}
+		strEncoded, err := json.Marshal(strconv.FormatInt(n, 10))
+		if err != nil {
+			return nil, err
+		}
+		fields[key] = strEncoded
+	}
+	return json.Marshal(fields)
+}
 
 // File is the top-level fold.vectors.json document.
 type File struct {
@@ -52,6 +139,12 @@ type File struct {
 	Spec string `json:"spec"`
 	// Note is free text for a human opening the file cold.
 	Note string `json:"note"`
+	// TimestampEncoding documents, IN this file (not only in Go comments — see
+	// EncodeItem), how expect.items[].created_at / updated_at are encoded. A
+	// client MUST read this before assuming those two fields are ordinary JSON
+	// numbers: they are decimal STRINGS, parse them with BigInt(), never
+	// Number() or JSON's own number parser. See spec §4.8.
+	TimestampEncoding string `json:"timestamp_encoding"`
 	// Keys are the fixture identities, by role name. Secrets are published on
 	// purpose: an independent client must be able to RE-SIGN the fixtures (and to
 	// prove to itself that the forged vectors really are forged).
@@ -191,7 +284,7 @@ func Run(v Vector) (items []json.RawMessage, viewSets map[string][]string, label
 
 	items = make([]json.RawMessage, 0, len(ordered))
 	for _, it := range ordered {
-		blob, mErr := json.Marshal(it)
+		blob, mErr := EncodeItem(it)
 		if mErr != nil {
 			return nil, nil, nil, mErr
 		}

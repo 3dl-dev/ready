@@ -220,6 +220,45 @@ card's `created_at` past a genuinely-later cross-machine edit. This is a **write
 rule; a folding client does not need it to read, but a conformance vector
 generator does, to reproduce byte-identical event sets.
 
+**§4.8 Conformance-vector JSON encoding of item timestamps (ready-414).**
+`state.Item.CreatedAt`/`UpdatedAt` are declared as arbitrary int64 unix
+nanoseconds. §4.6's derivation is `sec * int64(time.Second)`, i.e.
+`sec * 1_000_000_000`. `1e9 = 2^9 * 5^9`, so this value is exactly
+representable as an IEEE-754 double (53-bit mantissa) only when its ODD
+PART — the value divided by the highest power of two that divides it — is
+`<= 2^53`. Writing `sec = 2^k * m` with `m` odd, the odd part of `sec * 1e9`
+is `m * 5^9`, so exactness requires `m * 5^9 <= 2^53`. For `sec` with NO
+factor of two (`k = 0`, the common case for an arbitrary wall-clock second),
+that reduces to `sec <= floor(2^53 / 5^9) = 4,611,686,018` (~year 2116).
+Above that bound, whether a given `sec` is STILL exact depends on how many
+factors of two it happens to carry — e.g. `sec = 9,223,372,036 =
+4 * 2,305,843,009` survives because dividing out its factor of 4 brings the
+odd part back under the limit, while the odd `sec = 9,223,372,035` does not
+(its nanosecond value misses a `float64` round-trip by 512ns). So neither
+"always exact" nor "always lossy above 4,611,686,018" is a true universal
+claim about this formula — only "guaranteed exact at or below 4,611,686,018,
+and it depends above it" is. `state.Item`'s declared type (arbitrary int64
+unix nanoseconds) makes no promise about which case a given value falls
+into, and JavaScript's `Number` cannot represent an arbitrary 64-bit integer
+exactly (`Number.MAX_SAFE_INTEGER` = 2^53-1) regardless. The vector
+`item_timestamp_above_float64_safe_bound`
+(`internal/foldvectors/cases_encoding.go`) pins a concrete, LIVE-FOLD-PRODUCED
+counterexample at `sec = 4,611,686,019`: its nanosecond value does not
+survive a `float64` round-trip, proving a bare-number encoding would have
+been lossy for REAL fold output, not merely for a value the type permits in
+theory. So the **vector file**
+(not `state.Item`'s Go JSON tags, which are unchanged, and not rd's own
+CLI/wire output) encodes `expect.items[].created_at` / `.updated_at` as
+DECIMAL STRINGS — e.g. `"created_at":"1700000000000000000"` — so a client
+recovers them with `BigInt()`, never `Number()`. `internal/foldvectors.EncodeItem`
+(`internal/foldvectors/vectors.go`) applies this at the one point every item is
+turned into vector JSON, for both the hand-authored expectation and the
+live-fold comparison, so authoring and verification can never silently
+disagree about it. The vector file's own `timestamp_encoding` field restates
+this for a reader who never opens the Go source. `FormatVersion` was bumped
+1 → 2 for this change (a client on version 1 was silently trusting a bare
+number that is only safe by accident).
+
 ---
 
 ## 5. Card → item field projection
