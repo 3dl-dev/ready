@@ -184,13 +184,35 @@ func isPublishProductionCtx(ctx context.Context) bool {
 // init installs the board semantics (hitsReservedBoard + the production
 // opt-in) into pkg/nostr's nil-able PublishGuard hook (ready-69e class fix).
 // pkg/nostr itself gains no board knowledge — it only ever sees this closure
-// as an opaque func(ctx, *Event) error — but now EVERY call to nostr.Publish
-// in the whole module is checked here, regardless of how the caller reached
-// it: through GuardedPublish (production stamped on ctx, see above), or
-// directly via an aliased import, a dot-import, or a function value taken off
-// the package (none of those can stamp publishProductionCtxKey — its type is
-// unexported here — so they all read as production=false and are refused the
-// instant the event addresses the reserved coordinate, before any dial).
+// as an opaque func(ctx, *Event) error.
+//
+// SCOPE, stated precisely — an earlier version of this comment claimed EVERY
+// call to nostr.Publish in the module is checked here "regardless of how the
+// caller reached it". That was FALSE and a veracity adversary disproved it, so
+// do not restore that wording. What is actually true:
+//
+//	IN A BINARY THAT LINKS pkg/sync, every SPELLING is covered. The check lives
+//	in the callee, so an aliased import, a dot-import, a function value taken
+//	off the package, and reflection all land in this same closure. None of them
+//	can stamp publishProductionCtxKey (its type is unexported here), so they
+//	read as production=false and are refused the instant the event addresses
+//	the reserved coordinate, before any dial. Only GuardedPublish can stamp the
+//	opt-in, and only from a sanctioned CLI path.
+//
+//	ARMING IS A LINK-TIME SIDE EFFECT of this init(), which is the residual gap
+//	(ready-fcf, open). pkg/nostr ships with PublishGuard == nil, so two routes
+//	are NOT covered: (1) a file inside pkg/nostr itself, which calls Publish as
+//	a bare in-package identifier and cannot be reached by this hook because
+//	pkg/nostr cannot import pkg/sync without an import cycle; and (2) any
+//	binary that imports pkg/nostr without pkg/sync, which never runs this
+//	init(). pkg/nostr/live_relay_test.go and negentropy_live_relay_test.go are
+//	existing files of shape (1) — they publish kind 1 / kind 30078 with no
+//	board coordinate, so there is no exposure today, but a production-board
+//	test added there would NOT be guarded.
+//
+// The static counterpart (pkg/sync/publish_chokepoint_test.go) has the same
+// blind spot for shape (1): it only resolves bindings for files that IMPORT
+// pkg/nostr, so a file inside that package is never inspected.
 func init() {
 	nostr.PublishGuard = func(ctx context.Context, e *nostr.Event) error {
 		if isPublishProductionCtx(ctx) {
