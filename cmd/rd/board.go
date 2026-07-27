@@ -17,21 +17,29 @@ package main
 //                                an owner-signed grant via the EXISTING grant path
 //                                (same body as `rd grant`), THEN prints the URL —
 //                                zero-wait, the grant is already durable on the
-//                                relay before the recipient clicks.
+//                                relay before the recipient clicks. NO claim-nonce
+//                                is minted (ready-5c1): the grantee's key is
+//                                already known, and the grant just published IS
+//                                the authorization. A live, unbound claim-nonce
+//                                in this URL would be a bearer credential anyone
+//                                who saw the link could later bind to THEIR OWN
+//                                key via `rd grant --claim` — a credential leak.
 //   rd board share           -> mints a one-use claim-nonce token (same as
 //                                `rd invite`) for someone whose pubkey isn't known
 //                                yet, wrapped as a URL. Completed later with:
 //                                  rd grant --claim <nonce> <pubkey>
 //
-// URL SHAPE (share forms): https://<board-host>/#rd1_<base64url> — a FRAGMENT
-// (never sent to a server, never in an access log). The payload is the UNCHANGED
-// rd1_ v3 nostrClaimPayload (cmd/rd/nostr_invite.go buildNostrClaimToken /
-// decodeNostrClaimToken) — no new token version, no new event kind (constraint).
+// URL SHAPE (bare share form, unknown key): https://<board-host>/#rd1_<base64url>
+// — a FRAGMENT (never sent to a server, never in an access log). The payload is
+// the UNCHANGED rd1_ v3 nostrClaimPayload (cmd/rd/nostr_invite.go
+// buildNostrClaimToken / decodeNostrClaimToken) — no new token version, no new
+// event kind (constraint).
 //
-// URL SHAPE (own board, `rd board` with no args): https://<board-host>/#board=
-// <coord>&relays=<comma-list> — NO rd1_ token, NO claim-nonce. Byte-shape
-// deliberately distinct from a share link: a claim-nonce is a bearer credential
-// `rd grant --claim` can bind to whoever presents it, so an own-board link must
+// URL SHAPE (own board, `rd board` with no args, AND `rd board share <who>` for
+// a known key): https://<board-host>/#board=<coord>&relays=<comma-list> — NO
+// rd1_ token, NO claim-nonce. Byte-shape deliberately distinct from the bare
+// share link: a claim-nonce is a bearer credential `rd grant --claim` can bind
+// to whoever presents it, so a link for an already-authorized recipient must
 // never carry one, even an unconsumed/informational one.
 //
 // SECURITY: the link conveys NO secret and NO read access on its own for a
@@ -210,26 +218,19 @@ identity, then send you back a pubkey; complete the invite with:
 			return err
 		}
 
-		// Mint the URL's token AFTER the grant is durable (zero-wait: the grant
-		// is on the relay before the recipient can click the link). The token
-		// carries the same board+relays as any other board link — no secret,
-		// and the claim-nonce it carries is informational (this grant did not
-		// consume it; the grant itself, not the link, conferred access).
+		// Print the URL AFTER the grant is durable (zero-wait: the grant is on
+		// the relay before the recipient can click the link). NO claim-nonce is
+		// minted here (ready-5c1): the grantee's pubkey is already known and the
+		// grant just published is the authorization — a live, unbound
+		// claim-nonce would be a bearer credential anyone who saw this URL could
+		// later bind to THEIR OWN key via `rd grant --claim`, which is exactly
+		// the credential-leak this path must not create. Same plain
+		// board+relays fragment shape as the own-board URL — no rd1_ token.
 		board := nostrPinnedBoard(dir)
-		owner, _, ok := rdSync.ParseBoardCoord(board)
-		if !ok {
+		if _, _, ok := rdSync.ParseBoardCoord(board); !ok {
 			return fmt.Errorf("pinned board %q is malformed", board)
 		}
-		claim, err := randomNonce()
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		token, err := buildNostrClaimToken(board, inviteRelaySet(), claim, now.Unix(), now.Add(ttl).Unix(), owner)
-		if err != nil {
-			return err
-		}
-		fmt.Println(boardURL(host, token))
+		fmt.Println(ownBoardURL(host, board, inviteRelaySet()))
 		return nil
 	},
 }

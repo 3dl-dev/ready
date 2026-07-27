@@ -213,7 +213,10 @@ func TestBoardShareCmd_Bare_PrintsDecodableClaimURL(t *testing.T) {
 // lands in the local authoritative log (the durable write PublishEvents
 // always performs before any relay attempt) such that InviteGrantValid — the
 // SAME derivation the trust gate uses — returns true for the grantee, and the
-// printed URL still decodes.
+// printed URL is a plain board=/relays= fragment (ready-5c1: the grant IS the
+// authorization for a known key, so no rd1_ claim-nonce token rides along —
+// see TestBoardShareCmd_WithPubkey_NoClaimNonce for the dedicated rejection
+// test).
 func TestBoardShareCmd_WithPubkey_GrantsAndPrintsURL(t *testing.T) {
 	ownerKey, boardD, coord, dir := boardTestEnv(t)
 	granteeKey, err := nostr.GenerateKey()
@@ -228,13 +231,19 @@ func TestBoardShareCmd_WithPubkey_GrantsAndPrintsURL(t *testing.T) {
 		}
 	})
 	urlLine := findURLLine(t, out)
-	token := extractToken(t, urlLine)
-	p, err := decodeNostrClaimToken(token)
-	if err != nil {
-		t.Fatalf("rd board share <pubkey> token failed to decode: %v", err)
+	if !strings.HasPrefix(urlLine, "https://") {
+		t.Fatalf("rd board share <pubkey> output %q does not start with https://", urlLine)
 	}
-	if p.Board != coord {
-		t.Errorf("rd board share <pubkey> token board = %q, want %q", p.Board, coord)
+	i := strings.Index(urlLine, "#")
+	if i < 0 {
+		t.Fatalf("rd board share <pubkey> output %q has no '#' fragment", urlLine)
+	}
+	values, err := url.ParseQuery(urlLine[i+1:])
+	if err != nil {
+		t.Fatalf("rd board share <pubkey> fragment %q did not parse as a query string: %v", urlLine[i+1:], err)
+	}
+	if got := values.Get("board"); got != coord {
+		t.Errorf("rd board share <pubkey> fragment board=%q, want %q", got, coord)
 	}
 
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
@@ -243,6 +252,38 @@ func TestBoardShareCmd_WithPubkey_GrantsAndPrintsURL(t *testing.T) {
 	}
 	if !rdSync.InviteGrantValid(events, ownerKey.PubKeyHex(), boardD, grantee) {
 		t.Error("InviteGrantValid = false after `rd board share <pubkey>` — the grant did not land where the trust gate reads it")
+	}
+}
+
+// TestBoardShareCmd_WithPubkey_NoClaimNonce is the REJECTION test for
+// ready-5c1: `rd board share <known-pubkey>` must NOT mint a claim-nonce or an
+// rd1_ token, even though the grant it just published carries no --claim. The
+// grantee's key is already known and the grant IS the authorization; a live,
+// unbound claim-nonce riding along in the URL would be a bearer credential
+// anyone who later saw the link could bind to THEIR OWN key via
+// `rd grant --claim`, obtaining the authority the owner intended for the
+// specific person just granted. This test FAILS if that mint is
+// reintroduced — proven by reverting the ready-5c1 fix locally and observing
+// this test fail with both assertions below before restoring the fix.
+func TestBoardShareCmd_WithPubkey_NoClaimNonce(t *testing.T) {
+	boardTestEnv(t)
+	granteeKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey grantee: %v", err)
+	}
+
+	out := captureStdoutPipe(t, func() {
+		if err := boardShareCmd.RunE(boardShareCmd, []string{granteeKey.PubKeyHex()}); err != nil {
+			t.Fatalf("rd board share <pubkey>: %v", err)
+		}
+	})
+	urlLine := findURLLine(t, out)
+
+	if strings.Contains(urlLine, "#"+nostrInviteTokenPrefix) {
+		t.Errorf("rd board share <known pubkey> output %q carries an %q token — a known-key share must issue NO claim-nonce, the grant is the authorization", urlLine, nostrInviteTokenPrefix)
+	}
+	if strings.Contains(strings.ToLower(urlLine), "claim") {
+		t.Errorf("rd board share <known pubkey> output %q mentions a claim — no claim-nonce may ride along on a link for an already-authorized recipient", urlLine)
 	}
 }
 
@@ -347,6 +388,11 @@ func TestBoardURL_NoSecretMaterial(t *testing.T) {
 	})
 	check("rd board share (bare)", findURLLine(t, out))
 
+	// rd board share <pubkey> (known key) carries NO rd1_ token either
+	// (ready-5c1 — see TestBoardShareCmd_WithPubkey_NoClaimNonce for the
+	// dedicated rejection test), so — like the own-board form above — it is
+	// checked by scanning the raw URL line rather than via extractToken
+	// (which requires a "#rd1_" fragment this form must never have).
 	grantee, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -356,7 +402,12 @@ func TestBoardURL_NoSecretMaterial(t *testing.T) {
 			t.Fatalf("rd board share <pubkey>: %v", err)
 		}
 	})
-	check("rd board share <pubkey>", findURLLine(t, out))
+	pubkeyLine := strings.ToLower(findURLLine(t, out))
+	for _, bad := range forbidden {
+		if strings.Contains(pubkeyLine, strings.ToLower(bad)) {
+			t.Errorf("rd board share <pubkey>: URL contains forbidden secret-shaped material %q — url: %s", bad, pubkeyLine)
+		}
+	}
 }
 
 // boardTokenAllowedKeys is the EXACT top-level JSON key set nostrClaimPayload
@@ -394,11 +445,16 @@ func tokenKeyAllowlistViolations(t *testing.T, raw []byte) []string {
 
 // TestBoardURL_TokenKeys_ExactAllowlist is the ALLOWLIST rejection test for
 // done #3 (stronger than TestBoardURL_NoSecretMaterial's forbidden-substring
-// scan — see boardTokenAllowedKeys doc comment): it decodes each share
-// form's token to map[string]any and asserts the top-level key set is
-// EXACTLY {v,board,relays,claim,iat,exp,iss}. This test is DESIGNED to fail
-// the moment any future change adds a new field to the payload, no matter
-// what that field is named or how its content is encoded.
+// scan — see boardTokenAllowedKeys doc comment): it decodes the ONE share
+// form that still mints a token — `rd board share` bare, for an unknown key —
+// to map[string]any and asserts the top-level key set is EXACTLY
+// {v,board,relays,claim,iat,exp,iss}. This test is DESIGNED to fail the
+// moment any future change adds a new field to the payload, no matter what
+// that field is named or how its content is encoded.
+//
+// `rd board share <known-pubkey>` mints NO token at all (ready-5c1) — there
+// is no payload here to check against the allowlist; its absence is proven
+// by TestBoardShareCmd_WithPubkey_NoClaimNonce instead.
 func TestBoardURL_TokenKeys_ExactAllowlist(t *testing.T) {
 	boardTestEnv(t)
 
@@ -420,17 +476,6 @@ func TestBoardURL_TokenKeys_ExactAllowlist(t *testing.T) {
 		}
 	})
 	checkToken("rd board share (bare)", findURLLine(t, out))
-
-	grantee, err := nostr.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	out = captureStdoutPipe(t, func() {
-		if err := boardShareCmd.RunE(boardShareCmd, []string{grantee.PubKeyHex()}); err != nil {
-			t.Fatalf("rd board share <pubkey>: %v", err)
-		}
-	})
-	checkToken("rd board share <pubkey>", findURLLine(t, out))
 }
 
 // TestBoardURL_RejectsExpiredToken and TestBoardURL_RejectsV2SecretToken cover
@@ -710,9 +755,20 @@ func TestLiveRelay_BoardShare_GrantReadableOnRelay(t *testing.T) {
 		}
 	})
 	urlLine := findURLLine(t, out)
-	token := extractToken(t, urlLine)
-	if _, err := decodeNostrClaimToken(token); err != nil {
-		t.Fatalf("rd board share <npub> token failed to decode: %v", err)
+	// ready-5c1: a known-key share mints NO rd1_ claim-nonce token — the grant
+	// just published is the authorization. Assert the plain board=/relays=
+	// shape instead of decoding a token.
+	if strings.Contains(urlLine, "#"+nostrInviteTokenPrefix) {
+		t.Fatalf("rd board share <npub> output %q carries an %q token — a known-key share must issue NO claim-nonce", urlLine, nostrInviteTokenPrefix)
+	}
+	i := strings.Index(urlLine, "#")
+	if i < 0 {
+		t.Fatalf("rd board share <npub> output %q has no '#' fragment", urlLine)
+	}
+	if values, err := url.ParseQuery(urlLine[i+1:]); err != nil {
+		t.Fatalf("rd board share <npub> fragment %q did not parse as a query string: %v", urlLine[i+1:], err)
+	} else if got := values.Get("board"); got != coord {
+		t.Errorf("rd board share <npub> fragment board=%q, want %q", got, coord)
 	}
 
 	// Give the relay a beat to index before querying it back — matches
