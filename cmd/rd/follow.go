@@ -442,6 +442,10 @@ func importFollowedBoard(ctx context.Context, dir, coord, owner, boardD string, 
 		Log:         log,
 		WriteRelays: relays,
 		PendingPath: nostrPendingPath(dir),
+		// Production: real rd CLI follow path — sanctioned to republish the
+		// board's own reserved coordinate when this repo IS the followed board
+		// (ready-fce). See nostrPublisher's Production doc.
+		Production: true,
 	}
 	_, _ = pub.PublishBoard(ctx, coord)
 	return nil
@@ -505,6 +509,11 @@ func publishFollowAlias(ctx context.Context, dir string, k *nostr.Key, email str
 		Log:         log,
 		WriteRelays: relays,
 		PendingPath: nostrPendingPath(dir),
+		// Production: real rd CLI follow-alias path — this publishes a person-alias
+		// event, not a board/card event, so it never actually hits the reserved
+		// board-coordinate check, but it is a sanctioned production write path all
+		// the same (ready-fce). See nostrPublisher's Production doc.
+		Production: true,
 	}
 	if _, err := pub.PublishEvents(ctx, []*nostr.Event{ev}); err != nil {
 		return "", err

@@ -48,10 +48,11 @@ func TestLiveRelay_GenericNIP34ClientAssociatesStatusWithIssue(t *testing.T) {
 		WriteRelays: []string{relay},
 		PendingPath: filepath.Join(dir, ".ready", NostrPendingFile),
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 	card := CardSpec{
 		ItemID: itemID, Title: "NIP-34 issue-anchor live proof", Status: state.StatusActive,
-		Priority: "p1", Type: "task", Context: "generic-client interop check (ready-da7)", BoardD: "ready",
+		Priority: "p1", Type: "task", Context: "generic-client interop check (ready-da7)", BoardD: boardD,
 	}
 
 	// --- CREATE (with a close/change reason so we also prove reason-carry, ready-b5f

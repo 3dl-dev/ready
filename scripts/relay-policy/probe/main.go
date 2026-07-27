@@ -21,6 +21,23 @@ import (
 	rdsync "github.com/3dl-dev/ready/pkg/sync"
 )
 
+// probeBoardD is deliberately NOT "ready" — this probe is proving PUBKEY-based
+// relay write-allowlist enforcement (ready-266), which has nothing to do with
+// which board a card claims membership in. In "allowlisted" mode this signs with
+// the REAL portfolio key (loaded from $HOME/.cf below); a "ready" BoardD would
+// address this repo's own live production board coordinate and, on acceptance,
+// publish a disposable probe card straight onto it (ready-fce finding (3) /
+// ready-6d0). A board D-tag that can never collide with a real project's pinned
+// board removes the vector at its source. This probe doesn't go through
+// Publisher (the per-caller guard), but it DOES go through rdsync.GuardedPublish
+// below (the CLASS-level network choke point, ready-6d0 round 3) — so even if a
+// future edit here reintroduced a literal "ready" BoardD, GuardedPublish would
+// still refuse to dial the relay for it. See main_test.go for the regression
+// lock on this constant, and pkg/sync/publish_chokepoint_test.go for the
+// mechanical lock proving no file (including this one) can reach nostr.Publish
+// directly instead of through GuardedPublish.
+const probeBoardD = "relay-policy-probe-disposable"
+
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: probe <relay-url> <allowlisted|random> [key-path]")
@@ -55,7 +72,7 @@ func main() {
 
 	_ = rdconfig.Config{} // endpoints are passed in explicitly by the demo
 	itemID := fmt.Sprintf("ready-266-probe-%s-%d", mode, time.Now().UnixNano())
-	card := rdsync.CardSpec{ItemID: itemID, Title: "266 write-allowlist probe", Status: state.StatusActive, Priority: "p3", Type: "task", BoardD: "ready"}
+	card := rdsync.CardSpec{ItemID: itemID, Title: "266 write-allowlist probe", Status: state.StatusActive, Priority: "p3", Type: "task", BoardD: probeBoardD}
 	ev, err := rdsync.BuildCardEvent(k, card, time.Now().Unix())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build event: %v\n", err)
@@ -64,7 +81,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), nostr.DefaultTimeout)
 	defer cancel()
-	accepted, msg, err := nostr.Publish(ctx, relay, ev)
+	// production=false: this is a disposable probe, not a sanctioned CLI write
+	// path. GuardedPublish is the ONLY sanctioned way to reach nostr.Publish
+	// (ready-6d0 round 3) — see the const doc above.
+	accepted, msg, err := rdsync.GuardedPublish(ctx, relay, ev, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "publish error to %s: %v\n", relay, err)
 		os.Exit(1)

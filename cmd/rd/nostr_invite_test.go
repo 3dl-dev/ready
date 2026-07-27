@@ -49,7 +49,9 @@ func TestNostrClaim_TwoActor_SelfMintReadOnlyThenGrant(t *testing.T) {
 		t.Fatalf("owner GenerateKey: %v", err)
 	}
 	owner := ownerKey.PubKeyHex()
-	const boardD = "ready"
+	// boardD is an arbitrary fixture name, not the reserved production "ready"
+	// coordinate (ready-fce; see Publisher.Production's doc).
+	const boardD = "invite-board"
 	board := rdSync.BoardCoord(owner, boardD)
 
 	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: sharedLog} // WriteRelays nil → no dial

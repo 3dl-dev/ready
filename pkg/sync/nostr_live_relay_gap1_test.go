@@ -32,9 +32,9 @@ func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	relay := liveRelayURL(t)
 	t.Logf("live relay: %s", relay)
 
-	owner := liveRelayKey(t) // allowlisted — may write to the locked relays.
+	owner := liveRelayKey(t)  // allowlisted — may write to the locked relays.
 	contributor := testKey(t) // fresh key, never granted before this run, never writes.
-	const boardD = "ready"
+	boardD := liveTestBoardD(t)
 	boardCoord := BoardCoord(owner.PubKeyHex(), boardD)
 
 	dir := t.TempDir()
@@ -76,7 +76,7 @@ func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	// deliberately NOT in the trust set here.
 	filter := BoardSyncFilter(boardCoord, nil)
 	trust := map[string]bool{owner.PubKeyHex(): true}
-	if _, err := NegentropySync(ctx, relay, logB, filter, trust, 30*time.Second); err != nil {
+	if _, err := NegentropySync(ctx, relay, logB, filter, trust, 30*time.Second, false); err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
 

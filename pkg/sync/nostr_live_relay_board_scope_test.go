@@ -104,7 +104,7 @@ func TestLiveRelay_BoardScopedStatusConvergence(t *testing.T) {
 
 	// 3+4. Machine B: empty log, board-scoped negentropy sync.
 	logB := NewNostrLog(filepath.Join(dir, "B", NostrLogFile))
-	rB, err := NegentropySync(ctx, relay, logB, filter, trusted, 30*time.Second)
+	rB, err := NegentropySync(ctx, relay, logB, filter, trusted, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("B board-scoped sync: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestLiveRelay_BoardScopedStatusConvergence(t *testing.T) {
 
 	// 5. Machine C: independent empty log, identical board-scoped sync -> converges.
 	logC := NewNostrLog(filepath.Join(dir, "C", NostrLogFile))
-	rC, err := NegentropySync(ctx, relay, logC, filter, trusted, 30*time.Second)
+	rC, err := NegentropySync(ctx, relay, logC, filter, trusted, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("C board-scoped sync: %v", err)
 	}

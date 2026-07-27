@@ -123,6 +123,108 @@ type relayAttempt struct {
 	Outcome  relayOutcome
 }
 
+// GuardedPublish is the SINGLE sanctioned entry point to the network write —
+// pkg/nostr's Publish — for this entire repo (ready-6d0 finding (3)). Every
+// other call site that used to dial nostr.Publish directly (relayclass.go's own
+// loop below, negentropy.go's upload step, the relay-policy probe, the nostr-demo
+// proof tool, and the self-heal adversarial tests) now funnels through here.
+//
+// WHY HERE AND NOT IN pkg/nostr: pkg/nostr is a lower layer than pkg/sync and
+// knows nothing about rd boards or coordinates — pushing hitsReservedBoard's
+// "d"/"a" tag semantics down into it would be the wrong layer for that
+// knowledge to live in. This wrapper stays in pkg/sync, where hitsReservedBoard
+// already lives (nostroutbound.go), and becomes the mandatory choke point
+// instead: production mirrors Publisher.Production — false refuses to dial the
+// relay AT ALL (no network I/O) for an event addressing the reserved production
+// board coordinate; true passes through unconditionally, exactly as
+// guardReservedBoard does for the Publisher's own call surface.
+//
+// THIS IS A CLASS FIX, NOT AN INSTANCE FIX: guardReservedBoard protects
+// Publisher's methods, but Publisher was only one of several ways to reach the
+// network. Finding (3) was that a brand-new file could sidestep Publisher
+// entirely (BuildCardEvent + nostr.Publish, ready-6d0's own adversary probe A5)
+// and nothing would stop it. Fixing this file's call sites closes the KNOWN
+// vectors; publish_chokepoint_test.go (mechanical, not conventional) is what
+// closes the class — it fails CI the moment ANY file other than this one calls
+// nostr.Publish directly, so a brand-new violating file cannot even compile a
+// green test run, regardless of whether its author read this comment.
+func GuardedPublish(ctx context.Context, relayURL string, e *nostr.Event, production bool) (accepted bool, message string, err error) {
+	if !production && hitsReservedBoard(e) {
+		return false, "", fmt.Errorf("sync: refusing to dial %s with kind %d event addressing the reserved production board coordinate %q — not marked production (ready-6d0 chokepoint guard); use an isolated board D-tag, or thread production=true from a sanctioned CLI path if this really is a production write", relayURL, e.Kind, reservedProductionBoardD)
+	}
+	return nostr.Publish(withPublishProduction(ctx, production), relayURL, e)
+}
+
+// publishProductionCtxKey is the unexported context key carrying this call's
+// production opt-in down into pkg/nostr.Publish, for nostr.PublishGuard
+// (installed below in init) to read. It is unexported and its type is defined
+// only in this package, so no caller outside pkg/sync — in particular no
+// brand-new file an adversary writes, however it imports pkg/nostr — can
+// forge a context that satisfies it; the zero value (ctx with no such key, or
+// any ctx a new file constructs itself) always reads as production=false.
+type publishProductionCtxKey struct{}
+
+// withPublishProduction stamps ctx with this call's production opt-in so
+// nostr.PublishGuard (installed in init below) can see it. Only GuardedPublish
+// calls this — every path already sanctioned to reach nostr.Publish threads
+// the SAME production bool its Publisher (or CLI command) carries.
+func withPublishProduction(ctx context.Context, production bool) context.Context {
+	return context.WithValue(ctx, publishProductionCtxKey{}, production)
+}
+
+// isPublishProductionCtx reports the production opt-in stamped on ctx by
+// withPublishProduction, defaulting to false (fail closed) for any ctx that
+// never passed through it — which is every ctx a caller builds itself instead
+// of going through GuardedPublish.
+func isPublishProductionCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(publishProductionCtxKey{}).(bool)
+	return v
+}
+
+// init installs the board semantics (hitsReservedBoard + the production
+// opt-in) into pkg/nostr's nil-able PublishGuard hook (ready-69e class fix).
+// pkg/nostr itself gains no board knowledge — it only ever sees this closure
+// as an opaque func(ctx, *Event) error.
+//
+// SCOPE, stated precisely — an earlier version of this comment claimed EVERY
+// call to nostr.Publish in the module is checked here "regardless of how the
+// caller reached it". That was FALSE and a veracity adversary disproved it, so
+// do not restore that wording. What is actually true:
+//
+//	IN A BINARY THAT LINKS pkg/sync, every SPELLING is covered. The check lives
+//	in the callee, so an aliased import, a dot-import, a function value taken
+//	off the package, and reflection all land in this same closure. None of them
+//	can stamp publishProductionCtxKey (its type is unexported here), so they
+//	read as production=false and are refused the instant the event addresses
+//	the reserved coordinate, before any dial. Only GuardedPublish can stamp the
+//	opt-in, and only from a sanctioned CLI path.
+//
+//	ARMING IS A LINK-TIME SIDE EFFECT of this init(), which is the residual gap
+//	(ready-fcf, open). pkg/nostr ships with PublishGuard == nil, so two routes
+//	are NOT covered: (1) a file inside pkg/nostr itself, which calls Publish as
+//	a bare in-package identifier and cannot be reached by this hook because
+//	pkg/nostr cannot import pkg/sync without an import cycle; and (2) any
+//	binary that imports pkg/nostr without pkg/sync, which never runs this
+//	init(). pkg/nostr/live_relay_test.go and negentropy_live_relay_test.go are
+//	existing files of shape (1) — they publish kind 1 / kind 30078 with no
+//	board coordinate, so there is no exposure today, but a production-board
+//	test added there would NOT be guarded.
+//
+// The static counterpart (pkg/sync/publish_chokepoint_test.go) has the same
+// blind spot for shape (1): it only resolves bindings for files that IMPORT
+// pkg/nostr, so a file inside that package is never inspected.
+func init() {
+	nostr.PublishGuard = func(ctx context.Context, e *nostr.Event) error {
+		if isPublishProductionCtx(ctx) {
+			return nil
+		}
+		if hitsReservedBoard(e) {
+			return fmt.Errorf("nostr: refusing to publish kind %d event addressing the reserved production board coordinate %q — no production opt-in reached pkg/nostr for this call (ready-69e class guard); route through sync.GuardedPublish with production=true from a sanctioned CLI path, or use an isolated board D-tag", e.Kind, reservedProductionBoardD)
+		}
+		return nil
+	}
+}
+
 // publishEventToRelays publishes e to every relay in order and returns the
 // per-relay attempts (each carrying its classified Outcome), the reduced
 // event-level outcome, and a permanent-rejection reason. permReason is the
@@ -133,7 +235,13 @@ type relayAttempt struct {
 // so the fresh-publish path (relayPublish) and the retry path (FlushNostrPending)
 // can never diverge. It has no side effects beyond the network calls — buffering,
 // dead-lettering, and ack/error bookkeeping are the caller's.
-func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, timeout time.Duration) (attempts []relayAttempt, outcome relayOutcome, permReason string) {
+//
+// production is threaded straight through to GuardedPublish (ready-6d0 finding
+// (3)): callers pass the SAME opt-in their Publisher (or sanctioned CLI command)
+// carries, so an event addressing the reserved production board coordinate is
+// refused here — before any relay dial — exactly as it already is at the
+// Publisher-method layer, but now also at the actual network choke point.
+func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, timeout time.Duration, production bool) (attempts []relayAttempt, outcome relayOutcome, permReason string) {
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
 	}
@@ -141,7 +249,7 @@ func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, 
 	attempts = make([]relayAttempt, 0, len(relays))
 	for _, relay := range relays {
 		rctx, cancel := context.WithTimeout(ctx, timeout)
-		accepted, msg, err := nostr.Publish(rctx, relay, e)
+		accepted, msg, err := GuardedPublish(rctx, relay, e, production)
 		cancel()
 		oc := classifyRelayResult(accepted, msg, err)
 		attempts = append(attempts, relayAttempt{Relay: relay, Accepted: accepted, Message: msg, Err: err, Outcome: oc})

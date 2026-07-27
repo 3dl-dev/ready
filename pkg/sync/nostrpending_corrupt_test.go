@@ -33,7 +33,7 @@ func TestFlushNostrPending_MalformedLineDoesNotWedgeQueue(t *testing.T) {
 		t.Fatalf("seed good event: %v", err)
 	}
 
-	res, err := FlushNostrPending(context.Background(), pending, []string{contentRelay(t)}, 3*time.Second)
+	res, err := FlushNostrPending(context.Background(), pending, []string{contentRelay(t)}, 3*time.Second, false)
 	if err != nil {
 		t.Fatalf("FlushNostrPending must not error on a malformed line: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestFlushNostrPending_OnlyMalformedLine_ClearsBuffer(t *testing.T) {
 	if err := os.WriteFile(pending, []byte("garbage\n"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	res, err := FlushNostrPending(context.Background(), pending, []string{contentRelay(t)}, 3*time.Second)
+	res, err := FlushNostrPending(context.Background(), pending, []string{contentRelay(t)}, 3*time.Second, false)
 	if err != nil {
 		t.Fatalf("FlushNostrPending: %v", err)
 	}

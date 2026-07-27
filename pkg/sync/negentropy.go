@@ -70,9 +70,17 @@ type SyncResult struct {
 // validly-signed foreign event would enter the log via this path and bypass the
 // 'single admission choke point' invariant. A nil `trusted` set disables the gate
 // (tests / legacy paths); production callers pass at least the self pubkey
-// (rdconfig.Config.TrustSet). Uploads are unaffected — publishing local events is
-// always permitted; the gate only guards INBOUND admission.
-func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration) (SyncResult, error) {
+// (rdconfig.Config.TrustSet). Uploads are unaffected BY THE TRUST GATE —
+// publishing local events (already admitted into the log by some other,
+// already-gated path) is always permitted here on THAT axis; the trust gate
+// only guards INBOUND admission.
+//
+// production is a SEPARATE axis, threaded to GuardedPublish for the upload step
+// (ready-6d0 finding (3)): an event addressing the reserved production board
+// coordinate is refused before any relay dial unless production is true. Pass
+// true only from the sanctioned CLI's own sync command (cmd/rd/nostr.go); every
+// other caller (tests) passes false explicitly.
+func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration, production bool) (SyncResult, error) {
 	res := SyncResult{Relay: relayURL}
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
@@ -142,7 +150,7 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 			continue
 		}
 		pctx, pcancel := context.WithTimeout(ctx, timeout)
-		accepted, _, perr := nostr.Publish(pctx, relayURL, e)
+		accepted, _, perr := GuardedPublish(pctx, relayURL, e, production)
 		pcancel()
 		if perr != nil {
 			continue
@@ -161,11 +169,13 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 // replaceable cache: an event downloaded from relay-a is uploaded to relay-b on
 // the next pass, so the machine converges even if it can only reach one relay at
 // a time. Unreachable relays are recorded as errors and skipped, never fatal.
-func NegentropySyncMany(ctx context.Context, relays []string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration) ([]SyncResult, []string) {
+// production is threaded straight through to NegentropySync/GuardedPublish per
+// relay (ready-6d0 finding (3)); see NegentropySync's doc for the contract.
+func NegentropySyncMany(ctx context.Context, relays []string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration, production bool) ([]SyncResult, []string) {
 	var results []SyncResult
 	var errs []string
 	for _, relay := range relays {
-		r, err := NegentropySync(ctx, relay, log, filter, trusted, timeout)
+		r, err := NegentropySync(ctx, relay, log, filter, trusted, timeout, production)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", relay, err))
 			continue

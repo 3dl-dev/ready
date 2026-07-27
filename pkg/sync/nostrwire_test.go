@@ -251,8 +251,12 @@ func TestPublisher_OfflineBuffers(t *testing.T) {
 		PendingPath: pendingPath,
 		Timeout:     500_000_000, // 0.5s so the test is fast
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
-	card := CardSpec{ItemID: "ready-a13", Title: "offline", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}
+	// BoardD is an arbitrary LOCAL fixture name, not the reserved production
+	// "ready" coordinate — this Publisher dials only an unreachable localhost
+	// address and never touches a real relay, but the write-path guard fires
+	// regardless of relay reachability (ready-fce, Publisher.Production).
+	board := BoardSpec{BoardD: "offline-board", Title: "offline-board", Maintainers: []string{k.PubKeyHex()}}
+	card := CardSpec{ItemID: "ready-a13", Title: "offline", Status: state.StatusInbox, Priority: "p1", BoardD: "offline-board"}
 	res, err := pub.PublishItem(context.Background(), &board, card, 1700000000)
 	if err != nil {
 		t.Fatalf("publish (offline) should not fail: %v", err)

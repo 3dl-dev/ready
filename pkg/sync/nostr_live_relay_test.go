@@ -54,8 +54,9 @@ func TestLiveRelay_ItemRoundTrip(t *testing.T) {
 		WriteRelays: []string{relay},
 		PendingPath: filepath.Join(dir, ".ready", NostrPendingFile),
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
-	card := CardSpec{ItemID: itemID, Title: "keystone live round-trip", Status: state.StatusActive, Priority: "p1", Type: "task", Context: "live proof <>&\"", BoardD: "ready"}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
+	card := CardSpec{ItemID: itemID, Title: "keystone live round-trip", Status: state.StatusActive, Priority: "p1", Type: "task", Context: "live proof <>&\"", BoardD: boardD}
 
 	// --- CREATE: publish to the live relay + local log ---
 	res, err := pub.PublishItem(context.Background(), &board, card, time.Now().Unix())
@@ -146,7 +147,8 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 		WriteRelays: []string{relay},
 		PendingPath: filepath.Join(dir, ".ready", NostrPendingFile),
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 
 	mustAccept := func(label string, res PublishResult, err error) {
 		t.Helper()
@@ -165,28 +167,28 @@ func TestLiveRelay_FullHistoryReplay(t *testing.T) {
 	now := time.Now().Unix()
 
 	// 1. create (inbox).
-	createCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusInbox, Priority: "p1", Type: "task", BoardD: "ready"}
+	createCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusInbox, Priority: "p1", Type: "task", BoardD: boardD}
 	res, err := pub.PublishItem(context.Background(), &board, createCard, now)
 	mustAccept("create", res, err)
 
 	// 2. claim -> active.
-	claimCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: "ready"}
+	claimCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: boardD}
 	res, err = pub.PublishStatusChange(context.Background(), claimCard, "", now+1)
 	mustAccept("claim", res, err)
 
 	// 3. progress -> card-only edit (context), no status event.
-	progressCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: "ready"}
+	progressCard := CardSpec{ItemID: itemID, Title: "b5f live history", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: boardD}
 	res, err = pub.PublishCardEdit(context.Background(), progressCard, now+2)
 	mustAccept("progress edit", res, err)
 
 	// 4. edit -> another card-only edit (title), no status event. Proves editing
 	// the addressable card does not erase history.
-	editCard := CardSpec{ItemID: itemID, Title: "b5f live history (edited)", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: "ready"}
+	editCard := CardSpec{ItemID: itemID, Title: "b5f live history (edited)", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: boardD}
 	res, err = pub.PublishCardEdit(context.Background(), editCard, now+3)
 	mustAccept("title edit", res, err)
 
 	// 5. done --reason -> terminal status event carrying the close reason.
-	doneCard := CardSpec{ItemID: itemID, Title: "b5f live history (edited)", Status: state.StatusDone, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: "ready"}
+	doneCard := CardSpec{ItemID: itemID, Title: "b5f live history (edited)", Status: state.StatusDone, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), Context: "progress note", BoardD: boardD}
 	res, err = pub.PublishStatusChange(context.Background(), doneCard, "implemented and merged; live-relay proof", now+4)
 	mustAccept("done --reason", res, err)
 
@@ -306,7 +308,8 @@ func TestLiveRelay_WriteAllowlistTrustGate(t *testing.T) {
 		relay := relay
 		t.Run(relay, func(t *testing.T) {
 			itemID := fmt.Sprintf("ready-266-live-%d", time.Now().UnixNano())
-			board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{trusted.PubKeyHex()}}
+			boardD := liveTestBoardD(t)
+			board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{trusted.PubKeyHex()}}
 			now := time.Now().Unix()
 
 			newPub := func(k *nostr.Key) *Publisher {
@@ -319,7 +322,7 @@ func TestLiveRelay_WriteAllowlistTrustGate(t *testing.T) {
 			}
 
 			// LAYER 1a — the allowlisted key's write is ACCEPTED by the relay.
-			trustedCard := CardSpec{ItemID: itemID, Title: "legit", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "ready"}
+			trustedCard := CardSpec{ItemID: itemID, Title: "legit", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: boardD}
 			res, err := newPub(trusted).PublishItem(context.Background(), &board, trustedCard, now)
 			if err != nil {
 				t.Fatalf("trusted publish: %v", err)
@@ -332,7 +335,7 @@ func TestLiveRelay_WriteAllowlistTrustGate(t *testing.T) {
 			t.Logf("LAYER 1a PROVEN: allowlisted key %s accepted by %s", trusted.PubKeyHex(), relay)
 
 			// LAYER 1b — the untrusted key's write is REJECTED by the relay.
-			attackCard := CardSpec{ItemID: itemID, Title: "HIJACKED", Status: state.StatusDone, Priority: "p0", Type: "task", BoardD: "ready"}
+			attackCard := CardSpec{ItemID: itemID, Title: "HIJACKED", Status: state.StatusDone, Priority: "p0", Type: "task", BoardD: boardD}
 			ares, err := newPub(attacker).PublishStatusChange(context.Background(), attackCard, "seized", now+10)
 			if err != nil {
 				t.Fatalf("attacker publish attempt: %v", err)

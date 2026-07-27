@@ -77,7 +77,10 @@ func TestWritePath_FullMutationParity(t *testing.T) {
 	k := testKey(t)
 	pub, log := newTestPublisher(t, k)
 	ctx := context.Background()
-	const board = "ready"
+	// board is an arbitrary LOCAL fixture name, not the reserved production
+	// "ready" coordinate (ready-fce; see Publisher.Production's doc) — this
+	// Publisher has no WriteRelays and never leaves t.TempDir().
+	const board = "writepath-board"
 	boardSpec := &BoardSpec{BoardD: board, Title: board, Maintainers: []string{k.PubKeyHex()}}
 
 	// t=1 create parent + a blocker item (rd create hook: PublishItem).
@@ -209,7 +212,9 @@ func TestWritePath_CascadeChildrenPublish(t *testing.T) {
 	k := testKey(t)
 	pub, log := newTestPublisher(t, k)
 	ctx := context.Background()
-	const board = "ready"
+	// board is an arbitrary LOCAL fixture name, not the reserved production
+	// "ready" coordinate (ready-fce; see Publisher.Production's doc).
+	const board = "writepath-board"
 	boardSpec := &BoardSpec{BoardD: board, Title: board, Maintainers: []string{k.PubKeyHex()}}
 
 	parent := &state.Item{ID: "ready-c00", Title: "parent", Status: state.StatusActive, Priority: "p1", Type: "task"}

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -34,6 +35,88 @@ type Publisher struct {
 	PendingPath string
 	// Timeout per relay publish. Zero uses nostr.DefaultTimeout.
 	Timeout time.Duration
+
+	// Production marks this Publisher as the sanctioned rd CLI write path — the
+	// only context allowed to append/relay-publish events that address the
+	// RESERVED production board coordinate (reservedProductionBoardD, this repo's
+	// own live "ready" board; see .ready/config.json's pinned "board"). The zero
+	// value is false, so EVERY Publisher not explicitly marked Production fails
+	// closed the moment it tries to touch that coordinate (ready-fce rework).
+	//
+	// WHY THIS FIELD AND NOT A BOARD-NAME HEURISTIC: "ready" is not, in general,
+	// an unsafe D-tag — it is THIS project's own real board, and the real `rd`
+	// CLI must obviously go on writing to it. What distinguishes a legitimate
+	// production write from a test/probe write hitting the identical coordinate
+	// with the identical (real, allowlisted) key is not anything visible in the
+	// event itself — it is WHO is making the call. So the guard is an explicit,
+	// visible opt-in at Publisher construction, not an attempt to sniff "is this
+	// a test" from environment or call stack (which a probe binary, run as a
+	// plain `go run`/`go build` artifact outside `go test`, would trivially
+	// evade — see scripts/relay-policy/probe/main.go, ready-6d0).
+	//
+	// Set to true ONLY by the sanctioned CLI construction sites: nostrPublisher()
+	// (cmd/rd/nostr.go) and the two Publisher{} literals in cmd/rd/follow.go.
+	// Every test, probe, or other ad hoc tool that builds a Publisher leaves this
+	// false (the zero value) — the guard then blocks it if it ever addresses the
+	// reserved coordinate, REGARDLESS of how the caller spelled its way there
+	// (a hardcoded literal, a helper that forgot to isolate, a copy-pasted
+	// probe): the check runs on the actual built events immediately before they
+	// would become durable (Log.Append) or reach a relay (relayPublish), not on
+	// a caller-supplied string the caller could simply not pass through a helper.
+	Production bool
+}
+
+// reservedProductionBoardD is THIS repo's own live board D-tag. .ready/config.json
+// pins this project's board coordinate to "30301:<owner>:ready" — the exact
+// coordinate the real portfolio identity maintains in production. Any Publisher
+// not marked Production that tries to append or relay-publish an event
+// addressing this coordinate is refused by guardReservedBoard below (ready-fce).
+const reservedProductionBoardD = "ready"
+
+// hitsReservedBoard reports whether e itself addresses the reserved production
+// board coordinate: either e IS the reserved 30301 board event (its own "d" tag
+// equals reservedProductionBoardD), or it carries an "a" tag whose D-component
+// equals reservedProductionBoardD (an "a" tag is "<kind>:<pubkey>:<d>" — see
+// coord/BoardCoord in nostrwire.go). Checking the D-component regardless of kind
+// or pubkey catches a card's board-membership tag, a status event's board-scope
+// tag (ready-7ec, BuildStatusEventWithIssueRoot's second "a" tag), and any future
+// tag shape addressing that board — the check runs on what was ACTUALLY built and
+// signed, not on a spec field a caller could spell differently.
+func hitsReservedBoard(e *nostr.Event) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == KindBoard && tagValue(e, "d") == reservedProductionBoardD {
+		return true
+	}
+	for _, a := range tagValues(e, "a") {
+		parts := strings.SplitN(a, ":", 3)
+		if len(parts) == 3 && parts[2] == reservedProductionBoardD {
+			return true
+		}
+	}
+	return false
+}
+
+// guardReservedBoard is the ready-fce write-path guard: called at the top of
+// every Publisher method that appends to the authoritative log or relay-publishes
+// (publishEvents, PublishEvents, PublishEventsUnique, PublishBoard) — the actual
+// choke points where events become durable or reach the network, as opposed to
+// requireIsolatedBoardD (live_relay_key_test.go), which was only a convention
+// helper a caller had to remember to invoke. A Publisher not marked Production
+// gets a hard error the instant any event in the batch addresses the reserved
+// coordinate — before Log.Append and before any relay dial — so nothing lands in
+// even a local log, let alone a live relay.
+func (p *Publisher) guardReservedBoard(events []*nostr.Event) error {
+	if p.Production {
+		return nil
+	}
+	for _, e := range events {
+		if hitsReservedBoard(e) {
+			return fmt.Errorf("sync: refusing to publish kind %d event addressing the reserved production board coordinate %q — this Publisher is not marked Production (ready-fce guard); use an isolated board D-tag, or construct the Publisher via a sanctioned CLI path if this really is a production write", e.Kind, reservedProductionBoardD)
+		}
+	}
+	return nil
 }
 
 // RelayAck records the per-relay outcome of a publish attempt.
@@ -244,6 +327,9 @@ func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (Publis
 			scoped = append(scoped, e)
 		}
 	}
+	if err := p.guardReservedBoard(scoped); err != nil {
+		return PublishResult{}, err
+	}
 	var res PublishResult
 	p.relayPublish(ctx, &res, scoped)
 	return res, nil
@@ -292,6 +378,9 @@ func (p *Publisher) PublishEvents(ctx context.Context, events []*nostr.Event) (P
 // byte-identical duplicates on every re-run, even though projection stays
 // idempotent). Returns the number of events actually added.
 func (p *Publisher) PublishEventsUnique(ctx context.Context, events []*nostr.Event) (PublishResult, int, error) {
+	if err := p.guardReservedBoard(events); err != nil {
+		return PublishResult{}, 0, err
+	}
 	added, err := p.Log.AppendUnique(events)
 	if err != nil {
 		return PublishResult{}, 0, fmt.Errorf("sync: appending unique to authoritative log: %w", err)
@@ -327,6 +416,9 @@ func distinctIfAdded(events []*nostr.Event, added int) []*nostr.Event {
 }
 
 func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events []*nostr.Event) (PublishResult, error) {
+	if err := p.guardReservedBoard(events); err != nil {
+		return res, err
+	}
 	// Phase 1 — append to the authoritative log. This MUST succeed; it is the
 	// durability guarantee independent of any relay.
 	for _, e := range events {
@@ -349,7 +441,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	}
 	reachedRelay := false
 	for _, e := range events {
-		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout)
+		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout, p.Production)
 		ack := EventAck{EventID: e.ID, Kind: e.Kind}
 		for _, a := range attempts {
 			ra := RelayAck{Relay: a.Relay, Accepted: a.Accepted, Message: a.Message}
@@ -415,7 +507,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	// so it costs nothing on the common path; never fails the operation (the events
 	// are already durable in the local log). Re-publish is idempotent by event id.
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
 	}
 }
 

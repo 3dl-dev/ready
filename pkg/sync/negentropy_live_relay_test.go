@@ -56,13 +56,14 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	logB := NewNostrLog(filepath.Join(dir, "B", NostrLogFile))
 	pubA := &Publisher{Key: k, Log: logA, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "A", NostrPendingFile)}
 	pubB := &Publisher{Key: k, Log: logB, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "B", NostrPendingFile)}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 
 	ctx := context.Background()
-	if _, err := pubA.PublishItem(ctx, &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pubA.PublishItem(ctx, &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("A publish X: %v", err)
 	}
-	if _, err := pubB.PublishItem(ctx, &board, CardSpec{ItemID: idY, Title: "Y", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pubB.PublishItem(ctx, &board, CardSpec{ItemID: idY, Title: "Y", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("B publish Y: %v", err)
 	}
 	time.Sleep(1 * time.Second)
@@ -70,11 +71,11 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
 
 	// Each machine syncs against the relay.
-	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("A sync: %v", err)
 	}
-	rB, err := NegentropySync(ctx, relay, logB, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rB, err := NegentropySync(ctx, relay, logB, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 
 	// Anti-pathology: a SECOND sync on a converged machine transfers ZERO event
 	// bodies (no full re-sync). This is the measured proof vs campfire's 44x.
-	rA2, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rA2, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("A resync: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	// the pending buffer.
 	pub := &Publisher{Key: k, Log: log, WriteRelays: []string{deadRelay}, PendingPath: pendingPath}
 	id := fmt.Sprintf("ready-797-offline-%d", time.Now().UnixNano())
-	res, err := pub.PublishItem(context.Background(), nil, CardSpec{ItemID: id, Title: "offline", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix())
+	res, err := pub.PublishItem(context.Background(), nil, CardSpec{ItemID: id, Title: "offline", Status: state.StatusActive, Type: "task", BoardD: liveTestBoardD(t)}, time.Now().Unix())
 	if err != nil {
 		t.Fatalf("offline publish: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	t.Logf("offline: %d events buffered, all durable in the local log", len(buffered))
 
 	// Reconnect: flush to the LIVE relay.
-	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, 30*time.Second)
+	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	// (relay dedupes, OK,true) — prove by direct republish of the buffered events.
 	for _, e := range buffered {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		accepted, msg, perr := nostr.Publish(ctx, relay, e)
+		accepted, msg, perr := GuardedPublish(ctx, relay, e, false)
 		cancel()
 		if perr != nil {
 			t.Fatalf("republish %s: %v", e.ID, perr)
@@ -191,9 +192,10 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	dir := t.TempDir()
 	logPub := NewNostrLog(filepath.Join(dir, "pub", NostrLogFile))
 	pub := &Publisher{Key: k, Log: logPub, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "pub", NostrPendingFile)}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 	idX := fmt.Sprintf("ready-b57-dl-%d", time.Now().UnixNano())
-	if _, err := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("publish X: %v", err)
 	}
 	time.Sleep(1 * time.Second)
@@ -203,7 +205,7 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	syncLog := NewNostrLog(filepath.Join(dir, "sync", NostrLogFile))
 	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
 	untrusting := map[string]bool{stranger.PubKeyHex(): true}
-	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second)
+	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("gated sync: %v", err)
 	}
@@ -225,7 +227,7 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	// Admit k -> the very same events now download. Proves the gate (not the relay,
 	// not the filter) was the sole blocker.
 	trusting := map[string]bool{k.PubKeyHex(): true}
-	r2, err := NegentropySync(context.Background(), relay, syncLog, filter, trusting, 30*time.Second)
+	r2, err := NegentropySync(context.Background(), relay, syncLog, filter, trusting, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("trusting sync: %v", err)
 	}

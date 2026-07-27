@@ -81,7 +81,16 @@ type FlushResult struct {
 // relays and rewrites the buffer with only the events that still reached no relay.
 // A missing/empty buffer is a no-op. The authoritative log is never touched here —
 // the buffer is purely a relay-delivery retry queue.
-func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, timeout time.Duration) (FlushResult, error) {
+//
+// production is threaded straight through to publishEventToRelays/GuardedPublish
+// (ready-6d0 finding (3)): a buffered event can only address the reserved
+// production board coordinate if it was already durable via a Production
+// Publisher (appendPendingEvent is only ever called from Publisher.relayPublish,
+// itself gated by guardReservedBoard), so the sanctioned CLI's own flush passes
+// production=true (cmd/rd/nostr.go's `rd nostr flush` and Publisher.relayPublish's
+// auto-drain, which passes p.Production through); every other caller (tests)
+// passes false explicitly.
+func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, timeout time.Duration, production bool) (FlushResult, error) {
 	var res FlushResult
 	if timeout <= 0 {
 		timeout = nostr.DefaultTimeout
@@ -133,7 +142,7 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	var remaining []*nostr.Event
 	var rejected []RejectedRecord
 	for _, e := range events {
-		attempts, outcome, permReason := publishEventToRelays(ctx, relays, e, timeout)
+		attempts, outcome, permReason := publishEventToRelays(ctx, relays, e, timeout, production)
 		for _, a := range attempts {
 			if a.Err != nil {
 				res.RelayErrors = append(res.RelayErrors, fmt.Sprintf("%s: %v", a.Relay, a.Err))
