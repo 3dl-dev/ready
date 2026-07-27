@@ -8,8 +8,8 @@ name: Board CI
 # site's deploy down with it, a failure mode that did not exist before
 # web/board was added.
 #
-# This workflow runs the same npm ci / typecheck / build steps on every PR
-# that touches web/board, so a broken board build is caught before merge —
+# This workflow runs the same npm ci / typecheck / test / build steps on
+# every PR that touches web/board, so a broken board build is caught before merge —
 # never on main, never coupled to the root site's deploy. (Chosen over
 # splitting pages.yml's single job in two: a `needs:` split would still
 # leave the root site's push-triggered deploy blocked whenever the board job
@@ -44,6 +44,15 @@ jobs:
       - name: Typecheck board
         working-directory: web/board
         run: npm run typecheck
+
+      - name: Test board
+        # Unit tests are fully hermetic (mocked WebSocket/fetch, no live
+        # relay) — see relay.test.ts's header. The real-browser / real-relay
+        # proof (ready-dbf done condition 0) is a separate manual
+        # verification, never a CI test (rule 11: a live-network test inside
+        # a hermetic suite is a flakiness hazard).
+        working-directory: web/board
+        run: npm run test
 
       - name: Build board
         working-directory: web/board
