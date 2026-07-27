@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'site/**'
+      - 'web/**'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -27,13 +29,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/board/package-lock.json
+
+      - name: Install board dependencies
+        working-directory: web/board
+        run: npm ci
+
+      - name: Build board
+        working-directory: web/board
+        run: npm run build
+        env:
+          VITE_BUILD_STAMP: ${{ github.sha }}
+
+      - name: Assemble Pages artifact
+        # site/ is the existing ready.3dl.dev root (untouched, minus
+        # *_test.go which never ships). web/board's build output is layered
+        # in at /board/ so the root site keeps serving exactly as before
+        # and /board becomes newly available. Logic lives in
+        # scripts/assemble-pages.sh so it is exercised by
+        # scripts/assemble_pages_test.go, not just this YAML comment.
+        run: scripts/assemble-pages.sh site web/board/dist _site
+
       - name: Setup Pages
         uses: actions/configure-pages@v6
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site/
+          path: _site/
 
       - name: Deploy to GitHub Pages
         id: deployment

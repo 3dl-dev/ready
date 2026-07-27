@@ -39,3 +39,10 @@ nostr-identity.json
 
 # Local vendor tree (generated on demand for offline builds; never committed)
 /vendor/
+
+# web/board (ready-2f1) — node toolchain build artifacts, never committed.
+# package-lock.json IS committed for reproducible builds.
+web/board/node_modules/
+web/board/dist/
+web/board/tsconfig.tsbuildinfo
+
