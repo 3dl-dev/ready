@@ -1,10 +1,12 @@
 package board
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -24,11 +26,19 @@ import (
 // and npm/network is unavailable, this fails loudly with npm's own error —
 // it never skips.
 //
-// The scan also rejects any bare "//" substring in .html/.js/.css content
-// (not just attribute values — see assertSameOriginAttrs below for those),
-// so a protocol-relative reference stuffed into a <style> @import or a JS
-// string literal (e.g. a fetch() call) is caught even though it never
-// appears as a src=/href= attribute.
+// The scan reads raw file bytes, not just attribute values (those are
+// assertSameOriginAttrs's job below), so a protocol-relative reference
+// stuffed into a <style> @import or a JS string literal — e.g.
+// fetch("//cdn.jsdelivr.net/x") — is caught even though it never appears as
+// a src=/href= attribute. scanExternalRefs defines exactly what counts;
+// legalCommentRegionStart defines the one exempt region in .js output.
+//
+// Stated plainly, because this test is easy to over-trust: it scans source
+// text. It cannot see a URL that is assembled at runtime ("http"+"s://x"),
+// escaped ("\x68ttps://x"), or read out of data the page loads later. What
+// it catches is an external reference written down in the shipped bundle —
+// the accidental CDN import, the dependency that inlines a font URL, the
+// hand-edited <script src>. Nothing stronger should be claimed for it.
 func TestDist_NoExternalReferences(t *testing.T) {
 	dist := buildDist(t)
 
@@ -46,14 +56,8 @@ func TestDist_NoExternalReferences(t *testing.T) {
 			return rerr
 		}
 		content := string(b)
-		if idx := strings.Index(content, "http://"); idx != -1 {
-			t.Errorf("%s: absolute http:// URL found: ...%s...", path, snippet(content, idx))
-		}
-		if idx := strings.Index(content, "https://"); idx != -1 {
-			t.Errorf("%s: absolute https:// URL found: ...%s...", path, snippet(content, idx))
-		}
-		if idx := strings.Index(content, "//"); idx != -1 {
-			t.Errorf("%s: protocol-relative reference found: ...%s...", path, snippet(content, idx))
+		for _, ref := range scanExternalRefs(content, exemptRegionStart(path, content)) {
+			t.Errorf("%s: %s: ...%s...", path, ref.what, snippet(content, ref.off))
 		}
 		return nil
 	})
@@ -62,6 +66,272 @@ func TestDist_NoExternalReferences(t *testing.T) {
 	}
 
 	assertSameOriginAttrs(t, filepath.Join(dist, "index.html"))
+}
+
+// TestDist_ExternalRefScanToleratesBannersAndRelayURLs is the other half of
+// TestDist_NoExternalReferences: it proves the scan is survivable by things
+// that are NOT external references but do contain slashes and URLs.
+//
+// This is not hypothetical. Until ready-8c5 this scan rejected every "//" in
+// the output, so a dependency shipping the near-universal `// @license MIT
+// <url>` banner could not be bundled at all, and neither could a wss:// relay
+// literal. The board client's response was to hand-roll SHA-256, BIP-340
+// schnorr verification and bech32 rather than take a vetted dependency, and
+// to move the relay list out of TypeScript into a runtime-fetched JSON file.
+// A guard nobody can satisfy does not get satisfied; it gets routed around,
+// and here it was routed around straight through the client's security
+// boundary. So "a license banner and a wss:// literal build clean" is a
+// property worth a test of its own.
+//
+// It builds testdata/tolerated-refs with the REAL vite.config.ts (not a copy)
+// so it also fails if legalComments: "eof" is dropped from that config —
+// banners then land inline in the code region and the scan rejects them.
+func TestDist_ExternalRefScanToleratesBannersAndRelayURLs(t *testing.T) {
+	dist := buildFixture(t, filepath.Join("testdata", "tolerated-refs"))
+
+	bundle, name := readSoleBundle(t, dist)
+
+	// Guard against a vacuous pass: if the fixture stopped carrying these,
+	// the test below would "pass" while exercising nothing.
+	for _, required := range []string{
+		"// @license MIT — https://example.com/l", // preserved dependency banner
+		`wss://relay.3dl.network`,                 // relay endpoint literal
+	} {
+		if !strings.Contains(bundle, required) {
+			t.Fatalf("%s: fixture bundle does not contain %q — testdata/tolerated-refs no longer exercises the case this test exists for", name, required)
+		}
+	}
+
+	for _, ref := range scanExternalRefs(bundle, exemptRegionStart(name, bundle)) {
+		t.Errorf("%s: %s: ...%s... — this is a license banner or a relay URL, not an external reference; the scan has been tightened past what a real dependency can ship (see ready-8c5)", name, ref.what, snippet(bundle, ref.off))
+	}
+}
+
+// externalRef is one reference to a non-same-origin resource found in built
+// output.
+type externalRef struct {
+	off  int    // byte offset of the match within the scanned content
+	what string // human-readable classification, for the failure message
+}
+
+// urlAuthorityRe matches "//" together with the URL scheme that introduces
+// it, if any. The scheme group is optional, so it matches both "https://x"
+// (scheme "https") and a protocol-relative "//x" (scheme "").
+var urlAuthorityRe = regexp.MustCompile(`(?i)(?:([a-z][a-z0-9+.\-]*):)?//`)
+
+// hostShapeRe matches a DNS-style host at the very start of the text that
+// follows a "//": a label, at least one dot, and an alphabetic TLD of two or
+// more characters. "cdn.jsdelivr.net/npm/x" and "fonts.googleapis.com/css2"
+// match; " @license MIT", "# sourceMappingURL=x", and "/home/u/x" do not.
+var hostShapeRe = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}`)
+
+// allowedSchemes are the schemes whose authority is not treated as an
+// external reference. ws:/wss: are here because connecting to nostr relays IS
+// the board client's function and every relay is a third-party origin by
+// construction — banning wss:// literals does not make the page depend on
+// fewer origins, it just moves the relay list somewhere this test cannot see
+// (which is exactly what happened before ready-8c5). Which relays are
+// trusted is a decision the client makes; it is not a property of the bundle
+// text and this scan does not police it.
+var allowedSchemes = map[string]bool{"ws": true, "wss": true}
+
+// scanExternalRefs reports every reference to a non-same-origin resource in
+// content. Bytes at or after exemptFrom are not scanned (see
+// exemptRegionStart); pass len(content) to scan all of it.
+//
+// A match is a violation when:
+//
+//   - it carries any scheme other than ws:/wss: — http://, https://, ftp://,
+//     anything — regardless of what follows the slashes. This is the same
+//     strength the http(s) scan has always had: "https://localhost:8080/x"
+//     and "https://10.0.0.5/x" are violations even though neither has a
+//     DNS-shaped host.
+//   - it carries no scheme AND a DNS-shaped host follows immediately, e.g.
+//     "//cdn.jsdelivr.net/npm/x" or "@import url(//fonts.googleapis.com/x)".
+//
+// The host requirement exists only for the scheme-less case, and only
+// because "//" is also the JavaScript line-comment token and the tail of
+// every absolute URL. Rejecting the token itself — what this scan did before
+// ready-8c5 — bans license banners and wss:// literals from the bundle, which
+// is a build rule about punctuation rather than about origins.
+//
+// Consequence worth naming: a URL written inside a line comment in the CODE
+// region (not the trailing banner region) still fails, e.g. a source comment
+// reading "//github.com/foo/bar". That is a false positive; it is left in
+// because the alternative — deciding comment-ness by lexing minified
+// JavaScript — fails in the direction of a false PASS, and rewording a
+// comment is cheaper than a missed CDN reference.
+func scanExternalRefs(content string, exemptFrom int) []externalRef {
+	var refs []externalRef
+	for _, m := range urlAuthorityRe.FindAllStringSubmatchIndex(content, -1) {
+		off := m[0]
+		if off >= exemptFrom {
+			continue
+		}
+		scheme := ""
+		if m[2] != -1 {
+			scheme = strings.ToLower(content[m[2]:m[3]])
+		}
+		rest := content[m[1]:]
+		switch {
+		case scheme == "":
+			host := hostShapeRe.FindString(rest)
+			if host == "" {
+				continue
+			}
+			refs = append(refs, externalRef{off: off, what: fmt.Sprintf("protocol-relative reference to //%s", host)})
+		case allowedSchemes[scheme]:
+			continue
+		default:
+			refs = append(refs, externalRef{off: off, what: fmt.Sprintf("absolute %s:// URL", scheme)})
+		}
+	}
+	return refs
+}
+
+// exemptRegionStart returns the offset in content from which scanExternalRefs
+// should stop looking. For .js output that is the start of the trailing
+// comment run (legalCommentRegionStart); for .html and .css it is len(content)
+// — every byte is scanned. Today that costs nothing: the page's CSS is inline
+// in index.html and dist/ emits no .css chunk, so no HTML or CSS we ship
+// carries a preserved banner. The day a CSS dependency with a `/*! ... */`
+// banner is bundled, this scan will reject it and this function is where to
+// extend the exemption — it fails in the direction of a broken build, not a
+// missed reference.
+func exemptRegionStart(path, content string) int {
+	if filepath.Ext(path) == ".js" {
+		return legalCommentRegionStart(content)
+	}
+	return len(content)
+}
+
+// legalCommentRegionStart returns the offset at which js's trailing run of
+// pure comments begins, or len(js) when the file does not end in one. A
+// position qualifies when it is the start of a line (or of the file) AND
+// everything from there to EOF is nothing but whitespace, "//" line comments
+// and "/* */" block comments. The earliest qualifying position wins.
+//
+// That region is where esbuild puts the license banners it is obliged to
+// preserve, because vite.config.ts sets legalComments: "eof". Nothing in a
+// run of comments executes and nothing in it can be fetched, so a URL there
+// is not an external reference. Drop legalComments: "eof" and banners land
+// inline in the code instead — no trailing run, no exemption, and
+// TestDist_ExternalRefScanToleratesBannersAndRelayURLs fails.
+//
+// The assumption this makes, stated so it can be checked: the code before the
+// region is syntactically complete at that line boundary. One could write JS
+// whose final statement is a multi-line template literal whose continuation
+// lines each begin with "//", and this would misread those lines as comments;
+// esbuild's minified output does not emit that shape. The exemption is
+// deliberately confined to a trailing, line-aligned run for that reason — a
+// general "skip every comment" pass would require lexing minified JavaScript,
+// where mistaking a string for a comment silently hides whatever follows it
+// on the line, i.e. fails toward a false PASS.
+func legalCommentRegionStart(js string) int {
+	for i := 0; ; {
+		if isOnlyCommentsAndSpace(js[i:]) {
+			return i
+		}
+		nl := strings.IndexByte(js[i:], '\n')
+		if nl == -1 {
+			return len(js)
+		}
+		i += nl + 1
+	}
+}
+
+// isOnlyCommentsAndSpace reports whether s, read as JavaScript starting in
+// code position, consists of nothing but whitespace and complete comments.
+// An unterminated /* block comment is not "complete" and returns false; an
+// unterminated // line comment at EOF is.
+func isOnlyCommentsAndSpace(s string) bool {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		switch {
+		case s == "":
+			return true
+		case strings.HasPrefix(s, "//"):
+			nl := strings.IndexByte(s, '\n')
+			if nl == -1 {
+				return true
+			}
+			s = s[nl+1:]
+		case strings.HasPrefix(s, "/*"):
+			end := strings.Index(s[2:], "*/")
+			if end == -1 {
+				return false
+			}
+			s = s[2+end+2:]
+		default:
+			return false
+		}
+	}
+}
+
+// TestExternalRefScan_Predicate pins the predicate itself, both directions,
+// without paying for a build. The dist-level tests prove the wiring (the scan
+// runs over what actually ships, and real Vite output survives it); this
+// proves the classification, including the cases a build fixture cannot
+// conveniently produce — an IP-literal https URL, an inline banner, a
+// trailing comment run that must not swallow code above it.
+func TestExternalRefScan_Predicate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    string
+		content string
+		want    int
+	}{
+		// --- must be rejected -------------------------------------------
+		{"protocol-relative fetch in a JS string", "chunk.js",
+			`function t(){fetch("//cdn.jsdelivr.net/npm/telemetry@1/beacon.json")}`, 1},
+		{"protocol-relative CSS @import", "index.html",
+			`<style>@import url(//fonts.googleapis.com/css2?family=Inter);</style>`, 1},
+		{"protocol-relative with leading space inside the string", "chunk.js",
+			`fetch(" //evil.example/x")`, 1},
+		{"absolute https in a script tag", "index.html",
+			`<script src="https://cdn.example.com/x.js"></script>`, 1},
+		{"absolute https to a host with no dot", "chunk.js",
+			`fetch("https://localhost:8080/x")`, 1},
+		{"absolute https to an IP literal", "chunk.js",
+			`fetch("https://10.0.0.5/x")`, 1},
+		{"absolute http in a CSS url()", "sheet.css",
+			`body{background:url("http://x.example/a.png")}`, 1},
+		{"a scheme that is neither http nor ws", "chunk.js",
+			`const u="ftp://files.example.com/x"`, 1},
+		{"license banner left INLINE instead of at EOF", "chunk.js",
+			"const a=1;// @license MIT — https://example.com/l\nconst b=2;\n", 1},
+		{"trailing comment run does not exempt code above it", "chunk.js",
+			"//a\nconst z=fetch(\"//evil.example/x\");\n//b\n", 1},
+		{"unterminated block comment is not a comment run", "chunk.js",
+			"const a=1;\n/* https://evil.example/x\n", 1},
+		{"trailing comment exemption is JS-only", "index.html",
+			"<p>hi</p>\n// https://evil.example/x\n", 1},
+		{"every violation is reported, not just the first", "chunk.js",
+			`fetch("https://a.example/x");fetch("//b.example/y")`, 2},
+
+		// --- must be accepted -------------------------------------------
+		{"preserved license banner at EOF", "chunk.js",
+			"const a=1;\n// @license MIT — https://example.com/l\n", 0},
+		{"preserved multi-line block banner at EOF", "chunk.js",
+			"const a=1;\n/*! pako 2.1.0\n * https://github.com/nodeca/pako\n */\n", 0},
+		{"relay endpoint literals in code", "chunk.js",
+			`const R=["wss://relay.3dl.network","ws://127.0.0.1:7777"];`, 0},
+		{"the line-comment token on its own", "chunk.js",
+			"// this comment is not a reference\nconst a=1;\n", 0},
+		{"source map comment", "chunk.js",
+			"const a=1;\n//# sourceMappingURL=index.js.map\n", 0},
+		{"root-relative asset path", "index.html",
+			`<script type="module" src="/board/assets/index-abc.js"></script>`, 0},
+		{"doubled slash with no host after it", "chunk.js",
+			`const p="a//b",q="x//1.2"`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanExternalRefs(tc.content, exemptRegionStart(tc.path, tc.content))
+			if len(got) != tc.want {
+				t.Fatalf("scanExternalRefs(%q) found %d references, want %d: %v", tc.content, len(got), tc.want, got)
+			}
+		})
+	}
 }
 
 // TestDist_BuildStampReachesBundle proves the VITE_BUILD_STAMP value main.ts
@@ -178,6 +448,56 @@ const buildStampForTest = "go-test"
 
 func buildDist(t *testing.T) string {
 	t.Helper()
+	ensureNodeModules(t)
+	cmd := exec.Command("npm", "run", "build")
+	cmd.Env = append(os.Environ(), "VITE_BUILD_STAMP="+buildStampForTest)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("npm run build: %v\n%s", err, out)
+	}
+	return "dist"
+}
+
+// buildFixture builds a small Vite project rooted at root (a testdata
+// directory) into a temp dir and returns that dir. It runs the project's own
+// vite.config.ts on purpose: a fixture built with a copied config would keep
+// passing after the real config changed, which is the whole property
+// TestDist_ExternalRefScanToleratesBannersAndRelayURLs is checking.
+func buildFixture(t *testing.T, root string) string {
+	t.Helper()
+	ensureNodeModules(t)
+	outDir := t.TempDir()
+	vite := filepath.Join("node_modules", ".bin", "vite")
+	// --emptyOutDir: outDir is outside the project root, where Vite otherwise
+	// refuses to clear it without confirmation.
+	cmd := exec.Command(vite, "build", "--config", "vite.config.ts", "--emptyOutDir", "--outDir", outDir, root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("vite build %s: %v\n%s", root, err, out)
+	}
+	return outDir
+}
+
+// readSoleBundle returns the contents and path of the single JavaScript chunk
+// under dist/assets. It fails rather than picking one if there are several,
+// so a caller can never end up asserting against whichever chunk happened to
+// sort first.
+func readSoleBundle(t *testing.T, dist string) (string, string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dist, "assets", "*.js"))
+	if err != nil {
+		t.Fatalf("glob %s: %v", dist, err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one .js chunk in %s/assets, found %d: %v", dist, len(matches), matches)
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read %s: %v", matches[0], err)
+	}
+	return string(b), matches[0]
+}
+
+func ensureNodeModules(t *testing.T) {
+	t.Helper()
 	if _, err := exec.LookPath("npm"); err != nil {
 		t.Fatalf("npm not found on PATH — required to build the board dist under test: %v", err)
 	}
@@ -187,10 +507,4 @@ func buildDist(t *testing.T) string {
 			t.Fatalf("npm ci: %v\n%s", err, out)
 		}
 	}
-	cmd := exec.Command("npm", "run", "build")
-	cmd.Env = append(os.Environ(), "VITE_BUILD_STAMP="+buildStampForTest)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("npm run build: %v\n%s", err, out)
-	}
-	return "dist"
 }
