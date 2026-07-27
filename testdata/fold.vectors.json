@@ -1,0 +1,5623 @@
+{
+  "version": 1,
+  "spec": "docs/design/board-fold-spec.md",
+  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op.",
+  "keys": [
+    {
+      "name": "owner",
+      "secret": "1111111111111111111111111111111111111111111111111111111111111111",
+      "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+    },
+    {
+      "name": "maintainer",
+      "secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+    },
+    {
+      "name": "agent",
+      "secret": "3333333333333333333333333333333333333333333333333333333333333333",
+      "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+    },
+    {
+      "name": "outsider",
+      "secret": "4444444444444444444444444444444444444444444444444444444444444444",
+      "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "card_field_projection",
+      "spec_clauses": [
+        "5.1",
+        "5.2",
+        "5.3",
+        "6.11",
+        "4.6",
+        "14.9"
+      ],
+      "note": "One plaintext card carrying every projected tag. Pins the tag-\u003efield table, the seconds-\u003enanoseconds conversion, and the absence of campfire_id / label_warnings / cross_campfire_warnings from the nostr JSON surface. No status event, so the card's `s` tag stands as current status and history is empty (§6.11).",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "3ba8a34aa3174dd727de94de7146e35125b40afc4941ae5eecdade9b9d0ecb1a",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v01"
+            ],
+            [
+              "title",
+              "Full field card"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ],
+            [
+              "l",
+              "security"
+            ],
+            [
+              "eta",
+              "2099-01-01T00:00:00Z"
+            ],
+            [
+              "level",
+              "l3"
+            ],
+            [
+              "for",
+              "human:baron"
+            ],
+            [
+              "parent",
+              "ready-p00"
+            ],
+            [
+              "due",
+              "2099-02-01T00:00:00Z"
+            ]
+          ],
+          "content": "the whole description",
+          "sig": "d577dd02f64061dd5e6d3e41e7260e0f6c938dff20f6c31ff8974c9162ac9ea4da87559780957d311ee680281b2965f736ac78b3b9df5ea9c8f302cba2e1592b"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v01",
+            "msg_id": "3ba8a34aa3174dd727de94de7146e35125b40afc4941ae5eecdade9b9d0ecb1a",
+            "title": "Full field card",
+            "context": "the whole description",
+            "description": "the whole description",
+            "type": "task",
+            "level": "l3",
+            "for": "human:baron",
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "priority": "p1",
+            "status": "inbox",
+            "eta": "2099-01-01T00:00:00Z",
+            "due": "2099-02-01T00:00:00Z",
+            "parent_id": "ready-p00",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000,
+            "labels": [
+              "security"
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v01"
+          ],
+          "gates": [],
+          "my-work": [
+            "ready-v01"
+          ],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v01"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "labels_freeform_no_validation",
+      "spec_clauses": [
+        "10.1",
+        "10.2",
+        "13.12",
+        "13.9",
+        "15.3"
+      ],
+      "note": "An unknown/ill-formed label atom is KEPT VERBATIM by the nostr fold: no atom-pattern check, no registry check, no label_warnings field. Asserting the campfire drop-with-warning behaviour here would assert something the live fold does not do (spec §15.3 records the question). Also pins LabelFilter's exact match and the empty-identity rule (§13.9): with identity \"\", delegated and my-work match nothing.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "05842def8dadf947e68174a0311f075c4dd8c918ee6a71596cdd1971dd291db6",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v02"
+            ],
+            [
+              "title",
+              "Freeform labels"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "l",
+              "security"
+            ],
+            [
+              "l",
+              "NOT_AN_ATOM!!"
+            ],
+            [
+              "l",
+              "a-label-far-longer-than-the-campfire-32-char-atom-pattern-allows"
+            ]
+          ],
+          "content": "",
+          "sig": "e687cbb2630b4aafbe96435c2d861e4f7063186001d7ccd53bf8740565a3e0c58dcba85a21ba179ec3b09c9d9c22aa2f6f7ecb84921647f5d739ca485489ad12"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v02",
+            "msg_id": "05842def8dadf947e68174a0311f075c4dd8c918ee6a71596cdd1971dd291db6",
+            "title": "Freeform labels",
+            "type": "task",
+            "for": "",
+            "priority": "p2",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000,
+            "labels": [
+              "security",
+              "NOT_AN_ATOM!!",
+              "a-label-far-longer-than-the-campfire-32-char-atom-pattern-allows"
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v02"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v02"
+          ],
+          "work": []
+        },
+        "label_views": {
+          "NOT_AN_ATOM!!": [
+            "ready-v02"
+          ],
+          "secur": [],
+          "security": [
+            "ready-v02"
+          ]
+        }
+      }
+    },
+    {
+      "name": "card_latest_wins_created_at",
+      "spec_clauses": [
+        "4.1",
+        "4.3"
+      ],
+      "note": "Two cards for one item; the greater created_at wins even though it appears FIRST in the log. Note CreatedAt tracks the WINNING card, not the first-ever card (§5.1).",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "df7d1fc28ca434ceb758c3cb26aacecd89774a8b890be4c6ad571e426f1c1a58",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v03"
+            ],
+            [
+              "title",
+              "newer"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "second write",
+          "sig": "e889eaf9e3f046d4ba9ee2b8c2ca540141ba25baf9157c9dc8644574e925a606915e0e627a78a942847e2c4678646b2678ff1f579588c29b908fb06cd4f1ba72"
+        },
+        {
+          "id": "c6588bf859854b75fa4e8e1a49c85dd23f92657d64763828ef5f2f357a84951d",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v03"
+            ],
+            [
+              "title",
+              "older"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "first write",
+          "sig": "d977bb9ddf40fe7b5d5694548ecd818e4a201db69b1dcd533b305b8a796302f30dcc398ffc9b5c17497699dc8832cea31dbe7d7813f11b14550afa5a1595fb13"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v03",
+            "msg_id": "df7d1fc28ca434ceb758c3cb26aacecd89774a8b890be4c6ad571e426f1c1a58",
+            "title": "newer",
+            "context": "second write",
+            "description": "second write",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000100000000000,
+            "updated_at": 1700000100000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v03"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v03"
+          ],
+          "work": [
+            "ready-v03"
+          ]
+        }
+      }
+    },
+    {
+      "name": "card_tie_lowest_event_id_wins",
+      "spec_clauses": [
+        "4.1",
+        "4.3"
+      ],
+      "note": "Two cards for one item at the SAME created_at. The lexicographically lowest event id is retained (matching NIP-01's replaceable-event rule and strfry's tie-break), so the winner is a pure function of the event set and never of log order. The two fixtures carry different title/type/priority/status so the tie-break is observable in the projection, not just in MsgID.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "3de802e71c7a5eae4913233a57d97e27ac570d24637d26266555506ed777018a",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v04"
+            ],
+            [
+              "title",
+              "alpha"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "73895c443e36153be03e4483ae86d9b58110194637026c4299e500c2e9b25fca2b4187278417c52540a487f5c262c2affd93a3e72cdcdd420f389d5bc0a8cf53"
+        },
+        {
+          "id": "71a2a7e7174e790714df1c2dd56f8c3c536f8ef3693425eb5f29e826ed93e49b",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v04"
+            ],
+            [
+              "title",
+              "beta"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "a35623cf10c01d8820436229b6571745aace10b7201180b0d4daf8ebb2ec33148b7b53832abd9c434f91195179afb2972255cc97f7119cd11c25ee62e9cfc996"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v04",
+            "msg_id": "3de802e71c7a5eae4913233a57d97e27ac570d24637d26266555506ed777018a",
+            "title": "alpha",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v04"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v04"
+          ],
+          "work": [
+            "ready-v04"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dedup_by_event_id",
+      "spec_clauses": [
+        "3.2",
+        "6.5"
+      ],
+      "note": "Card and status event each appear TWICE in the log. Exactly one history entry results.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "c93679b5498aa3129f3da3a8c9d3ea505c104dbd97cf997a1872adc461c06687",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v05"
+            ],
+            [
+              "title",
+              "Dedup"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "0aeb08a6346a4edfb019c438e94b961b017a196c193ef13d41baa28487d4b521096c6baccac1f5675f073ca9791f702024033f5c24b01e2c2b238eb152ddc79e"
+        },
+        {
+          "id": "16927a84e840706d9ce2376b403f9717d7ab03b9745d571bdf69e8c1847c3cfe",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v05"
+            ],
+            [
+              "d",
+              "ready-v05"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "4611a43fd423027856c3fabee2c65abf1ceca097343fb8dd6ea7c3ce2e58cc9f1315eff60dcc9854be3b982400afb21326404c3079a88a6a71932717f775b820"
+        },
+        {
+          "id": "c93679b5498aa3129f3da3a8c9d3ea505c104dbd97cf997a1872adc461c06687",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v05"
+            ],
+            [
+              "title",
+              "Dedup"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "0aeb08a6346a4edfb019c438e94b961b017a196c193ef13d41baa28487d4b521096c6baccac1f5675f073ca9791f702024033f5c24b01e2c2b238eb152ddc79e"
+        },
+        {
+          "id": "16927a84e840706d9ce2376b403f9717d7ab03b9745d571bdf69e8c1847c3cfe",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v05"
+            ],
+            [
+              "d",
+              "ready-v05"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "4611a43fd423027856c3fabee2c65abf1ceca097343fb8dd6ea7c3ce2e58cc9f1315eff60dcc9854be3b982400afb21326404c3079a88a6a71932717f775b820"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v05",
+            "msg_id": "c93679b5498aa3129f3da3a8c9d3ea505c104dbd97cf997a1872adc461c06687",
+            "title": "Dedup",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "claimed"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v05"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v05"
+          ],
+          "work": [
+            "ready-v05"
+          ]
+        }
+      }
+    },
+    {
+      "name": "status_chain_history_replay",
+      "spec_clauses": [
+        "4.2",
+        "6.4",
+        "6.5",
+        "6.9",
+        "6.10",
+        "7.2"
+      ],
+      "note": "Status events are supplied NEWEST-FIRST in the log and must be replayed in (created_at, id) ascending order: from_status chains, the last entry sets current status, UpdatedAt advances to the newest status event. The item is terminal, so every view is empty.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "7844404aa9b1f2ea5d958bae25d8f0e788023f27c9d7b6de41240fc5d5e6dad7",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v06"
+            ],
+            [
+              "title",
+              "Chain"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "c4c6cde8cee1fa5dc9e124973de36c5fd8abda5b3b6bf9cd0460690e360023af79cbeb3e9c238e9a011d3601e04ff1a94c5ec68dd87173963bdcd2d8ce4c9a87"
+        },
+        {
+          "id": "88dab8547146c9b08dc13322dc8fe5b7ff335abac8f5e4785fbcab8eb9716cf0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000300,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v06"
+            ],
+            [
+              "d",
+              "ready-v06"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "shipped",
+          "sig": "20afb18b9a6212556895300d957ff909d5405338afaa040e0ccbbec8e461e384296fa4daae280a8180ebf399c277971261043557e614af901af344ba25282216"
+        },
+        {
+          "id": "02009dd2c9838c5211b5539bd45c94a6899aa84df2d22824a1ff3ede93355871",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v06"
+            ],
+            [
+              "d",
+              "ready-v06"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "956c220984e524bc2cf7a1d6a714d7da44d73e332f8af4871e014e65f3484ed1d7497e6e09ed11cd32e9224b8730990965eb7c850d05143ff9be9de74c9a848e"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v06",
+            "msg_id": "7844404aa9b1f2ea5d958bae25d8f0e788023f27c9d7b6de41240fc5d5e6dad7",
+            "title": "Chain",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "done",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000300000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "claimed"
+              },
+              {
+                "timestamp": "2023-11-14T22:18:20Z",
+                "from_status": "active",
+                "to_status": "done",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "shipped"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "status_same_second_tiebreak_by_event_id",
+      "spec_clauses": [
+        "4.2",
+        "4.3",
+        "6.10",
+        "13.3",
+        "13.5"
+      ],
+      "note": "Two authoritative status events share a created_at and carry DIFFERENT statuses, so the (created_at, id) tie-break is observable in both the history order and the resulting current status. Inverting the tie-break flips this vector.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "fec3b85ad643e8ffafd18f6aec802a6b7ea145e43bd57b79e6f0f9a82252da61",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v07"
+            ],
+            [
+              "title",
+              "Same second"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "c214e0e2f83b260474a990c2f8af58824b19b0943b9075f50891ccdda9f2e6a0c7798b5ba3ada67f56d22820e687a20605ebd3e9988c8ba2ee8a5b0eacf96b6c"
+        },
+        {
+          "id": "771ab4f6ca413cede0b72f0b0e6e5838a3ed465f8a17a2dff75507006200a17e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v07"
+            ],
+            [
+              "d",
+              "ready-v07"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "df6cf88ca7f5f0662af899a836e8e4ac8341e724b1f0e776d93e9f420a8a67a9aa866257306a5c87bb78bc4743fd5c60a23c25a1bb8dc69e91ca5da5a748d15f"
+        },
+        {
+          "id": "799882901eb90be49a524f52b9ae26deb10f851a354893dd52eac52c04096328",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v07"
+            ],
+            [
+              "d",
+              "ready-v07"
+            ],
+            [
+              "status",
+              "waiting"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "parked",
+          "sig": "a5bca06d973514dd19004d1e60756652bcfba2bfc2d4f728402c424e904de208d88eb8846c301d7af7a1316ef6f9744090c969e3f85dd090440c93e45309f920"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v07",
+            "msg_id": "fec3b85ad643e8ffafd18f6aec802a6b7ea145e43bd57b79e6f0f9a82252da61",
+            "title": "Same second",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "waiting",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "claimed"
+              },
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "active",
+                "to_status": "waiting",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "parked"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v07"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v07"
+          ],
+          "ready": [
+            "ready-v07"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "status_event_without_status_tag_inherits",
+      "spec_clauses": [
+        "6.6",
+        "6.5",
+        "2.3"
+      ],
+      "note": "A kind-1630 status event carrying no `status` tag still emits a history row, with to_status inherited from the previous entry. The NIP-34 kind is NOT used as a fallback status source.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "bacda77c87db5aecdbd4ac3f5c4b17dab50e1087e21ada4913d3cd3be0309243",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v08"
+            ],
+            [
+              "title",
+              "No status tag"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "2d74d078f4ca3219b7acbfa81a620e0c2d55776450ff977ab24b3711b3ce69c489c580d4939362a4c7a1220d87d76d4bfceb1a015e55e16b4da4e130633b1ce3"
+        },
+        {
+          "id": "3a37eef9284f512145f34c73f6d35e50180e921d3dbfef99dbd94fc12059f63e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v08"
+            ],
+            [
+              "d",
+              "ready-v08"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "9dec6fe9da796e9cc20270cf11b7c7241df40cabbb18ae514ff37b4c77cffa09698e8fc822689566641223d432e14791b9c216328c9571fdfd6568f47b316572"
+        },
+        {
+          "id": "d670dc22c42737a212c7b968ed7e2fc75b6513500a8036b2a591dc12584c2e9e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000200,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v08"
+            ],
+            [
+              "d",
+              "ready-v08"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "note without a status tag",
+          "sig": "9c2aaa46b9d4709ef73076c0f0e3c37eff11f6fc9336939e50dc2803878acb60353147bb1b63537c949af3d79b0ee3291b646971647ce2b5f15d25b118eb2fd6"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v08",
+            "msg_id": "bacda77c87db5aecdbd4ac3f5c4b17dab50e1087e21ada4913d3cd3be0309243",
+            "title": "No status tag",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000200000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "claimed"
+              },
+              {
+                "timestamp": "2023-11-14T22:16:40Z",
+                "from_status": "active",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "note without a status tag"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v08"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v08"
+          ],
+          "work": [
+            "ready-v08"
+          ]
+        }
+      }
+    },
+    {
+      "name": "status_from_non_authority_ignored",
+      "spec_clauses": [
+        "6.4",
+        "6.11",
+        "3.4"
+      ],
+      "note": "The agent key IS read-trusted (it passes §3.4) but is neither the card author nor a board maintainer, so its status event is excluded ENTIRELY — no status change and no history row. Read-trust and status-authority are separate gates.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "b786581a4b25b959c79c1320efa61228634cf74320932e2b506a78d67c60eee3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v09"
+            ],
+            [
+              "title",
+              "Authority"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "f68df84865787e284a7ec3d3ae3f462fb0445b9fcdffae83191401cfebcd603a941c3e6aeb863559d8a6fd3197329b6228644d0aed7aab9e5eb452ea9c501d34"
+        },
+        {
+          "id": "5e4fe464c2e29546d1ff819423728f149d9276e4987604483868567c743440ca",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000100,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready-v09"
+            ],
+            [
+              "d",
+              "ready-v09"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "closing someone else's item",
+          "sig": "fc3549e87f9846c91b6a74bb30f6001fc33ea1036331307ad8c09ebe298829f148f34a3506d2223e3a07b7fbdb1dbed76f5c1bb167cb078da687454c14406636"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v09",
+            "msg_id": "b786581a4b25b959c79c1320efa61228634cf74320932e2b506a78d67c60eee3",
+            "title": "Authority",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v09"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v09"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "board_p_tag_confers_status_authority",
+      "spec_clauses": [
+        "2.1",
+        "6.1",
+        "6.4",
+        "3.6"
+      ],
+      "note": "A 30301 board naming the maintainer key in a `p` tag makes that key's status events authoritative for cards whose `a` coordinate is that board. The board event itself produces no item.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "eaf89ae9f228bef68f4a1724b6d492b921390d6829228d7fae3c83437721275c",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 30301,
+          "tags": [
+            [
+              "d",
+              "ready"
+            ],
+            [
+              "title",
+              "Ready"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ]
+          ],
+          "content": "",
+          "sig": "fbbdbbfcabb883f811c746ee312c734c9cdd6192e21db6e5a0787237b792153bb4f5c54f7b3e32bd1b449972a7b2a9dde350446fd02590211f7c847b1b58bf24"
+        },
+        {
+          "id": "1032df9cfd89f8037fb197bab224769d22b527a259e7b6c8f5779db153107f64",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v10"
+            ],
+            [
+              "title",
+              "Maintainer authority"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "40429d5059be09e7e6ce639a1f168eaca3afa7c29b280682e4efb9cf1d24ca37321256972a1410fc2fa9125a7204ed3a8e909a8e80ef8eb146bfc4c2559d0aba"
+        },
+        {
+          "id": "137c3d1eaedc06e4c3f39d845b3b6b56fd558de8eb735f0563939bc9305cab86",
+          "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27:ready-v10"
+            ],
+            [
+              "d",
+              "ready-v10"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "picked up by the second machine",
+          "sig": "183e6902ee423f63fc8c97cc3ea65ad66f84704a4d8e5247af9f08bab635271f2c4fb9d81b06f6efefb6ca7bb19638c2c492af9ab7477203f4d0855487832b8f"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v10",
+            "msg_id": "1032df9cfd89f8037fb197bab224769d22b527a259e7b6c8f5779db153107f64",
+            "title": "Maintainer authority",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+                "note": "picked up by the second machine"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v10"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v10"
+          ],
+          "work": [
+            "ready-v10"
+          ]
+        }
+      }
+    },
+    {
+      "name": "board_latest_wins_revokes_maintainer",
+      "spec_clauses": [
+        "4.5",
+        "6.1",
+        "6.4"
+      ],
+      "note": "Historical boards are NOT unioned. The newest board for the coordinate drops the `p` tag, so the former maintainer's status event is no longer authoritative and the item does not close.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "07d584bd46de514964f0120be2e3f093a47a25610430c5f7c9c5a8b8cfe2635e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999800,
+          "kind": 30301,
+          "tags": [
+            [
+              "d",
+              "ready"
+            ],
+            [
+              "title",
+              "Ready"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ]
+          ],
+          "content": "",
+          "sig": "c3f38eb7d2849560eb8a8d8f9cd6738941d63a8b5954c0b25848af927021aced9a5f513fd6054fffa00036c305c762415af90e54dd3d723a995d69038d62879c"
+        },
+        {
+          "id": "c40f8f7b4e3a1e593a9127755354d78778056013d7dcaa92b3d027c24d50d119",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 30301,
+          "tags": [
+            [
+              "d",
+              "ready"
+            ],
+            [
+              "title",
+              "Ready"
+            ]
+          ],
+          "content": "",
+          "sig": "d13bc1564724e32efcd7569bc3c91bc35a9ebf8f4fe340589f876e565a7931f07ebacacfb22367709edf6c84398eec68d795aaf44bfec43bd0989ca5bce844f3"
+        },
+        {
+          "id": "bdee1ab6cff55a75f7083dee7accb3a49a997979c4b4d427c8b0d7cf36859856",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v11"
+            ],
+            [
+              "title",
+              "Revoked maintainer"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "b4ec3bb723abec47bd2b8ae66c0e01417c2ce440c44a5c638d3d84ac17ab9a33cecce61912bc360eb1c4b3738d6195ec439fb5b5a25253dab1a72e2a4bd73461"
+        },
+        {
+          "id": "eee5e99a8a09486fd2470ebf29fef13f678ed5576ae01edf2dab57182132c694",
+          "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "created_at": 1700000100,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27:ready-v11"
+            ],
+            [
+              "d",
+              "ready-v11"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "no longer authorised",
+          "sig": "233ed4747a8afd8e9203609d48ba19063af80d4206098c6643413ef9dec05415c0a722b4f0df564cac4b378101d25d6273b854df36aa8c799b78257eabcf4353"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v11",
+            "msg_id": "bdee1ab6cff55a75f7083dee7accb3a49a997979c4b4d427c8b0d7cf36859856",
+            "title": "Revoked maintainer",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v11"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v11"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "by_tag_spoof_guard",
+      "spec_clauses": [
+        "6.7",
+        "6.1"
+      ],
+      "note": "Both items carry an rd-extension `by` tag. On ready-v12a the signer is the bare item author, so `by` is IGNORED and changed_by falls back to the signer pubkey. On ready-v12b the signer is the board author (an implicit maintainer), so the migrated campfire actor survives.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "c40f8f7b4e3a1e593a9127755354d78778056013d7dcaa92b3d027c24d50d119",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 30301,
+          "tags": [
+            [
+              "d",
+              "ready"
+            ],
+            [
+              "title",
+              "Ready"
+            ]
+          ],
+          "content": "",
+          "sig": "d13bc1564724e32efcd7569bc3c91bc35a9ebf8f4fe340589f876e565a7931f07ebacacfb22367709edf6c84398eec68d795aaf44bfec43bd0989ca5bce844f3"
+        },
+        {
+          "id": "a156bdee6933feb4099fa4ada0e85c5ac220a1bc0dc97661c32cd32cc25f4703",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v12a"
+            ],
+            [
+              "title",
+              "Spoof attempt"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "5580d8aad3c4a9faa740878bb721a165f6b4bf90f512fde612cb372bfd848609ae818907996e496f2d3855385b4b0201e6264939ac635f4f17541d5bda40a3a2"
+        },
+        {
+          "id": "3e6a108654d065fd053dd22d1b4588bdaba453beac900832e9a1209245ba41a5",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v12b"
+            ],
+            [
+              "title",
+              "Migrated entry"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "bd36ef8e85eb3f9214c3e8ec90ed5c393d4dbe241131008ed028c4bc9413eac2dd3978fb65d850781feaa65c6cde015e8282ab3aebe2aa567aac65a5dd018204"
+        },
+        {
+          "id": "f32c115aba95cd589128dcfff4e1e6009b3436ccda1432a8292325eea3fff642",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready-v12a"
+            ],
+            [
+              "d",
+              "ready-v12a"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "by",
+              "victim@example.com"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "attributing to someone else",
+          "sig": "01a97a5184a935d2efed0d37f4e6c56c0a9cd016912f935aba4218de364eb8891e787fa91a4bf11194db5dbbc575cc66ae641380d3feacfe4db14910ec065ad3"
+        },
+        {
+          "id": "9a55cf3d804d0c369d8f3f6629291a9c768946de9f13bd2e18091d25335b6e45",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v12b"
+            ],
+            [
+              "d",
+              "ready-v12b"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "by",
+              "orig@campfire"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "replayed campfire history",
+          "sig": "938d0de49e0584f11526e91aee3d61652f0650d0a9229c26480aa9c7e4bee567498e4492556e318351ede1156329450d3d9d1d1705c38ae9a3fc407671581420"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v12a",
+            "msg_id": "a156bdee6933feb4099fa4ada0e85c5ac220a1bc0dc97661c32cd32cc25f4703",
+            "title": "Spoof attempt",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+                "note": "attributing to someone else"
+              }
+            ]
+          },
+          {
+            "id": "ready-v12b",
+            "msg_id": "3e6a108654d065fd053dd22d1b4588bdaba453beac900832e9a1209245ba41a5",
+            "title": "Migrated entry",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "orig@campfire",
+                "note": "replayed campfire history"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v12a",
+            "ready-v12b"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v12a",
+            "ready-v12b"
+          ],
+          "work": [
+            "ready-v12a",
+            "ready-v12b"
+          ]
+        }
+      }
+    },
+    {
+      "name": "status_kind_1633_folds_like_any_status",
+      "spec_clauses": [
+        "2.3",
+        "6.6",
+        "14.10",
+        "15.4"
+      ],
+      "note": "isStatusKind is the range 1630..1633, so a kind-1633 draft event folds as an ordinary status transition. rd never writes 1633; spec §15.4 records the open question of whether it should be accepted at all. This vector pins the current behaviour so a decision to exclude 1633 is a DELIBERATE, visible change.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "28b724f6a6b2c24f513f7f90e3f046b9d1629bd56e1555a1cc951a8fb56fe757",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v13"
+            ],
+            [
+              "title",
+              "Draft kind"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "9917edc480802ff73bcf8fc3c525d66e5fec146d383aaf8efdde50d144d929054a91ae7d751ac13602412319fa215366b5067372673b008bf957ef4e557125d5"
+        },
+        {
+          "id": "d35d324c4e5cb8cda6da347d2de32b56fd7de5fb3091fcfed454cc775c3143e4",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1633,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v13"
+            ],
+            [
+              "d",
+              "ready-v13"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "draft transition from a foreign client",
+          "sig": "70f295e2646cb0454a4bccabc4e21b38459e7394381ac39cd68c71b897c5f9568123c948cacd0057143ecaa970fc63414cdd11fca83ef05328e085df8f820380"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v13",
+            "msg_id": "28b724f6a6b2c24f513f7f90e3f046b9d1629bd56e1555a1cc951a8fb56fe757",
+            "title": "Draft kind",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "draft transition from a foreign client"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v13"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v13"
+          ],
+          "work": [
+            "ready-v13"
+          ]
+        }
+      }
+    },
+    {
+      "name": "status_without_card_projects_nothing",
+      "spec_clauses": [
+        "3.11"
+      ],
+      "note": "An item exists iff it has at least one surviving card. Orphan status events are silently inert.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "2c8475bbd16043306756c436eb82ccebef7aa8a240978849ea6e70322baf4e12",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v14"
+            ],
+            [
+              "d",
+              "ready-v14"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed",
+          "sig": "23e90dd9cf29db3e3b17857b252269ba2ea355f6658edaa13d2672e4182e6e4c83196c1f757be1202fc424bad432f5abf2b9fb55f3990479d5c67b84dbfb5b1f"
+        },
+        {
+          "id": "78cf8a6f37b4c84eda4046317f2cd2b999f1120512b744c9b9b1eec574cb6fcb",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v14"
+            ],
+            [
+              "d",
+              "ready-v14"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "shipped",
+          "sig": "1197739d33f6d2bc2aabc35d47032c4b43056989315ae986d376c0fbba6d569f0b516108d943206d71ff5d0f386624969258f850f8c1ca69cdf8187211f70047"
+        }
+      ],
+      "expect": {
+        "items": [],
+        "views": {
+          "delegated": [],
+          "focus": [],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "dep_chain_blocks_downstream",
+      "spec_clauses": [
+        "8.1",
+        "8.4",
+        "8.5",
+        "7.6",
+        "13.3",
+        "13.5"
+      ],
+      "note": "Raw `i` tags are drained into validated edges: blocked_by/blocks are populated on both ends and `blocked` is DERIVED (it overrides the card's own `s` tag). Only the head of the chain is ready; the tail is pending.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "67973645862ea5f1179a58f5f52ace2a1cfb33836b2c00ebc1164a4e58fd110a",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v15a"
+            ],
+            [
+              "title",
+              "Step 1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "7d05e8e123e7e4525975da6f31543f893a07a0e3cf8471a2262d0480486c228d3df07ec640a2e771c73804092439f2669162ad1f76fc3c29ff47dda602be1153"
+        },
+        {
+          "id": "4eb3a263fae25bae4f854ac908d5715c061d73ee6d7b272e57bb4200091bd4f3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v15b"
+            ],
+            [
+              "title",
+              "Step 2"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v15a"
+            ]
+          ],
+          "content": "",
+          "sig": "1403d171fb46da2aab4922e1ca2f1d56a57cb6303187a986c7c67be699e67e08c428619277843bd50e8be6c81d51f557be914c7943d9d35fab708b971110e5ec"
+        },
+        {
+          "id": "a62462c3a7148b80db05720ea36f8a67c4b11d504e483168b50b2e513f79a3f8",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v15c"
+            ],
+            [
+              "title",
+              "Step 3"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v15b"
+            ]
+          ],
+          "content": "",
+          "sig": "9b85b9443eb40f1c5cd55e1d68072520ce9a3619e75417b1472fa9ddf5cfb6c9465b2bf7477a92e433d2cab5d07e284d96910e2403b9b4aa1930aa4ee9620139"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v15a",
+            "msg_id": "67973645862ea5f1179a58f5f52ace2a1cfb33836b2c00ebc1164a4e58fd110a",
+            "title": "Step 1",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "blocks": [
+              "ready-v15b"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v15b",
+            "msg_id": "4eb3a263fae25bae4f854ac908d5715c061d73ee6d7b272e57bb4200091bd4f3",
+            "title": "Step 2",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v15a"
+            ],
+            "blocks": [
+              "ready-v15c"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v15c",
+            "msg_id": "a62462c3a7148b80db05720ea36f8a67c4b11d504e483168b50b2e513f79a3f8",
+            "title": "Step 3",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v15b"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v15a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v15b",
+            "ready-v15c"
+          ],
+          "ready": [
+            "ready-v15a"
+          ],
+          "work": [
+            "ready-v15a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dep_terminal_edges",
+      "spec_clauses": [
+        "8.3",
+        "8.4",
+        "8.5",
+        "8.7"
+      ],
+      "note": "Two distinct terminal rules. A terminal BLOCKER (v16a) still records blocks/blocked_by but no longer sets `blocked` — this is why rd needs no explicit unblock event. A terminal BLOCKED item (v16c) is skipped entirely: neither its blocked_by nor the blocker's blocks list gains an entry. Inverting the blocker-terminal test flips v16b to blocked and empties the ready view.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "fea272fd3cd4ccb88ed60cf5915bb23cfc89e6f8388759291f0df290f6a71ab4",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v16a"
+            ],
+            [
+              "title",
+              "Finished blocker"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "6c6d4c098ae894d94b0144be43167f000599fae3fc0760e0267ab5f04bd8789b62c0715588ed67e3caae401f1b268a829d9bbd491cfc5c3eff7b27ef0becf5cb"
+        },
+        {
+          "id": "56b33d3a965b13c70424e187eb7e81429c0ca29bc697416295c521f98542f3fb",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v16b"
+            ],
+            [
+              "title",
+              "Unblocked"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v16a"
+            ]
+          ],
+          "content": "",
+          "sig": "568aa2ea5f81d95f44ad02316ca1ac3e1dbf15dc27da1ce008d2a5d4e1d903e14cef2158253efaad61ff0beea77a17e0613fe12b2c69502682f90ae03cb6cf5e"
+        },
+        {
+          "id": "44729b104d2b08fd11792271eb46ec7edbbb618c99e188420a3505b5801f7243",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v16c"
+            ],
+            [
+              "title",
+              "Closed while depending"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v16d"
+            ]
+          ],
+          "content": "",
+          "sig": "dc79779c35c9f76f22b86a995bdc02d7b636725d3f521473e7aee9c901b4d1532ea7500e8141a53994b09223c349a7145673f57c2b1745590edc01caefdecd16"
+        },
+        {
+          "id": "7bf84c0f5e057472ee238a6088c7fa2574515d5a584e342941bf68593a955748",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v16d"
+            ],
+            [
+              "title",
+              "Live blocker"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "1d6a4274c6a4b6526842fc17a3dde92a5cce8cd807609fa03ad7398e91e8ad52d4f9882c2c71f1b73e3891058e30bda5a39d7672c1db92ada997db0304af21aa"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v16a",
+            "msg_id": "fea272fd3cd4ccb88ed60cf5915bb23cfc89e6f8388759291f0df290f6a71ab4",
+            "title": "Finished blocker",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "done",
+            "blocks": [
+              "ready-v16b"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v16b",
+            "msg_id": "56b33d3a965b13c70424e187eb7e81429c0ca29bc697416295c521f98542f3fb",
+            "title": "Unblocked",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "blocked_by": [
+              "ready-v16a"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v16c",
+            "msg_id": "44729b104d2b08fd11792271eb46ec7edbbb618c99e188420a3505b5801f7243",
+            "title": "Closed while depending",
+            "type": "task",
+            "for": "",
+            "priority": "p2",
+            "status": "done",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v16d",
+            "msg_id": "7bf84c0f5e057472ee238a6088c7fa2574515d5a584e342941bf68593a955748",
+            "title": "Live blocker",
+            "type": "task",
+            "for": "",
+            "priority": "p2",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v16b",
+            "ready-v16d"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v16b",
+            "ready-v16d"
+          ],
+          "work": [
+            "ready-v16b",
+            "ready-v16d"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dep_unresolvable_and_cross_board_dropped_silently",
+      "spec_clauses": [
+        "8.2",
+        "8.9",
+        "15.2"
+      ],
+      "note": "A dep on an item absent from this event set, and a cross-board `repo/item` reference, are both dropped: no blocked_by entry, no blocking, and — the part that differs from the campfire fold — NO cross_campfire_warnings field. Spec §15.2 records the question of whether the warning should be restored; a vector asserting warnings here would assert behaviour the live fold does not have.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "c30ab382ace177f63b1e115cfe7d78911016c538a95fd6c7ce96d078d1488499",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v17"
+            ],
+            [
+              "title",
+              "Dangling deps"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-nosuchitem"
+            ],
+            [
+              "i",
+              "galtrader/galtrader-d0a"
+            ]
+          ],
+          "content": "",
+          "sig": "d970ab03fb312bcfb14bebe1679cb8527062c061e649021f04041b878ffadad7f7114f4dd53221383cf3d11acf549bdb39d814c2d481c82c0d3f77ccc8551355"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v17",
+            "msg_id": "c30ab382ace177f63b1e115cfe7d78911016c538a95fd6c7ce96d078d1488499",
+            "title": "Dangling deps",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v17"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v17"
+          ],
+          "work": [
+            "ready-v17"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dep_cycle_not_detected",
+      "spec_clauses": [
+        "8.6",
+        "8.4",
+        "8.5"
+      ],
+      "note": "A 2-cycle deadlocks both items into `blocked`. The fold neither detects nor reports it.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "db65d3153b1596d60d71b93fae1406cf688c9fab9b7074fc1063301d8326e8b0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v18a"
+            ],
+            [
+              "title",
+              "Cycle A"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v18b"
+            ]
+          ],
+          "content": "",
+          "sig": "9e4e34eef179ad04659784adcd3dfd37af254b4fca96057f98e43a291de13f931cded9c04c6c1e92e48123375eaf59decb556147407d0a31da0514c9f1f183d4"
+        },
+        {
+          "id": "7205cf407fa835e60b5fb249fada50b6cd7492be3edb0a7fc17fb9542b065318",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v18b"
+            ],
+            [
+              "title",
+              "Cycle B"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v18a"
+            ]
+          ],
+          "content": "",
+          "sig": "45b0b0c357ec03a04ca345d199f154885d6e1e30c5830855f6c72ab40e73ed26bf6ca8631f331e585281c79b250dff09b968b4a0bee92da3074a88d9a6873561"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v18a",
+            "msg_id": "db65d3153b1596d60d71b93fae1406cf688c9fab9b7074fc1063301d8326e8b0",
+            "title": "Cycle A",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v18b"
+            ],
+            "blocks": [
+              "ready-v18b"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v18b",
+            "msg_id": "7205cf407fa835e60b5fb249fada50b6cd7492be3edb0a7fc17fb9542b065318",
+            "title": "Cycle B",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v18a"
+            ],
+            "blocks": [
+              "ready-v18a"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v18a",
+            "ready-v18b"
+          ],
+          "ready": [],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "gate_promotion_and_gate_msg_id",
+      "spec_clauses": [
+        "9.4",
+        "9.6",
+        "13.3",
+        "13.5",
+        "13.10",
+        "5.4"
+      ],
+      "note": "Both cards declare a wait and carry `s=active`; both are PROMOTED to waiting at fold time. gate_msg_id is set to the winning card's event id ONLY when waiting_type is exactly \"gate\", which is what makes the gates view non-empty. Note a waiting item is still READY: §13.3 excludes only terminal, blocked and scheduled.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v19a"
+            ],
+            [
+              "title",
+              "Gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "needs a ruling on the envelope"
+            ]
+          ],
+          "content": "",
+          "sig": "6a369a7200cd2432e294ca4c0146b4bd6ef44a386a3760d93db4a1ed1c8b8e2140aafb72e914835e3a799a061c5dc9a8b4b2ded9c37f11e69cbb20380d7d4b18"
+        },
+        {
+          "id": "a249b3b982c673d973f2817abc0cff49ba61288df2440bfc8d4ad22045acfd6e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v19b"
+            ],
+            [
+              "title",
+              "Waiting on a human"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "waiting_type",
+              "human"
+            ],
+            [
+              "waiting_on",
+              "baron"
+            ]
+          ],
+          "content": "",
+          "sig": "0f2dc31e7ea9a198bc3834989ce70e0171ba0ed8669640091eb476e6326189ae175b7c9b979e387fd5c61762f287e76bb9e348db08e68017348cb44c1c5925c1"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v19a",
+            "msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
+            "title": "Gated",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "waiting",
+            "gate": "design",
+            "waiting_on": "needs a ruling on the envelope",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:13:20Z",
+            "gate_msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v19b",
+            "msg_id": "a249b3b982c673d973f2817abc0cff49ba61288df2440bfc8d4ad22045acfd6e",
+            "title": "Waiting on a human",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "waiting",
+            "waiting_on": "baron",
+            "waiting_type": "human",
+            "waiting_since": "2023-11-14T22:13:20Z",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v19a",
+            "ready-v19b"
+          ],
+          "gates": [
+            "ready-v19a"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v19a",
+            "ready-v19b"
+          ],
+          "ready": [
+            "ready-v19a",
+            "ready-v19b"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "gate_fields_persist_under_blocking",
+      "spec_clauses": [
+        "9.7",
+        "9.9",
+        "8.4",
+        "13.10"
+      ],
+      "note": "The gated item also gains a live blocker. Status becomes `blocked` (the dep pass runs first and the gate promotion checks it), but gate/waiting_type/waiting_on/waiting_since/gate_msg_id all survive — the pending gate is still real. It drops out of the gates view because that predicate also requires status=waiting.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "ed79e4124d7832f6bd607a252b64e1db77c39ebc2438757abec4dacb1f141bc3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v20a"
+            ],
+            [
+              "title",
+              "Blocker"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "1cfa5fdc833d00d136db7a41f7747440d160a06af6e1251e6628d8b5a92d887e57d6f764effa6ef1da0be5423877846a974934949e61c919bdb5352837208841"
+        },
+        {
+          "id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v20b"
+            ],
+            [
+              "title",
+              "Blocked and gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "i",
+              "ready-v20a"
+            ],
+            [
+              "gate",
+              "budget"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "spend approval"
+            ]
+          ],
+          "content": "",
+          "sig": "52e80227e54344e934b4da4e9c2bbe9165368f9134d2871717efbfd0eb091baee40f76b6f17129ef14f316daa676a13016e4f7b004d0344d0db7ba95c1717d24"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v20a",
+            "msg_id": "ed79e4124d7832f6bd607a252b64e1db77c39ebc2438757abec4dacb1f141bc3",
+            "title": "Blocker",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "blocks": [
+              "ready-v20b"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v20b",
+            "msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
+            "title": "Blocked and gated",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v20a"
+            ],
+            "gate": "budget",
+            "waiting_on": "spend approval",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:13:20Z",
+            "gate_msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v20a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v20b"
+          ],
+          "ready": [
+            "ready-v20a"
+          ],
+          "work": [
+            "ready-v20a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gate_terminal_clears_all_but_gate",
+      "spec_clauses": [
+        "9.5",
+        "7.2",
+        "15.5"
+      ],
+      "note": "A cancelled item drops waiting_on / waiting_type / waiting_since / gate_msg_id but KEEPS `gate`, so `rd show` still reports the escalation category it died under. Spec §15.5 records the open question of whether the retained `gate` is deliberate provenance or a missed clear.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "9866355111bcca0bb1bc7449c54fe51a546bd1921908d95a0c4f2e315102ee43",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v21"
+            ],
+            [
+              "title",
+              "Closed while gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "a ruling that never came"
+            ]
+          ],
+          "content": "",
+          "sig": "1426c7c3a1597f12d58c9c635bc26838d1367b7057151ea47b234c13a2125287b4a87f4487e341446ffadc022e5d4683858a7cc5a7bb259484843b081984bf5d"
+        },
+        {
+          "id": "69df6415e5cefd2f1301987accaf95c0e1a876f29e757de639af2daa69c45447",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1632,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v21"
+            ],
+            [
+              "d",
+              "ready-v21"
+            ],
+            [
+              "status",
+              "cancelled"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "abandoned",
+          "sig": "636b2994d9ea35980e5d6ad643ad816ef9f7471e26d8058a2d4c8b9ec9426263bc35f668dc354302fc4e3fffaaa184617ea68f69eca32435839280b45ef4b034"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v21",
+            "msg_id": "9866355111bcca0bb1bc7449c54fe51a546bd1921908d95a0c4f2e315102ee43",
+            "title": "Closed while gated",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "cancelled",
+            "gate": "design",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "cancelled",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "abandoned"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "issue_1621_does_not_fold",
+      "spec_clauses": [
+        "2.4",
+        "2.6",
+        "3.7"
+      ],
+      "note": "The kind-1621 issue event exists purely for generic-client interop. Despite carrying a `d` tag naming the item, itemIDForEvent returns \"\" for it, so it neither creates nor mutates an item — MsgID and UpdatedAt still come from the card.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "1e2d0866256eea5c23a3a86fc23c55293dd9eceb9374cbe0a08b111aaf44b8c8",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v22"
+            ],
+            [
+              "title",
+              "Interop"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "has a NIP-34 issue anchor",
+          "sig": "62aa0707ce12fa64e3ecc95569620d59b4e51901aca5d8af9da3dab5ee7ddf2f5d70e0051e7e0e187ec30914af2b9f5a30dce196ca989baee88942f3e37326bc"
+        },
+        {
+          "id": "6f9282b84fed801748585f95a0f66d7509ad1f5019c512909a0142d0789dde37",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000010,
+          "kind": 1621,
+          "tags": [
+            [
+              "d",
+              "ready-v22"
+            ],
+            [
+              "subject",
+              "Interop"
+            ]
+          ],
+          "content": "has a NIP-34 issue anchor",
+          "sig": "0209b7c016a4f04eb3125369b3b91749ff243e4cbbbf4cc1aa93187765f05681a2634abfa6ef9ab077f7b14fc1c9994c2a36485ba9c1ed2d3905ffcf4b12a00d"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v22",
+            "msg_id": "1e2d0866256eea5c23a3a86fc23c55293dd9eceb9374cbe0a08b111aaf44b8c8",
+            "title": "Interop",
+            "context": "has a NIP-34 issue anchor",
+            "description": "has a NIP-34 issue anchor",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v22"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v22"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "malformed_events_dropped",
+      "spec_clauses": [
+        "3.1",
+        "3.7",
+        "2.6"
+      ],
+      "note": "Three non-events in one log: a JSON null (the nil-event guard), a well-signed 30302 with no `d` tag, and a well-signed kind-1 note carrying the item id. All three are newer than the valid card and all three claim status=done; none of them touches the projection.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        null,
+        {
+          "id": "e795966d846e8959d05ff4e713a6a8e7a8c282a0f67c465962346fcd186efb01",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "title",
+              "card without a d tag"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ]
+          ],
+          "content": "should never fold",
+          "sig": "bac9639675f77380ebe6508122a3b0e49135f945ad17ae9aa007220a305a1ad7d42d51173e0625bddd41b61a1c02bdab67a524a1557ec3ac136906af4ac33ff4"
+        },
+        {
+          "id": "ad2185e8b3073215fb5e0ec7d246af9559ac25d5910793c4ee1fa993ce25a4fa",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000200,
+          "kind": 1,
+          "tags": [
+            [
+              "d",
+              "ready-v23"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ]
+          ],
+          "content": "a plain nostr note mentioning the item",
+          "sig": "dbc07cc81cabe91fc787f550d6d136cb6b22e042d1420a6eb60561a5c06bd8be518500ed841d2089247adf72a8c96c8998b765e31a39f6a957dec37d9c2cccd2"
+        },
+        {
+          "id": "1d7c19dae381cfae0b00d52f462b00e43e5f5f31b620aace0d57dba7ddd46c88",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v23"
+            ],
+            [
+              "title",
+              "Survivor"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "c8dfc9439b13db884b974e905637572163f2601c561e3a8fc6404f31fa77bbd0ad02b603f36bd258a5d5b258e3180b41939e618b875a58e9646ea1cf3d60fcad"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v23",
+            "msg_id": "1d7c19dae381cfae0b00d52f462b00e43e5f5f31b620aace0d57dba7ddd46c88",
+            "title": "Survivor",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v23"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v23"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "forged_events_dropped",
+      "spec_clauses": [
+        "3.3",
+        "4.1"
+      ],
+      "note": "Two forgeries, both NEWER than the genuine card, so latest-wins would hand them the item if the signature gate did not fire first. ready-v24's content was rewritten after signing (stored id no longer matches the canonical serialization); the third card's signature bytes were corrupted. An independent client can confirm both fail verification before folding.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "7e6baf4c1d59fd0da38046553e32d74957e9f0b517db35f107675f91bc1a100b",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v24"
+            ],
+            [
+              "title",
+              "genuine"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "the real card",
+          "sig": "8a23c65673b80464a2bc894051b2c95e2b2712aa800a88536e888ffb983a409a709e9ab76c41d61e3ed44f13be3090e5698e75ce0bbe59dc040ffa8806bc1427"
+        },
+        {
+          "id": "dc75091e7018871e2f2e8ba98e1e4b43a863d1405c8ce964b66f43fbc90da144",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v24"
+            ],
+            [
+              "title",
+              "content tampered"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "rewritten after signing",
+          "sig": "b4468c24ea8a582e8652f15c253c75f44629b6bfca62e6de6b6891d756ec1ce0a4dd67780ac4d3eda4dafaabed50925b26d74f8bc5179274cea21d6097f567dc"
+        },
+        {
+          "id": "925f799549201e92c2bc5378bd5c4c3dc1ca71f43c87bd85d40154fab8dba383",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000200,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v24"
+            ],
+            [
+              "title",
+              "signature corrupted"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "cancelled"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "a32daabd47cda3a4845571bd473e243c2f4c73f639ace016e0d7a6e5c9987cae8002ebf29160dd6bf092afd328ed4862be04a27ea4f3985caeb4a17f246aab0f"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v24",
+            "msg_id": "7e6baf4c1d59fd0da38046553e32d74957e9f0b517db35f107675f91bc1a100b",
+            "title": "genuine",
+            "context": "the real card",
+            "description": "the real card",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v24"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v24"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "untrusted_author_dropped",
+      "spec_clauses": [
+        "3.3",
+        "3.4",
+        "6.4"
+      ],
+      "note": "The outsider's card is newer and its events VERIFY — signature validity proves consistency, not authority. With an enforced trust set it never reaches the winning-card contest, so it cannot become the item author and its status event cannot close the item. Paired with trust_gate_disabled_admits_anyone, which folds these exact events with the gate off.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "76ee45986a6259efc9ddc2b7a1fab08d32c085f0b77c8f5f27431ddaf7da757d",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "title",
+              "genuine"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "9c556ebaef50a9d15545a05a67dc1eb3ddf625eb842a1df960f10169ef74882ae1092c709b6d5ab439648164704818717b37fc663d8bf0c6cbec40ef166540fd"
+        },
+        {
+          "id": "9c92bdf9d1663792e00d3112de71d54afe0a58b6656eb9175416ab396bda68cc",
+          "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "title",
+              "hostile takeover"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "ba4e190672f2c9d7952c315c79c1eac9bf3cad84af26a5f15ef3a5175bd21d79137f3c565b39e8567c231392b01056d55a3220f78d51c39824792a7a6f67e647"
+        },
+        {
+          "id": "270a2a3b65a9988e2f578ffa023ee119c0c882c4bc3f153d4123dc6336813f16",
+          "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+          "created_at": 1700000200,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991:ready-v25"
+            ],
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "closing your item",
+          "sig": "738e170ef79d7edb11056e31f6178575f18e88b4b6bb6e2e899c1efb1dbc417a122fa6b26fcfefeed8e1a047dbf2dcff1ad9dccc0e2667849a2349beaab3da7f"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v25",
+            "msg_id": "76ee45986a6259efc9ddc2b7a1fab08d32c085f0b77c8f5f27431ddaf7da757d",
+            "title": "genuine",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v25"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v25"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "trust_gate_disabled_admits_anyone",
+      "spec_clauses": [
+        "3.4",
+        "4.1",
+        "6.4"
+      ],
+      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set).",
+      "options": {
+        "trusted": null,
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "76ee45986a6259efc9ddc2b7a1fab08d32c085f0b77c8f5f27431ddaf7da757d",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "title",
+              "genuine"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "9c556ebaef50a9d15545a05a67dc1eb3ddf625eb842a1df960f10169ef74882ae1092c709b6d5ab439648164704818717b37fc663d8bf0c6cbec40ef166540fd"
+        },
+        {
+          "id": "9c92bdf9d1663792e00d3112de71d54afe0a58b6656eb9175416ab396bda68cc",
+          "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "title",
+              "hostile takeover"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "ba4e190672f2c9d7952c315c79c1eac9bf3cad84af26a5f15ef3a5175bd21d79137f3c565b39e8567c231392b01056d55a3220f78d51c39824792a7a6f67e647"
+        },
+        {
+          "id": "270a2a3b65a9988e2f578ffa023ee119c0c882c4bc3f153d4123dc6336813f16",
+          "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+          "created_at": 1700000200,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991:ready-v25"
+            ],
+            [
+              "d",
+              "ready-v25"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "closing your item",
+          "sig": "738e170ef79d7edb11056e31f6178575f18e88b4b6bb6e2e899c1efb1dbc417a122fa6b26fcfefeed8e1a047dbf2dcff1ad9dccc0e2667849a2349beaab3da7f"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v25",
+            "msg_id": "9c92bdf9d1663792e00d3112de71d54afe0a58b6656eb9175416ab396bda68cc",
+            "title": "hostile takeover",
+            "type": "bug",
+            "for": "",
+            "priority": "p3",
+            "status": "done",
+            "created_at": 1700000100000000000,
+            "updated_at": 1700000200000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:16:40Z",
+                "from_status": "",
+                "to_status": "done",
+                "changed_by": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+                "note": "closing your item"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "board_pin_rejects_foreign_board_card",
+      "spec_clauses": [
+        "3.8",
+        "4.1",
+        "12.4"
+      ],
+      "note": "With a pinned board, a newer card carrying a DIFFERENT `a` coordinate is rejected — the agent key is read-trusted, so only the pin stops it forking its own 30301, self-granting maintainer on it and publishing cards for another owner's items.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+        ],
+        "maintainers": null,
+        "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "26440444d5a4c403c6298aec8b30775ec34fadb2d184d44fa5c50bcc3ecb4665",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v26"
+            ],
+            [
+              "title",
+              "on the pinned board"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "2e8de423eb2ec078546810dada76cac8e77a920f03664409b624009a4afb4190e6f0db18bda46059c4e56d72ba83971e2fd612036745fc9e6db6154c9a9afc19"
+        },
+        {
+          "id": "8bebb669613d110ade15088981b68feb39679a56b317a2b428b76e94125035f3",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v26"
+            ],
+            [
+              "title",
+              "parallel board escalation"
+            ],
+            [
+              "a",
+              "30301:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "d6fe587919cfbece48c58f446f347a8e704cd0d4307b65c50d567443221a361b3b052e8b83bcc79535451cbd06668b2acdca5bb9f634354d7747dbc2011ba4fd"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v26",
+            "msg_id": "26440444d5a4c403c6298aec8b30775ec34fadb2d184d44fa5c50bcc3ecb4665",
+            "title": "on the pinned board",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v26"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v26"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "grant_admits_and_revoke_is_prospective",
+      "spec_clauses": [
+        "3.4",
+        "3.5",
+        "12.1",
+        "12.4",
+        "12.7",
+        "12.8",
+        "2.5"
+      ],
+      "note": "The agent key is NOT in the trust list; it is admitted solely by the owner-signed 39301 grant, which is why its pre-revoke card and status event fold. The revoke then bounds its authoritative-until to the revoke's created_at: the later card and the later close are dropped, while the earlier ones REMAIN authoritative — a completed item must not reopen because its past author was later revoked. The 39301 events themselves produce no item.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "5c7ed2df3732428c65cce6e654a1adc172a46ae713f377d0e079664a714dbbed",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ]
+          ],
+          "content": "admit the agent machine",
+          "sig": "e0b9eabe4233a65b22c65b1f296def4c7e47f9b89819f76d5051faa41c64cdce93c9bed772be2df8e26b012514a6ac19d849d8925b548fd4240b773f1f3602df"
+        },
+        {
+          "id": "d70c81612d4ad8cbdb5a38840350dd236053a217fa1d6ec14c28233bbccb8d8b",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v27"
+            ],
+            [
+              "title",
+              "authored before the revoke"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "dc4dbaaa2f432201b1697f75f0034fae0bf90109d457586b936521d84d892aa51d9db1661ad4a065e8b15f05c098d20b5ff12a9e632c54729e89da38ee4ffb38"
+        },
+        {
+          "id": "ee8f8715a58fe768f55ff0c0580a50345ea5ab95a96307640e0a02f895d6af01",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000050,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready-v27"
+            ],
+            [
+              "d",
+              "ready-v27"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "claimed before the revoke",
+          "sig": "04b105e0a7377c8d72d30fdc3240f4e6821e955f0a6d9b51e3aa3f2af0ddb7823df662fcebfcb210a7c27dd1f257a7ee8fc6e60b5e88edecb5cb68f67d81db42"
+        },
+        {
+          "id": "945477ff553d96318b5568ee567de59e93f8fc4909777afff881b1942b32cab3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "revoked"
+            ]
+          ],
+          "content": "machine decommissioned",
+          "sig": "de012ca273e247872fcdf664f337e8416df8c8c3bad99d87bbda4434fdf42868cd60132fa11aa4318cce10e902a0a14c286cdd59561b4462e52ada099fee3739"
+        },
+        {
+          "id": "b9b57aa19751d4cb25978eb6b72cb5b43fd2de37e2637f9d9701dab78c5efcb0",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000200,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v27"
+            ],
+            [
+              "title",
+              "post-revoke edit"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "bug"
+            ]
+          ],
+          "content": "",
+          "sig": "d87e0efb0747940141b3c9624dc88ece03e621bda1597a2e265cf81dc8af7b4191e0cc58a3599c9cbbe0d856f5747a683576bbfd538f473d561d4539a27897df"
+        },
+        {
+          "id": "4e60ca4940d758c4e4839f2a3cf1e100f339727c57e343ec1d90d2387bffda4b",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000300,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready-v27"
+            ],
+            [
+              "d",
+              "ready-v27"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "closing after revocation",
+          "sig": "0f676e6b60b2d38cb977867949e96a268c1e9bc37cbd56fff92843074e942bc183455fa2c37d655d848fbf78309f6dbc4b93683795134c89fc184d8bc77cf56c"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v27",
+            "msg_id": "d70c81612d4ad8cbdb5a38840350dd236053a217fa1d6ec14c28233bbccb8d8b",
+            "title": "authored before the revoke",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000050000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:14:10Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+                "note": "claimed before the revoke"
+              }
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v27"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v27"
+          ],
+          "work": [
+            "ready-v27"
+          ]
+        }
+      }
+    },
+    {
+      "name": "confidential_granted_reader_decrypts",
+      "spec_clauses": [
+        "11.1",
+        "11.2",
+        "11.6",
+        "11.7",
+        "11.8",
+        "11.9",
+        "10.3",
+        "9.4"
+      ],
+      "note": "A granted member holds the CEK for (board coordinate, epoch 1), so title, context/description, waiting_on and the plaintext labels all come out of the sealed blob, and the status event's sealed reason renders as the history note. The clear `l` tag on the wire is the HMAC label token, not the label. Compare with the two placeholder vectors, which fold the SAME events.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": {
+          "keys": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "epoch": 1,
+              "cek_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+            }
+          ]
+        },
+        "encrypted_boards": {
+          "boards": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "cutover": 1699999800
+            }
+          ]
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "l",
+              "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "sClrpdJbuO7cE0t9sy94nlhXPyWuInMuXc1r7ZXLRGxL/38vvJbsyBMvQ/JgypY0bW4+lAb7vkD7hPVLd+OC30R9bXC1uhnb3ALSfqXtJubW/PBAbwrW0NGhhYCoj6TWDbOF4UGRTxCz7Wzj8qx0YvwwzWDKLs3A6OjL833+LkAn",
+          "sig": "7820ced54018375eaf4e541b49604ffb8c837dc42b5d7c88329bdd04836ab502a3eee7738b6f57bd9cbac0aa9d4e89f101035bb243f8cf8d1f3a385823a64c9e"
+        },
+        {
+          "id": "3f209ad6de1b1e66fec06803a010eb5a4de3065eb89eda3a47e977187bd8f10f",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v28"
+            ],
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "hBVNwY8CSvtjdBnjaMkO5fBEa73r6SB36cSFSlL2EZ4RDV4tWiblywT9WxNFigmMRb7Y82YQ",
+          "sig": "90ce51937e3e830de75c9f86a349e534f1d1e897a175f8f54124ea24ad2c45dd9e3070754738d3ccc97c855b8a25b5d907a96c9c3313a0f016f7056d4adc5d08"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v28",
+            "msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+            "title": "sealed title",
+            "context": "sealed context",
+            "description": "sealed context",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "waiting",
+            "gate": "design",
+            "waiting_on": "the approver",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "gate_msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "sealed reason"
+              }
+            ],
+            "labels": [
+              "security"
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v28"
+          ],
+          "gates": [
+            "ready-v28"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v28"
+          ],
+          "ready": [
+            "ready-v28"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "confidential_wrong_cek_placeholder",
+      "spec_clauses": [
+        "11.6",
+        "11.7",
+        "11.8",
+        "11.9",
+        "10.3"
+      ],
+      "note": "The reader holds a 32-byte key for exactly the right (board coordinate, epoch) slot — the WRONG key. cekFor succeeds, the ChaCha20-Poly1305 Open fails, and every sealed field fail-closes: title/context/description become \"[encrypted]\" (never \"\", never raw ciphertext), waiting_on is HIDDEN rather than placeheld, the history note becomes the placeholder, and the labels stay opaque HMAC tokens. Every CLEAR routing field — status, priority, type, gate, waiting_type — renders normally, which is why the item still gate-promotes and still appears in the gates view.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": {
+          "keys": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "epoch": 1,
+              "cek_hex": "5f5e5d5c5b5a595857565554535251504f4e4d4c4b4a49484746454443424140"
+            }
+          ]
+        },
+        "encrypted_boards": {
+          "boards": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "cutover": 1699999800
+            }
+          ]
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "l",
+              "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "8IDIbOjAujM8gDWtv6txkaD+cN2tWpPpoqllU+Xo+4UcgdLOXV3DqaMl1nv1heyx/Dr8C1pYRwwMys9JshP+DSlIvQK5USwBJskpxgbBvvh/TAMIDVMauwQc/4SZGLhZNIiKFXBMzGsxCoWgf4Oqs3m2u1OrjniEiLFwQXTCJfVq",
+          "sig": "1c9f0a4982e78b025760e1bd75145a1e0fff7cef3969d2626aa9366c81d9420e1d51305dd646b2b6df841865c997571ad1c1b32d9fe5d0f7f7d4afbb4cd94771"
+        },
+        {
+          "id": "402a53b98b180f6b3674f3acc0821006e07f74340841aff2993c0ab84802e93e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v28"
+            ],
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "rh/dI9r9d8jRW/DNKtm8vJL7ZYgOdrYhn6VpMOeAOKDBU5xl6RCgA/H/+YsHUJVPXN7u9zto",
+          "sig": "42e66e8cded9961e9efb0b186ae1d2c8a167ab195927daa3728d0f8e1da7b2c1499962b8bc278f137e9a4542d38bb8ce7161d7a5fc9177a3b0692907170f46a8"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v28",
+            "msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+            "title": "[encrypted]",
+            "context": "[encrypted]",
+            "description": "[encrypted]",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "waiting",
+            "gate": "design",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "gate_msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "[encrypted]"
+              }
+            ],
+            "labels": [
+              "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v28"
+          ],
+          "gates": [
+            "ready-v28"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v28"
+          ],
+          "ready": [
+            "ready-v28"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "confidential_no_decryptor_placeholder",
+      "spec_clauses": [
+        "11.6",
+        "11.7",
+        "11.8",
+        "11.15"
+      ],
+      "note": "A read-trusted but NOT key-granted reader (`decryptor: null`) sees exactly what the wrong-key reader sees. A missing keyring is a silent fail-closed, never an error and never a panic.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": {
+          "boards": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "cutover": 1699999800
+            }
+          ]
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "l",
+              "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "P1InDBgxxj5XfgYNKsSQ+4uIMImOMt7B74Y2Mvu3zYt8IJL7Jms4Sx4DeGWLNJ6ybEB1dOwd5cYfxq2uH6G7X5o7Zw0EiWu9PkOtANg9Nvwdm4/bgGAZzddNWpH8h9Wz2vt9A4cO8Pmqcm1jXgmyBwxK/pXBhzhMdvNI4XMI71OS",
+          "sig": "b97a6b018ad012cd70743cd6cc05cdf97c72b4c5b6f8c6758e9799f67cae79fb2d72b4610f9850d148457035b3cc274f69ac846607d16ce959ad0cbeca8f5199"
+        },
+        {
+          "id": "1bdcddbdea9182d50baaa17b18355fb55fadff7566beb4cc3a00fd3557a6f785",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v28"
+            ],
+            [
+              "d",
+              "ready-v28"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "duTQXDfE8d6epkh24ImuETQTI/F0VB/09TfYfURf7GQypTTOoWT9aOxQyqGv2N4X32bOhWOK",
+          "sig": "f7502261ca78ef603eb891d6de9349fa38388a22ba23238218e42ea1963d51dc68ac440f94055ab96ac276209fef781f46480e7cdbfb002ef940c0b41368233b"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v28",
+            "msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+            "title": "[encrypted]",
+            "context": "[encrypted]",
+            "description": "[encrypted]",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "waiting",
+            "gate": "design",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "gate_msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000100000000000,
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "[encrypted]"
+              }
+            ],
+            "labels": [
+              "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
+            ]
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v28"
+          ],
+          "gates": [
+            "ready-v28"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v28"
+          ],
+          "ready": [
+            "ready-v28"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "fold_gate_quarantines_plaintext_and_malformed",
+      "spec_clauses": [
+        "3.9",
+        "11.2",
+        "11.3",
+        "11.4",
+        "11.5",
+        "3.11"
+      ],
+      "note": "The board is confidential with cutover 2023-11-14T22:13:20Z. ready-v29a's card predates the cutover and is plaintext, so it is grandfathered and folds — but its POST-cutover plaintext status event is quarantined, so its cleartext close reason never reaches history and the item does not close. ready-v29b's post-cutover plaintext card is quarantined outright, so the item does not exist at all. ready-v29c is enc-shaped but its Content is not base64: grandfathering covers only GENUINE plaintext, never a malformed envelope, so it is quarantined despite predating the cutover. All three quarantined events verify — this is the fold gate firing, not the signature gate.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": {
+          "boards": [
+            {
+              "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+              "cutover": 1700000000
+            }
+          ]
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "4af1e9ef08b082e3a39ff52f690b3f24694981a67267a6c0c7709cfbcbc59b1b",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v29a"
+            ],
+            [
+              "title",
+              "grandfathered plaintext"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "written before the board went confidential",
+          "sig": "73dbcf04782b040d86de68dffa5f5ff23fb09895f5c38f1c04d3ff9b922c47426e313b1d4a471fb9896c6911b9d0aeda2c7d35819127da5bd7b18f9c2dc7a8e0"
+        },
+        {
+          "id": "fdb6b4ac222e716b925dd446fe17eafdb1c3082027d014636cb485cc67941c99",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1631,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v29a"
+            ],
+            [
+              "d",
+              "ready-v29a"
+            ],
+            [
+              "status",
+              "done"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "cleartext close reason",
+          "sig": "84e88fa896f4c15152cf0736884d4a4bf8ca4ad451f1b66b0e5061dd7f24d001917815e930a784be21aaa5b06256ae94d1420037472aaa43291e988ab307e26f"
+        },
+        {
+          "id": "2ea32b2b06ff7778b36fee92d4d975ad50b78443715cb4dceae1a124f32ad513",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v29b"
+            ],
+            [
+              "title",
+              "post-cutover cleartext"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "a37b1a6408749f2f35eb8a18a72c34eda9253bd44f7288dc1500bd9ac2c23c0557f459203ddb3e1df497757cba2cbc9eef7362267c608f74dc20bd09733c2668"
+        },
+        {
+          "id": "37c0bb4b4e318afa9e93bb7b5c2faa09ab0a464a8390bab74b0619ebf8d7c0a2",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999500,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v29c"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "!!! not base64 !!!",
+          "sig": "233a00089b4d9d5b47f2c40c8f1fae25d3691887e4ba2378d278cf09a259d384fae0760dc164ca7d126d21d871e2a16a51f4af3c35ffdf0d1bb656d45def69e6"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v29a",
+            "msg_id": "4af1e9ef08b082e3a39ff52f690b3f24694981a67267a6c0c7709cfbcbc59b1b",
+            "title": "grandfathered plaintext",
+            "context": "written before the board went confidential",
+            "description": "written before the board went confidential",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1699999900000000000,
+            "updated_at": 1699999900000000000
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v29a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v29a"
+          ],
+          "work": [
+            "ready-v29a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "views_lattice",
+      "spec_clauses": [
+        "13.1",
+        "13.2",
+        "13.3",
+        "13.4",
+        "13.5",
+        "13.6",
+        "13.7",
+        "13.8",
+        "13.10",
+        "13.11",
+        "13.12"
+      ],
+      "note": "Eight items spread across the lattice, evaluated for the owner identity. ready: everything non-terminal and non-blocked (the gated item included — waiting is READY). work: status exactly `active`. pending: waiting + blocked. overdue: past ETA and non-terminal, so the finished and cancelled past-ETA items are excluded. delegated: for=me, by=someone else, active. my-work: by=me and non-terminal, so the finished one drops out and the item merely SCOPED to me (for=me, by=someone else) is not mine. gates: waiting + waiting_type=gate + gate_msg_id. focus with no gate type is exactly ready (that is what Named wires). NOTE: no `scheduled` item appears anywhere in this suite — spec §15.1 records that no writer produces that status and rules a conformance vector out of order until it is resolved, so the scheduled conjunct of ready/pending is deliberately uncovered.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "a81da4a0163bffde4984030bdc34bccea170c650a4e62504e46a74e8a3bfdc11",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30a"
+            ],
+            [
+              "title",
+              "Mine, scoped to the agent"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ],
+            [
+              "l",
+              "security"
+            ],
+            [
+              "for",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ]
+          ],
+          "content": "",
+          "sig": "01e56daaeb7bf3bf4e242a9751626e055de45ecd0d26eae093dac801b058ed4b3dea7971e206db5f494f3b157d9a7080a19d0cdd47cd55d6a0bd51de50f61c93"
+        },
+        {
+          "id": "389636077e0aac8c5b3b4c1eec620eaf68591ccc62c709398e89245fb92c48ec",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30b"
+            ],
+            [
+              "title",
+              "Delegated to the agent"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "for",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "03c40f7e972c59d808b0a1b6ac49cc047bf5420c825a0089780953d967f6410514b2eeb6ec07ecfe44cf4438d6d44ab0d958534e1f8205cced277601b1b6df7e"
+        },
+        {
+          "id": "3d0c7521df9850d419b0dbcc3731b2c5a15c544ce254580294b376589de8732e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30c"
+            ],
+            [
+              "title",
+              "Mine, scoped to me"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ],
+            [
+              "for",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "b9e79bdfb2747e4d7651b5d4ba1f44df2e37ba618b4b2987c10e1e828c27d81152c119f9bcef68f57a96718185ba28f9416e1ae0bbe9cd05f24e64be676ff13f"
+        },
+        {
+          "id": "9ed5da46549e49ed75956fcf261af10ba38b67ac0c5f15490f54235f5a8ad39f",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30d"
+            ],
+            [
+              "title",
+              "Overdue"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "eta",
+              "2020-01-01T00:00:00Z"
+            ]
+          ],
+          "content": "",
+          "sig": "b6b75c8d321cdfde91c9cfe3c874ed3420574f20458348ad497a7783c388f2a5ac2c40c228073d80b1c02b7ee003a1cecea7c5f3b49829e02c3f6bd89833b98d"
+        },
+        {
+          "id": "e9dc11958ba3f4c1c7f363addfb7838748091c491b8a6aabcc59c881e859afe3",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30e"
+            ],
+            [
+              "title",
+              "Overdue but finished"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "done"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ],
+            [
+              "eta",
+              "2020-01-01T00:00:00Z"
+            ]
+          ],
+          "content": "",
+          "sig": "4d62b828a6353307a8cf9b87ae1ce1a137514a3d62f689ac2c932670a8ab08c8f1702c4d10ddd563b5a28293342ee146f46e5022f28920d2ba3bbd856998dcc4"
+        },
+        {
+          "id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30f"
+            ],
+            [
+              "title",
+              "Gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "gate",
+              "review"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "a reviewer"
+            ]
+          ],
+          "content": "",
+          "sig": "01efc2cbd0e1421acf6f2ef4250cdc84152cd5e0f76fe2425b02f3c23c4e02595b39457065ee95e517db53a18fd8fcefdb43ca1ce3bb5885456ff168f5eb95d3"
+        },
+        {
+          "id": "e3ef2c78d6cb43a1e34cc9b95978759d251c3cf31181f2ecb360adc4725110b0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30g"
+            ],
+            [
+              "title",
+              "Blocked"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "i",
+              "ready-v30a"
+            ]
+          ],
+          "content": "",
+          "sig": "2932c312c533290587b0c16be800e93a86258f6bb6fd7e23256a041512b7366afb59f7f6245116ac8da6d9e3c262aeac271cdaa5294a5a8bdc6fff44c1cc78b8"
+        },
+        {
+          "id": "7e4d928edcb19b304b5c90778331e1fc65d2e53672fe0871d2ee5372c266b665",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v30h"
+            ],
+            [
+              "title",
+              "Cancelled"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "cancelled"
+            ],
+            [
+              "rank",
+              "p3"
+            ],
+            [
+              "priority",
+              "p3"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "eta",
+              "2020-01-01T00:00:00Z"
+            ]
+          ],
+          "content": "",
+          "sig": "92d29deb2d1be6db1d1fc1aa080fce0b898fc3ea42ae58678a342c649a12acc42a9fd1066ef340b9eb31a6695b5519890265624c6d13c2775ab0f8eb73006ecd"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v30a",
+            "msg_id": "a81da4a0163bffde4984030bdc34bccea170c650a4e62504e46a74e8a3bfdc11",
+            "title": "Mine, scoped to the agent",
+            "type": "task",
+            "for": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "priority": "p1",
+            "status": "active",
+            "blocks": [
+              "ready-v30g"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000,
+            "labels": [
+              "security"
+            ]
+          },
+          {
+            "id": "ready-v30b",
+            "msg_id": "389636077e0aac8c5b3b4c1eec620eaf68591ccc62c709398e89245fb92c48ec",
+            "title": "Delegated to the agent",
+            "type": "task",
+            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+            "priority": "p1",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30c",
+            "msg_id": "3d0c7521df9850d419b0dbcc3731b2c5a15c544ce254580294b376589de8732e",
+            "title": "Mine, scoped to me",
+            "type": "task",
+            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "priority": "p2",
+            "status": "active",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30d",
+            "msg_id": "9ed5da46549e49ed75956fcf261af10ba38b67ac0c5f15490f54235f5a8ad39f",
+            "title": "Overdue",
+            "type": "task",
+            "for": "",
+            "priority": "p1",
+            "status": "inbox",
+            "eta": "2020-01-01T00:00:00Z",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30e",
+            "msg_id": "e9dc11958ba3f4c1c7f363addfb7838748091c491b8a6aabcc59c881e859afe3",
+            "title": "Overdue but finished",
+            "type": "task",
+            "for": "",
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "priority": "p1",
+            "status": "done",
+            "eta": "2020-01-01T00:00:00Z",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30f",
+            "msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
+            "title": "Gated",
+            "type": "decision",
+            "for": "",
+            "priority": "p0",
+            "status": "waiting",
+            "gate": "review",
+            "waiting_on": "a reviewer",
+            "waiting_type": "gate",
+            "waiting_since": "2023-11-14T22:13:20Z",
+            "gate_msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30g",
+            "msg_id": "e3ef2c78d6cb43a1e34cc9b95978759d251c3cf31181f2ecb360adc4725110b0",
+            "title": "Blocked",
+            "type": "task",
+            "for": "",
+            "priority": "p2",
+            "status": "blocked",
+            "blocked_by": [
+              "ready-v30a"
+            ],
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          },
+          {
+            "id": "ready-v30h",
+            "msg_id": "7e4d928edcb19b304b5c90778331e1fc65d2e53672fe0871d2ee5372c266b665",
+            "title": "Cancelled",
+            "type": "task",
+            "for": "",
+            "priority": "p3",
+            "status": "cancelled",
+            "eta": "2020-01-01T00:00:00Z",
+            "created_at": 1700000000000000000,
+            "updated_at": 1700000000000000000
+          }
+        ],
+        "views": {
+          "delegated": [
+            "ready-v30b"
+          ],
+          "focus": [
+            "ready-v30a",
+            "ready-v30b",
+            "ready-v30c",
+            "ready-v30d",
+            "ready-v30f"
+          ],
+          "gates": [
+            "ready-v30f"
+          ],
+          "my-work": [
+            "ready-v30a",
+            "ready-v30c"
+          ],
+          "overdue": [
+            "ready-v30d"
+          ],
+          "pending": [
+            "ready-v30f",
+            "ready-v30g"
+          ],
+          "ready": [
+            "ready-v30a",
+            "ready-v30b",
+            "ready-v30c",
+            "ready-v30d",
+            "ready-v30f"
+          ],
+          "work": [
+            "ready-v30a",
+            "ready-v30b",
+            "ready-v30c"
+          ]
+        },
+        "label_views": {
+          "security": [
+            "ready-v30a"
+          ]
+        }
+      }
+    }
+  ]
+}
