@@ -1,7 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "spec": "docs/design/board-fold-spec.md",
-  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op.",
+  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they are NOT bare JSON numbers.",
+  "timestamp_encoding": "expect.items[].created_at and expect.items[].updated_at are unix-nanosecond int64 values encoded as DECIMAL STRINGS (e.g. \"1700000000000000000\"), not bare JSON numbers. Parse them with BigInt(field), never Number(field) or a generic JSON number parser: JavaScript's Number cannot represent an arbitrary 64-bit integer exactly (Number.MAX_SAFE_INTEGER = 2^53-1 = 9007199254740991), and this field's declared type (arbitrary int64 unix nanoseconds) is not restricted to values that happen to survive that. See board-fold-spec.md §4.8.",
   "keys": [
     {
       "name": "owner",
@@ -117,25 +118,25 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v01",
-            "msg_id": "3ba8a34aa3174dd727de94de7146e35125b40afc4941ae5eecdade9b9d0ecb1a",
-            "title": "Full field card",
-            "context": "the whole description",
-            "description": "the whole description",
-            "type": "task",
-            "level": "l3",
-            "for": "human:baron",
             "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-            "priority": "p1",
-            "status": "inbox",
-            "eta": "2099-01-01T00:00:00Z",
+            "context": "the whole description",
+            "created_at": "1700000000000000000",
+            "description": "the whole description",
             "due": "2099-02-01T00:00:00Z",
-            "parent_id": "ready-p00",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "eta": "2099-01-01T00:00:00Z",
+            "for": "human:baron",
+            "id": "ready-v01",
             "labels": [
               "security"
-            ]
+            ],
+            "level": "l3",
+            "msg_id": "3ba8a34aa3174dd727de94de7146e35125b40afc4941ae5eecdade9b9d0ecb1a",
+            "parent_id": "ready-p00",
+            "priority": "p1",
+            "status": "inbox",
+            "title": "Full field card",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -231,20 +232,20 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v02",
-            "msg_id": "05842def8dadf947e68174a0311f075c4dd8c918ee6a71596cdd1971dd291db6",
-            "title": "Freeform labels",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p2",
-            "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "id": "ready-v02",
             "labels": [
               "security",
               "NOT_AN_ATOM!!",
               "a-label-far-longer-than-the-campfire-32-char-atom-pattern-allows"
-            ]
+            ],
+            "msg_id": "05842def8dadf947e68174a0311f075c4dd8c918ee6a71596cdd1971dd291db6",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Freeform labels",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -370,17 +371,17 @@
       "expect": {
         "items": [
           {
+            "context": "second write",
+            "created_at": "1700000100000000000",
+            "description": "second write",
+            "for": "",
             "id": "ready-v03",
             "msg_id": "df7d1fc28ca434ceb758c3cb26aacecd89774a8b890be4c6ad571e426f1c1a58",
-            "title": "newer",
-            "context": "second write",
-            "description": "second write",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000100000000000,
-            "updated_at": 1700000100000000000
+            "title": "newer",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -499,15 +500,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v04",
             "msg_id": "3de802e71c7a5eae4913233a57d97e27ac570d24637d26266555506ed777018a",
-            "title": "alpha",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "alpha",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -678,15 +679,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v05",
-            "msg_id": "c93679b5498aa3129f3da3a8c9d3ea505c104dbd97cf997a1872adc461c06687",
-            "title": "Dedup",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -695,7 +689,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "claimed"
               }
-            ]
+            ],
+            "id": "ready-v05",
+            "msg_id": "c93679b5498aa3129f3da3a8c9d3ea505c104dbd97cf997a1872adc461c06687",
+            "priority": "p1",
+            "status": "active",
+            "title": "Dedup",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -832,15 +833,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v06",
-            "msg_id": "7844404aa9b1f2ea5d958bae25d8f0e788023f27c9d7b6de41240fc5d5e6dad7",
-            "title": "Chain",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "done",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000300000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -856,7 +850,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "shipped"
               }
-            ]
+            ],
+            "id": "ready-v06",
+            "msg_id": "7844404aa9b1f2ea5d958bae25d8f0e788023f27c9d7b6de41240fc5d5e6dad7",
+            "priority": "p1",
+            "status": "done",
+            "title": "Chain",
+            "type": "task",
+            "updated_at": "1700000300000000000"
           }
         ],
         "views": {
@@ -986,15 +987,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v07",
-            "msg_id": "fec3b85ad643e8ffafd18f6aec802a6b7ea145e43bd57b79e6f0f9a82252da61",
-            "title": "Same second",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "waiting",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1010,7 +1004,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "parked"
               }
-            ]
+            ],
+            "id": "ready-v07",
+            "msg_id": "fec3b85ad643e8ffafd18f6aec802a6b7ea145e43bd57b79e6f0f9a82252da61",
+            "priority": "p1",
+            "status": "waiting",
+            "title": "Same second",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -1140,15 +1141,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v08",
-            "msg_id": "bacda77c87db5aecdbd4ac3f5c4b17dab50e1087e21ada4913d3cd3be0309243",
-            "title": "No status tag",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000200000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1164,7 +1158,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "note without a status tag"
               }
-            ]
+            ],
+            "id": "ready-v08",
+            "msg_id": "bacda77c87db5aecdbd4ac3f5c4b17dab50e1087e21ada4913d3cd3be0309243",
+            "priority": "p1",
+            "status": "active",
+            "title": "No status tag",
+            "type": "task",
+            "updated_at": "1700000200000000000"
           }
         ],
         "views": {
@@ -1273,15 +1274,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v09",
             "msg_id": "b786581a4b25b959c79c1320efa61228634cf74320932e2b506a78d67c60eee3",
-            "title": "Authority",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Authority",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -1411,15 +1412,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v10",
-            "msg_id": "1032df9cfd89f8037fb197bab224769d22b527a259e7b6c8f5779db153107f64",
-            "title": "Maintainer authority",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1428,7 +1422,14 @@
                 "changed_by": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
                 "note": "picked up by the second machine"
               }
-            ]
+            ],
+            "id": "ready-v10",
+            "msg_id": "1032df9cfd89f8037fb197bab224769d22b527a259e7b6c8f5779db153107f64",
+            "priority": "p1",
+            "status": "active",
+            "title": "Maintainer authority",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -1577,15 +1578,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v11",
             "msg_id": "bdee1ab6cff55a75f7083dee7accb3a49a997979c4b4d427c8b0d7cf36859856",
-            "title": "Revoked maintainer",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Revoked maintainer",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -1781,15 +1782,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v12a",
-            "msg_id": "a156bdee6933feb4099fa4ada0e85c5ac220a1bc0dc97661c32cd32cc25f4703",
-            "title": "Spoof attempt",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1798,18 +1792,18 @@
                 "changed_by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
                 "note": "attributing to someone else"
               }
-            ]
-          },
-          {
-            "id": "ready-v12b",
-            "msg_id": "3e6a108654d065fd053dd22d1b4588bdaba453beac900832e9a1209245ba41a5",
-            "title": "Migrated entry",
-            "type": "task",
-            "for": "",
+            ],
+            "id": "ready-v12a",
+            "msg_id": "a156bdee6933feb4099fa4ada0e85c5ac220a1bc0dc97661c32cd32cc25f4703",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "title": "Spoof attempt",
+            "type": "task",
+            "updated_at": "1700000100000000000"
+          },
+          {
+            "created_at": "1700000000000000000",
+            "for": "",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1818,7 +1812,14 @@
                 "changed_by": "orig@campfire",
                 "note": "replayed campfire history"
               }
-            ]
+            ],
+            "id": "ready-v12b",
+            "msg_id": "3e6a108654d065fd053dd22d1b4588bdaba453beac900832e9a1209245ba41a5",
+            "priority": "p1",
+            "status": "active",
+            "title": "Migrated entry",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -1930,15 +1931,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v13",
-            "msg_id": "28b724f6a6b2c24f513f7f90e3f046b9d1629bd56e1555a1cc951a8fb56fe757",
-            "title": "Draft kind",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1947,7 +1941,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "draft transition from a foreign client"
               }
-            ]
+            ],
+            "id": "ready-v13",
+            "msg_id": "28b724f6a6b2c24f513f7f90e3f046b9d1629bd56e1555a1cc951a8fb56fe757",
+            "priority": "p1",
+            "status": "active",
+            "title": "Draft kind",
+            "type": "task",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -2200,49 +2201,49 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v15a",
-            "msg_id": "67973645862ea5f1179a58f5f52ace2a1cfb33836b2c00ebc1164a4e58fd110a",
-            "title": "Step 1",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "active",
             "blocks": [
               "ready-v15b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v15a",
+            "msg_id": "67973645862ea5f1179a58f5f52ace2a1cfb33836b2c00ebc1164a4e58fd110a",
+            "priority": "p1",
+            "status": "active",
+            "title": "Step 1",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
-            "id": "ready-v15b",
-            "msg_id": "4eb3a263fae25bae4f854ac908d5715c061d73ee6d7b272e57bb4200091bd4f3",
-            "title": "Step 2",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "blocked",
             "blocked_by": [
               "ready-v15a"
             ],
             "blocks": [
               "ready-v15c"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
-          },
-          {
-            "id": "ready-v15c",
-            "msg_id": "a62462c3a7148b80db05720ea36f8a67c4b11d504e483168b50b2e513f79a3f8",
-            "title": "Step 3",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
+            "id": "ready-v15b",
+            "msg_id": "4eb3a263fae25bae4f854ac908d5715c061d73ee6d7b272e57bb4200091bd4f3",
             "priority": "p1",
             "status": "blocked",
+            "title": "Step 2",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          },
+          {
             "blocked_by": [
               "ready-v15b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v15c",
+            "msg_id": "a62462c3a7148b80db05720ea36f8a67c4b11d504e483168b50b2e513f79a3f8",
+            "priority": "p1",
+            "status": "blocked",
+            "title": "Step 3",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2450,54 +2451,54 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v16a",
-            "msg_id": "fea272fd3cd4ccb88ed60cf5915bb23cfc89e6f8388759291f0df290f6a71ab4",
-            "title": "Finished blocker",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "done",
             "blocks": [
               "ready-v16b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v16a",
+            "msg_id": "fea272fd3cd4ccb88ed60cf5915bb23cfc89e6f8388759291f0df290f6a71ab4",
+            "priority": "p1",
+            "status": "done",
+            "title": "Finished blocker",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
-            "id": "ready-v16b",
-            "msg_id": "56b33d3a965b13c70424e187eb7e81429c0ca29bc697416295c521f98542f3fb",
-            "title": "Unblocked",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "active",
             "blocked_by": [
               "ready-v16a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v16b",
+            "msg_id": "56b33d3a965b13c70424e187eb7e81429c0ca29bc697416295c521f98542f3fb",
+            "priority": "p1",
+            "status": "active",
+            "title": "Unblocked",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v16c",
             "msg_id": "44729b104d2b08fd11792271eb46ec7edbbb618c99e188420a3505b5801f7243",
-            "title": "Closed while depending",
-            "type": "task",
-            "for": "",
             "priority": "p2",
             "status": "done",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Closed while depending",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v16d",
             "msg_id": "7bf84c0f5e057472ee238a6088c7fa2574515d5a584e342941bf68593a955748",
-            "title": "Live blocker",
-            "type": "task",
-            "for": "",
             "priority": "p2",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Live blocker",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2590,15 +2591,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v17",
             "msg_id": "c30ab382ace177f63b1e115cfe7d78911016c538a95fd6c7ce96d078d1488499",
-            "title": "Dangling deps",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Dangling deps",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2726,38 +2727,38 @@
       "expect": {
         "items": [
           {
+            "blocked_by": [
+              "ready-v18b"
+            ],
+            "blocks": [
+              "ready-v18b"
+            ],
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v18a",
             "msg_id": "db65d3153b1596d60d71b93fae1406cf688c9fab9b7074fc1063301d8326e8b0",
+            "priority": "p1",
+            "status": "blocked",
             "title": "Cycle A",
             "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "blocked",
-            "blocked_by": [
-              "ready-v18b"
-            ],
-            "blocks": [
-              "ready-v18b"
-            ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "updated_at": "1700000000000000000"
           },
           {
-            "id": "ready-v18b",
-            "msg_id": "7205cf407fa835e60b5fb249fada50b6cd7492be3edb0a7fc17fb9542b065318",
-            "title": "Cycle B",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "blocked",
             "blocked_by": [
               "ready-v18a"
             ],
             "blocks": [
               "ready-v18a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v18b",
+            "msg_id": "7205cf407fa835e60b5fb249fada50b6cd7492be3edb0a7fc17fb9542b065318",
+            "priority": "p1",
+            "status": "blocked",
+            "title": "Cycle B",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2897,34 +2898,34 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "gate": "design",
+            "gate_msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
             "id": "ready-v19a",
             "msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
-            "title": "Gated",
-            "type": "decision",
-            "for": "",
             "priority": "p0",
             "status": "waiting",
-            "gate": "design",
+            "title": "Gated",
+            "type": "decision",
+            "updated_at": "1700000000000000000",
             "waiting_on": "needs a ruling on the envelope",
-            "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:13:20Z",
-            "gate_msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "waiting_type": "gate"
           },
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v19b",
             "msg_id": "a249b3b982c673d973f2817abc0cff49ba61288df2440bfc8d4ad22045acfd6e",
-            "title": "Waiting on a human",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "waiting",
+            "title": "Waiting on a human",
+            "type": "task",
+            "updated_at": "1700000000000000000",
             "waiting_on": "baron",
-            "waiting_type": "human",
             "waiting_since": "2023-11-14T22:13:20Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "waiting_type": "human"
           }
         ],
         "views": {
@@ -3066,37 +3067,37 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v20a",
-            "msg_id": "ed79e4124d7832f6bd607a252b64e1db77c39ebc2438757abec4dacb1f141bc3",
-            "title": "Blocker",
-            "type": "task",
-            "for": "",
-            "priority": "p1",
-            "status": "active",
             "blocks": [
               "ready-v20b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v20a",
+            "msg_id": "ed79e4124d7832f6bd607a252b64e1db77c39ebc2438757abec4dacb1f141bc3",
+            "priority": "p1",
+            "status": "active",
+            "title": "Blocker",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
-            "id": "ready-v20b",
-            "msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
-            "title": "Blocked and gated",
-            "type": "decision",
-            "for": "",
-            "priority": "p0",
-            "status": "blocked",
             "blocked_by": [
               "ready-v20a"
             ],
+            "created_at": "1700000000000000000",
+            "for": "",
             "gate": "budget",
-            "waiting_on": "spend approval",
-            "waiting_type": "gate",
-            "waiting_since": "2023-11-14T22:13:20Z",
             "gate_msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "id": "ready-v20b",
+            "msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
+            "priority": "p0",
+            "status": "blocked",
+            "title": "Blocked and gated",
+            "type": "decision",
+            "updated_at": "1700000000000000000",
+            "waiting_on": "spend approval",
+            "waiting_since": "2023-11-14T22:13:20Z",
+            "waiting_type": "gate"
           }
         ],
         "views": {
@@ -3218,16 +3219,9 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v21",
-            "msg_id": "9866355111bcca0bb1bc7449c54fe51a546bd1921908d95a0c4f2e315102ee43",
-            "title": "Closed while gated",
-            "type": "decision",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p0",
-            "status": "cancelled",
             "gate": "design",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -3236,7 +3230,14 @@
                 "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
                 "note": "abandoned"
               }
-            ]
+            ],
+            "id": "ready-v21",
+            "msg_id": "9866355111bcca0bb1bc7449c54fe51a546bd1921908d95a0c4f2e315102ee43",
+            "priority": "p0",
+            "status": "cancelled",
+            "title": "Closed while gated",
+            "type": "decision",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -3330,17 +3331,17 @@
       "expect": {
         "items": [
           {
+            "context": "has a NIP-34 issue anchor",
+            "created_at": "1700000000000000000",
+            "description": "has a NIP-34 issue anchor",
+            "for": "",
             "id": "ready-v22",
             "msg_id": "1e2d0866256eea5c23a3a86fc23c55293dd9eceb9374cbe0a08b111aaf44b8c8",
-            "title": "Interop",
-            "context": "has a NIP-34 issue anchor",
-            "description": "has a NIP-34 issue anchor",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Interop",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3465,15 +3466,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v23",
             "msg_id": "1d7c19dae381cfae0b00d52f462b00e43e5f5f31b620aace0d57dba7ddd46c88",
-            "title": "Survivor",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Survivor",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3628,17 +3629,17 @@
       "expect": {
         "items": [
           {
+            "context": "the real card",
+            "created_at": "1700000000000000000",
+            "description": "the real card",
+            "for": "",
             "id": "ready-v24",
             "msg_id": "7e6baf4c1d59fd0da38046553e32d74957e9f0b517db35f107675f91bc1a100b",
-            "title": "genuine",
-            "context": "the real card",
-            "description": "the real card",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "genuine",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3782,15 +3783,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v25",
             "msg_id": "76ee45986a6259efc9ddc2b7a1fab08d32c085f0b77c8f5f27431ddaf7da757d",
-            "title": "genuine",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "genuine",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3932,15 +3933,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v25",
-            "msg_id": "9c92bdf9d1663792e00d3112de71d54afe0a58b6656eb9175416ab396bda68cc",
-            "title": "hostile takeover",
-            "type": "bug",
+            "created_at": "1700000100000000000",
             "for": "",
-            "priority": "p3",
-            "status": "done",
-            "created_at": 1700000100000000000,
-            "updated_at": 1700000200000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:16:40Z",
@@ -3949,7 +3943,14 @@
                 "changed_by": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
                 "note": "closing your item"
               }
-            ]
+            ],
+            "id": "ready-v25",
+            "msg_id": "9c92bdf9d1663792e00d3112de71d54afe0a58b6656eb9175416ab396bda68cc",
+            "priority": "p3",
+            "status": "done",
+            "title": "hostile takeover",
+            "type": "bug",
+            "updated_at": "1700000200000000000"
           }
         ],
         "views": {
@@ -4064,15 +4065,15 @@
       "expect": {
         "items": [
           {
+            "created_at": "1700000000000000000",
+            "for": "",
             "id": "ready-v26",
             "msg_id": "26440444d5a4c403c6298aec8b30775ec34fadb2d184d44fa5c50bcc3ecb4665",
-            "title": "on the pinned board",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "on the pinned board",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -4298,15 +4299,8 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v27",
-            "msg_id": "d70c81612d4ad8cbdb5a38840350dd236053a217fa1d6ec14c28233bbccb8d8b",
-            "title": "authored before the revoke",
-            "type": "task",
+            "created_at": "1700000000000000000",
             "for": "",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000050000000000,
             "history": [
               {
                 "timestamp": "2023-11-14T22:14:10Z",
@@ -4315,7 +4309,14 @@
                 "changed_by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
                 "note": "claimed before the revoke"
               }
-            ]
+            ],
+            "id": "ready-v27",
+            "msg_id": "d70c81612d4ad8cbdb5a38840350dd236053a217fa1d6ec14c28233bbccb8d8b",
+            "priority": "p1",
+            "status": "active",
+            "title": "authored before the revoke",
+            "type": "task",
+            "updated_at": "1700000050000000000"
           }
         ],
         "views": {
@@ -4376,7 +4377,7 @@
       "identity": "",
       "events": [
         {
-          "id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+          "id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4426,11 +4427,11 @@
               "1"
             ]
           ],
-          "content": "sClrpdJbuO7cE0t9sy94nlhXPyWuInMuXc1r7ZXLRGxL/38vvJbsyBMvQ/JgypY0bW4+lAb7vkD7hPVLd+OC30R9bXC1uhnb3ALSfqXtJubW/PBAbwrW0NGhhYCoj6TWDbOF4UGRTxCz7Wzj8qx0YvwwzWDKLs3A6OjL833+LkAn",
-          "sig": "7820ced54018375eaf4e541b49604ffb8c837dc42b5d7c88329bdd04836ab502a3eee7738b6f57bd9cbac0aa9d4e89f101035bb243f8cf8d1f3a385823a64c9e"
+          "content": "Zf2ggd6/XlX2+WLTuu27BcSb5Fjx3z9AuW1EXayUpEqeHuUm+V5v3UYroaRXh3N/7cPV6Evff+owT/w0Hz9EhjotApf4zpWps446cwkhvgvRh720fM347ph3d+zV7LuWoQEFGflsJytM3xucEHK1zSlqCVSGl8m0vbwTT3v67aOo",
+          "sig": "6dcc149974a2de3f8f9b2ecb23165eb98ede9c833aac7f315afdd3f95649425532c28599e659a1aba39bf4f94a15e9adbf665ed128b169d2a969f69dcb72fee5"
         },
         {
-          "id": "3f209ad6de1b1e66fec06803a010eb5a4de3065eb89eda3a47e977187bd8f10f",
+          "id": "9ec338c8a1a5aa3f632187350447a8c3c31bde50827d04c47bd3f6098ecbe3a0",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4460,29 +4461,19 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "hBVNwY8CSvtjdBnjaMkO5fBEa73r6SB36cSFSlL2EZ4RDV4tWiblywT9WxNFigmMRb7Y82YQ",
-          "sig": "90ce51937e3e830de75c9f86a349e534f1d1e897a175f8f54124ea24ad2c45dd9e3070754738d3ccc97c855b8a25b5d907a96c9c3313a0f016f7056d4adc5d08"
+          "content": "3r2AKs5pRQgd2LeqwLB3LC0DPDpfA8IBENiHfo1O5P4RXK3axEGmgIvwoOwYKqZ7iQNlao8S",
+          "sig": "1b4ae3fccfcb0fdd66f5f17d517df65f8e3cf605e46db0b959c88daff47b7abad1664c74c33e9bb38a5ce1656f9933bdb03f28e1eb061bfb6b98e57a8e139bd8"
         }
       ],
       "expect": {
         "items": [
           {
-            "id": "ready-v28",
-            "msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
-            "title": "sealed title",
             "context": "sealed context",
+            "created_at": "1700000000000000000",
             "description": "sealed context",
-            "type": "decision",
             "for": "",
-            "priority": "p0",
-            "status": "waiting",
             "gate": "design",
-            "waiting_on": "the approver",
-            "waiting_type": "gate",
-            "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4492,9 +4483,19 @@
                 "note": "sealed reason"
               }
             ],
+            "id": "ready-v28",
             "labels": [
               "security"
-            ]
+            ],
+            "msg_id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
+            "priority": "p0",
+            "status": "waiting",
+            "title": "sealed title",
+            "type": "decision",
+            "updated_at": "1700000100000000000",
+            "waiting_on": "the approver",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "waiting_type": "gate"
           }
         ],
         "views": {
@@ -4554,7 +4555,7 @@
       "identity": "",
       "events": [
         {
-          "id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+          "id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4604,11 +4605,11 @@
               "1"
             ]
           ],
-          "content": "8IDIbOjAujM8gDWtv6txkaD+cN2tWpPpoqllU+Xo+4UcgdLOXV3DqaMl1nv1heyx/Dr8C1pYRwwMys9JshP+DSlIvQK5USwBJskpxgbBvvh/TAMIDVMauwQc/4SZGLhZNIiKFXBMzGsxCoWgf4Oqs3m2u1OrjniEiLFwQXTCJfVq",
-          "sig": "1c9f0a4982e78b025760e1bd75145a1e0fff7cef3969d2626aa9366c81d9420e1d51305dd646b2b6df841865c997571ad1c1b32d9fe5d0f7f7d4afbb4cd94771"
+          "content": "JHfFbDi9PpP+CBEEgmRBWmEb3WpxpHDtbtpukicIkH9AqrxMStv36WDdJVKilV0+XVi5uZ3j+/TORB80aGXGmqpwjNkS3nFGlELRm6NQejmJoOO185Hh35VpNiTjh23Gpk8QE6pPGpRrhmik2WHrYTkH3lrjVHHJRAUudTsKvVEJ",
+          "sig": "957fc96ee89ad891ee916cdb750dfa289757b122f097c1e1b7e0e7f2bb65fa94719ecc4885282bd6c1d30a3c08959bba2c5b3fc003abe85421fd38e013d7b6fe"
         },
         {
-          "id": "402a53b98b180f6b3674f3acc0821006e07f74340841aff2993c0ab84802e93e",
+          "id": "5b2078cd160c76829f813cce246f52693496cfefebf904725e8807a745ad0a46",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4638,28 +4639,19 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "rh/dI9r9d8jRW/DNKtm8vJL7ZYgOdrYhn6VpMOeAOKDBU5xl6RCgA/H/+YsHUJVPXN7u9zto",
-          "sig": "42e66e8cded9961e9efb0b186ae1d2c8a167ab195927daa3728d0f8e1da7b2c1499962b8bc278f137e9a4542d38bb8ce7161d7a5fc9177a3b0692907170f46a8"
+          "content": "+WhiG4PEV0CwmcRWK0IbFNCgxLx9fv5yGohVlLC/D18n/8OL1ZoQ9m0xjsC+z9SjCIBRYYi1",
+          "sig": "9447e1da2c9732cd134906a5981800804e6ae5c188f91d022f26fafc700a59561ac9fc6e6043c948ce57a03d0f9a2ae71c9c5c478bc33c4cb7fa4b0af43fe2a3"
         }
       ],
       "expect": {
         "items": [
           {
-            "id": "ready-v28",
-            "msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
-            "title": "[encrypted]",
             "context": "[encrypted]",
+            "created_at": "1700000000000000000",
             "description": "[encrypted]",
-            "type": "decision",
             "for": "",
-            "priority": "p0",
-            "status": "waiting",
             "gate": "design",
-            "waiting_type": "gate",
-            "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4669,9 +4661,18 @@
                 "note": "[encrypted]"
               }
             ],
+            "id": "ready-v28",
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
-            ]
+            ],
+            "msg_id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
+            "priority": "p0",
+            "status": "waiting",
+            "title": "[encrypted]",
+            "type": "decision",
+            "updated_at": "1700000100000000000",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "waiting_type": "gate"
           }
         ],
         "views": {
@@ -4722,7 +4723,7 @@
       "identity": "",
       "events": [
         {
-          "id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+          "id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4772,11 +4773,11 @@
               "1"
             ]
           ],
-          "content": "P1InDBgxxj5XfgYNKsSQ+4uIMImOMt7B74Y2Mvu3zYt8IJL7Jms4Sx4DeGWLNJ6ybEB1dOwd5cYfxq2uH6G7X5o7Zw0EiWu9PkOtANg9Nvwdm4/bgGAZzddNWpH8h9Wz2vt9A4cO8Pmqcm1jXgmyBwxK/pXBhzhMdvNI4XMI71OS",
-          "sig": "b97a6b018ad012cd70743cd6cc05cdf97c72b4c5b6f8c6758e9799f67cae79fb2d72b4610f9850d148457035b3cc274f69ac846607d16ce959ad0cbeca8f5199"
+          "content": "7i82IKk/ipRBNLm62YnqI3oHcMvEUqhqiQmEV7S0BVGuGDPC4v4e7idugLApAYoGy7ilPhV1h27AsCOnDUJszkpbtjD/9WaFZj7+HYCotCMJdRlvh9p9YVH/sZdRK5kvTwUnBDK9zhM7hQB+21cP0LAkcgzK2fhrxPYMfDTpKKtg",
+          "sig": "6f11c64d544c9a6ee4cdfc52ff66ecd2ae6357763c69752936ed3a7be941dce81259983cbe478adf96280fed6087cb57d5672b3189bd598ca5dac23ee3ec7537"
         },
         {
-          "id": "1bdcddbdea9182d50baaa17b18355fb55fadff7566beb4cc3a00fd3557a6f785",
+          "id": "e99ab67e4c1c3227419f67600c0a516c8ce8fd9d65d0d26488bd80946c66de72",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4806,28 +4807,19 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "duTQXDfE8d6epkh24ImuETQTI/F0VB/09TfYfURf7GQypTTOoWT9aOxQyqGv2N4X32bOhWOK",
-          "sig": "f7502261ca78ef603eb891d6de9349fa38388a22ba23238218e42ea1963d51dc68ac440f94055ab96ac276209fef781f46480e7cdbfb002ef940c0b41368233b"
+          "content": "I0Qdb0PsB568NCthMiMMlgchV5Q3Qs1GtpVBnEu+IL8DTXDGKpLBSLnD7wrRM6TQttQOKWBE",
+          "sig": "f88f1238b77afdb66bd1ca9bdb0d5ff349c9fa57991f3199dc1bc110b377bbcac7e9d82eeb0b3591793e021cb9bfc79a070d48ef474cb586c5be87aa17d61a48"
         }
       ],
       "expect": {
         "items": [
           {
-            "id": "ready-v28",
-            "msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
-            "title": "[encrypted]",
             "context": "[encrypted]",
+            "created_at": "1700000000000000000",
             "description": "[encrypted]",
-            "type": "decision",
             "for": "",
-            "priority": "p0",
-            "status": "waiting",
             "gate": "design",
-            "waiting_type": "gate",
-            "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4837,9 +4829,18 @@
                 "note": "[encrypted]"
               }
             ],
+            "id": "ready-v28",
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
-            ]
+            ],
+            "msg_id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
+            "priority": "p0",
+            "status": "waiting",
+            "title": "[encrypted]",
+            "type": "decision",
+            "updated_at": "1700000100000000000",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "waiting_type": "gate"
           }
         ],
         "views": {
@@ -5039,17 +5040,17 @@
       "expect": {
         "items": [
           {
+            "context": "written before the board went confidential",
+            "created_at": "1699999900000000000",
+            "description": "written before the board went confidential",
+            "for": "",
             "id": "ready-v29a",
             "msg_id": "4af1e9ef08b082e3a39ff52f690b3f24694981a67267a6c0c7709cfbcbc59b1b",
-            "title": "grandfathered plaintext",
-            "context": "written before the board went confidential",
-            "description": "written before the board went confidential",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1699999900000000000,
-            "updated_at": 1699999900000000000
+            "title": "grandfathered plaintext",
+            "type": "task",
+            "updated_at": "1699999900000000000"
           }
         ],
         "views": {
@@ -5465,113 +5466,113 @@
       "expect": {
         "items": [
           {
-            "id": "ready-v30a",
-            "msg_id": "a81da4a0163bffde4984030bdc34bccea170c650a4e62504e46a74e8a3bfdc11",
-            "title": "Mine, scoped to the agent",
-            "type": "task",
-            "for": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
-            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-            "priority": "p1",
-            "status": "active",
             "blocks": [
               "ready-v30g"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "1700000000000000000",
+            "for": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+            "id": "ready-v30a",
             "labels": [
               "security"
-            ]
+            ],
+            "msg_id": "a81da4a0163bffde4984030bdc34bccea170c650a4e62504e46a74e8a3bfdc11",
+            "priority": "p1",
+            "status": "active",
+            "title": "Mine, scoped to the agent",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+            "created_at": "1700000000000000000",
+            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
             "id": "ready-v30b",
             "msg_id": "389636077e0aac8c5b3b4c1eec620eaf68591ccc62c709398e89245fb92c48ec",
+            "priority": "p1",
+            "status": "active",
             "title": "Delegated to the agent",
             "type": "task",
-            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-            "by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
-            "priority": "p1",
-            "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "updated_at": "1700000000000000000"
           },
           {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "1700000000000000000",
+            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
             "id": "ready-v30c",
             "msg_id": "3d0c7521df9850d419b0dbcc3731b2c5a15c544ce254580294b376589de8732e",
-            "title": "Mine, scoped to me",
-            "type": "task",
-            "for": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
             "priority": "p2",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Mine, scoped to me",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "created_at": "1700000000000000000",
+            "eta": "2020-01-01T00:00:00Z",
+            "for": "",
             "id": "ready-v30d",
             "msg_id": "9ed5da46549e49ed75956fcf261af10ba38b67ac0c5f15490f54235f5a8ad39f",
-            "title": "Overdue",
-            "type": "task",
-            "for": "",
             "priority": "p1",
             "status": "inbox",
-            "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Overdue",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "1700000000000000000",
+            "eta": "2020-01-01T00:00:00Z",
+            "for": "",
             "id": "ready-v30e",
             "msg_id": "e9dc11958ba3f4c1c7f363addfb7838748091c491b8a6aabcc59c881e859afe3",
-            "title": "Overdue but finished",
-            "type": "task",
-            "for": "",
-            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
             "priority": "p1",
             "status": "done",
-            "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Overdue but finished",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "gate": "review",
+            "gate_msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
             "id": "ready-v30f",
             "msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
-            "title": "Gated",
-            "type": "decision",
-            "for": "",
             "priority": "p0",
             "status": "waiting",
-            "gate": "review",
+            "title": "Gated",
+            "type": "decision",
+            "updated_at": "1700000000000000000",
             "waiting_on": "a reviewer",
-            "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:13:20Z",
-            "gate_msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "waiting_type": "gate"
           },
           {
-            "id": "ready-v30g",
-            "msg_id": "e3ef2c78d6cb43a1e34cc9b95978759d251c3cf31181f2ecb360adc4725110b0",
-            "title": "Blocked",
-            "type": "task",
-            "for": "",
-            "priority": "p2",
-            "status": "blocked",
             "blocked_by": [
               "ready-v30a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v30g",
+            "msg_id": "e3ef2c78d6cb43a1e34cc9b95978759d251c3cf31181f2ecb360adc4725110b0",
+            "priority": "p2",
+            "status": "blocked",
+            "title": "Blocked",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           },
           {
+            "created_at": "1700000000000000000",
+            "eta": "2020-01-01T00:00:00Z",
+            "for": "",
             "id": "ready-v30h",
             "msg_id": "7e4d928edcb19b304b5c90778331e1fc65d2e53672fe0871d2ee5372c266b665",
-            "title": "Cancelled",
-            "type": "task",
-            "for": "",
             "priority": "p3",
             "status": "cancelled",
-            "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "title": "Cancelled",
+            "type": "task",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -5616,6 +5617,292 @@
           "security": [
             "ready-v30a"
           ]
+        }
+      }
+    },
+    {
+      "name": "item_timestamp_large_nontidy_value_encoded_as_string",
+      "spec_clauses": [
+        "4.8",
+        "4.6",
+        "5.1"
+      ],
+      "note": "created_at/updated_at at a large, non-tidy wall-clock second value (not a small t0-relative offset) to exercise the decimal-string encoding at realistic magnitude, well below the float64-safe bound (spec §4.8). See this vector's Go doc comment (cases_encoding.go) for what it deliberately does NOT prove, and item_timestamp_above_float64_safe_bound (same file) plus TestTimestampEncodingPreservesArbitraryNanoseconds for the actual old-encoding counterexamples.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "9d01b866c4d731b835ac3804e5253821ead450b36785c9c39e8d6620a7dcbeb0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1785193627,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v31"
+            ],
+            [
+              "title",
+              "Large wall-clock timestamp"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "b84b13e0bf98d35f31b276e2dc87a6ef663f90d362bae7342735848d53a5c8372071721473bffe4c8b9aeba3ed99a036010e93d8310dac50bd4c7d8b443340bb"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "1785193627000000000",
+            "for": "",
+            "id": "ready-v31",
+            "msg_id": "9d01b866c4d731b835ac3804e5253821ead450b36785c9c39e8d6620a7dcbeb0",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Large wall-clock timestamp",
+            "type": "task",
+            "updated_at": "1785193627000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v31"
+          ],
+          "gates": [],
+          "my-work": [
+            "ready-v31"
+          ],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v31"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "item_timestamp_above_float64_safe_bound",
+      "spec_clauses": [
+        "4.8",
+        "4.6",
+        "5.1"
+      ],
+      "note": "created_at/updated_at at sec=4611686019, ABOVE the float64-safe bound spec §4.8 derives (sec \u003c= 4,611,686,018 is guaranteed exact for a sec with no factor of two). This is a GENUINE counterexample to the old bare-number encoding, produced by the live fold from a real signed event, not a synthetic value the type merely permits: int64(float64(4611686019000000000)) == 4611686019000000512, a 512ns miss. A bare-number vector file would have handed an independent client a value that fails JSON.parse-then-compare against this item's real created_at.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "b76a7e27e4bbf70ce81f87c5da6a0964694dfe1a243f3711f37bbe41d0015f18",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 4611686019,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v32"
+            ],
+            [
+              "title",
+              "Timestamp above the float64-safe bound"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "aa5b1eec6839421b2ad40b5a75aae5dda007af08dae001bd802c0e2c6b761c7118638e9c23cc01d76b8bec43dc304b0d951b664bc404cbc9f573b7f1828a9b6f"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "4611686019000000000",
+            "for": "",
+            "id": "ready-v32",
+            "msg_id": "b76a7e27e4bbf70ce81f87c5da6a0964694dfe1a243f3711f37bbe41d0015f18",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Timestamp above the float64-safe bound",
+            "type": "task",
+            "updated_at": "4611686019000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v32"
+          ],
+          "gates": [],
+          "my-work": [
+            "ready-v32"
+          ],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v32"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "item_context_contains_timestamp_byte_pattern",
+      "spec_clauses": [
+        "4.8",
+        "5.1"
+      ],
+      "note": "Context/Description literally contain the byte pattern \"created_at\":123 -- the exact shape EncodeItem's target fields have. Pins that EncodeItem operates on the DECODED item (a map[string]RawMessage keyed by field name), not a byte-pattern match over marshaled JSON, so this content is never mistaken for the item's own created_at/updated_at and never corrupts the surrounding JSON. See this vector's Go doc comment (vItemContextContainsTimestampBytePattern, cases_encoding.go) for a disclosure: this specific literal did not, in fact, defeat ready-414's PRIOR regex-based implementation either, because encoding/json's escaping guarantees rule it out for this struct's current field types — this vector is a forward-looking structural pin, not a proof the prior code was broken.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "85b6a6521ccbe1eda53a2e1856c29b0dd09b4f348a85adbb3b3dce79001ecb41",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v33"
+            ],
+            [
+              "title",
+              "Context contains a timestamp-shaped byte pattern"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "\"created_at\":123",
+          "sig": "d1412b83d9e21a9ef9c2f4930497edb8bd8dbec70a11addf3cf3a9c267c27ece1216d2973f017227a60e99469e6ad09796711266adfedaaedbf001ba338f53ae"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "context": "\"created_at\":123",
+            "created_at": "1700000000000000000",
+            "description": "\"created_at\":123",
+            "for": "",
+            "id": "ready-v33",
+            "msg_id": "85b6a6521ccbe1eda53a2e1856c29b0dd09b4f348a85adbb3b3dce79001ecb41",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Context contains a timestamp-shaped byte pattern",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v33"
+          ],
+          "gates": [],
+          "my-work": [
+            "ready-v33"
+          ],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v33"
+          ],
+          "work": []
         }
       }
     }

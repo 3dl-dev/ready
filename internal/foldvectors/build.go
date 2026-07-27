@@ -124,6 +124,9 @@ func Build() (*File, error) {
 		b.vConfidentialNoDecryptor,
 		b.vFoldGateQuarantine,
 		b.vViewsLattice,
+		b.vItemTimestampEncoding,
+		b.vItemTimestampAboveFloat64SafeBound,
+		b.vItemContextContainsTimestampBytePattern,
 	} {
 		if err := fn(); err != nil {
 			return nil, err
@@ -140,7 +143,15 @@ func Build() (*File, error) {
 			"the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the " +
 			"confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event " +
 			"ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every " +
-			"regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op.",
+			"regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. " +
+			"See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they " +
+			"are NOT bare JSON numbers.",
+		TimestampEncoding: "expect.items[].created_at and expect.items[].updated_at are unix-nanosecond " +
+			"int64 values encoded as DECIMAL STRINGS (e.g. \"1700000000000000000\"), not bare JSON numbers. " +
+			"Parse them with BigInt(field), never Number(field) or a generic JSON number parser: JavaScript's " +
+			"Number cannot represent an arbitrary 64-bit integer exactly (Number.MAX_SAFE_INTEGER = " +
+			"2^53-1 = 9007199254740991), and this field's declared type (arbitrary int64 unix nanoseconds) " +
+			"is not restricted to values that happen to survive that. See board-fold-spec.md §4.8.",
 		Keys: []Key{
 			{Name: "owner", Secret: secOwner, Pubkey: b.ownerPub},
 			{Name: "maintainer", Secret: secMaint, Pubkey: b.maintPub},
@@ -207,12 +218,14 @@ func (b *builder) add(v Vector) error {
 	return nil
 }
 
-// itemsJSON marshals hand-authored items, sorted by id.
+// itemsJSON marshals hand-authored items, sorted by id, through EncodeItem so
+// the hand-authored expectation and the live-fold comparison in Run() always
+// agree on how created_at/updated_at are encoded (ready-414).
 func itemsJSON(items ...*state.Item) ([]json.RawMessage, error) {
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	out := make([]json.RawMessage, 0, len(items))
 	for _, it := range items {
-		blob, err := json.Marshal(it)
+		blob, err := EncodeItem(it)
 		if err != nil {
 			return nil, err
 		}
