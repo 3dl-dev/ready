@@ -29,14 +29,14 @@ package main
 //                                yet, wrapped as a URL. Completed later with:
 //                                  rd grant --claim <nonce> <pubkey>
 //
-// URL SHAPE (bare share form, unknown key): https://<board-host>/#rd1_<base64url>
+// URL SHAPE (bare share form, unknown key): https://<board-host>#rd1_<base64url>
 // — a FRAGMENT (never sent to a server, never in an access log). The payload is
 // the UNCHANGED rd1_ v3 nostrClaimPayload (cmd/rd/nostr_invite.go
 // buildNostrClaimToken / decodeNostrClaimToken) — no new token version, no new
 // event kind (constraint).
 //
 // URL SHAPE (own board, `rd board` with no args, AND `rd board share <who>` for
-// a known key): https://<board-host>/#board=<coord>&relays=<comma-list> — NO
+// a known key): https://<board-host>#board=<coord>&relays=<comma-list> — NO
 // rd1_ token, NO claim-nonce. Byte-shape deliberately distinct from the bare
 // share link: a claim-nonce is a bearer credential `rd grant --claim` can bind
 // to whoever presents it, so a link for an already-authorized recipient must
@@ -62,7 +62,9 @@ import (
 // defaultBoardHost is the hosted-board origin used when neither --host nor
 // $RD_BOARD_HOST names one. This MUST be a host that actually resolves
 // (ready-df6: an earlier placeholder, board.ready.3dl.dev, never resolved and
-// shipped as if it were real) — verified by TestBoardHost_DefaultResolves.
+// shipped as if it were real) — verified by
+// TestBoardCmd_DefaultHost_EmitsConfiguredHost (cmd/rd/board_test.go), which
+// drives the real cobra RunE and asserts on the literal printed bytes.
 const defaultBoardHost = "https://ready.3dl.dev/board"
 
 // boardHost resolves the hosted-board ORIGIN a token URL is minted against:
@@ -131,7 +133,7 @@ var boardCmd = &cobra.Command{
 	Short: "Print a working URL for this project's board",
 	Long: `Print a shareable URL for this repo's pinned board:
 
-  https://<board-host>/#board=<coord>&relays=<relay-list>
+  https://<board-host>#board=<coord>&relays=<relay-list>
 
 With NO arguments this is YOUR OWN board: no grant is issued and NO rd1_
 token is minted — your key already holds owner access, so nothing needs to
@@ -147,9 +149,11 @@ ever bind a stranger's key to.
 
 ` + boardSecurityNote + `
 
---host / $RD_BOARD_HOST overrides the hosted-board origin (default: a
-https://ready.3dl.dev/board — a real, TLS-serving host. The browser-served
-board UI at that path has not shipped yet, see ready-1ab).`,
+--host / $RD_BOARD_HOST overrides the hosted-board origin (default:
+https://ready.3dl.dev/board — ready.3dl.dev is a real, TLS-serving,
+DNS-resolving host, but the /board page itself is not live yet and
+currently 404s. The browser-served board UI at that path has not shipped
+yet, see ready-1ab).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, native := nostrNativeProject()

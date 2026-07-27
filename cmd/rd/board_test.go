@@ -43,7 +43,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -187,8 +186,22 @@ func TestBoardCmd_OwnBoard_PlainURL_NoToken(t *testing.T) {
 
 // TestBoardShareCmd_Bare_PrintsDecodableClaimURL covers done #1 for
 // `rd board share` (no argument): the claim-nonce link for an unknown key.
+//
+// This is also the ONLY hermetic coverage of boardURL()'s DEFAULT host: every
+// other call site either passes defaultBoardHost in directly as an argument
+// (TestBoardURL_RejectsExpiredToken, TestBoardURL_RejectsV2SecretToken — which
+// is host-tautological and cannot detect a wrong default) or exercises
+// ownBoardURL, not boardURL. Here no --host flag and no $RD_BOARD_HOST are
+// set, so boardShareCmd.RunE resolves the host itself via boardHost(cmd), and
+// the assertion below is against the HARDCODED literal
+// "https://ready.3dl.dev/board" — never the defaultBoardHost constant — so a
+// regression back to a dead placeholder host fails this test.
 func TestBoardShareCmd_Bare_PrintsDecodableClaimURL(t *testing.T) {
 	_, _, coord, _ := boardTestEnv(t)
+	t.Setenv("RD_BOARD_HOST", "")
+	if err := boardShareCmd.Flags().Set("host", ""); err != nil {
+		t.Fatalf("reset --host: %v", err)
+	}
 
 	out := captureStdoutPipe(t, func() {
 		if err := boardShareCmd.RunE(boardShareCmd, nil); err != nil {
@@ -196,6 +209,12 @@ func TestBoardShareCmd_Bare_PrintsDecodableClaimURL(t *testing.T) {
 		}
 	})
 	urlLine := findURLLine(t, out)
+
+	const wantHostPrefix = "https://ready.3dl.dev/board#rd1_"
+	if !strings.HasPrefix(urlLine, wantHostPrefix) {
+		t.Fatalf("rd board share (bare) printed %q, want it to start with the configured default host %q", urlLine, wantHostPrefix)
+	}
+
 	token := extractToken(t, urlLine)
 	p, err := decodeNostrClaimToken(token)
 	if err != nil {
@@ -537,19 +556,70 @@ func TestBoardCmd_Help_StatesLinkConveysNoReadAccess(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_DefaultHost_EmitsRealResolvableURL covers ready-df6: `rd
-// board`, run through the REAL cobra command (boardCmd.RunE) with no --host
-// flag and no $RD_BOARD_HOST set, must print a URL anchored on
-// https://ready.3dl.dev/board — a host that actually resolves — never the
-// board.ready.3dl.dev placeholder that shipped in PR #127 and never resolved.
-// This is deliberately NOT a boardHost()-vs-defaultBoardHost constant
-// comparison (that would be a tautology the moment both sides drift
-// together); it drives the same RunE path a real `rd board` invocation takes
-// and asserts on the literal printed bytes, then independently confirms via
-// net.LookupHost that the host segment actually resolves in DNS — the exact
-// failure mode of the original bug (a syntactically fine host that was never
-// registered).
-func TestBoardCmd_DefaultHost_EmitsRealResolvableURL(t *testing.T) {
+// TestBoardCmd_Help_URLShapeMatchesEmittedURL covers ready-df6 done-condition
+// 4 on cmd/rd/board.go's user-facing --help (Long) text: it documents a URL
+// shape (`https://<board-host>#board=<coord>&relays=<relay-list>`), and this
+// test proves that documented shape is the shape `rd board` ACTUALLY prints —
+// not prose that quietly drifted. This is exactly how the bug shipped:
+// boardURL/ownBoardURL were changed from `host + "/#"` to `host + "#"` (no
+// slash before the fragment marker) but the Long string kept documenting
+// "<board-host>/#board=..." — under the real default host that renders as
+// https://ready.3dl.dev/board/#board=... which is NOT what `rd board` prints
+// (https://ready.3dl.dev/board#board=...). Anchoring this test on the real
+// RunE output means the doc string and the emitted bytes can never
+// independently drift apart again without failing CI.
+func TestBoardCmd_Help_URLShapeMatchesEmittedURL(t *testing.T) {
+	boardTestEnv(t)
+	t.Setenv("RD_BOARD_HOST", "")
+	if err := boardCmd.Flags().Set("host", ""); err != nil {
+		t.Fatalf("reset --host: %v", err)
+	}
+
+	out := captureStdoutPipe(t, func() {
+		if err := boardCmd.RunE(boardCmd, nil); err != nil {
+			t.Fatalf("rd board: %v", err)
+		}
+	})
+	emitted := strings.TrimSpace(out)
+	i := strings.Index(emitted, "#")
+	if i < 0 {
+		t.Fatalf("rd board output %q has no '#' fragment", emitted)
+	}
+	if strings.HasSuffix(emitted[:i], "/") {
+		t.Fatalf("rd board output %q has a '/' immediately before the '#' fragment", emitted)
+	}
+
+	help := boardCmd.Long
+	if !strings.Contains(help, "<board-host>#board=") {
+		t.Fatalf("rd board --help Long text does not document the actually-emitted shape %q (host directly followed by '#', no slash); Long =\n%s", "<board-host>#board=", help)
+	}
+	if strings.Contains(help, "<board-host>/#") {
+		t.Fatalf("rd board --help Long text still documents the stale %q shape, which is NOT what `rd board` prints (%q); Long =\n%s", "<board-host>/#", emitted, help)
+	}
+}
+
+// TestBoardCmd_DefaultHost_EmitsConfiguredHost covers ready-df6: `rd board`,
+// run through the REAL cobra command (boardCmd.RunE) with no --host flag and
+// no $RD_BOARD_HOST set, must print a URL anchored on the literal
+// https://ready.3dl.dev/board — never the board.ready.3dl.dev placeholder
+// that shipped in PR #127 and never resolved. This is deliberately NOT a
+// boardHost()-vs-defaultBoardHost constant comparison (that would be a
+// tautology the moment both sides drift together — see the fixed
+// TestBoardHost_Resolution below for exactly that failure mode); it drives
+// the same RunE path a real `rd board` invocation takes and asserts on the
+// literal printed bytes against a hardcoded string.
+//
+// This test does NOT probe DNS (no net.LookupHost). An earlier revision did,
+// but mutating defaultBoardHost back to the dead board.ready.3dl.dev
+// placeholder already fails the wantPrefix check below before the DNS lookup
+// would ever run — the DNS assertion was unreachable dead weight that bought
+// zero additional regression coverage while making `go test ./cmd/rd/` (and
+// therefore the whole suite) depend on live network access, going red on any
+// offline machine or sandboxed CI runner. If a live-DNS/reachability proof is
+// ever wanted, it belongs behind the RD_NOSTR_LIVE_RELAY-style gate used by
+// TestLiveRelay_BoardShare_GrantReadableOnRelay below, not in the default
+// hermetic suite.
+func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	boardTestEnv(t)
 	t.Setenv("RD_BOARD_HOST", "")
 	if err := boardCmd.Flags().Set("host", ""); err != nil {
@@ -570,26 +640,28 @@ func TestBoardCmd_DefaultHost_EmitsRealResolvableURL(t *testing.T) {
 	if strings.Contains(line, "board.ready.3dl.dev") {
 		t.Fatalf("rd board (default host) printed %q, which still carries the dead board.ready.3dl.dev placeholder", line)
 	}
-
-	u, err := url.Parse(line)
-	if err != nil {
-		t.Fatalf("parsing emitted URL %q: %v", line, err)
-	}
-	if _, err := net.LookupHost(u.Hostname()); err != nil {
-		t.Fatalf("default board host %q (from emitted URL %q) does not resolve in DNS: %v — this is exactly the ready-df6 bug (a placeholder host that was never registered)", u.Hostname(), line, err)
-	}
 }
 
 // TestBoardHost_Resolution proves the --host flag and $RD_BOARD_HOST override
 // the placeholder default, and that a trailing slash on either is trimmed so
 // boardURL never doubles it (constraint: "board host URL must be
 // configurable, not hardcoded").
+//
+// The no-override case is asserted against the HARDCODED literal
+// "https://ready.3dl.dev/board", never against the defaultBoardHost constant
+// itself — comparing boardHost()'s result to the very constant boardHost()
+// returns by construction is a tautology that passes for ANY value of
+// defaultBoardHost (an adversary proved this: under a mutation back to the
+// dead board.ready.3dl.dev placeholder, a `boardHost(cmd) != defaultBoardHost`
+// assertion stays green). The literal comparison is the only form that can
+// actually catch defaultBoardHost drifting back to a placeholder.
 func TestBoardHost_Resolution(t *testing.T) {
 	cmd := boardCmd
 	t.Cleanup(func() { _ = cmd.Flags().Set("host", "") })
 
-	if got := boardHost(cmd); got != defaultBoardHost {
-		t.Errorf("boardHost() with nothing set = %q, want default %q", got, defaultBoardHost)
+	const wantDefault = "https://ready.3dl.dev/board"
+	if got := boardHost(cmd); got != wantDefault {
+		t.Errorf("boardHost() with nothing set = %q, want hardcoded default %q", got, wantDefault)
 	}
 
 	t.Setenv("RD_BOARD_HOST", "https://env-board.example/")
