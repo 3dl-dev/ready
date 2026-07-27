@@ -21,6 +21,19 @@ import (
 	rdsync "github.com/3dl-dev/ready/pkg/sync"
 )
 
+// probeBoardD is deliberately NOT "ready" — this probe is proving PUBKEY-based
+// relay write-allowlist enforcement (ready-266), which has nothing to do with
+// which board a card claims membership in. In "allowlisted" mode this signs with
+// the REAL portfolio key (loaded from $HOME/.cf below); a "ready" BoardD would
+// address this repo's own live production board coordinate and, on acceptance,
+// publish a disposable probe card straight onto it (ready-fce finding (3) /
+// ready-6d0). A board D-tag that can never collide with a real project's pinned
+// board removes the vector at its source, independent of the Publisher-level
+// guard (pkg/sync's Publisher.Production) — this probe doesn't go through
+// Publisher at all, it calls BuildCardEvent + nostr.Publish directly, so that
+// guard cannot protect it. See main_test.go for the regression lock.
+const probeBoardD = "relay-policy-probe-disposable"
+
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: probe <relay-url> <allowlisted|random> [key-path]")
@@ -55,7 +68,7 @@ func main() {
 
 	_ = rdconfig.Config{} // endpoints are passed in explicitly by the demo
 	itemID := fmt.Sprintf("ready-266-probe-%s-%d", mode, time.Now().UnixNano())
-	card := rdsync.CardSpec{ItemID: itemID, Title: "266 write-allowlist probe", Status: state.StatusActive, Priority: "p3", Type: "task", BoardD: "ready"}
+	card := rdsync.CardSpec{ItemID: itemID, Title: "266 write-allowlist probe", Status: state.StatusActive, Priority: "p3", Type: "task", BoardD: probeBoardD}
 	ev, err := rdsync.BuildCardEvent(k, card, time.Now().Unix())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build event: %v\n", err)

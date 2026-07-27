@@ -47,22 +47,22 @@ func liveRelayKey(t *testing.T) *nostr.Key {
 	return nil
 }
 
-// reservedProductionBoardD is THIS repo's own live board D-tag. .ready/config.json
-// pins this project's board coordinate to "30301:<owner>:ready" — the exact
-// coordinate liveRelayKey's identity (the real portfolio key) maintains in
-// production. A live-relay test that signs with liveRelayKey and addresses
-// BoardD "ready" therefore publishes DIRECTLY onto the real "ready" board:
-// `rd ready --view work` then shows the test's disposable fixture cards (and, for
-// role-grant tests, actually grants a throwaway test key a role on the real
-// board) as if they were genuine work (ready-fce).
-const reservedProductionBoardD = "ready"
-
-// requireIsolatedBoardD is the ready-fce guard: it FAILS the test immediately,
-// before any publish call, if boardD is the reserved production board D-tag.
-// Every live-relay test that constructs a BoardSpec/CardSpec must route its
-// board D-tag through here (directly, or via liveTestBoardD) so a regression
-// back to BoardD: "ready" breaks the test loudly instead of silently writing to
-// the live board again.
+// reservedProductionBoardD is defined in nostroutbound.go (production code,
+// not test-only) — the REAL guard now lives on Publisher's write path
+// (Publisher.Production / guardReservedBoard), which fires regardless of
+// whether a test remembers to call requireIsolatedBoardD below. This helper
+// remains as an early, in-test convention check (a live-relay test SHOULD fail
+// fast with a clear message before even attempting to build a BoardSpec/CardSpec
+// with the reserved D-tag) — belt to the write-path guard's suspenders, not the
+// guard itself (ready-fce rework: the original write-path gap this closes).
+//
+// requireIsolatedBoardD FAILS the test immediately, before any publish call, if
+// boardD is the reserved production board D-tag. Every live-relay test that
+// constructs a BoardSpec/CardSpec is encouraged to route its board D-tag through
+// here (directly, or via liveTestBoardD) for a fast, readable failure — but the
+// actual safety property (no write ever reaches the log or a relay) is enforced
+// unconditionally by Publisher.guardReservedBoard, not by this function being
+// called.
 func requireIsolatedBoardD(t *testing.T, boardD string) {
 	t.Helper()
 	if boardD == reservedProductionBoardD {

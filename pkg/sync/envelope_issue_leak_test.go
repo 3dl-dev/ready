@@ -24,10 +24,15 @@ func TestConfidentialItemPublishesNoPlaintextIssueEvent(t *testing.T) {
 	title := "SECRET rotate the leaked signing key"
 	desc := "the signing key leaked in a paste; rotate and audit immediately"
 
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	// BoardD is an arbitrary LOCAL fixture name, deliberately not the reserved
+	// production "ready" coordinate (ready-fce): this test's Publisher has no
+	// WriteRelays and never leaves t.TempDir(), so it carries no live-relay risk,
+	// but the write-path guard fires on ANY Publisher not marked Production
+	// regardless of relay config — see Publisher.Production's doc.
+	board := BoardSpec{BoardD: "issueleak-board", Title: "issueleak-board", Maintainers: []string{k.PubKeyHex()}}
 	card := CardSpec{
 		ItemID: "ready-leak1", Title: title, Context: desc, Status: state.StatusActive,
-		Priority: "p1", Type: "task", BoardD: "ready", Enc: env,
+		Priority: "p1", Type: "task", BoardD: "issueleak-board", Enc: env,
 	}
 
 	pub := &Publisher{Key: k, Log: NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile))}
@@ -67,7 +72,7 @@ func TestConfidentialItemPublishesNoPlaintextIssueEvent(t *testing.T) {
 	// Regression guard the OTHER way: a PLAINTEXT item STILL gets its kind:1621
 	// interop anchor (the fix must not over-suppress on normal boards).
 	pub2 := &Publisher{Key: k, Log: NewNostrLog(filepath.Join(t.TempDir(), ".ready", NostrLogFile))}
-	plainCard := CardSpec{ItemID: "ready-plain1", Title: "public title", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "ready"}
+	plainCard := CardSpec{ItemID: "ready-plain1", Title: "public title", Status: state.StatusActive, Priority: "p1", Type: "task", BoardD: "issueleak-board"}
 	if _, err := pub2.PublishItem(context.Background(), &board, plainCard, 1_700_000_000); err != nil {
 		t.Fatalf("publish plaintext item: %v", err)
 	}

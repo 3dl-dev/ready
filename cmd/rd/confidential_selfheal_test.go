@@ -139,7 +139,11 @@ func newSelfHealFixture(t *testing.T) *selfHealFixture {
 	if err != nil {
 		t.Fatalf("owner key: %v", err)
 	}
-	const boardD = "ready"
+	// boardD is an arbitrary fixture name, not the reserved production "ready"
+	// coordinate (ready-fce; see Publisher.Production's doc) — this test's
+	// relay is an in-process fake (relay.url() below), not a live production
+	// relay, but the write-path guard fires regardless of which relay is dialed.
+	const boardD = "selfheal-board"
 	coord := rdSync.BoardCoord(owner.PubKeyHex(), boardD)
 
 	ownerDir := filepath.Join(base, "A")

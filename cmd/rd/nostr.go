@@ -256,6 +256,11 @@ func nostrPublisher() (*rdSync.Publisher, bool, error) {
 		Log:         rdSync.NewNostrLog(rdSync.NostrLogPath(dir)),
 		WriteRelays: nostrWriteRelays(),
 		PendingPath: nostrPendingPath(dir),
+		// Production: this is the real rd CLI's own publisher constructor — the
+		// sanctioned path allowed to write the reserved production board
+		// coordinate (ready-fce). Every other Publisher{} construction (tests,
+		// probes) must leave this false.
+		Production: true,
 	}, true, nil
 }
 
