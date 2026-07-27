@@ -1,7 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "spec": "docs/design/board-fold-spec.md",
-  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op.",
+  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they are NOT bare JSON numbers.",
+  "timestamp_encoding": "expect.items[].created_at and expect.items[].updated_at are unix-nanosecond int64 values encoded as DECIMAL STRINGS (e.g. \"1700000000000000000\"), not bare JSON numbers. Parse them with BigInt(field), never Number(field) or a generic JSON number parser: JavaScript's Number cannot represent an arbitrary 64-bit integer exactly (Number.MAX_SAFE_INTEGER = 2^53-1 = 9007199254740991), and this field's declared type (arbitrary int64 unix nanoseconds) is not restricted to values that happen to survive that. See board-fold-spec.md §4.8.",
   "keys": [
     {
       "name": "owner",
@@ -131,8 +132,8 @@
             "eta": "2099-01-01T00:00:00Z",
             "due": "2099-02-01T00:00:00Z",
             "parent_id": "ready-p00",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000",
             "labels": [
               "security"
             ]
@@ -238,8 +239,8 @@
             "for": "",
             "priority": "p2",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000",
             "labels": [
               "security",
               "NOT_AN_ATOM!!",
@@ -379,8 +380,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000100000000000,
-            "updated_at": 1700000100000000000
+            "created_at": "1700000100000000000",
+            "updated_at": "1700000100000000000"
           }
         ],
         "views": {
@@ -506,8 +507,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -685,8 +686,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -839,8 +840,8 @@
             "for": "",
             "priority": "p1",
             "status": "done",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000300000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000300000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -993,8 +994,8 @@
             "for": "",
             "priority": "p1",
             "status": "waiting",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1147,8 +1148,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000200000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000200000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1280,8 +1281,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -1418,8 +1419,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1584,8 +1585,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -1788,8 +1789,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1808,8 +1809,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -1937,8 +1938,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -2210,8 +2211,8 @@
             "blocks": [
               "ready-v15b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v15b",
@@ -2227,8 +2228,8 @@
             "blocks": [
               "ready-v15c"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v15c",
@@ -2241,8 +2242,8 @@
             "blocked_by": [
               "ready-v15b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2460,8 +2461,8 @@
             "blocks": [
               "ready-v16b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v16b",
@@ -2474,8 +2475,8 @@
             "blocked_by": [
               "ready-v16a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v16c",
@@ -2485,8 +2486,8 @@
             "for": "",
             "priority": "p2",
             "status": "done",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v16d",
@@ -2496,8 +2497,8 @@
             "for": "",
             "priority": "p2",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2597,8 +2598,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2739,8 +2740,8 @@
             "blocks": [
               "ready-v18b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v18b",
@@ -2756,8 +2757,8 @@
             "blocks": [
               "ready-v18a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2909,8 +2910,8 @@
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:13:20Z",
             "gate_msg_id": "6f6424c18a226d3374798683fd63223667d154dd547707dad13bc05966cf4ad3",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v19b",
@@ -2923,8 +2924,8 @@
             "waiting_on": "baron",
             "waiting_type": "human",
             "waiting_since": "2023-11-14T22:13:20Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3076,8 +3077,8 @@
             "blocks": [
               "ready-v20b"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v20b",
@@ -3095,8 +3096,8 @@
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:13:20Z",
             "gate_msg_id": "eb1e973bb280f43273dd9164ff748d9a4d47513453a67e678edd284c7bc205b3",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3226,8 +3227,8 @@
             "priority": "p0",
             "status": "cancelled",
             "gate": "design",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -3339,8 +3340,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3472,8 +3473,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3637,8 +3638,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3789,8 +3790,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -3939,8 +3940,8 @@
             "for": "",
             "priority": "p3",
             "status": "done",
-            "created_at": 1700000100000000000,
-            "updated_at": 1700000200000000000,
+            "created_at": "1700000100000000000",
+            "updated_at": "1700000200000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:16:40Z",
@@ -4071,8 +4072,8 @@
             "for": "",
             "priority": "p1",
             "status": "inbox",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -4305,8 +4306,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000050000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000050000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:14:10Z",
@@ -4376,7 +4377,7 @@
       "identity": "",
       "events": [
         {
-          "id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+          "id": "956b9ab1f27256e3c0af30ae9fa12f0527f45689a6573c962897bf4b6ccb4dc8",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4426,11 +4427,11 @@
               "1"
             ]
           ],
-          "content": "sClrpdJbuO7cE0t9sy94nlhXPyWuInMuXc1r7ZXLRGxL/38vvJbsyBMvQ/JgypY0bW4+lAb7vkD7hPVLd+OC30R9bXC1uhnb3ALSfqXtJubW/PBAbwrW0NGhhYCoj6TWDbOF4UGRTxCz7Wzj8qx0YvwwzWDKLs3A6OjL833+LkAn",
-          "sig": "7820ced54018375eaf4e541b49604ffb8c837dc42b5d7c88329bdd04836ab502a3eee7738b6f57bd9cbac0aa9d4e89f101035bb243f8cf8d1f3a385823a64c9e"
+          "content": "dHo4Rj7RvClzGZIxg8KQRRRNl7JhWNXhfi+NDjRmKzVCNXHX30jAJ1gH0YWXEIzDzXXM1C1eDHsepMvJNr9b5ttuNGIuxVmtKgL6GBLUS4x+G88ViRK081xqPMuVDqPTjM5DUqHp6S6LmT6INR8IZCvvXJQXhPH19ECmYBffrW/O",
+          "sig": "0af40f5c0a4dfde1c45e990de6a3c4f2a265f7815f3de8513fffd99ad6a1369cb7b2c7817a3af9fdab774f1c2d18a393a289a5aeabd3c85183d9da4c79601c2c"
         },
         {
-          "id": "3f209ad6de1b1e66fec06803a010eb5a4de3065eb89eda3a47e977187bd8f10f",
+          "id": "2897a03e9d278929214a7d9864b4ebaf13d04e0029b8a5226aa8fa2a756c3310",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4460,15 +4461,15 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "hBVNwY8CSvtjdBnjaMkO5fBEa73r6SB36cSFSlL2EZ4RDV4tWiblywT9WxNFigmMRb7Y82YQ",
-          "sig": "90ce51937e3e830de75c9f86a349e534f1d1e897a175f8f54124ea24ad2c45dd9e3070754738d3ccc97c855b8a25b5d907a96c9c3313a0f016f7056d4adc5d08"
+          "content": "E1SrtsvBOhbTMM5Qt0N+g5kWhqF7lwD/k3y9TVCBYCqnETOprLJINvzC44ByAHVTuEBFzefs",
+          "sig": "b988ec86a6030fe2c21e923d8ddb8f210b1b28d6b798e7cb5694c589eb116620a728ddc97a46945b532ab18c67f4269754d7652e9e8ece42d9f6c93787cbc333"
         }
       ],
       "expect": {
         "items": [
           {
             "id": "ready-v28",
-            "msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
+            "msg_id": "956b9ab1f27256e3c0af30ae9fa12f0527f45689a6573c962897bf4b6ccb4dc8",
             "title": "sealed title",
             "context": "sealed context",
             "description": "sealed context",
@@ -4480,9 +4481,9 @@
             "waiting_on": "the approver",
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "15890ffb2e8e76e402162f3a7695d157a9dc7172880b5dc10580c51ad9a4e0b1",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "956b9ab1f27256e3c0af30ae9fa12f0527f45689a6573c962897bf4b6ccb4dc8",
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4554,7 +4555,7 @@
       "identity": "",
       "events": [
         {
-          "id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+          "id": "510b5f7d9d63349dd2bf1e5132bfb7de858b7d01ca06ccc9302809053269a3da",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4604,11 +4605,11 @@
               "1"
             ]
           ],
-          "content": "8IDIbOjAujM8gDWtv6txkaD+cN2tWpPpoqllU+Xo+4UcgdLOXV3DqaMl1nv1heyx/Dr8C1pYRwwMys9JshP+DSlIvQK5USwBJskpxgbBvvh/TAMIDVMauwQc/4SZGLhZNIiKFXBMzGsxCoWgf4Oqs3m2u1OrjniEiLFwQXTCJfVq",
-          "sig": "1c9f0a4982e78b025760e1bd75145a1e0fff7cef3969d2626aa9366c81d9420e1d51305dd646b2b6df841865c997571ad1c1b32d9fe5d0f7f7d4afbb4cd94771"
+          "content": "YL1mJkx6tNZeOI230CZZat0VsI63Cjeizu/v3B18TX6hbMGlLZukXrAA7Pa8Md1kn4TXNgk9brorOLrxBVMO69j8Qb158iUoFZasyivFKq0Tt3/HMuluPfcQNz1WryaLEcGbHm5gymdoszJKLBo3cGwXHz/Nwoop11PJdywaO2L3",
+          "sig": "207d34bfaa40775b847ca99922accd4a18feeec575dba2ec241a06753bf1d859d58175847542b7c4c87389733f038b515addd04355db79c3c15c194c0dd20c48"
         },
         {
-          "id": "402a53b98b180f6b3674f3acc0821006e07f74340841aff2993c0ab84802e93e",
+          "id": "e98ab32459f0713ea5373233bbd36c92cf60afc06e406a8071cdbfb9d920ee14",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4638,15 +4639,15 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "rh/dI9r9d8jRW/DNKtm8vJL7ZYgOdrYhn6VpMOeAOKDBU5xl6RCgA/H/+YsHUJVPXN7u9zto",
-          "sig": "42e66e8cded9961e9efb0b186ae1d2c8a167ab195927daa3728d0f8e1da7b2c1499962b8bc278f137e9a4542d38bb8ce7161d7a5fc9177a3b0692907170f46a8"
+          "content": "yK3NI6NNUuzMgsj5T4sgwvKgvuhQPQyW2JPl5Iszczxblf8Vzxq9JY/ST7Q54wYKlBl45h1p",
+          "sig": "b7aa0c86e5bb9d4c3bb298ad22523af362217b62f0c2dd340da671705a2be48a1581ba312f8ea0538aaadfaef2dfda14ebfa3e5f5328ac5d8f6570ab58eb36f0"
         }
       ],
       "expect": {
         "items": [
           {
             "id": "ready-v28",
-            "msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
+            "msg_id": "510b5f7d9d63349dd2bf1e5132bfb7de858b7d01ca06ccc9302809053269a3da",
             "title": "[encrypted]",
             "context": "[encrypted]",
             "description": "[encrypted]",
@@ -4657,9 +4658,9 @@
             "gate": "design",
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "1e72bf1f6c4b40047738b6c66675e6702b657844951bab97cc36e8867c2a7304",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "510b5f7d9d63349dd2bf1e5132bfb7de858b7d01ca06ccc9302809053269a3da",
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4722,7 +4723,7 @@
       "identity": "",
       "events": [
         {
-          "id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+          "id": "f7a50282b429816f84d6b477b325abdd2a897a0c41bada8710a3acf8832b098c",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4772,11 +4773,11 @@
               "1"
             ]
           ],
-          "content": "P1InDBgxxj5XfgYNKsSQ+4uIMImOMt7B74Y2Mvu3zYt8IJL7Jms4Sx4DeGWLNJ6ybEB1dOwd5cYfxq2uH6G7X5o7Zw0EiWu9PkOtANg9Nvwdm4/bgGAZzddNWpH8h9Wz2vt9A4cO8Pmqcm1jXgmyBwxK/pXBhzhMdvNI4XMI71OS",
-          "sig": "b97a6b018ad012cd70743cd6cc05cdf97c72b4c5b6f8c6758e9799f67cae79fb2d72b4610f9850d148457035b3cc274f69ac846607d16ce959ad0cbeca8f5199"
+          "content": "Jx/3MTLxF0J4mWQR9A2V1Ytxy6T4MODn5wIT4walbUiyegWVd7jrfxktG+QVSYlvND7FsGLsivCPJnhXxWIkAUqdlq9hxCmA7hCio7DP714TPASzIOb2hYSfpwjWC8sSXfxVa0yitgXR3Bek8bBmsTs2hd5jopxM4e0UBcZO8Db7",
+          "sig": "468166d18573f314af835679a6b1c203ddce22d2edbaffe83bf7e7a7689189176d441982a14f2849135d201a1b0d163e34ff472274b3cc430cfa4258857a756d"
         },
         {
-          "id": "1bdcddbdea9182d50baaa17b18355fb55fadff7566beb4cc3a00fd3557a6f785",
+          "id": "8e133d5e1ce53327e4406558b5eacde4505280cfaec03d4326495341028f5c5f",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4806,15 +4807,15 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "duTQXDfE8d6epkh24ImuETQTI/F0VB/09TfYfURf7GQypTTOoWT9aOxQyqGv2N4X32bOhWOK",
-          "sig": "f7502261ca78ef603eb891d6de9349fa38388a22ba23238218e42ea1963d51dc68ac440f94055ab96ac276209fef781f46480e7cdbfb002ef940c0b41368233b"
+          "content": "50Hdhz8bnwISGO3uaDpNpCqAKyR4B1dl3+6TG8ZFxGFfKRwTnS74cSxdgblvTtTnJCVE0k1E",
+          "sig": "37ac7b94dfeca49021027ed4fe61f7333828294c04fd3b2e64a5ff4ffa272eccc17d9f7b65ff438af40a9ac3ea3583982d8c9434c2c8b9aae28c36dc18161b2a"
         }
       ],
       "expect": {
         "items": [
           {
             "id": "ready-v28",
-            "msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
+            "msg_id": "f7a50282b429816f84d6b477b325abdd2a897a0c41bada8710a3acf8832b098c",
             "title": "[encrypted]",
             "context": "[encrypted]",
             "description": "[encrypted]",
@@ -4825,9 +4826,9 @@
             "gate": "design",
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:15:00Z",
-            "gate_msg_id": "daeb0db2259d76b1bc7d355e07c6623b947536e95b52300f73811f6e99d777d0",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000100000000000,
+            "gate_msg_id": "f7a50282b429816f84d6b477b325abdd2a897a0c41bada8710a3acf8832b098c",
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000100000000000",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -5048,8 +5049,8 @@
             "for": "",
             "priority": "p1",
             "status": "active",
-            "created_at": 1699999900000000000,
-            "updated_at": 1699999900000000000
+            "created_at": "1699999900000000000",
+            "updated_at": "1699999900000000000"
           }
         ],
         "views": {
@@ -5476,8 +5477,8 @@
             "blocks": [
               "ready-v30g"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000,
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000",
             "labels": [
               "security"
             ]
@@ -5491,8 +5492,8 @@
             "by": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
             "priority": "p1",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30c",
@@ -5503,8 +5504,8 @@
             "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
             "priority": "p2",
             "status": "active",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30d",
@@ -5515,8 +5516,8 @@
             "priority": "p1",
             "status": "inbox",
             "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30e",
@@ -5528,8 +5529,8 @@
             "priority": "p1",
             "status": "done",
             "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30f",
@@ -5544,8 +5545,8 @@
             "waiting_type": "gate",
             "waiting_since": "2023-11-14T22:13:20Z",
             "gate_msg_id": "94ba2c03c6f29db57562ff0931487b7ffde5f7163cf9e510f2778b17a0ca6b43",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30g",
@@ -5558,8 +5559,8 @@
             "blocked_by": [
               "ready-v30a"
             ],
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           },
           {
             "id": "ready-v30h",
@@ -5570,8 +5571,8 @@
             "priority": "p3",
             "status": "cancelled",
             "eta": "2020-01-01T00:00:00Z",
-            "created_at": 1700000000000000000,
-            "updated_at": 1700000000000000000
+            "created_at": "1700000000000000000",
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -5616,6 +5617,101 @@
           "security": [
             "ready-v30a"
           ]
+        }
+      }
+    },
+    {
+      "name": "item_timestamp_large_nontidy_value_encoded_as_string",
+      "spec_clauses": [
+        "4.8",
+        "4.6",
+        "5.1"
+      ],
+      "note": "created_at/updated_at at a large, non-tidy wall-clock second value (not a small t0-relative offset) to exercise the decimal-string encoding at realistic magnitude. See this vector's Go doc comment (cases_encoding.go) for what it deliberately does NOT prove, and TestTimestampEncodingPreservesArbitraryNanoseconds for the actual old-encoding counterexample.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "events": [
+        {
+          "id": "9d01b866c4d731b835ac3804e5253821ead450b36785c9c39e8d6620a7dcbeb0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1785193627,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v31"
+            ],
+            [
+              "title",
+              "Large wall-clock timestamp"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "b84b13e0bf98d35f31b276e2dc87a6ef663f90d362bae7342735848d53a5c8372071721473bffe4c8b9aeba3ed99a036010e93d8310dac50bd4c7d8b443340bb"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "id": "ready-v31",
+            "msg_id": "9d01b866c4d731b835ac3804e5253821ead450b36785c9c39e8d6620a7dcbeb0",
+            "title": "Large wall-clock timestamp",
+            "type": "task",
+            "for": "",
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "priority": "p2",
+            "status": "inbox",
+            "created_at": "1785193627000000000",
+            "updated_at": "1785193627000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v31"
+          ],
+          "gates": [],
+          "my-work": [
+            "ready-v31"
+          ],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v31"
+          ],
+          "work": []
         }
       }
     }

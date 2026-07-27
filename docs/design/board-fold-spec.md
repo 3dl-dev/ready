@@ -220,6 +220,30 @@ card's `created_at` past a genuinely-later cross-machine edit. This is a **write
 rule; a folding client does not need it to read, but a conformance vector
 generator does, to reproduce byte-identical event sets.
 
+**§4.8 Conformance-vector JSON encoding of item timestamps (ready-414).**
+`state.Item.CreatedAt`/`UpdatedAt` are declared as arbitrary int64 unix
+nanoseconds. §4.6's derivation (`sec * int64(time.Second)`) happens to make
+every value the live fold can currently produce exactly representable as an
+IEEE-754 double: a multiple of `1e9` is always a multiple of `2^9`, and a
+multiple of `2^9` round-trips through `float64` losslessly at any magnitude an
+`int64` can hold. But the FIELD'S TYPE carries no such guarantee — it is
+"arbitrary int64 unix nanoseconds," not "a whole number of seconds times
+1e9" — and `testdata/fold.vectors.json` must be trustworthy for an independent
+client for any value the type permits, not only the ones today's formula
+happens to produce. JavaScript's `Number` cannot represent an arbitrary 64-bit
+integer exactly (`Number.MAX_SAFE_INTEGER` = 2^53-1), so the **vector file**
+(not `state.Item`'s Go JSON tags, which are unchanged, and not rd's own
+CLI/wire output) encodes `expect.items[].created_at` / `.updated_at` as
+DECIMAL STRINGS — e.g. `"created_at":"1700000000000000000"` — so a client
+recovers them with `BigInt()`, never `Number()`. `internal/foldvectors.EncodeItem`
+(`internal/foldvectors/vectors.go`) applies this at the one point every item is
+turned into vector JSON, for both the hand-authored expectation and the
+live-fold comparison, so authoring and verification can never silently
+disagree about it. The vector file's own `timestamp_encoding` field restates
+this for a reader who never opens the Go source. `FormatVersion` was bumped
+1 → 2 for this change (a client on version 1 was silently trusting a bare
+number that is only safe by accident).
+
 ---
 
 ## 5. Card → item field projection

@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -42,7 +43,50 @@ import (
 // FormatVersion is bumped when the vector file's SHAPE changes (not when
 // vectors are added). An independent client should refuse a version it does not
 // understand rather than silently mis-read a field.
-const FormatVersion = 1
+//
+// Bumped 1 -> 2 by ready-414: expect.items[].created_at / updated_at changed
+// from bare JSON numbers to decimal STRINGS (see EncodeItem, TimestampEncoding
+// and spec §4.8). A client still reading version 1 was silently losing
+// nanosecond precision on JSON.parse for any int64 value not shaped like
+// today's fold output; the version bump forces a client to notice the shape
+// changed instead of mis-parsing it.
+const FormatVersion = 2
+
+// tsFieldPattern matches the two Item JSON fields that carry arbitrary int64
+// unix-nanosecond timestamps. See EncodeItem.
+var tsFieldPattern = regexp.MustCompile(`"(created_at|updated_at)":(-?[0-9]+)`)
+
+// EncodeItem marshals a projected item into the JSON that lands in a vector's
+// expect.items, re-encoding its two int64 unix-nanosecond fields (created_at,
+// updated_at) as decimal STRINGS instead of bare numbers.
+//
+// state.Item's own JSON tags are untouched by this -- rd's real JSON output
+// (CLI, wire) is not part of this change -- only the copy that lands in
+// testdata/fold.vectors.json is reshaped. That is deliberate: the fold's
+// derivation of these two fields (event created_at, unix SECONDS, times
+// int64(time.Second), spec §4.6) happens to always produce a value that
+// survives an IEEE-754 double round-trip today (a multiple of 1e9 is always a
+// multiple of 2^9, which stays exact at any magnitude an int64 can hold), but
+// the FIELD'S TYPE makes no such promise, and JavaScript's Number cannot
+// represent an arbitrary 64-bit integer exactly (Number.MAX_SAFE_INTEGER =
+// 2^53-1 = 9007199254740991). A vector file that hands a client a bare number
+// here is correct only by an accident of today's derivation formula; the
+// string encoding removes that dependency. See spec §4.8 and
+// TestTimestampEncodingPreservesArbitraryNanoseconds for a value that
+// concretely fails under the old (bare-number) encoding.
+//
+// Both places that turn a *state.Item into vector JSON -- the hand-authored
+// expectation in build.go's itemsJSON, and the live-fold comparison in Run()
+// below -- call this one function, so a case added after this fix (ready-ce8,
+// ready-882) gets the encoding for free and authoring/verification can never
+// silently disagree about it.
+func EncodeItem(it *state.Item) (json.RawMessage, error) {
+	blob, err := json.Marshal(it)
+	if err != nil {
+		return nil, err
+	}
+	return tsFieldPattern.ReplaceAll(blob, []byte(`"$1":"$2"`)), nil
+}
 
 // File is the top-level fold.vectors.json document.
 type File struct {
@@ -52,6 +96,12 @@ type File struct {
 	Spec string `json:"spec"`
 	// Note is free text for a human opening the file cold.
 	Note string `json:"note"`
+	// TimestampEncoding documents, IN this file (not only in Go comments — see
+	// EncodeItem), how expect.items[].created_at / updated_at are encoded. A
+	// client MUST read this before assuming those two fields are ordinary JSON
+	// numbers: they are decimal STRINGS, parse them with BigInt(), never
+	// Number() or JSON's own number parser. See spec §4.8.
+	TimestampEncoding string `json:"timestamp_encoding"`
 	// Keys are the fixture identities, by role name. Secrets are published on
 	// purpose: an independent client must be able to RE-SIGN the fixtures (and to
 	// prove to itself that the forged vectors really are forged).
@@ -191,7 +241,7 @@ func Run(v Vector) (items []json.RawMessage, viewSets map[string][]string, label
 
 	items = make([]json.RawMessage, 0, len(ordered))
 	for _, it := range ordered {
-		blob, mErr := json.Marshal(it)
+		blob, mErr := EncodeItem(it)
 		if mErr != nil {
 			return nil, nil, nil, mErr
 		}

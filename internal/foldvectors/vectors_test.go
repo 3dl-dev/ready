@@ -14,9 +14,12 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/3dl-dev/ready/internal/foldvectors"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 const (
@@ -232,6 +235,75 @@ func TestVectorEventsAreWellFormed(t *testing.T) {
 	}
 	if nulls == 0 {
 		t.Error("no vector exercises the nil-event guard (spec §3.1)")
+	}
+}
+
+// TestTimestampEncodingPreservesArbitraryNanoseconds is the ready-414
+// counterexample: a genuinely non-round int64 nanosecond value — one the live
+// fold's `sec * int64(time.Second)` derivation (spec §4.6) never produces, but
+// which state.Item.CreatedAt's declared type (arbitrary int64 unix
+// nanoseconds) does not forbid — is not exactly representable as an IEEE-754
+// double, the same type backing JavaScript's Number. A bare-number JSON
+// encoding of this value is lossy at JSON.parse time on any JS/TS client;
+// EncodeItem's decimal string is not. This is deliberately NOT a
+// foldvectors.Vector: every vector's expect.items is checked against the live
+// fold (build.go's add()), and the live fold cannot produce this value — see
+// cases_encoding.go's doc comment for why the closest fold-checked vector
+// (item_timestamp_large_nontidy_value_encoded_as_string) cannot carry this
+// proof itself.
+func TestTimestampEncodingPreservesArbitraryNanoseconds(t *testing.T) {
+	const nonRound int64 = 1700000000123456789 // NOT a multiple of 1e9
+
+	// Ground truth: this specific value cannot round-trip through float64
+	// exactly. If it did, it would be a useless fixture for this test — fail
+	// loudly rather than silently prove nothing.
+	if int64(float64(nonRound)) == nonRound {
+		t.Fatalf("fixture %d round-trips through float64 exactly; this test needs a genuinely non-round value", nonRound)
+	}
+
+	it := &state.Item{ID: "ready-tsenc-proof", CreatedAt: nonRound, UpdatedAt: nonRound}
+	blob, err := foldvectors.EncodeItem(it)
+	if err != nil {
+		t.Fatalf("EncodeItem: %v", err)
+	}
+
+	var decoded struct {
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(blob, &decoded); err != nil {
+		t.Fatalf("decode %s: %v", blob, err)
+	}
+
+	want := strconv.FormatInt(nonRound, 10)
+	if decoded.CreatedAt != want {
+		t.Errorf("created_at = %q, want the exact decimal string %q — a bare number here is exactly the "+
+			"defect ready-414 closes: it would render as %v after a JS JSON.parse, silently 21ns off",
+			decoded.CreatedAt, want, float64(nonRound))
+	}
+	if decoded.UpdatedAt != want {
+		t.Errorf("updated_at = %q, want %q", decoded.UpdatedAt, want)
+	}
+
+	got, err := strconv.ParseInt(decoded.CreatedAt, 10, 64)
+	if err != nil || got != nonRound {
+		t.Errorf("created_at %q does not parse back (via the string a client would use) to the original %d", decoded.CreatedAt, nonRound)
+	}
+}
+
+// TestTimestampEncodingIsSelfDescribing is done-condition 3 (ready-414): the
+// vector file must state its own timestamp encoding where a TS reader who
+// never opens the Go source will find it, not only in Go doc comments.
+func TestTimestampEncodingIsSelfDescribing(t *testing.T) {
+	f := load(t)
+	if f.TimestampEncoding == "" {
+		t.Fatal("timestamp_encoding is empty — the vector file no longer documents, in the file itself, " +
+			"that created_at/updated_at are decimal strings rather than bare numbers")
+	}
+	for _, must := range []string{"created_at", "updated_at", "BigInt"} {
+		if !strings.Contains(f.TimestampEncoding, must) {
+			t.Errorf("timestamp_encoding does not mention %q: %s", must, f.TimestampEncoding)
+		}
 	}
 }
 
