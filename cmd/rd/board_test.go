@@ -645,7 +645,14 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	// URL SHAPE. Without this, --help can go on naming a host `rd board`
 	// has never emitted (e.g. after a copy-paste-only rename of the three
 	// literals above) while every other assertion in this file stays green.
-	const wantHost = "ready.3dl.dev"
+	//
+	// This MUST be the full origin+path literal, not the bare domain. A bare
+	// "ready.3dl.dev" is a SUBSTRING of the dead "board.ready.3dl.dev"
+	// placeholder from PR #127, so it would be satisfied by the exact
+	// regression this item exists to remove. It is also a hardcoded literal
+	// rather than defaultBoardHost, so it cannot degrade into the
+	// constant-vs-constant tautology that let the placeholder ship.
+	const wantHost = "https://ready.3dl.dev/board"
 	if !strings.Contains(boardCmd.Long, wantHost) {
 		t.Fatalf("boardCmd.Long does not mention the configured default host %q; Long =\n%s", wantHost, boardCmd.Long)
 	}

@@ -150,10 +150,10 @@ ever bind a stranger's key to.
 ` + boardSecurityNote + `
 
 --host / $RD_BOARD_HOST overrides the hosted-board origin (default:
-https://ready.3dl.dev/board — ready.3dl.dev is a real, TLS-serving,
-DNS-resolving host, but the /board page itself is not live yet and
-currently 404s. The browser-served board UI at that path has not shipped
-yet, see ready-1ab).`,
+https://ready.3dl.dev/board — a real, TLS-serving, DNS-resolving host that
+serves a page. That page is currently a build placeholder; the browser-served
+board UI has not shipped yet, so the URL is not yet useful to open — see
+ready-1ab).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, native := nostrNativeProject()
