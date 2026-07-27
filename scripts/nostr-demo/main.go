@@ -29,6 +29,7 @@ import (
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
+	rdsync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 func main() {
@@ -145,7 +146,13 @@ func cmdProve(args []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), nostr.DefaultTimeout)
 	defer cancel()
-	accepted, msg, err := nostr.Publish(ctx, *relay, e)
+	// production=false: this is a demo/proof tool (see the package doc), not a
+	// sanctioned CLI write path. rdsync.GuardedPublish is the ONLY sanctioned way
+	// to reach nostr.Publish (ready-6d0 round 3) — this event is a plain kind-1
+	// note with no board "d"/"a" tag, so it can never hit the reserved
+	// coordinate, but routing through the chokepoint keeps that true even if a
+	// future edit adds tag flags to this subcommand.
+	accepted, msg, err := rdsync.GuardedPublish(ctx, *relay, e, false)
 	if err != nil {
 		fatalf("publish: %v", err)
 	}

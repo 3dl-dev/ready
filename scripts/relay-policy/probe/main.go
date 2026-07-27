@@ -28,10 +28,14 @@ import (
 // address this repo's own live production board coordinate and, on acceptance,
 // publish a disposable probe card straight onto it (ready-fce finding (3) /
 // ready-6d0). A board D-tag that can never collide with a real project's pinned
-// board removes the vector at its source, independent of the Publisher-level
-// guard (pkg/sync's Publisher.Production) — this probe doesn't go through
-// Publisher at all, it calls BuildCardEvent + nostr.Publish directly, so that
-// guard cannot protect it. See main_test.go for the regression lock.
+// board removes the vector at its source. This probe doesn't go through
+// Publisher (the per-caller guard), but it DOES go through rdsync.GuardedPublish
+// below (the CLASS-level network choke point, ready-6d0 round 3) — so even if a
+// future edit here reintroduced a literal "ready" BoardD, GuardedPublish would
+// still refuse to dial the relay for it. See main_test.go for the regression
+// lock on this constant, and pkg/sync/publish_chokepoint_test.go for the
+// mechanical lock proving no file (including this one) can reach nostr.Publish
+// directly instead of through GuardedPublish.
 const probeBoardD = "relay-policy-probe-disposable"
 
 func main() {
@@ -77,7 +81,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), nostr.DefaultTimeout)
 	defer cancel()
-	accepted, msg, err := nostr.Publish(ctx, relay, ev)
+	// production=false: this is a disposable probe, not a sanctioned CLI write
+	// path. GuardedPublish is the ONLY sanctioned way to reach nostr.Publish
+	// (ready-6d0 round 3) — see the const doc above.
+	accepted, msg, err := rdsync.GuardedPublish(ctx, relay, ev, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "publish error to %s: %v\n", relay, err)
 		os.Exit(1)

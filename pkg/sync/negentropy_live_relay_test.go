@@ -71,11 +71,11 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
 
 	// Each machine syncs against the relay.
-	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("A sync: %v", err)
 	}
-	rB, err := NegentropySync(ctx, relay, logB, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rB, err := NegentropySync(ctx, relay, logB, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 
 	// Anti-pathology: a SECOND sync on a converged machine transfers ZERO event
 	// bodies (no full re-sync). This is the measured proof vs campfire's 44x.
-	rA2, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second)
+	rA2, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("A resync: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	t.Logf("offline: %d events buffered, all durable in the local log", len(buffered))
 
 	// Reconnect: flush to the LIVE relay.
-	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, 30*time.Second)
+	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	// (relay dedupes, OK,true) — prove by direct republish of the buffered events.
 	for _, e := range buffered {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		accepted, msg, perr := nostr.Publish(ctx, relay, e)
+		accepted, msg, perr := GuardedPublish(ctx, relay, e, false)
 		cancel()
 		if perr != nil {
 			t.Fatalf("republish %s: %v", e.ID, perr)
@@ -205,7 +205,7 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	syncLog := NewNostrLog(filepath.Join(dir, "sync", NostrLogFile))
 	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
 	untrusting := map[string]bool{stranger.PubKeyHex(): true}
-	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second)
+	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("gated sync: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	// Admit k -> the very same events now download. Proves the gate (not the relay,
 	// not the filter) was the sole blocker.
 	trusting := map[string]bool{k.PubKeyHex(): true}
-	r2, err := NegentropySync(context.Background(), relay, syncLog, filter, trusting, 30*time.Second)
+	r2, err := NegentropySync(context.Background(), relay, syncLog, filter, trusting, 30*time.Second, false)
 	if err != nil {
 		t.Fatalf("trusting sync: %v", err)
 	}

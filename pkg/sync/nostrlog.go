@@ -102,6 +102,23 @@ func (l *NostrLog) Path() string { return l.path }
 // Append writes one signed event as a JSON line. It creates the .ready directory
 // on demand. The event is NOT re-verified here (callers sign via pkg/nostr); use
 // ReadAll+Verify for a trust pass.
+//
+// NOT GATED by the reserved-production-board guard (ready-6d0 finding (3)/round
+// 3, considered and deliberately left out of scope): the guard's threat model is
+// a caller signing/publishing events under a REAL key to REAL relays without
+// realizing it addresses this repo's live board. Append/AppendUnique write to
+// whatever *NostrLog the caller constructed — usually an isolated t.TempDir()
+// log, but rd init (cmd/rd/init.go) legitimately calls AppendUnique directly on
+// THIS project's own real log for the board's own genesis event, with no
+// Publisher in the loop yet. A production-only gate here would break that
+// legitimate bootstrap. And a caller with enough access to point a *NostrLog at
+// this repo's real .ready/nostr-log.jsonl already has raw filesystem write
+// access to that same JSONL file — no Go-level check on this function closes
+// that path, since a line can be appended with a text editor. The guard that
+// matters is at the network boundary (GuardedPublish) and at Publisher's own
+// call surface (guardReservedBoard): both stop a locally-durable-but-unsent
+// event from ever reaching a live relay under this identity unless production
+// is explicitly set.
 func (l *NostrLog) Append(e *nostr.Event) error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
 		return fmt.Errorf("sync: nostr-log mkdir: %w", err)
@@ -150,6 +167,10 @@ func (l *NostrLog) Append(e *nostr.Event) error {
 // blocks until the first fully commits, then reads the first writer's appends and
 // dedups correctly. flock is per-open-file-description, so it serializes concurrent
 // goroutines (each with its own open) AND concurrent processes.
+//
+// NOT GATED by the reserved-production-board guard — see Append's doc comment
+// (ready-6d0 finding (3)/round 3) for why this is a deliberate, documented
+// scope decision rather than an oversight.
 func (l *NostrLog) AppendUnique(events []*nostr.Event) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
 		return 0, fmt.Errorf("sync: nostr-log mkdir: %w", err)

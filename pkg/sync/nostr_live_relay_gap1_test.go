@@ -76,7 +76,7 @@ func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	// deliberately NOT in the trust set here.
 	filter := BoardSyncFilter(boardCoord, nil)
 	trust := map[string]bool{owner.PubKeyHex(): true}
-	if _, err := NegentropySync(ctx, relay, logB, filter, trust, 30*time.Second); err != nil {
+	if _, err := NegentropySync(ctx, relay, logB, filter, trust, 30*time.Second, false); err != nil {
 		t.Fatalf("B sync: %v", err)
 	}
 

@@ -382,7 +382,7 @@ func TestConfidentialWriteSelfHealRejectsHostileGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build attacker grant: %v", err)
 	}
-	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), attackerEv); perr != nil || !accepted {
+	if accepted, msg, perr := rdSync.GuardedPublish(context.Background(), f.relay.url(), attackerEv, false); perr != nil || !accepted {
 		t.Fatalf("publish attacker grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
 	}
 
@@ -405,7 +405,7 @@ func TestConfidentialWriteSelfHealRejectsHostileGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build retargeted-member grant: %v", err)
 	}
-	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), retargetedMemberEv); perr != nil || !accepted {
+	if accepted, msg, perr := rdSync.GuardedPublish(context.Background(), f.relay.url(), retargetedMemberEv, false); perr != nil || !accepted {
 		t.Fatalf("publish retargeted-member grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
 	}
 
@@ -424,7 +424,7 @@ func TestConfidentialWriteSelfHealRejectsHostileGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build retargeted-board grant: %v", err)
 	}
-	if accepted, msg, perr := nostr.Publish(context.Background(), f.relay.url(), retargetedBoardEv); perr != nil || !accepted {
+	if accepted, msg, perr := rdSync.GuardedPublish(context.Background(), f.relay.url(), retargetedBoardEv, false); perr != nil || !accepted {
 		t.Fatalf("publish retargeted-board grant to relay: accepted=%v msg=%q err=%v", accepted, msg, perr)
 	}
 

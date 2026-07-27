@@ -786,7 +786,10 @@ var nostrSyncCmd = &cobra.Command{
 		// ready-b57: gate the negentropy download with the web-of-trust allowlist so a
 		// hostile relay cannot inject a validly-signed foreign event into the log.
 		trusted := nostrTrustSet(dir, k.PubKeyHex())
-		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, trusted, nostr.DefaultTimeout)
+		// production=true: this is the sanctioned `rd nostr sync` CLI path operating
+		// on THIS project's own .ready dir (same standing as nostrPublisher()'s
+		// Publisher.Production — ready-6d0 finding (3) chokepoint guard).
+		results, errs := rdSync.NegentropySyncMany(ctx, relays, log, filter, trusted, nostr.DefaultTimeout, true)
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -816,7 +819,9 @@ var nostrFlushCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("no .ready project directory found")
 		}
-		res, err := rdSync.FlushNostrPending(context.Background(), nostrPendingPath(dir), nostrWriteRelays(), nostr.DefaultTimeout)
+		// production=true: sanctioned `rd nostr flush` CLI path (ready-6d0 finding (3)
+		// chokepoint guard) — mirrors nostrPublisher()'s Publisher.Production.
+		res, err := rdSync.FlushNostrPending(context.Background(), nostrPendingPath(dir), nostrWriteRelays(), nostr.DefaultTimeout, true)
 		if err != nil {
 			return err
 		}

@@ -441,7 +441,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	}
 	reachedRelay := false
 	for _, e := range events {
-		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout)
+		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout, p.Production)
 		ack := EventAck{EventID: e.ID, Kind: e.Kind}
 		for _, a := range attempts {
 			ra := RelayAck{Relay: a.Relay, Accepted: a.Accepted, Message: a.Message}
@@ -507,7 +507,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	// so it costs nothing on the common path; never fails the operation (the events
 	// are already durable in the local log). Re-publish is idempotent by event id.
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
 	}
 }
 
