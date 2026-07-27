@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,26 +51,37 @@ func TestAssemblePages_ProducesExpectedArtifact(t *testing.T) {
 
 	// Every real site/ file must be present in the artifact, EXCEPT
 	// *_test.go source files, which must be excluded (pre-existing issue:
-	// site/content_test.go was being shipped as public content).
-	siteEntries, err := os.ReadDir(siteDir)
-	if err != nil {
-		t.Fatalf("read site dir: %v", err)
-	}
+	// site/content_test.go was being shipped as public content). This
+	// walks site/ recursively (not just its top-level entries) so a future
+	// site/img/ or other subdirectory is proven to land in the artifact
+	// too, instead of silently going unchecked the moment site/ stops
+	// being flat.
 	sawTestGo := false
-	for _, e := range siteEntries {
-		if e.IsDir() {
-			continue
+	walkErr := filepath.WalkDir(siteDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		if strings.HasSuffix(e.Name(), "_test.go") {
+		if d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(siteDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if strings.HasSuffix(rel, "_test.go") {
 			sawTestGo = true
-			if _, statErr := os.Stat(filepath.Join(outDir, e.Name())); statErr == nil {
-				t.Fatalf("artifact must not ship %s (Go test source, not site content)", e.Name())
+			if _, statErr := os.Stat(filepath.Join(outDir, rel)); statErr == nil {
+				t.Fatalf("artifact must not ship %s (Go test source, not site content)", rel)
 			}
-			continue
+			return nil
 		}
-		if _, statErr := os.Stat(filepath.Join(outDir, e.Name())); statErr != nil {
-			t.Fatalf("artifact missing site file %s: %v", e.Name(), statErr)
+		if _, statErr := os.Stat(filepath.Join(outDir, rel)); statErr != nil {
+			t.Fatalf("artifact missing site file %s: %v", rel, statErr)
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk site dir: %v", walkErr)
 	}
 	if !sawTestGo {
 		t.Fatalf("test assumption broken: site/ no longer contains a *_test.go file to exclude — update this test")
