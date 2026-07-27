@@ -32,9 +32,9 @@ func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	relay := liveRelayURL(t)
 	t.Logf("live relay: %s", relay)
 
-	owner := liveRelayKey(t) // allowlisted — may write to the locked relays.
+	owner := liveRelayKey(t)  // allowlisted — may write to the locked relays.
 	contributor := testKey(t) // fresh key, never granted before this run, never writes.
-	const boardD = "ready"
+	boardD := liveTestBoardD(t)
 	boardCoord := BoardCoord(owner.PubKeyHex(), boardD)
 
 	dir := t.TempDir()

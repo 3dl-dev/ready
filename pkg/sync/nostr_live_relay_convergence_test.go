@@ -57,7 +57,8 @@ func TestLiveRelay_SameSecondConvergence(t *testing.T) {
 		WriteRelays: []string{relay},
 		PendingPath: filepath.Join(dir, ".ready", NostrPendingFile),
 	}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 	trust := map[string]bool{k.PubKeyHex(): true}
 	opts := ProjectOptions{Maintainers: trust, Trusted: trust}
 
@@ -84,7 +85,7 @@ func TestLiveRelay_SameSecondConvergence(t *testing.T) {
 
 	now := time.Now().Unix()
 	// create (active) @now, so the item exists and is authoritative.
-	cRes, cErr := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: itemID, Title: "base", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: "ready"}, now)
+	cRes, cErr := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: itemID, Title: "base", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: boardD}, now)
 	mustAccept("create", cRes, cErr)
 
 	// TWO competing card edits stamped in the SAME created_at second (now+5).
@@ -96,11 +97,11 @@ func TestLiveRelay_SameSecondConvergence(t *testing.T) {
 	// newer event". So we require no transport error, but NOT relay acceptance of
 	// both (the loser's rejection is the relay agreeing with our tie-break).
 	editSec := now + 5
-	resX, xErr := pub.PublishCardEdit(context.Background(), CardSpec{ItemID: itemID, Title: "edit-X", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: "ready"}, editSec)
+	resX, xErr := pub.PublishCardEdit(context.Background(), CardSpec{ItemID: itemID, Title: "edit-X", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: boardD}, editSec)
 	if xErr != nil {
 		t.Fatalf("edit-X publish: %v", xErr)
 	}
-	resY, yErr := pub.PublishCardEdit(context.Background(), CardSpec{ItemID: itemID, Title: "edit-Y", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: "ready"}, editSec)
+	resY, yErr := pub.PublishCardEdit(context.Background(), CardSpec{ItemID: itemID, Title: "edit-Y", Status: state.StatusActive, Priority: "p1", Type: "task", Assignee: k.PubKeyHex(), BoardD: boardD}, editSec)
 	if yErr != nil {
 		t.Fatalf("edit-Y publish: %v", yErr)
 	}

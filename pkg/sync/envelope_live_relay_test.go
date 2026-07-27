@@ -46,10 +46,11 @@ func TestLiveRelayEncryptedCard(t *testing.T) {
 	itemID := fmt.Sprintf("ready-enc-live-%d", time.Now().UnixNano())
 	title := "CONFIDENTIAL rotate the leaked pager secret"
 	desc := "the pager secret leaked in a screenshot, rotate and audit"
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 	card := CardSpec{
 		ItemID: itemID, Title: title, Status: state.StatusActive, Priority: "p1",
-		Type: "task", Context: desc, BoardD: "ready", Labels: []string{"security"},
+		Type: "task", Context: desc, BoardD: boardD, Labels: []string{"security"},
 		WaitingOn: "ready-blocker", Enc: env,
 	}
 	now := time.Now().Unix()

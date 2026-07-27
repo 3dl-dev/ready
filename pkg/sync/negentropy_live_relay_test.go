@@ -56,13 +56,14 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	logB := NewNostrLog(filepath.Join(dir, "B", NostrLogFile))
 	pubA := &Publisher{Key: k, Log: logA, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "A", NostrPendingFile)}
 	pubB := &Publisher{Key: k, Log: logB, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "B", NostrPendingFile)}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 
 	ctx := context.Background()
-	if _, err := pubA.PublishItem(ctx, &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pubA.PublishItem(ctx, &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("A publish X: %v", err)
 	}
-	if _, err := pubB.PublishItem(ctx, &board, CardSpec{ItemID: idY, Title: "Y", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pubB.PublishItem(ctx, &board, CardSpec{ItemID: idY, Title: "Y", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("B publish Y: %v", err)
 	}
 	time.Sleep(1 * time.Second)
@@ -122,7 +123,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	// the pending buffer.
 	pub := &Publisher{Key: k, Log: log, WriteRelays: []string{deadRelay}, PendingPath: pendingPath}
 	id := fmt.Sprintf("ready-797-offline-%d", time.Now().UnixNano())
-	res, err := pub.PublishItem(context.Background(), nil, CardSpec{ItemID: id, Title: "offline", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix())
+	res, err := pub.PublishItem(context.Background(), nil, CardSpec{ItemID: id, Title: "offline", Status: state.StatusActive, Type: "task", BoardD: liveTestBoardD(t)}, time.Now().Unix())
 	if err != nil {
 		t.Fatalf("offline publish: %v", err)
 	}
@@ -191,9 +192,10 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	dir := t.TempDir()
 	logPub := NewNostrLog(filepath.Join(dir, "pub", NostrLogFile))
 	pub := &Publisher{Key: k, Log: logPub, WriteRelays: []string{relay}, PendingPath: filepath.Join(dir, "pub", NostrPendingFile)}
-	board := BoardSpec{BoardD: "ready", Title: "ready", Maintainers: []string{k.PubKeyHex()}}
+	boardD := liveTestBoardD(t)
+	board := BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{k.PubKeyHex()}}
 	idX := fmt.Sprintf("ready-b57-dl-%d", time.Now().UnixNano())
-	if _, err := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: "ready"}, time.Now().Unix()); err != nil {
+	if _, err := pub.PublishItem(context.Background(), &board, CardSpec{ItemID: idX, Title: "X", Status: state.StatusActive, Type: "task", BoardD: boardD}, time.Now().Unix()); err != nil {
 		t.Fatalf("publish X: %v", err)
 	}
 	time.Sleep(1 * time.Second)

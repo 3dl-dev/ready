@@ -1,9 +1,11 @@
 package sync
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 )
@@ -43,4 +45,37 @@ func liveRelayKey(t *testing.T) *nostr.Key {
 	}
 	t.Skip("no allowlisted portfolio key available: set RD_NOSTR_TEST_SECRET_HEX or RD_NOSTR_TEST_KEY_PATH (the write-allowlisted relays reject non-admitted keys; ready-266)")
 	return nil
+}
+
+// reservedProductionBoardD is THIS repo's own live board D-tag. .ready/config.json
+// pins this project's board coordinate to "30301:<owner>:ready" — the exact
+// coordinate liveRelayKey's identity (the real portfolio key) maintains in
+// production. A live-relay test that signs with liveRelayKey and addresses
+// BoardD "ready" therefore publishes DIRECTLY onto the real "ready" board:
+// `rd ready --view work` then shows the test's disposable fixture cards (and, for
+// role-grant tests, actually grants a throwaway test key a role on the real
+// board) as if they were genuine work (ready-fce).
+const reservedProductionBoardD = "ready"
+
+// requireIsolatedBoardD is the ready-fce guard: it FAILS the test immediately,
+// before any publish call, if boardD is the reserved production board D-tag.
+// Every live-relay test that constructs a BoardSpec/CardSpec must route its
+// board D-tag through here (directly, or via liveTestBoardD) so a regression
+// back to BoardD: "ready" breaks the test loudly instead of silently writing to
+// the live board again.
+func requireIsolatedBoardD(t *testing.T, boardD string) {
+	t.Helper()
+	if boardD == reservedProductionBoardD {
+		t.Fatalf("refusing to publish to reserved production board D-tag %q — this is THIS repo's own live board (see .ready/config.json's pinned \"board\" coordinate); use liveTestBoardD(t) for an isolated per-run board instead (ready-fce guard)", boardD)
+	}
+}
+
+// liveTestBoardD returns an isolated, per-run, disposable board D-tag for
+// live-relay tests — never the reserved production "ready" board. See
+// requireIsolatedBoardD.
+func liveTestBoardD(t *testing.T) string {
+	t.Helper()
+	d := fmt.Sprintf("ready-livetest-%d", time.Now().UnixNano())
+	requireIsolatedBoardD(t, d)
+	return d
 }
