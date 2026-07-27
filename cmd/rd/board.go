@@ -29,14 +29,14 @@ package main
 //                                yet, wrapped as a URL. Completed later with:
 //                                  rd grant --claim <nonce> <pubkey>
 //
-// URL SHAPE (bare share form, unknown key): https://<board-host>/#rd1_<base64url>
+// URL SHAPE (bare share form, unknown key): https://<board-host>#rd1_<base64url>
 // — a FRAGMENT (never sent to a server, never in an access log). The payload is
 // the UNCHANGED rd1_ v3 nostrClaimPayload (cmd/rd/nostr_invite.go
 // buildNostrClaimToken / decodeNostrClaimToken) — no new token version, no new
 // event kind (constraint).
 //
 // URL SHAPE (own board, `rd board` with no args, AND `rd board share <who>` for
-// a known key): https://<board-host>/#board=<coord>&relays=<comma-list> — NO
+// a known key): https://<board-host>#board=<coord>&relays=<comma-list> — NO
 // rd1_ token, NO claim-nonce. Byte-shape deliberately distinct from the bare
 // share link: a claim-nonce is a bearer credential `rd grant --claim` can bind
 // to whoever presents it, so a link for an already-authorized recipient must
@@ -59,13 +59,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultBoardHost is the placeholder hosted-board origin used when neither
-// --host nor $RD_BOARD_HOST names one. The board host does not serve TLS yet
-// (ready-1ab: wss:// + a browser-served page still need to ship) — this is a
-// NAME, not a live endpoint today. rd board still prints a well-formed,
-// decodable URL now so this command and its tests don't block on that
-// infrastructure landing.
-const defaultBoardHost = "https://board.ready.3dl.dev"
+// defaultBoardHost is the hosted-board origin used when neither --host nor
+// $RD_BOARD_HOST names one. This MUST be a host that actually resolves
+// (ready-df6: an earlier placeholder, board.ready.3dl.dev, never resolved and
+// shipped as if it were real) — verified by
+// TestBoardCmd_DefaultHost_EmitsConfiguredHost (cmd/rd/board_test.go), which
+// drives the real cobra RunE and asserts on the literal printed bytes.
+const defaultBoardHost = "https://ready.3dl.dev/board"
 
 // boardHost resolves the hosted-board ORIGIN a token URL is minted against:
 // --host flag > $RD_BOARD_HOST env > defaultBoardHost. This is the ONLY place
@@ -87,7 +87,7 @@ func boardHost(cmd *cobra.Command) string {
 // an access log. Used ONLY by the share forms (`rd board share ...`), which
 // carry a real claim-nonce or a live grant reference.
 func boardURL(host, token string) string {
-	return host + "/#" + token
+	return host + "#" + token
 }
 
 // ownBoardURL builds the URL for YOUR OWN board: no rd1_ token, no claim-nonce —
@@ -102,7 +102,7 @@ func ownBoardURL(host, coord string, relays []string) string {
 	if len(relays) > 0 {
 		v.Set("relays", strings.Join(relays, ","))
 	}
-	return host + "/#" + v.Encode()
+	return host + "#" + v.Encode()
 }
 
 // resolveGranteePubkey accepts either an npub1... (NIP-19 bech32) or a bare
@@ -133,7 +133,7 @@ var boardCmd = &cobra.Command{
 	Short: "Print a working URL for this project's board",
 	Long: `Print a shareable URL for this repo's pinned board:
 
-  https://<board-host>/#board=<coord>&relays=<relay-list>
+  https://<board-host>#board=<coord>&relays=<relay-list>
 
 With NO arguments this is YOUR OWN board: no grant is issued and NO rd1_
 token is minted — your key already holds owner access, so nothing needs to
@@ -149,8 +149,11 @@ ever bind a stranger's key to.
 
 ` + boardSecurityNote + `
 
---host / $RD_BOARD_HOST overrides the hosted-board origin (default: a
-placeholder — the board host does not serve TLS yet, see ready-1ab).`,
+--host / $RD_BOARD_HOST overrides the hosted-board origin (default:
+` + defaultBoardHost + ` — a real, TLS-serving, DNS-resolving host that
+serves a page. That page is currently a build placeholder; the browser-served
+board UI has not shipped yet, so the URL is not yet useful to open — see
+ready-1ab).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, native := nostrNativeProject()
@@ -235,10 +238,16 @@ identity, then send you back a pubkey; complete the invite with:
 	},
 }
 
-func init() {
-	boardCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else a placeholder — ready-1ab has not shipped TLS yet)")
+// hostFlagUsage is the --host flag's help text on both boardCmd and
+// boardShareCmd, DERIVED from defaultBoardHost so the two copies can never
+// drift from the constant (or each other) — the exact bug class ready-df6
+// exists to remove structurally rather than police after the fact.
+var hostFlagUsage = fmt.Sprintf("hosted-board origin override (default: $RD_BOARD_HOST, else %s)", defaultBoardHost)
 
-	boardShareCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else a placeholder — ready-1ab has not shipped TLS yet)")
+func init() {
+	boardCmd.Flags().String("host", "", hostFlagUsage)
+
+	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")
 	boardShareCmd.Flags().String("role", rdSync.RoleContributor, "role to grant (owner|maintainer|contributor) — only used with a pubkey argument")
 	boardShareCmd.Flags().String("label", "", "human label carried in the grant content — only used with a pubkey argument")
