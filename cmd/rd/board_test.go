@@ -6,10 +6,15 @@ package main
 // commands the SAME way a real invocation does — via cmd.RunE with a real
 // pinned .ready/ project on disk and a real signed-event log — and cover:
 //
-//   done #1 — each of the three URL forms decodes via decodeNostrClaimToken.
-//   done #3 — the emitted URL/token carries NO secret material: a REJECTION
-//             test that must fail if a key/secret field is ever added to the
-//             payload.
+//   done #1 — each URL form decodes/parses as documented: the share forms
+//             via decodeNostrClaimToken, the own-board form as a plain
+//             board=/relays= query fragment (NO token — see below).
+//   done #3 — the emitted URL/token carries NO secret material, proven TWO
+//             ways: a forbidden-substring denylist (TestBoardURL_NoSecretMaterial,
+//             catches secrets whose field name/bytes were guessed in advance)
+//             AND an exact top-level-key ALLOWLIST
+//             (TestBoardURL_TokenKeys_ExactAllowlist, catches ANY new field
+//             regardless of name — a denylist alone cannot).
 //   done #4 — an expired token and a v2 secret-bearing token are both
 //             rejected with the EXISTING actionable messages (already proven
 //             by decodeNostrClaimToken's own tests in nostr_invite_test.go;
@@ -18,18 +23,30 @@ package main
 //   done #5 — `rd board --help` (Long) states the link conveys no read access
 //             on its own for a confidential board.
 //
+// `rd board` (own board, no args) is a REJECTION-tested contract
+// (TestBoardCmd_OwnBoard_PlainURL_NoToken): NO rd1_ token and NO claim-nonce
+// ride along, because your key already holds owner access and nothing needs
+// to be conveyed. A claim-nonce on an own-board link would be a bearer
+// credential `rd grant --claim` could later bind to a stranger's key.
+//
 // TestLiveRelay_BoardShare_GrantReadableOnRelay is gated behind
-// RD_NOSTR_LIVE_RELAY=1 and proves done #2 against a REAL relay: after
-// `rd board share <pubkey>`, InviteGrantValid returns true for events FETCHED
-// FROM THE RELAY (not the local log) — the literal done condition ("verified
-// against the live relays — --offline is not sufficient").
+// RD_NOSTR_LIVE_RELAY=1 and proves done #2 against a REAL relay for BOTH
+// grantee forms (64-hex, and npub1... via a round-trip-verified test-only
+// bech32 encoder): after `rd board share <who>`, InviteGrantValid returns
+// true for events FETCHED FROM THE RELAY (not the local log) — the literal
+// done condition ("verified against the live relays — --offline is not
+// sufficient").
 
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -117,11 +134,19 @@ func extractToken(t *testing.T, url string) string {
 	return url[i+1:]
 }
 
-// TestBoardCmd_OwnBoard_PrintsDecodableURL covers done #1 for `rd board` (no
-// args): it prints exactly one line shaped https://<host>/#rd1_<token>, and
-// the token round-trips through decodeNostrClaimToken to the project's own
-// pinned board coordinate.
-func TestBoardCmd_OwnBoard_PrintsDecodableURL(t *testing.T) {
+// TestBoardCmd_OwnBoard_PlainURL_NoToken covers done #1 for `rd board` (no
+// args) AND is the REJECTION test for the ready-384 spec's own-board
+// contract: "rd board -> URL for your own boards, NO token (your key already
+// holds the owner CEK self-grants, so nothing needs to be conveyed)". It
+// asserts the printed URL is a PLAIN board=/relays= fragment carrying the
+// project's own pinned board coordinate, and — the rejection half — that it
+// carries NO rd1_ token and NO "claim" field anywhere in the line. A
+// claim-nonce riding along on an own-board link is a nonce `rd grant --claim`
+// could later bind to a STRANGER'S key, making an own-board link
+// byte-shape-indistinguishable from a share link (a real security
+// regression, not a cosmetic one). This test FAILS if that token is ever
+// reintroduced.
+func TestBoardCmd_OwnBoard_PlainURL_NoToken(t *testing.T) {
 	_, _, coord, _ := boardTestEnv(t)
 
 	out := captureStdoutPipe(t, func() {
@@ -133,13 +158,29 @@ func TestBoardCmd_OwnBoard_PrintsDecodableURL(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("rd board printed %d line(s), want exactly 1 URL:\n%s", len(lines), out)
 	}
-	token := extractToken(t, lines[0])
-	p, err := decodeNostrClaimToken(token)
-	if err != nil {
-		t.Fatalf("rd board token failed to decode: %v", err)
+	line := lines[0]
+	if !strings.HasPrefix(line, "https://") {
+		t.Fatalf("rd board output %q does not start with https://", line)
 	}
-	if p.Board != coord {
-		t.Errorf("rd board token board = %q, want %q", p.Board, coord)
+
+	// REJECTION: no rd1_ token, no claim-nonce, anywhere in the line.
+	if strings.Contains(line, "#"+nostrInviteTokenPrefix) {
+		t.Errorf("rd board (own board) output %q carries an %q token — the own-board contract requires NO token", line, nostrInviteTokenPrefix)
+	}
+	if strings.Contains(strings.ToLower(line), "claim") {
+		t.Errorf("rd board (own board) output %q mentions a claim — an own-board link must never carry a claim-nonce a stranger's key could later be bound to", line)
+	}
+
+	i := strings.Index(line, "#")
+	if i < 0 {
+		t.Fatalf("rd board output %q has no '#' fragment", line)
+	}
+	values, err := url.ParseQuery(line[i+1:])
+	if err != nil {
+		t.Fatalf("rd board fragment %q did not parse as a query string: %v", line[i+1:], err)
+	}
+	if got := values.Get("board"); got != coord {
+		t.Errorf("rd board fragment board=%q, want %q", got, coord)
 	}
 }
 
@@ -282,12 +323,22 @@ func TestBoardURL_NoSecretMaterial(t *testing.T) {
 		}
 	}
 
+	// rd board (own board) carries NO rd1_ token (see
+	// TestBoardCmd_OwnBoard_PlainURL_NoToken for the dedicated rejection
+	// test), so it is checked by scanning the raw URL line directly rather
+	// than via extractToken/decodeNostrClaimToken (which requires a "#rd1_"
+	// fragment the own-board form must never have).
 	out := captureStdoutPipe(t, func() {
 		if err := boardCmd.RunE(boardCmd, nil); err != nil {
 			t.Fatalf("rd board: %v", err)
 		}
 	})
-	check("rd board", findURLLine(t, out))
+	ownLine := strings.ToLower(findURLLine(t, out))
+	for _, bad := range forbidden {
+		if strings.Contains(ownLine, strings.ToLower(bad)) {
+			t.Errorf("rd board (own board): URL contains forbidden secret-shaped material %q — url: %s", bad, ownLine)
+		}
+	}
 
 	out = captureStdoutPipe(t, func() {
 		if err := boardShareCmd.RunE(boardShareCmd, nil); err != nil {
@@ -306,6 +357,80 @@ func TestBoardURL_NoSecretMaterial(t *testing.T) {
 		}
 	})
 	check("rd board share <pubkey>", findURLLine(t, out))
+}
+
+// boardTokenAllowedKeys is the EXACT top-level JSON key set nostrClaimPayload
+// may carry (cmd/rd/nostr_invite.go's json tags: v, board, relays, claim,
+// iat, exp, iss). Unlike TestBoardURL_NoSecretMaterial's forbidden-substring
+// denylist — which only catches a secret whose field name or literal bytes
+// were guessed in advance — an ALLOWLIST fails on ANY new field regardless
+// of its name or encoding: a wrapped board CEK smuggled in under an
+// innocuous key like "cap" trips none of the six forbidden strings but DOES
+// trip this allowlist.
+var boardTokenAllowedKeys = map[string]bool{
+	"v": true, "board": true, "relays": true, "claim": true,
+	"iat": true, "exp": true, "iss": true,
+}
+
+// tokenKeyAllowlistViolations decodes raw rd1_ token JSON and returns any
+// top-level keys NOT in boardTokenAllowedKeys, sorted for a stable error
+// message. An empty result means the payload's key set is EXACTLY the
+// allowlist.
+func tokenKeyAllowlistViolations(t *testing.T, raw []byte) []string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal token JSON: %v", err)
+	}
+	var bad []string
+	for k := range m {
+		if !boardTokenAllowedKeys[k] {
+			bad = append(bad, k)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// TestBoardURL_TokenKeys_ExactAllowlist is the ALLOWLIST rejection test for
+// done #3 (stronger than TestBoardURL_NoSecretMaterial's forbidden-substring
+// scan — see boardTokenAllowedKeys doc comment): it decodes each share
+// form's token to map[string]any and asserts the top-level key set is
+// EXACTLY {v,board,relays,claim,iat,exp,iss}. This test is DESIGNED to fail
+// the moment any future change adds a new field to the payload, no matter
+// what that field is named or how its content is encoded.
+func TestBoardURL_TokenKeys_ExactAllowlist(t *testing.T) {
+	boardTestEnv(t)
+
+	checkToken := func(label, url string) {
+		t.Helper()
+		token := extractToken(t, url)
+		raw, err := base64.RawURLEncoding.DecodeString(token[len(nostrInviteTokenPrefix):])
+		if err != nil {
+			t.Fatalf("%s: decode token base64: %v", label, err)
+		}
+		if bad := tokenKeyAllowlistViolations(t, raw); len(bad) > 0 {
+			t.Errorf("%s: token JSON carries key(s) %v outside the allowlist %v — raw payload: %s", label, bad, boardTokenAllowedKeys, raw)
+		}
+	}
+
+	out := captureStdoutPipe(t, func() {
+		if err := boardShareCmd.RunE(boardShareCmd, nil); err != nil {
+			t.Fatalf("rd board share: %v", err)
+		}
+	})
+	checkToken("rd board share (bare)", findURLLine(t, out))
+
+	grantee, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	out = captureStdoutPipe(t, func() {
+		if err := boardShareCmd.RunE(boardShareCmd, []string{grantee.PubKeyHex()}); err != nil {
+			t.Fatalf("rd board share <pubkey>: %v", err)
+		}
+	})
+	checkToken("rd board share <pubkey>", findURLLine(t, out))
 }
 
 // TestBoardURL_RejectsExpiredToken and TestBoardURL_RejectsV2SecretToken cover
@@ -391,6 +516,82 @@ func TestBoardHost_Resolution(t *testing.T) {
 	}
 }
 
+// --- test-only npub bech32 encoder (inverse of follow.go's decodeNpub) ----
+
+// encodeNpubForTest encodes a 64-hex pubkey as an npub1... bech32 string.
+// Production code only implements the DECODE direction (cmd/rd/follow.go
+// decodeNpub — `rd follow`/`rd board share` only ever need to consume an
+// npub a human pastes in, never mint one), so this test-only helper builds
+// one to drive `rd board share <npub>` against a live relay with a
+// pubkey the test just generated (rather than only the one fixed
+// TestBoardShareCmd_WithNpub_ResolvesAndGrants vector). It reuses the SAME
+// bech32Charset/bech32HrpExpand/bech32Polymod/convertBits production
+// functions decodeNpub is built on, and self-checks by round-tripping the
+// result back through the PRODUCTION decodeNpub before returning — so this
+// helper can never silently drift from what decodeNpub actually accepts.
+func encodeNpubForTest(t *testing.T, pubkeyHex string) string {
+	t.Helper()
+	raw, err := hex.DecodeString(pubkeyHex)
+	if err != nil {
+		t.Fatalf("encodeNpubForTest: decode hex %q: %v", pubkeyHex, err)
+	}
+	data := make([]int, len(raw))
+	for i, b := range raw {
+		data[i] = int(b)
+	}
+	conv, err := convertBits(data, 8, 5, true)
+	if err != nil {
+		t.Fatalf("encodeNpubForTest: convertBits: %v", err)
+	}
+	npub := bech32EncodeForTest("npub", conv)
+
+	got, err := decodeNpub(npub)
+	if err != nil {
+		t.Fatalf("encodeNpubForTest: round-trip decodeNpub(%q): %v", npub, err)
+	}
+	if got != pubkeyHex {
+		t.Fatalf("encodeNpubForTest: round-trip mismatch: decodeNpub(%q) = %q, want %q", npub, got, pubkeyHex)
+	}
+	return npub
+}
+
+func bech32EncodeForTest(hrp string, data []int) string {
+	checksum := bech32CreateChecksumForTest(hrp, data)
+	combined := append(append([]int{}, data...), checksum...)
+	var sb strings.Builder
+	sb.WriteString(hrp)
+	sb.WriteString("1")
+	for _, d := range combined {
+		sb.WriteByte(bech32Charset[d])
+	}
+	return sb.String()
+}
+
+func bech32CreateChecksumForTest(hrp string, data []int) []int {
+	values := append(bech32HrpExpand(hrp), data...)
+	values = append(values, 0, 0, 0, 0, 0, 0)
+	polymod := bech32Polymod(values) ^ 1
+	checksum := make([]int, 6)
+	for i := 0; i < 6; i++ {
+		checksum[i] = (polymod >> uint(5*(5-i))) & 31
+	}
+	return checksum
+}
+
+// TestEncodeNpubForTest_MatchesCanonicalVector proves encodeNpubForTest
+// against the SAME canonical NIP-19 test vector
+// TestBoardShareCmd_WithNpub_ResolvesAndGrants and follow_test.go's
+// TestDecodeNpub_CanonicalVector use, so the live-relay test below is
+// exercising a correctly-encoded npub, not an artifact of a buggy encoder
+// happening to round-trip through its own decoder.
+func TestEncodeNpubForTest_MatchesCanonicalVector(t *testing.T) {
+	const wantNpub = "npub1sn0wdenkukak0d9dfczzeacvhkrgz92ak56egt7vdgzn8pv2wfqqhrjdv9"
+	const hexPub = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240"
+	if got := encodeNpubForTest(t, hexPub); got != wantNpub {
+		t.Errorf("encodeNpubForTest(%q) = %q, want canonical vector %q", hexPub, got, wantNpub)
+	}
+}
+
 // --- live-relay proof (done #2) ------------------------------------------
 
 // resolveLiveBoardOwnerKey resolves an ALLOWLISTED portfolio key for the
@@ -431,11 +632,20 @@ func resolveLiveBoardOwnerKey(t *testing.T) *nostr.Key {
 }
 
 // TestLiveRelay_BoardShare_GrantReadableOnRelay is the ground-source proof
-// for done #2: `rd board share <pubkey>` results in a grant ACTUALLY readable
+// for done #2: `rd board share <npub>` results in a grant ACTUALLY readable
 // on the relay for that pubkey — fetched fresh FROM THE RELAY (not the local
 // log a process could have faked), then checked with InviteGrantValid, the
 // SAME derivation the trust gate uses. Gated behind RD_NOSTR_LIVE_RELAY=1 so
 // the default `go test ./...` stays green with no relay reachable.
+//
+// Uses the npub1... FORM of the grantee argument (via encodeNpubForTest,
+// round-trip-verified against the production decodeNpub and the canonical
+// NIP-19 vector — see TestEncodeNpubForTest_MatchesCanonicalVector), not the
+// 64-hex form. Done-condition #2 literally reads "`rd board share <npub>`
+// results in a grant actually readable on the relay for that pubkey"; before
+// this test, the npub form was proven only offline
+// (TestBoardShareCmd_WithNpub_ResolvesAndGrants, against the local log), and
+// the item states explicitly "--offline is not sufficient".
 func TestLiveRelay_BoardShare_GrantReadableOnRelay(t *testing.T) {
 	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
 		t.Skip("set RD_NOSTR_LIVE_RELAY=1 (with a reachable strfry relay) to run the live board-share proof")
@@ -491,16 +701,18 @@ func TestLiveRelay_BoardShare_GrantReadableOnRelay(t *testing.T) {
 		t.Fatalf("GenerateKey grantee: %v", err)
 	}
 	grantee := granteeKey.PubKeyHex()
+	granteeNpub := encodeNpubForTest(t, grantee)
+	t.Logf("grantee pubkey=%s npub=%s", grantee, granteeNpub)
 
 	out := captureStdoutPipe(t, func() {
-		if err := boardShareCmd.RunE(boardShareCmd, []string{grantee}); err != nil {
-			t.Fatalf("rd board share <pubkey>: %v", err)
+		if err := boardShareCmd.RunE(boardShareCmd, []string{granteeNpub}); err != nil {
+			t.Fatalf("rd board share <npub>: %v", err)
 		}
 	})
 	urlLine := findURLLine(t, out)
 	token := extractToken(t, urlLine)
 	if _, err := decodeNostrClaimToken(token); err != nil {
-		t.Fatalf("rd board share <pubkey> token failed to decode: %v", err)
+		t.Fatalf("rd board share <npub> token failed to decode: %v", err)
 	}
 
 	// Give the relay a beat to index before querying it back — matches
@@ -522,7 +734,7 @@ func TestLiveRelay_BoardShare_GrantReadableOnRelay(t *testing.T) {
 		t.Fatalf("read clean log: %v", err)
 	}
 	if !rdSync.InviteGrantValid(relayEvents, owner, boardD, grantee) {
-		t.Fatalf("InviteGrantValid = false for events fetched FROM THE RELAY — the grant from `rd board share %s` is not actually readable on the relay", grantee)
+		t.Fatalf("InviteGrantValid = false for events fetched FROM THE RELAY — the grant from `rd board share %s` is not actually readable on the relay", granteeNpub)
 	}
-	t.Logf("PROVEN: grant from `rd board share %s` is readable on the live relay %s", grantee, relay)
+	t.Logf("PROVEN: grant from `rd board share %s` (npub form) is readable on the live relay %s", granteeNpub, relay)
 }

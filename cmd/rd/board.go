@@ -4,12 +4,15 @@ package main
 // rd1_ token, so sharing a board is one command — not "mint a token, then explain
 // to the human how to turn it into a link."
 //
-//   rd board                 -> URL for YOUR OWN board. No grant is issued — your
-//                                key already holds owner access, so nothing needs
-//                                to be conveyed to anyone. The emitted URL still
-//                                wraps an rd1_ v3 token (board+relays) so a hosted
-//                                board page knows what to open; decodeNostrClaimToken
-//                                still validates it (thin wrapper over `rd invite`).
+//   rd board                 -> URL for YOUR OWN board. NO grant is issued and NO
+//                                rd1_ token is minted: your key already holds
+//                                owner access, so nothing needs to be conveyed to
+//                                anyone. The emitted URL is a PLAIN fragment
+//                                carrying only the board coordinate + relay set
+//                                (board=...&relays=...) so a hosted board page
+//                                knows what to open. Nothing here is a claim —
+//                                there is no claim-nonce for `rd grant --claim`
+//                                to ever bind a stranger's key to.
 //   rd board share <who>     -> resolves <who> (npub1... or 64-hex pubkey), issues
 //                                an owner-signed grant via the EXISTING grant path
 //                                (same body as `rd grant`), THEN prints the URL —
@@ -20,10 +23,16 @@ package main
 //                                yet, wrapped as a URL. Completed later with:
 //                                  rd grant --claim <nonce> <pubkey>
 //
-// URL SHAPE: https://<board-host>/#rd1_<base64url> — a FRAGMENT (never sent to a
-// server, never in an access log). The payload is the UNCHANGED rd1_ v3
-// nostrClaimPayload (cmd/rd/nostr_invite.go buildNostrClaimToken /
+// URL SHAPE (share forms): https://<board-host>/#rd1_<base64url> — a FRAGMENT
+// (never sent to a server, never in an access log). The payload is the UNCHANGED
+// rd1_ v3 nostrClaimPayload (cmd/rd/nostr_invite.go buildNostrClaimToken /
 // decodeNostrClaimToken) — no new token version, no new event kind (constraint).
+//
+// URL SHAPE (own board, `rd board` with no args): https://<board-host>/#board=
+// <coord>&relays=<comma-list> — NO rd1_ token, NO claim-nonce. Byte-shape
+// deliberately distinct from a share link: a claim-nonce is a bearer credential
+// `rd grant --claim` can bind to whoever presents it, so an own-board link must
+// never carry one, even an unconsumed/informational one.
 //
 // SECURITY: the link conveys NO secret and NO read access on its own for a
 // confidential board. Read access comes ONLY from the owner-signed kind-39301
@@ -33,6 +42,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -66,9 +76,25 @@ func boardHost(cmd *cobra.Command) string {
 
 // boardURL wraps an rd1_ token as the fragment URL a hosted board page opens.
 // A fragment (not a query string) is never sent to a server and never lands in
-// an access log.
+// an access log. Used ONLY by the share forms (`rd board share ...`), which
+// carry a real claim-nonce or a live grant reference.
 func boardURL(host, token string) string {
 	return host + "/#" + token
+}
+
+// ownBoardURL builds the URL for YOUR OWN board: no rd1_ token, no claim-nonce —
+// your key already holds owner access, so nothing needs to be conveyed. The
+// fragment carries only the board coordinate and relay set a hosted board page
+// needs to know what to open. Deliberately a DIFFERENT shape than boardURL's
+// rd1_ fragment so an own-board link can never be mistaken for (or later
+// confused with) a claim/share link.
+func ownBoardURL(host, coord string, relays []string) string {
+	v := url.Values{}
+	v.Set("board", coord)
+	if len(relays) > 0 {
+		v.Set("relays", strings.Join(relays, ","))
+	}
+	return host + "/#" + v.Encode()
 }
 
 // resolveGranteePubkey accepts either an npub1... (NIP-19 bech32) or a bare
@@ -99,11 +125,13 @@ var boardCmd = &cobra.Command{
 	Short: "Print a working URL for this project's board",
 	Long: `Print a shareable URL for this repo's pinned board:
 
-  https://<board-host>/#rd1_<token>
+  https://<board-host>/#board=<coord>&relays=<relay-list>
 
-With NO arguments this is YOUR OWN board: no grant is issued — your key
-already holds owner access, so nothing needs to be conveyed to anyone. The
-URL just tells the hosted board page which board and relays to open.
+With NO arguments this is YOUR OWN board: no grant is issued and NO rd1_
+token is minted — your key already holds owner access, so nothing needs to
+be conveyed to anyone. The URL just tells the hosted board page which board
+and relays to open; it carries no claim-nonce for ` + "`rd grant --claim`" + ` to
+ever bind a stranger's key to.
 
   rd board share <npub-or-pubkey>   issue a grant to a KNOWN key, then print
                                      the URL (zero-wait: the grant is durable
@@ -117,12 +145,12 @@ URL just tells the hosted board page which board and relays to open.
 placeholder — the board host does not serve TLS yet, see ready-1ab).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ttl, _ := cmd.Flags().GetDuration("ttl")
-		token, err := runNostrInvite(ttl)
-		if err != nil {
-			return err
+		dir, native := nostrNativeProject()
+		if !native {
+			return fmt.Errorf("rd board requires a nostr-native project (a pinned board) — run: rd link <coord> first")
 		}
-		fmt.Println(boardURL(boardHost(cmd), token))
+		coord := nostrPinnedBoard(dir)
+		fmt.Println(ownBoardURL(boardHost(cmd), coord, inviteRelaySet()))
 		return nil
 	},
 }
@@ -208,7 +236,6 @@ identity, then send you back a pubkey; complete the invite with:
 
 func init() {
 	boardCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else a placeholder — ready-1ab has not shipped TLS yet)")
-	boardCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")
 
 	boardShareCmd.Flags().String("host", "", "hosted-board origin override (default: $RD_BOARD_HOST, else a placeholder — ready-1ab has not shipped TLS yet)")
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")
