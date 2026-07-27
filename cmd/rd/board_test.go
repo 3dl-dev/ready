@@ -632,10 +632,10 @@ func TestBoardCmd_Help_URLShapeMatchesEmittedURL(t *testing.T) {
 // hostFlagUsage both --host flags use) instead of hand-typing it. Once that
 // holds, the only thing left to check here is that the interpolation
 // actually happened — a trivial, cheap Contains(text, defaultBoardHost) — and
-// TestBoardGo_NoHardcodedHostOutsideConstant below closes the case a
-// Contains check alone cannot: it fails the build the moment ANY new
-// hardcoded "ready.3dl.dev" literal appears ANYWHERE in board.go, regardless
-// of which help surface (or non-help surface) it's hiding in.
+// TestBoardGo_NoHardcodedHostOutsideConstant below covers the DRIFT case a
+// Contains check cannot: a second hardcoded "ready.3dl.dev" literal on an
+// ordinary source line of board.go. It does NOT cover every way false prose
+// can reach --help; see that test's comment for the exact, tested limits.
 func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	boardTestEnv(t)
 	t.Setenv("RD_BOARD_HOST", "")
@@ -660,9 +660,11 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 
 	// Every help surface that names the host now derives it from
 	// defaultBoardHost (board.go), so this is a cheap containment check, not
-	// a prose scan: it merely confirms the interpolation happened, not that
-	// nothing else is wrong — TestBoardGo_NoHardcodedHostOutsideConstant is
-	// what makes "something else wrong" structurally impossible.
+	// a prose scan: it confirms the interpolation happened. It deliberately
+	// does NOT assert exclusivity — a second, wrong URL on the same surface
+	// passes this check. Nothing in this file detects that; see
+	// TestBoardGo_NoHardcodedHostOutsideConstant's comment for why, and for
+	// what is tracked instead.
 	for label, text := range map[string]string{
 		"boardCmd.Long":                   boardCmd.Long,
 		"boardCmd --host flag usage":      boardCmd.Flags().Lookup("host").Usage,
@@ -693,8 +695,32 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 // flag or subcommand) is required to INTERPOLATE defaultBoardHost rather
 // than hardcode it — so it is structurally impossible for any of them to
 // drift from the constant, and impossible for a new one to be added already
-// wrong. It does not matter which surface an adversary edits next; a bare
-// host literal anywhere in this file fails the build.
+// wrong.
+//
+// WHAT THIS DOES NOT COVER — stated precisely, because four previous rounds
+// of this guard shipped comments claiming more than their code did, which is
+// the exact defect ready-df6 exists to punish. Each of the following was
+// demonstrated GREEN by an adversary, with the built binary printing the bad
+// URL in real --help output:
+//   - A hardcoded host literal in a DIFFERENT file of this package (the path
+//     below is board.go specifically, not the package).
+//   - A URL naming some OTHER fabricated host ("https://boards.example.invalid/b").
+//     The needle is the literal "ready.3dl.dev"; a different hostname is invisible.
+//   - A line of user-facing prose INSIDE a Long raw-string that begins with
+//     "//" and mentions board.ready.3dl.dev. This scan is line-based text, not
+//     an AST, so it cannot tell that line from a real Go comment.
+//   - The host split across Go string concatenation so no single line contains it.
+//
+// That is not a fixable oversight, it is the boundary of the technique: this
+// test stops the host literal from being DUPLICATED and drifting, which is the
+// bug that shipped in PR #127. It cannot stop someone from authoring a new
+// false sentence, which no text predicate can. Closing the residue needs an
+// AST/package-scoped check over the rendered help of every command; that is
+// tracked as its own item, not bolted on here.
+//
+// If you are tempted to widen the needle or loosen a case below: don't. Every
+// prior round of this guard was lost by making the predicate weaker in exchange
+// for looking broader.
 func TestBoardGo_NoHardcodedHostOutsideConstant(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -726,12 +752,16 @@ func TestBoardGo_NoHardcodedHostOutsideConstant(t *testing.T) {
 		}
 	}
 	if len(violations) > 0 {
-		t.Fatalf("cmd/rd/board.go has a hardcoded %q literal outside the single defaultBoardHost "+
-			"declaration and the historical dead-placeholder comment:\n%s\n\n"+
+		t.Fatalf("cmd/rd/board.go has a %q literal on a line that is neither the single "+
+			"defaultBoardHost declaration nor the historical dead-placeholder comment:\n%s\n\n"+
 			"Fix: interpolate the defaultBoardHost constant instead (e.g. `+ defaultBoardHost +` "+
 			"in a Long string, or fmt.Sprintf(\"...%%s...\", defaultBoardHost) for a flag usage) — "+
-			"do not hand-type the host anywhere else in this file.",
-			needle, strings.Join(violations, "\n"))
+			"do not hand-type the host anywhere else in this file.\n\n"+
+			"If the flagged line IS the declaration, this test matches it by exact trimmed text "+
+			"(%q), so a trailing comment or a grouped `const ( ... )` block trips it. Restore the "+
+			"single-line form rather than loosening the match — every prior version of this guard "+
+			"was lost by widening a predicate to accommodate a formatting change.",
+			needle, strings.Join(violations, "\n"), constLine)
 	}
 }
 
