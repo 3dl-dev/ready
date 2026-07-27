@@ -640,6 +640,23 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 	if strings.Contains(line, "board.ready.3dl.dev") {
 		t.Fatalf("rd board (default host) printed %q, which still carries the dead board.ready.3dl.dev placeholder", line)
 	}
+
+	// ready-df6 hole 1: bind the HOST LITERAL in --help text, not just the
+	// URL SHAPE. Without this, --help can go on naming a host `rd board`
+	// has never emitted (e.g. after a copy-paste-only rename of the three
+	// literals above) while every other assertion in this file stays green.
+	const wantHost = "ready.3dl.dev"
+	if !strings.Contains(boardCmd.Long, wantHost) {
+		t.Fatalf("boardCmd.Long does not mention the configured default host %q; Long =\n%s", wantHost, boardCmd.Long)
+	}
+	hostFlagUsage := boardCmd.Flags().Lookup("host").Usage
+	if !strings.Contains(hostFlagUsage, wantHost) {
+		t.Fatalf("boardCmd --host flag usage does not mention the configured default host %q; usage = %q", wantHost, hostFlagUsage)
+	}
+	shareHostFlagUsage := boardShareCmd.Flags().Lookup("host").Usage
+	if !strings.Contains(shareHostFlagUsage, wantHost) {
+		t.Fatalf("boardShareCmd --host flag usage does not mention the configured default host %q; usage = %q", wantHost, shareHostFlagUsage)
+	}
 }
 
 // TestBoardHost_Resolution proves the --host flag and $RD_BOARD_HOST override
