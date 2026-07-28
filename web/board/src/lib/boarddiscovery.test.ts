@@ -20,6 +20,15 @@ import {
   delta,
   forgedSig,
   impersonator,
+  ARCHIVE_OWNER,
+  plainBeforeArchive,
+  archivedBoard,
+  archivedThenRevived,
+  TIE_OWNER,
+  tiePlain,
+  tieArchived,
+  FUTUREVER_OWNER,
+  futureVersionArchived,
 } from "./boardevents.fixtures";
 
 describe("discoverOwnerBoards", () => {
@@ -31,7 +40,83 @@ describe("discoverOwnerBoards", () => {
       boardCoord(OWNER, "beta"),
       boardCoord(OWNER, "gamma"),
     ]);
-    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board"); // first occurrence wins
+    // LATEST-WINS (ready-a9b), not first-in-array: alphaDup (created_at
+    // 1700000004) is a LATER republish of the same "alpha" coordinate than
+    // alpha (1700000001), and a relay merge can serve them in either order —
+    // array position is relay-answer order, not a trust or recency signal
+    // (this is exactly the divergence a multi-relay portfolio gather already
+    // has to account for; see board_portfolio.go's portfolioGather doc). The
+    // winner must be the newer one regardless of which the array lists first.
+    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board Dup");
+  });
+
+  it("latest-wins is order-independent: the newer event wins even when listed FIRST in the array", () => {
+    const got = discoverOwnerBoards([alphaDup, alpha], [OWNER], "");
+    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board Dup");
+  });
+
+  it("ready-a9b: drops a board whose WINNING (latest) definition carries the archived marker", () => {
+    const got = discoverOwnerBoards([archivedBoard], [ARCHIVE_OWNER], "");
+    expect(got).toEqual([]);
+  });
+
+  it("ready-a9b: a LATER archive hides a board that was previously plain, order-independent", () => {
+    // plainBeforeArchive (created_at 1700000010) -> archivedBoard (1700000020,
+    // archived) — the real shape `rd board archive` publishes over an
+    // existing plain definition. The winner (later created_at) carries the
+    // marker, so the coordinate must be dropped regardless of array order.
+    expect(discoverOwnerBoards([plainBeforeArchive, archivedBoard], [ARCHIVE_OWNER], "")).toEqual([]);
+    expect(discoverOwnerBoards([archivedBoard, plainBeforeArchive], [ARCHIVE_OWNER], "")).toEqual([]);
+  });
+
+  it("ready-a9b: an archived board reappears once a LATER definition drops the marker (rd board unarchive), order-independent", () => {
+    // archivedBoard (1700000020, archived) -> archivedThenRevived (1700000030,
+    // marker dropped) — the real shape `rd board unarchive` publishes.
+    for (const events of [
+      [archivedBoard, archivedThenRevived],
+      [archivedThenRevived, archivedBoard],
+    ]) {
+      const got = discoverOwnerBoards(events, [ARCHIVE_OWNER], "");
+      expect(got.map((b) => b.boardD)).toEqual(["archiveme"]);
+      expect(got[0].title).toBe("Archive Me");
+    }
+  });
+
+  it("ready-a9b H2: on a GENUINE created_at tie, the lexicographically LOWEST event id wins — order-independent, and it must match pkg/sync's tie-break exactly", () => {
+    // tiePlain and tieArchived share the SAME created_at (1700000040): a real
+    // tie, not a strictly-increasing republish like alpha/alphaDup above.
+    // tieArchived's id is lexicographically lower than tiePlain's, so the
+    // documented rule ("on a tie the lexicographically LOWEST event id wins")
+    // says tieArchived wins and the coordinate is dropped as archived.
+    //
+    // This is the exact scenario newerBoardEvent's own doc comment claims
+    // (without a test to back it) "mirrors fold.ts's newerThan / pkg/sync's
+    // newerThan EXACTLY". Flipping the tie-break's comparison
+    // (`a.id < b.id` -> `a.id > b.id`) makes tiePlain win instead — passing
+    // all other tests here (none of which contain a genuine tie) while
+    // silently un-hiding an archived board in the browser that the CLI (whose
+    // Go tie-break IS covered, TestProjection_ConvergesUnderPermutation)
+    // still drops. That divergence — CLI and browser disagreeing on which
+    // definition of the same coordinate is current — is precisely what this
+    // feature must not do.
+    for (const events of [
+      [tiePlain, tieArchived],
+      [tieArchived, tiePlain],
+    ]) {
+      const got = discoverOwnerBoards(events, [TIE_OWNER], "");
+      expect(got).toEqual([]);
+    }
+  });
+
+  it("ready-a9b H3: ANY non-empty archived value counts, not just ArchivedTagValue (\"1\") — forward-compat for a future marker version", () => {
+    // futureVersionArchived carries archived="v2-hidden", not "1". The doc
+    // comment on isArchivedBoard claims this is deliberate: "a later marker
+    // version does not need a matching release to keep being honoured as
+    // archived". Tightening the check to exact-value equality (=== "1")
+    // passes every other test in this file (none of them use a non-"1"
+    // value) while silently un-hiding this board.
+    const got = discoverOwnerBoards([futureVersionArchived], [FUTUREVER_OWNER], "");
+    expect(got).toEqual([]);
   });
 
   it("single-board filter restricts discovery to one d", () => {

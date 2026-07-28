@@ -90,9 +90,14 @@ const STRANGER = "3a7d1c05e2b94f6810d43fbc27ae59016cb8f2d4739e0a5c6182bd4e90f37c
 const HOSTILE_SNAPSHOT: NostrEvent[] = [forgedSig, impersonator, alpha, delta, beta, alphaDup, gamma];
 
 /** The three boards OWNER genuinely published, in the order main.ts must
- * render them (discoverOwnerBoards sorts by coordinate). */
+ * render them (discoverOwnerBoards sorts by coordinate). "alpha"'s title is
+ * alphaDup's ("Alpha Board Dup"), not alpha's — alphaDup (created_at
+ * 1700000004) is a LATER republish of the same coordinate than alpha
+ * (1700000001), and discoverOwnerBoards is latest-wins (ready-a9b), not
+ * first-in-snapshot-wins: the winning definition is whichever has the
+ * greatest created_at, independent of HOSTILE_SNAPSHOT's array order. */
 const OWNERS_GENUINE_BOARDS = [
-  { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
+  { title: "Alpha Board Dup", coord: boardCoord(OWNER, "alpha") },
   { title: "Beta Board", coord: boardCoord(OWNER, "beta") },
   { title: "Gamma Board", coord: boardCoord(OWNER, "gamma") },
 ];
@@ -379,8 +384,9 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // 2. The rendered list is EXACTLY the three genuine boards of OWNER —
       //    whole-list equality in both directions, so neither an extra forged
       //    row nor a missing genuine row can slip through, and "alpha" carries
-      //    the first occurrence's title rather than alphaDup's. This holds for
-      //    a signing identity too: verification is NOT gated on canSign.
+      //    alphaDup's title (the LATER of the two definitions, ready-a9b
+      //    latest-wins) rather than alpha's. This holds for a signing identity
+      //    too: verification is NOT gated on canSign.
       expect(renderedBoards(root)).toEqual(OWNERS_GENUINE_BOARDS);
 
       // 2b. ready-56b: and their coordinates are provenance, not chrome — the
@@ -443,8 +449,11 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       ]);
       expectItemFetchesScopedToRenderedBoards(capture, root);
       expectSnapshotCarriedTheForgedEvents(capture);
+      // "Alpha Board Dup", not "Alpha Board" — alphaDup is the LATER of the
+      // two "alpha" definitions in HOSTILE_SNAPSHOT (see OWNERS_GENUINE_BOARDS'
+      // doc); latest-wins picks it regardless of snapshot order.
       expect(renderedBoards(root)).toEqual([
-        { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
+        { title: "Alpha Board Dup", coord: boardCoord(OWNER, "alpha") },
       ]);
       expectNoForgedContent(root);
     });

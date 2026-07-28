@@ -450,6 +450,63 @@ func detectShortAnswers(src grantSources, reader *nostr.Key, union []string) []s
 	return out
 }
 
+// filterArchivedBoards drops every coordinate in coords whose CURRENT
+// (latest-wins, board-fold-spec.md §4.5) kind-30301 definition carries the
+// archived marker (ready-a9b, `rd board archive`). It reads the SAME
+// local-log-union-read-relays shape portfolioGrantEvents already builds for
+// role grants, applied to board (30301) events instead: local log first (so
+// an offline read still honours a marker this machine already knows about),
+// then every configured read relay, merged, then WinningBoardEvent picks the
+// latest-wins definition per coordinate — exactly the read side of what `rd
+// board archive`'s write publishes.
+//
+// A relay that fails to answer here degrades to "whatever the local log and
+// the OTHER relays already established" — the same posture portfolioGrantEvents
+// takes for a single relay miss — because an archived board is a
+// portfolio-discovery nicety, not a security or durability boundary: a read
+// failure here must never turn into a hard refusal of the whole portfolio
+// link the way a lost grant relay does.
+func filterArchivedBoards(ctx context.Context, dir string, coords []string, onRetry func(string, int, error)) []string {
+	if len(coords) == 0 {
+		return coords
+	}
+	owners := map[string]bool{}
+	for _, c := range coords {
+		if o, _, ok := rdSync.ParseBoardCoord(c); ok {
+			owners[o] = true
+		}
+	}
+	authors := make([]string, 0, len(owners))
+	for o := range owners {
+		authors = append(authors, o)
+	}
+
+	var events []*nostr.Event
+	if local, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll(); err == nil {
+		events = append(events, local...)
+	}
+	if relays := nostrReadRelays(); len(relays) > 0 {
+		res := relayFetchMany(ctx, relays, map[string]any{
+			"kinds":   []int{rdSync.KindBoard},
+			"authors": authors,
+		}, relayFetchOpts{
+			PerAttempt: portfolioRelayTimeout,
+			Attempts:   portfolioRelayAttempts,
+			OnRetry:    onRetry,
+		})
+		events = append(events, res.Events...)
+	}
+
+	out := make([]string, 0, len(coords))
+	for _, c := range coords {
+		if e, found := rdSync.WinningBoardEvent(events, c); found && rdSync.IsBoardArchived(e) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // portfolioKeys gathers EVERY board this machine's key can read — across all
 // projects, not just the pinned board of the current directory — and returns the
 // key material for them.
@@ -471,6 +528,12 @@ func portfolioKeys(ctx context.Context, dir string, onRetry func(string, int, er
 	}
 
 	kr, coords := rdSync.DerivePortfolioKeyring(src.merged, k)
+	// ready-a9b: drop every coordinate whose CURRENT board definition carries
+	// the archived marker BEFORE anything downstream counts it. An archived
+	// board's grant may still be perfectly readable — archiving touches no
+	// grant — but it must not occupy a slot in "found", in the short-answer
+	// comparison, or in the minted key blob. See filterArchivedBoards's doc.
+	coords = filterArchivedBoards(ctx, dir, coords, onRetry)
 	// The second half of the completeness question, and the one "did the relay
 	// answer" cannot reach: did any relay that DID answer serve less than the
 	// rest of this read proves exists?

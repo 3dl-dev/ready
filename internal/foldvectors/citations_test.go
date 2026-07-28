@@ -700,14 +700,14 @@ var citationExceptions = map[string]string{
 		"`ParseCrossCampfireRef` / `CrossCampfireRef` (:1061-1083) spanning both the " +
 		"CrossCampfireRef type's declaration and ParseCrossCampfireRef's own body; " +
 		"ParseCrossCampfireRef itself is declared at :1063",
-	"BuildCardEvent|pkg/sync/nostrwire.go|237@decl246": "§15.8: documents the FROZEN " +
+	"BuildCardEvent|pkg/sync/nostrwire.go|237@decl254": "§15.8: documents the FROZEN " +
 		"confidential-boards-envelope.md's now-stale citation for BuildCardEvent " +
-		"(claimed :237-310 when frozen); BuildCardEvent's CURRENT declaration is :246 " +
-		"— this entry records drift, not a live citation of :237",
-	"BuildStatusEvent|pkg/sync/nostrwire.go|319@decl362": "§15.8: documents the FROZEN " +
+		"(claimed :237-310 when frozen); BuildCardEvent's CURRENT declaration is :254 " +
+		"(moved from :246, ready-a9b) — this entry records drift, not a live citation of :237",
+	"BuildStatusEvent|pkg/sync/nostrwire.go|319@decl370": "§15.8: documents the FROZEN " +
 		"confidential-boards-envelope.md's now-stale citation for BuildStatusEvent " +
 		"(claimed :319-344 when frozen); BuildStatusEvent's CURRENT declaration is " +
-		":362 — this entry records drift, not a live citation of :319",
+		":370 (moved from :362, ready-a9b) — this entry records drift, not a live citation of :319",
 	"sealStatusPayload|pkg/sync/envelope.go|230@decl308": "§18.5-area: names " +
 		"sealStatusPayload but cites the `statusPayload` struct (:230-234) that " +
 		"documents the JSON shape it marshals, not the func's own body; " +
@@ -715,9 +715,10 @@ var citationExceptions = map[string]string{
 	"boardConfidentialEnvelope|cmd/rd/confidential.go|83@decl85": "§27.1-area: cites " +
 		"boardConfidentialEnvelope's OWN 6-line doc comment (:79-84, cited range :83-84), " +
 		"not its body; the func itself is declared at :85",
-	"CardCoord|pkg/sync/nostrwire.go|370@decl196": "§27.8: CALL site inside " +
-		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :370); " +
-		"CardCoord itself is declared at :196",
+	"CardCoord|pkg/sync/nostrwire.go|378@decl201": "§27.8: CALL site inside " +
+		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :378, " +
+		"moved from :370 by ready-a9b); CardCoord itself is declared at :201 " +
+		"(moved from :196)",
 
 	// Detail citations (see the third bucket above). Each names a func whose
 	// OWN declaration is either cited exactly elsewhere in the doc, or (for
@@ -727,17 +728,19 @@ var citationExceptions = map[string]string{
 		"`by` tag write (:61-63) inside BuildHistoricalStatusEvent's body; " +
 		"BuildHistoricalStatusEvent is never cited at its own declaration line " +
 		"(:49) — only via this detail range",
-	"BuildCardEvent|pkg/sync/nostrwire.go|291@decl246": "§23.3: the three " +
-		"label-emission-mode branch (:291-311) inside BuildCardEvent's body; " +
-		"BuildCardEvent's own declaration+body is cited exactly at :246 " +
-		"(§5.1, `pkg/sync/nostrwire.go:246-...`)",
-	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|443@decl416": "§11.5/§19.4: " +
-		"the second `a` tag (board coordinate) construction (:443-446) inside " +
-		"the func's tag-table build; BuildStatusEventWithIssueRoot is never cited " +
-		"at its own declaration line (:416) — only via detail ranges like this one",
-	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|447@decl416": "§19.4/§24.1: " +
-		"the re-sign-after-tag-mutation step (:447-454); BuildStatusEventWithIssueRoot " +
-		"is never cited at its own declaration line (:416) — only via detail ranges",
+	"BuildCardEvent|pkg/sync/nostrwire.go|299@decl254": "§23.3: the three " +
+		"label-emission-mode branch (:299-319, moved from :291-311 by ready-a9b) " +
+		"inside BuildCardEvent's body; BuildCardEvent's own declaration+body is " +
+		"cited exactly at :254 (§5.1, `pkg/sync/nostrwire.go:254-...`)",
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|451@decl424": "§11.5/§19.4: " +
+		"the second `a` tag (board coordinate) construction (:451-454, moved from " +
+		":443-446 by ready-a9b) inside the func's tag-table build; " +
+		"BuildStatusEventWithIssueRoot is never cited at its own declaration line " +
+		"(:424) — only via detail ranges like this one",
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|455@decl424": "§19.4/§24.1: " +
+		"the re-sign-after-tag-mutation step (:455-462, moved from :447-454 by " +
+		"ready-a9b); BuildStatusEventWithIssueRoot is never cited at its own " +
+		"declaration line (:424) — only via detail ranges",
 	"CardSpecFromItem|pkg/sync/nostrmigrate.go|110@decl106": "§27.x: the `s` tag " +
 		"write inside CardSpecFromItem's body (:110); CardSpecFromItem's own " +
 		"declaration+body is cited exactly at :106 (§5.6, `:106-127`)",
@@ -783,9 +786,10 @@ var citationExceptions = map[string]string{
 	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
 		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
 		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
-	"itemIDForEvent|pkg/sync/nostrwire.go|589@decl585": "§9.x: a detail range " +
-		"(:589-600) inside itemIDForEvent's body; itemIDForEvent's own " +
-		"declaration+body is cited exactly at :585 (`:585-602`)",
+	"itemIDForEvent|pkg/sync/nostrwire.go|597@decl593": "§9.x: a detail range " +
+		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
+		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
+		"(`:593-610`)",
 	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|615@decl602": "§27.x: the " +
 		"project-prefix assignment (:615) inside publishEngagedItemsNostr's body; " +
 		"its declaration is cited exactly at :602 (§26.3)",

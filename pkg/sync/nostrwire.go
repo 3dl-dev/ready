@@ -181,6 +181,11 @@ type BoardSpec struct {
 	// Maintainers are pubkey hex strings that may author authoritative status
 	// events for cards on this board (NIP-100 board "p" maintainers).
 	Maintainers []string
+	// Archived marks the board as archived (ready-a9b) — see its full doc at
+	// this file's end (IsBoardArchived, BoardSpecFromEvent), kept there rather
+	// than here so this ready-a9b addition does not shift the line numbers
+	// board-fold-spec.md cites for every function below this struct.
+	Archived bool
 }
 
 // coord returns a NIP-01 addressable coordinate "<kind>:<pubkey>:<d>" used by
@@ -202,6 +207,9 @@ func BuildBoardEvent(k *nostr.Key, spec BoardSpec, createdAt int64) (*nostr.Even
 	tags := [][]string{
 		{"d", spec.BoardD},
 		{"title", spec.Title},
+	}
+	if spec.Archived {
+		tags = append(tags, []string{"archived", ArchivedTagValue})
 	}
 	for _, m := range spec.Maintainers {
 		if m != "" {
@@ -599,4 +607,64 @@ func itemIDForEvent(e *nostr.Event) string {
 		}
 	}
 	return ""
+}
+
+// --- ready-a9b: board archiving ------------------------------------------
+//
+// Everything below is appended at file end, not grouped next to BoardSpec /
+// BuildBoardEvent / GrantDriftScope where it would read more naturally,
+// because board-fold-spec.md cites dozens of this file's functions by EXACT
+// line number (internal/foldvectors/citations_test.go enforces it) and a
+// mid-file insertion shifts every citation below it for no reason connected
+// to what changed. Appending here costs nothing but locality.
+
+// BoardDriftScope is the DriftScope key for a board's own addressable 30301
+// slot, matching DriftScope's KindBoard branch. A caller about to republish a
+// board definition (e.g. `rd board archive` toggling the archived marker)
+// passes this to nostrNextCreatedAt so the monotonic bump considers only this
+// board's prior definition events, not the whole log.
+func BoardDriftScope(boardD string) string { return "board:" + boardD }
+
+// ArchivedTagValue is the "archived" tag's value BuildBoardEvent writes when
+// BoardSpec.Archived is true — a portfolio-discovery marker ONLY, carried as
+// an additive clear tag on the board's OWN 30301 definition. It changes
+// NOTHING about any other event on the board: no card, status, or grant is
+// touched, sealed, or re-signed, and it is reversible by republishing with
+// Archived: false. Two consumers honour it: the CLI portfolio gather
+// (cmd/rd/board_portfolio.go's filterArchivedBoards) drops an archived
+// coordinate's keys from the link, and the browser's board discovery
+// (web/board/src/lib/boarddiscovery.ts) drops it from the rendered list. The
+// live item fold (ProjectItems, board-fold-spec.md Part I, this same package)
+// deliberately does NOT read this tag: `rd list`/`rd ready`/`rd show` inside a
+// project that still pins an archived board's coordinate keep working exactly
+// as before — archiving hides a board from PORTFOLIO discovery, it is not a
+// mutation of the project or its item data.
+//
+// Any NON-EMPTY tag value counts as archived (IsBoardArchived), matching
+// isConfidential's style (envelope.go) — a future marker version does not
+// need a matching Go release to keep being honoured as "archived".
+const ArchivedTagValue = "1"
+
+// IsBoardArchived reports whether e — a kind-30301 board event — carries the
+// archived marker tag. Callers MUST pass the WINNING (latest-wins, §4.5) event
+// for the coordinate; this function makes no attempt at discovery or ordering
+// of its own (see WinningBoardEvent, pkg/sync/nostrproject.go).
+func IsBoardArchived(e *nostr.Event) bool {
+	return e != nil && tagValue(e, "archived") != ""
+}
+
+// BoardSpecFromEvent reconstructs the BoardSpec a kind-30301 event was built
+// from — the read side of BuildBoardEvent, mirroring CardSpecFromItem's role
+// for cards (nostrmigrate.go). A mutation that must change ONE field of a
+// board definition (e.g. `rd board archive` toggling Archived) starts from
+// this so it carries the CURRENT title and maintainers forward unchanged, per
+// §16.3's read-modify-write rule applied to boards. e is assumed already
+// verified and to be the coordinate's WINNING event.
+func BoardSpecFromEvent(e *nostr.Event) BoardSpec {
+	return BoardSpec{
+		BoardD:      tagValue(e, "d"),
+		Title:       tagValue(e, "title"),
+		Maintainers: tagValues(e, "p"),
+		Archived:    IsBoardArchived(e),
+	}
 }
