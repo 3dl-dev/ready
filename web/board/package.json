@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "ready.3dl.dev/board — nostr-login + owner-board discovery (ready-dbf), built with Vite + TypeScript, no runtime CDN dependencies.",
+  "description": "ready.3dl.dev/board — nostr-login, owner-board discovery (ready-dbf) and confidential-board decryption (ready-c4b), built with Vite + TypeScript. No runtime CDN dependencies: the one runtime dependency (@noble/ciphers, for the ChaCha20-Poly1305 content envelope) is bundled, and dist_test.go proves the built output references no external origin.",
   "engines": {
     "node": ">=20.17.0"
   },
@@ -14,9 +14,15 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@types/node": "^22.10.2",
     "jsdom": "25.0.1",
     "typescript": "5.6.3",
     "vite": "5.4.21",
     "vitest": "2.1.9"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0"
   }
 }

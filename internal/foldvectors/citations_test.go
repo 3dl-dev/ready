@@ -741,10 +741,10 @@ var citationExceptions = map[string]string{
 	"CardSpecFromItem|pkg/sync/nostrmigrate.go|110@decl106": "§27.x: the `s` tag " +
 		"write inside CardSpecFromItem's body (:110); CardSpecFromItem's own " +
 		"declaration+body is cited exactly at :106 (§5.6, `:106-127`)",
-	"DeriveBoardKeyring|pkg/sync/keydist.go|145@decl141": "§11.12 recap: " +
+	"DeriveBoardKeyring|pkg/sync/keydist.go|182@decl178": "§11.12 recap: " +
 		"\"accumulates epochs from the grants present in the LOCAL LOG\" " +
-		"(:145-186) inside DeriveBoardKeyring's body; DeriveBoardKeyring's own " +
-		"declaration+body is cited exactly at :141 (`:141-194`)",
+		"(:182-223) inside DeriveBoardKeyring's body; DeriveBoardKeyring's own " +
+		"declaration+body is cited exactly at :178 (`:178-231`)",
 	"OverdueFilter|pkg/views/views.go|95@decl94": "§15.6: the `now := time.Now()` " +
 		"construction-time capture (:95) inside OverdueFilter's body; OverdueFilter's " +
 		"own declaration+body is cited exactly at :94 (§13.6, `:94-109`)",

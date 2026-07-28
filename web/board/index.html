@@ -5,37 +5,60 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ready — board</title>
     <style>
-      html, body {
+      /* Design tokens, copied verbatim from docs/design/board-prototype.html's
+         :root. They are declared here rather than in board.css so the page has
+         its ground colour before any module has parsed — the shell must never
+         flash a colour the design does not contain.
+
+         BOTH THEMES, TWICE. prefers-color-scheme covers a visitor who has never
+         touched a control; :root[data-theme] covers an explicit choice and must
+         win over the media query, which is why the attribute blocks come last. */
+      :root {
+        color-scheme: light dark;
+        --ground: #f1f2f5; --panel: #ffffff; --sunk: #e9ebf0; --line: #dde0e7; --line-2: #edeef2;
+        --ink: #171922; --ink-2: #5c6273; --ink-3: #8a90a2;
+        --gate: #9a5b00; --gate-bg: #fff4e2; --gate-line: #e8b25f;
+        --flight: #0f7a6e; --blocked: #5b4c96; --ready: #2c5fa8; --p0: #b32d2d; --key: #7a4fb5;
+        --radius: 7px; --detail-w: 340px;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ground: #101219; --panel: #181b24; --sunk: #14161e; --line: #2a2e3c; --line-2: #21242f;
+          --ink: #e9eaf0; --ink-2: #9ba1b4; --ink-3: #6e7488;
+          --gate: #f2b357; --gate-bg: #292013; --gate-line: #8a6520;
+          --flight: #4cc0b2; --blocked: #9385d6; --ready: #6ba3e8; --p0: #e87070; --key: #b79ae8;
+        }
+      }
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --ground: #f1f2f5; --panel: #ffffff; --sunk: #e9ebf0; --line: #dde0e7; --line-2: #edeef2;
+        --ink: #171922; --ink-2: #5c6273; --ink-3: #8a90a2;
+        --gate: #9a5b00; --gate-bg: #fff4e2; --gate-line: #e8b25f;
+        --flight: #0f7a6e; --blocked: #5b4c96; --ready: #2c5fa8; --p0: #b32d2d; --key: #7a4fb5;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --ground: #101219; --panel: #181b24; --sunk: #14161e; --line: #2a2e3c; --line-2: #21242f;
+        --ink: #e9eaf0; --ink-2: #9ba1b4; --ink-3: #6e7488;
+        --gate: #f2b357; --gate-bg: #292013; --gate-line: #8a6520;
+        --flight: #4cc0b2; --blocked: #9385d6; --ready: #6ba3e8; --p0: #e87070; --key: #b79ae8;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
         margin: 0;
-        padding: 0;
-        background: #0b0d12;
-        color: #e6e8eb;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
       }
-      #app {
-        display: flex;
-        min-height: 100vh;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        gap: 0.5rem;
-        text-align: center;
-        padding: 2rem;
-        box-sizing: border-box;
-      }
-      h1 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin: 0;
-      }
-      p {
-        margin: 0;
-        color: #9aa1ac;
-        font-size: 0.95rem;
-      }
-      code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      }
+      #app { min-height: 100%; display: flex; flex-direction: column; }
+      code { font-family: var(--mono); }
     </style>
   </head>
   <body>

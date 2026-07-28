@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeItem } from "./testitem";
-import { daysSince, statusLine } from "./statusline";
+import { ageLabel, daysSince, statusLine } from "./statusline";
 
 const NOW = Date.parse("2026-07-28T00:00:00Z");
 const nowNanos = NOW * 1e6;
@@ -41,5 +41,26 @@ describe("daysSince", () => {
 
   it("never goes negative for a future timestamp", () => {
     expect(daysSince(nowNanos + 1e15, NOW)).toBe(0);
+  });
+});
+
+describe("ageLabel", () => {
+  // ready-56b: the card age used to be `${daysSince()}d` for every item, so on
+  // a live board where most work moved within the last day EVERY card read
+  // "0d" and the column carried no information at all. The prototype's three
+  // units are what make "11m" and "23d" tell different stories.
+  it("uses minutes under an hour, hours under a day, days above", () => {
+    const at = (ms: number) => (NOW - ms) * 1e6;
+    expect(ageLabel(at(0), NOW)).toBe("0m");
+    expect(ageLabel(at(11 * 60_000), NOW)).toBe("11m");
+    expect(ageLabel(at(59 * 60_000), NOW)).toBe("59m");
+    expect(ageLabel(at(60 * 60_000), NOW)).toBe("1h");
+    expect(ageLabel(at(23 * 3_600_000), NOW)).toBe("23h");
+    expect(ageLabel(at(24 * 3_600_000), NOW)).toBe("1d");
+    expect(ageLabel(at(23 * 24 * 3_600_000), NOW)).toBe("23d");
+  });
+
+  it("never goes negative for a future timestamp", () => {
+    expect(ageLabel(nowNanos + 1e15, NOW)).toBe("0m");
   });
 });
