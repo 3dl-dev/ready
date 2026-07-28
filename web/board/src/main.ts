@@ -7,6 +7,16 @@
 // ready-445, not this file — this page only gets you from "nothing" to "a
 // list of your boards, or an awaiting-authorization notice."
 //
+// TESTABILITY (ready-9b4): this module used to be un-testable — it held the
+// #app element in a module-level const and ran main() as an import side
+// effect, so nothing could drive the relay -> verify -> DOM path. Two
+// changes fix that without restructuring the app: the render helpers take
+// their container as a parameter, and afterLogin takes a BoardDeps seam
+// whose default is the real relay config + real multi-relay fetcher. See
+// main.test.ts, which injects a fake WebSocket serving Go-signed genuine
+// events mixed with forged ones and asserts the forged ones never reach the
+// DOM (ready-dbf done condition 4).
+//
 // BUILD_STAMP is injected at build time via VITE_BUILD_STAMP (see
 // .github/workflows/pages.yml) — kept from the ready-2f1 placeholder so the
 // orchestrator's post-merge "is the deployed page the one just built" check
@@ -18,15 +28,38 @@ import { hasNip07Extension, loginWithExtension } from "./lib/nip07";
 import { decodeNpub, encodeNpub } from "./lib/npub";
 import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
-import { fetchEventsFromRelays, type RelayStatusEvent } from "./lib/relay";
+import {
+  fetchEventsFromRelays,
+  type FetchEventsOptions,
+  type NostrFilter,
+  type RelayStatusEvent,
+} from "./lib/relay";
+import type { NostrEvent } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
 
-interface Identity {
+export interface Identity {
   pubkey: string;
   auth: AuthTransition;
 }
 
-const root = document.getElementById("app");
+/**
+ * BoardDeps is the injection seam for everything afterLogin does that reaches
+ * outside the page: resolving the relay set and querying relays. It exists so
+ * a test can serve a scripted relay snapshot; it deliberately does NOT
+ * abstract over discoverOwnerBoards, because the signature verification that
+ * happens inside discoverOwnerBoards is the property under test and must stay
+ * un-stubbable from here.
+ */
+export interface BoardDeps {
+  loadRelays: () => Promise<string[]>;
+  fetchEvents: (relays: string[], filter: NostrFilter, opts: FetchEventsOptions) => Promise<NostrEvent[]>;
+}
+
+/** Production wiring: same-origin relays.json + the real WebSocket client. */
+export const defaultDeps: BoardDeps = {
+  loadRelays: () => loadOwnBoardsRelays(),
+  fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
+};
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -39,8 +72,11 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function renderLogin(fragment: ParsedFragment, onIdentity: (id: Identity) => void): void {
-  if (!root) return;
+function renderLogin(
+  root: HTMLElement,
+  fragment: ParsedFragment,
+  onIdentity: (id: Identity) => void,
+): void {
   root.replaceChildren();
 
   const heading = el("h1", { textContent: "ready — board" });
@@ -90,8 +126,12 @@ function renderLogin(fragment: ParsedFragment, onIdentity: (id: Identity) => voi
   );
 }
 
-function renderAwaitingAuthorization(identity: Identity, board: string, npub: string): void {
-  if (!root) return;
+function renderAwaitingAuthorization(
+  root: HTMLElement,
+  identity: Identity,
+  board: string,
+  npub: string,
+): void {
   const panel = el("section", { className: "awaiting-authorization" }, [
     el("h2", { textContent: "Awaiting authorization" }),
     el("p", {
@@ -101,14 +141,13 @@ function renderAwaitingAuthorization(identity: Identity, board: string, npub: st
   root.append(panel);
 }
 
-function renderConnecting(): HTMLElement {
+function renderConnecting(root: HTMLElement): HTMLElement {
   const status = el("p", { className: "connecting", textContent: "Connecting to relays…" });
-  root?.append(status);
+  root.append(status);
   return status;
 }
 
-function renderBoards(boards: DiscoveredBoard[]): void {
-  if (!root) return;
+function renderBoards(root: HTMLElement, boards: DiscoveredBoard[]): void {
   if (boards.length === 0) {
     root.append(el("p", { textContent: "No boards found." }));
     return;
@@ -126,8 +165,7 @@ function renderBoards(boards: DiscoveredBoard[]): void {
   root.append(list);
 }
 
-function renderIdentityBar(identity: Identity): void {
-  if (!root) return;
+function renderIdentityBar(root: HTMLElement, identity: Identity): void {
   const npub = safeEncodeNpub(identity.pubkey);
   root.append(
     el("p", {
@@ -145,18 +183,22 @@ function safeEncodeNpub(pubkeyHex: string): string {
   }
 }
 
-async function afterLogin(identity: Identity, fragment: ParsedFragment): Promise<void> {
-  if (!root) return;
+export async function afterLogin(
+  root: HTMLElement,
+  identity: Identity,
+  fragment: ParsedFragment,
+  deps: BoardDeps = defaultDeps,
+): Promise<void> {
   root.replaceChildren();
   root.append(el("h1", { textContent: "ready — board" }));
-  renderIdentityBar(identity);
+  renderIdentityBar(root, identity);
 
   if (fragment.kind === "claim") {
-    renderAwaitingAuthorization(identity, fragment.payload.board, safeEncodeNpub(identity.pubkey));
+    renderAwaitingAuthorization(root, identity, fragment.payload.board, safeEncodeNpub(identity.pubkey));
     return;
   }
 
-  const connecting = renderConnecting();
+  const connecting = renderConnecting(root);
   const onStatus = (e: RelayStatusEvent) => {
     connecting.textContent = `Connecting to ${e.relay}… (${e.status}${e.attempt > 0 ? `, attempt ${e.attempt + 1}` : ""})`;
   };
@@ -165,32 +207,33 @@ async function afterLogin(identity: Identity, fragment: ParsedFragment): Promise
     if (fragment.kind === "board") {
       const parsedCoord = parseBoardCoord(fragment.board);
       if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(fragment.board)}`);
-      const relays = fragment.relays.length > 0 ? fragment.relays : await loadOwnBoardsRelays();
-      const events = await fetchEventsFromRelays(
+      const relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
+      const events = await deps.fetchEvents(
         relays,
         { kinds: [30301], authors: [parsedCoord.owner] },
         { onStatus },
       );
       connecting.remove();
-      renderBoards(discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD));
+      renderBoards(root, discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD));
       return;
     }
 
     // fragment.kind === "none": own-boards discovery (done condition 3).
-    const relays = await loadOwnBoardsRelays();
-    const events = await fetchEventsFromRelays(relays, { kinds: [30301], authors: [identity.pubkey] }, { onStatus });
+    const relays = await deps.loadRelays();
+    const events = await deps.fetchEvents(relays, { kinds: [30301], authors: [identity.pubkey] }, { onStatus });
     connecting.remove();
-    renderBoards(discoverOwnerBoards(events, [identity.pubkey]));
+    renderBoards(root, discoverOwnerBoards(events, [identity.pubkey]));
   } catch (err) {
     connecting.textContent = err instanceof Error ? err.message : String(err);
   }
 }
 
 function main(): void {
+  const root = document.getElementById("app");
   if (!root) return;
   const fragment = parseAndStripFragment();
-  renderLogin(fragment, (identity) => {
-    void afterLogin(identity, fragment);
+  renderLogin(root, fragment, (identity) => {
+    void afterLogin(root, identity, fragment);
   });
 }
 
