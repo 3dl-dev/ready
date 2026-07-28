@@ -53,7 +53,18 @@ package main
 //
 //	rd board --with-key      -> the own-board URL above, PLUS this key's already-
 //	                            unwrapped board read key(s) in the fragment:
-//	                            pk=<viewer pubkey>&cek=<epoch>:<hex>[,...]&ltk=<hex>.
+//	                            pk=<viewer pubkey>&cek=<epoch>:<hex>[,...].
+//
+// LEAST PRIVILEGE — WHY THE LTK IS NOT IN THAT LIST. An earlier cut of this also
+// embedded ltk=<hex>, the board's label-token key. Nothing in the browser reads
+// it: web/board's keyring.ltk() and envelope.labelToken() have no caller outside
+// their own tests, because labels are filtered client-side on decrypted
+// plaintext and the `#l`-filter path that would need a token has not been built.
+// So the link was shipping a second secret with no consumer — pure exposure for
+// no capability. It is gone from the EMITTED fragment; fragment.ts still PARSES
+// ltk= so links minted by older builds keep working. Re-add emission here (and
+// re-add it to the fragment allowlist test) at the same time a consumer lands,
+// not before.
 //
 // THE PROBLEM IT SOLVES: a confidential board's CEK is NIP-44-wrapped TO a
 // pubkey, so unwrapping it needs that key's SECRET. A read-only npub pasted into
@@ -141,12 +152,15 @@ func boardURL(host, token string) string {
 // TestBoardCmd_Default_NoKeyMaterial.
 //
 // `viewer` is a PUBLIC pubkey (the identity the page should open as, so nobody
-// has to paste an npub); `ceks` and `ltk` are SECRET.
+// has to paste an npub); `ceks` are SECRET.
+//
+// There is deliberately NO ltk field: the label-token key has no reader in the
+// browser, so embedding it would ship a secret nothing can spend (see the
+// LEAST PRIVILEGE note in this file's header). Adding one back means adding a
+// consumer first.
 type boardKeyFragment struct {
 	viewer string           // 64-hex pubkey of the key that minted this link
 	ceks   map[int][32]byte // epoch -> content-encryption key
-	ltk    [32]byte         // label-token key
-	hasLTK bool
 }
 
 // carriesSecret reports whether this fragment actually ships key material, as
@@ -154,7 +168,7 @@ type boardKeyFragment struct {
 // warning line is printed — the user must be told when, and only when, the link
 // is a bearer credential.
 func (f *boardKeyFragment) carriesSecret() bool {
-	return f != nil && (len(f.ceks) > 0 || f.hasLTK)
+	return f != nil && len(f.ceks) > 0
 }
 
 // cekParam renders the held CEKs as "<epoch>:<64-hex>[,<epoch>:<64-hex>...]",
@@ -185,8 +199,11 @@ func (f *boardKeyFragment) cekParam() string {
 //
 // `keys` is nil for every caller except `rd board --with-key` (ready-df0), and
 // nil produces byte-for-byte the pre-ready-df0 fragment. When non-nil it appends
-// pk= (public) and, for a confidential board this key can read, cek= / ltk=
-// (secret). web/board/src/lib/fragment.ts parses exactly these five params.
+// pk= (public) and, for a confidential board this key can read, cek= (secret).
+// Those FOUR parameters are the whole emitted vocabulary — see
+// TestBoardCmd_WithKey_FragmentParamAllowlist. web/board/src/lib/fragment.ts
+// parses one more, ltk=, which this no longer emits (header: LEAST PRIVILEGE);
+// it stays parseable so links from older builds keep opening.
 func ownBoardURL(host, coord string, relays []string, keys *boardKeyFragment) string {
 	v := url.Values{}
 	v.Set("board", coord)
@@ -199,9 +216,6 @@ func ownBoardURL(host, coord string, relays []string, keys *boardKeyFragment) st
 		}
 		if len(keys.ceks) > 0 {
 			v.Set("cek", keys.cekParam())
-		}
-		if keys.hasLTK {
-			v.Set("ltk", hex.EncodeToString(keys.ltk[:]))
 		}
 	}
 	return host + "#" + v.Encode()
@@ -242,9 +256,10 @@ func ownBoardKeys(dir, coord string) (keys *boardKeyFragment, confidential bool,
 			f.ceks[ep] = cek
 		}
 	}
-	if ltk, held := kr.LTK(coord); held {
-		f.ltk, f.hasLTK = ltk, true
-	}
+	// kr.LTK(coord) is deliberately NOT read. The keyring holds the label-token
+	// key — this key is entitled to it — but entitlement is not a reason to put
+	// it in a URL. Nothing on the receiving end can spend it (header: LEAST
+	// PRIVILEGE), so gathering it here would only widen what the link leaks.
 	_, confidential = kr.Cutover(coord)
 	return f, confidential, nil
 }
@@ -312,8 +327,8 @@ WITHOUT --with-key (the default), and for every ` + "`rd board share`" + ` link:
 
 WITH --with-key, that changes for THIS link and only this link: the fragment
 also carries the content-encryption key(s) your key already holds for this
-board (and the label-token key, if you hold one), so the hosted page can
-decrypt in your browser. A fragment is never sent to a server and the page
+board — those and nothing else — so the hosted page can decrypt titles in
+your browser. A fragment is never sent to a server and the page
 strips it from the address bar immediately, but the link itself is a bearer
 credential while it sits in your scrollback or clipboard — anyone you send it
 to can read this board. It carries NO signing key and NO write authority: a

@@ -71,6 +71,13 @@ describe("parseFragment", () => {
 // TestBoardCmd_WithKey_FragmentShapeMatchesBrowserParser (cmd/rd/board_test.go),
 // which builds this same string from the real command output, so the two
 // implementations cannot drift apart silently.
+// ltk= APPEARS THROUGHOUT THIS BLOCK AND IS NO LONGER EMITTED. `rd board
+// --with-key` dropped it on least-privilege grounds (nothing in this app reads
+// an LTK — see fragment.ts's header), but a link minted by an older build still
+// carries one and must still open. These cases are therefore the BACKWARD-
+// COMPATIBILITY witness, not a description of what the CLI produces today: the
+// emitted vocabulary is pinned on the Go side by
+// TestBoardCmd_WithKey_FragmentParamAllowlist, which fails if ltk= comes back.
 describe("parseFragment — `rd board --with-key` key material", () => {
   const CEK1 = "a".repeat(64);
   const CEK2 = "b".repeat(64);
@@ -83,7 +90,7 @@ describe("parseFragment — `rd board --with-key` key material", () => {
     "&pk=" + PK +
     "&relays=wss%3A%2F%2Frelay.3dl.network";
 
-  it("decodes pk, every cek epoch, and the ltk", () => {
+  it("decodes pk, every cek epoch, and a legacy ltk", () => {
     const parsed = parseFragment(WITH_KEY_HASH);
     if (parsed.kind !== "board") throw new Error("unreachable");
     expect(parsed.board).toBe("30301:abc123:myboard");
@@ -105,7 +112,7 @@ describe("parseFragment — `rd board --with-key` key material", () => {
     expect(parsed.keys).toBeUndefined();
   });
 
-  it("carries the ltk with no cek (a board whose reader holds only a label key)", () => {
+  it("carries a legacy ltk with no cek, without mistaking it for a key-free link", () => {
     const parsed = parseFragment("#board=30301%3Aabc123%3Amyboard&ltk=" + LTK);
     if (parsed.kind !== "board") throw new Error("unreachable");
     expect(parsed.keys!.ceks).toEqual([]);

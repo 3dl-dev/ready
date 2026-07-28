@@ -11,6 +11,9 @@ package main
 //	*  bare `rd board` still emits ZERO key material, on a board that is really
 //	   confidential and where the key really is available to embed
 //	   (TestBoardCmd_Default_NoKeyMaterial — the gate).
+//	*  a key-bearing link carries EXACTLY the four parameters something reads,
+//	   and no more (TestBoardCmd_WithKey_FragmentParamAllowlist — least
+//	   privilege; read its comment for why the LTK is gone).
 //	*  `rd board share`, in BOTH its forms, never embeds key material and has no
 //	   flag that could make it (TestBoardShareCmd_NeverEmbedsKeyMaterial — the
 //	   boundary the item calls "the single most important" one: third-party read
@@ -44,6 +47,11 @@ import (
 // pinned board as CONFIDENTIAL, exactly the way the owner's own bootstrap does:
 // two CEK epochs and one LTK, each NIP-44-wrapped to the owner's own key and
 // carried inside owner-signed kind-39301 grants in the local log.
+//
+// The LTK is still bootstrapped, and the CLI's keyring still derives it, even
+// though no link carries it any more — that is the point: the returned `ltk` is
+// what TestBoardCmd_WithKey_FragmentParamAllowlist proves is WITHHELD. A fixture
+// that stopped minting one would turn that test vacuous.
 //
 // TWO epochs, not one, because a rotated board is the case a naive
 // implementation gets wrong: shipping only the current epoch leaves every
@@ -145,10 +153,10 @@ func fragmentOf(t *testing.T, out string) url.Values {
 	return v
 }
 
-// TestBoardCmd_WithKey_EmbedsEveryHeldEpochAndTheLTK is done condition 1's CLI
-// half: the link carries the key material this key actually holds, unwrapped.
-func TestBoardCmd_WithKey_EmbedsEveryHeldEpochAndTheLTK(t *testing.T) {
-	owner, coord, _, cek1, cek2, ltk := confidentialBoardEnv(t)
+// TestBoardCmd_WithKey_EmbedsEveryHeldEpoch is done condition 1's CLI half: the
+// link carries the key material this key actually holds, unwrapped.
+func TestBoardCmd_WithKey_EmbedsEveryHeldEpoch(t *testing.T) {
+	owner, coord, _, cek1, cek2, _ := confidentialBoardEnv(t)
 
 	out, _ := runBoardCmd(t, true)
 	v := fragmentOf(t, out)
@@ -166,17 +174,44 @@ func TestBoardCmd_WithKey_EmbedsEveryHeldEpochAndTheLTK(t *testing.T) {
 	if got := v.Get("cek"); got != want {
 		t.Errorf("fragment cek=%q, want %q (every held epoch, ascending)", got, want)
 	}
-	if got, wantLTK := v.Get("ltk"), hex.EncodeToString(ltk[:]); got != wantLTK {
-		t.Errorf("fragment ltk=%q, want %q", got, wantLTK)
-	}
-	// Exactly these five parameters — an allowlist, so any future field has to
-	// be added here deliberately rather than riding along unnoticed.
-	allowed := map[string]bool{"board": true, "relays": true, "pk": true, "cek": true, "ltk": true}
+}
+
+// TestBoardCmd_WithKey_FragmentParamAllowlist is the least-privilege gate on the
+// emitted link: a key-bearing URL carries EXACTLY four parameters and every one
+// of them has to earn its place.
+//
+// The LTK is the reason this test is its own function rather than a tail of the
+// one above. This command used to embed ltk= — the board's label-token key — and
+// it passed review because the CLI legitimately holds it and the browser
+// legitimately parses it. What nobody checked was whether anything in the browser
+// ever READ it: keyring.ltk() and envelope.labelToken() are called only from
+// their own tests. A secret with no consumer is exposure bought for nothing, and
+// it rode along in every key-bearing link for exactly as long as the assertion
+// said "ltk is present" instead of "only what is used is present".
+//
+// So the allowlist below is the standing rule, and a would-be sixth parameter
+// (or a returning ltk=) fails here until someone edits this list on purpose.
+func TestBoardCmd_WithKey_FragmentParamAllowlist(t *testing.T) {
+	_, _, _, _, _, ltk := confidentialBoardEnv(t)
+
+	out, _ := runBoardCmd(t, true)
+	v := fragmentOf(t, out)
+
+	allowed := map[string]bool{"board": true, "relays": true, "pk": true, "cek": true}
 	for k := range v {
 		if !allowed[k] {
-			t.Errorf("fragment carries unexpected parameter %q — every parameter in a key-bearing link must be a deliberate choice", k)
+			t.Errorf("fragment carries unexpected parameter %q — every parameter in a key-bearing link must be a deliberate choice, and must have a consumer", k)
 		}
 	}
+	// Named explicitly, not just excluded by the allowlist, so the reason is
+	// legible at the failure site.
+	if got := v.Get("ltk"); got != "" {
+		t.Errorf("fragment carries ltk=%q — the label-token key has NO reader in web/board (keyring.ltk() and labelToken() are test-only). Re-add emission when a consumer lands, not before.", got)
+	}
+	// Byte level: not smuggled under another name either. This key is genuinely
+	// held by the minting key (the fixture wraps it into the epoch-1 grant), so
+	// this assertion is about restraint, not about absence.
+	assertNoKeyHex(t, out, ltk)
 }
 
 // TestBoardCmd_Default_NoKeyMaterial IS THE GATE (done condition 3). It runs on
@@ -333,9 +368,6 @@ func TestBoardCmd_WithKey_FragmentShapeMatchesBrowserParser(t *testing.T) {
 
 	if got := v.Get("cek"); !cekList.MatchString(got) {
 		t.Errorf("cek=%q does not match the <epoch>:<64-hex>[,...] grammar fragment.ts parses", got)
-	}
-	if got := v.Get("ltk"); !hex64.MatchString(got) {
-		t.Errorf("ltk=%q is not 64 lowercase hex characters", got)
 	}
 	if got := v.Get("pk"); !hex64.MatchString(got) {
 		t.Errorf("pk=%q is not 64 lowercase hex characters", got)

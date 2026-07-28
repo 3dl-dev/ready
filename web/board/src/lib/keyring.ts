@@ -258,5 +258,9 @@ export function applyFragmentKeys(kr: BoardKeyring, coord: string, keys: Fragmen
   for (const { epoch, key } of keys.ceks) {
     if (key.length === 32 && Number.isSafeInteger(epoch) && epoch >= 1) kr.addCEK(coord, epoch, key);
   }
+  // keys.ltk arrives only from a link minted before the LTK was dropped from
+  // emission (fragment.ts header). Applied for consistency with the CEKs — the
+  // keyring's shape should not depend on which build minted the link — but
+  // nothing in this app reads BoardKeyring.ltk() today.
   if (keys.ltk && keys.ltk.length === 32) kr.addLTK(coord, keys.ltk);
 }

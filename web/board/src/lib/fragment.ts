@@ -8,7 +8,7 @@
 //                                     nostrClaimPayload (nostr_invite.go).
 //   #board=<coord>&relays=<list>  -- own-board / known-key-share link
 //                                     (ownBoardURL in board.go). No claim.
-//   #board=...&pk=<hex>&cek=<epoch>:<hex>[,...]&ltk=<hex>
+//   #board=...&pk=<hex>&cek=<epoch>:<hex>[,...]
 //                                 -- the same own-board link minted by
 //                                     `rd board --with-key` (ready-df0): it
 //                                     also carries the viewer's PUBLIC pubkey
@@ -20,6 +20,22 @@
 //                                     shape — third-party read access is the
 //                                     owner-signed kind-39301 grant, which
 //                                     wraps the key to one specific grantee.
+//   ...&ltk=<hex>                 -- LEGACY, PARSED BUT NOT EMITTED. `rd board
+//                                     --with-key` used to append the board's
+//                                     label-token key. It was dropped on
+//                                     least-privilege grounds: nothing in this
+//                                     app reads an LTK — BoardKeyring.ltk() and
+//                                     envelope.labelToken() have no caller
+//                                     outside their own tests, because labels
+//                                     are filtered client-side on decrypted
+//                                     plaintext and the relay-side `#l` filter
+//                                     path (spec §7) has not been built. A link
+//                                     minted by an older build still carries
+//                                     one and must keep working, so decodeKeyParams
+//                                     still accepts and validates ltk=. When an
+//                                     LTK consumer lands, re-add EMISSION in
+//                                     cmd/rd/board.go (see its LEAST PRIVILEGE
+//                                     note) — nothing has to change here.
 //   (empty)                       -- plain visit, no board/claim context —
 //                                     the own-boards discovery path (done
 //                                     condition 3) with relays from config.
@@ -65,6 +81,8 @@ export interface NostrClaimPayload {
  */
 export interface FragmentKeys {
   ceks: { epoch: number; key: Uint8Array }[];
+  /** LEGACY, from links minted before the LTK was dropped from emission (see the
+   * module header). Still parsed so those links keep opening; nothing reads it. */
   ltk?: Uint8Array;
 }
 
@@ -78,8 +96,9 @@ export type ParsedFragment =
        * `rd board --with-key` link; when present the page skips the login form
        * entirely, which is the whole point ("no extension, nothing to paste"). */
       viewer?: string;
-      /** Secret key material from `cek=`/`ltk=`. Absent for a non-confidential
-       * board (nothing to decrypt) and for every default/share link. */
+      /** Secret key material from `cek=` (and legacy `ltk=`). Absent for a
+       * non-confidential board (nothing to decrypt) and for every default/share
+       * link. */
       keys?: FragmentKeys;
     }
   | { kind: "none" };
@@ -148,9 +167,13 @@ function decodeHexKeyParam(name: string, value: string): string {
 }
 
 /**
- * decodeKeyParams parses `cek=<epoch>:<hex>[,<epoch>:<hex>...]` and `ltk=<hex>`
- * into raw key bytes, or returns null when neither parameter is present (the
- * default link, and any non-confidential board).
+ * decodeKeyParams parses `cek=<epoch>:<hex>[,<epoch>:<hex>...]` and the legacy
+ * `ltk=<hex>` into raw key bytes, or returns null when neither parameter is
+ * present (the default link, and any non-confidential board).
+ *
+ * ltk= is no longer emitted by `rd board --with-key` (module header). It is
+ * still accepted, and still validated to the same 64-hex standard, so a link
+ * from an older build opens instead of tripping the malformed-fragment notice.
  *
  * An epoch must be a positive integer, matching Go's DeriveBoardKeyring, which
  * refuses any grant with cek_epoch < 1 rather than binding a key to epoch 0.

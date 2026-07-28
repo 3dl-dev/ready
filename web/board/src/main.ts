@@ -232,8 +232,17 @@ function encryptedBoardsOf(keyring: BoardKeyring): EncryptedBoardSet {
  * forged_events_dropped vector), so the gate would be a weaker second check.
  * Failures are non-fatal — a board that will not load must not take the whole
  * page down, which is the ready-62d1 lesson applied one layer up.
+ *
+ * EXPORTED FOR TESTS ONLY, and for one specific property: the per-board key
+ * scope below (`fragmentKeys.coord === b.coord`) can only be witnessed with a
+ * board list containing MORE THAN ONE board, and today afterLogin cannot produce
+ * one on the key-bearing path — a `#board=` link is boardD-filtered by
+ * discoverOwnerBoards down to exactly one coordinate. That stops being true the
+ * moment a whole-portfolio link lands (ready-4d9), at which point the check is
+ * load-bearing in production; it is witnessed HERE from today.
+ * See main.fragmentkey.test.ts, "PER-BOARD KEY SCOPE".
  */
-async function loadBoardItems(
+export async function loadBoardItems(
   boards: DiscoveredBoard[],
   relays: string[],
   authorityEvents: NostrEvent[],
@@ -389,7 +398,17 @@ export async function afterLogin(
   }
 }
 
-export function main(): void {
+/**
+ * main is the entry point. `deps` exists for the same reason afterLogin takes
+ * one — but for a property afterLogin cannot carry: the IDENTITY main() mints
+ * from a `pk=` fragment is built HERE, and whether that identity can sign is a
+ * security control (see the comment at the mint site below). A test that
+ * constructs its own read-only identity and hands it to afterLogin proves
+ * nothing about this file; it has to observe the identity main() actually made.
+ * The seam is what lets it, by handing back every identity the composition
+ * routes through keyUnwrapper. Production passes nothing and gets defaultDeps.
+ */
+export function main(deps: BoardDeps = defaultDeps): void {
   const root = document.getElementById("app");
   if (!root) return;
 
@@ -411,22 +430,33 @@ export function main(): void {
   // ready-df0: an `rd board --with-key` link names, in `pk=`, the PUBLIC pubkey
   // it was minted for, so there is nothing left for the visitor to supply — no
   // extension to install, no npub to paste. Skip the login form and open the
-  // board directly. The identity is deliberately marked read-only: this page
-  // holds no signing key (canSign() false also means keyUnwrapper() returns
-  // neverUnwraps, so an unrelated extension that happens to be installed is
-  // never asked to decrypt a board for a pubkey that did not authenticate).
+  // board directly.
+  //
+  // `method: "readOnly"` IS A SECURITY CONTROL, NOT A LABEL. The owner approved
+  // putting a CEK in a URL specifically because a CEK cannot sign, and this line
+  // is what makes that true of the resulting session: canSign() false means
+  // defaultDeps.keyUnwrapper returns neverUnwraps, so an unrelated extension
+  // that happens to be installed is never asked to nip44.decrypt grants for a
+  // pubkey that did not authenticate — nobody proved they hold `pk=`'s secret;
+  // they only proved they were sent a link naming it. It is also what keeps the
+  // "(read-only)" marker on the identity line and what every write control (the
+  // scaffolded board/write.ts drop path, and whatever lands on it) gates on.
+  // Flipping it to "extension" is a one-word edit that silently converts a
+  // bearer READ link into a session the page treats as signing-capable, so it is
+  // witnessed directly: main.fragmentkey.test.ts, "the pk= identity CANNOT SIGN".
+  //
   // Decryption comes from the fragment's own keys, threaded through afterLogin.
   if (fragment.kind === "board" && fragment.viewer) {
     const identity: Identity = {
       pubkey: fragment.viewer,
       auth: authTransition({ type: "login", method: "readOnly" }),
     };
-    void afterLogin(root, identity, fragment);
+    void afterLogin(root, identity, fragment, deps);
     return;
   }
 
   renderLogin(root, fragment, (identity) => {
-    void afterLogin(root, identity, fragment);
+    void afterLogin(root, identity, fragment, deps);
   });
 
   // Appended AFTER renderLogin, which calls root.replaceChildren() and would
