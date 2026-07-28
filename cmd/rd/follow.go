@@ -50,39 +50,28 @@ import (
 // preview" footgun this const fixes — the operator must see the count+names and
 // either confirm interactively or pass --all/--yes.
 const followConfirmThreshold = 3
+
 // followFetch fetches events matching filter from relays, merged across relays and
 // de-duplicated by event id. It is a package-level var so the deterministic
 // integration test replaces it with a local seeded-log reader — the same
 // no-live-relay seam pattern as relayInviteMedium.fetchFn (ready-6d5 flaky
 // family). A down relay is skipped best-effort; an all-relay failure surfaces the
 // first error so a genuinely offline follow is reported, not silently empty.
+//
+// ready-4d9: THIS RETURN SHAPE CANNOT EXPRESS A PARTIAL READ, and that is now a
+// deliberate, documented limit rather than an accident. `err == nil` here means
+// "at least one relay answered, or nobody was asked" — it does NOT mean every
+// relay answered. Callers that must not act on a partial read (rd board
+// --portfolio --with-key, whose link is only honest if the board set is complete)
+// must call relayFetchMany directly and inspect relayFetchOutcome.complete().
+// This wrapper exists so rd follow's genuinely best-effort reads keep their
+// forgiving behaviour unchanged.
 var followFetch = func(ctx context.Context, relays []string, filter map[string]any) ([]*nostr.Event, error) {
-	seen := map[string]*nostr.Event{}
-	var firstErr error
-	for _, r := range relays {
-		rctx, cancel := context.WithTimeout(ctx, nostr.DefaultTimeout)
-		evs, err := nostr.FetchMany(rctx, r, filter)
-		cancel()
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		for _, e := range evs {
-			if e != nil {
-				seen[e.ID] = e
-			}
-		}
+	out := relayFetchMany(ctx, relays, filter, relayFetchOpts{})
+	if len(out.Events) == 0 && !out.complete() {
+		return nil, out.firstErr()
 	}
-	out := make([]*nostr.Event, 0, len(seen))
-	for _, e := range seen {
-		out = append(out, e)
-	}
-	if len(out) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-	return out, nil
+	return out.Events, nil
 }
 
 // followConfirm previews the discovered board names and asks the operator to

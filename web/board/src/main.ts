@@ -36,7 +36,8 @@ const BUILD_STAMP: string = import.meta.env.VITE_BUILD_STAMP ?? "dev-local";
 import { authTransition, canSign, type AuthTransition } from "./lib/auth";
 import { hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
 import { decodeNpub, encodeNpub } from "./lib/npub";
-import { parseAndStripFragment, type FragmentKeys, type ParsedFragment } from "./lib/fragment";
+import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
+import type { PortfolioKeys } from "./lib/portfoliokeys";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
 import {
   fetchEventsFromRelays,
@@ -233,14 +234,20 @@ function encryptedBoardsOf(keyring: BoardKeyring): EncryptedBoardSet {
  * Failures are non-fatal — a board that will not load must not take the whole
  * page down, which is the ready-62d1 lesson applied one layer up.
  *
- * EXPORTED FOR TESTS ONLY, and for one specific property: the per-board key
- * scope below (`fragmentKeys.coord === b.coord`) can only be witnessed with a
- * board list containing MORE THAN ONE board, and today afterLogin cannot produce
- * one on the key-bearing path — a `#board=` link is boardD-filtered by
- * discoverOwnerBoards down to exactly one coordinate. That stops being true the
- * moment a whole-portfolio link lands (ready-4d9), at which point the check is
- * load-bearing in production; it is witnessed HERE from today.
- * See main.fragmentkey.test.ts, "PER-BOARD KEY SCOPE".
+ * PER-BOARD KEY SCOPE (ready-df0, made load-bearing by ready-4d9). `fragmentKeys`
+ * is keyed by board COORDINATE and looked up with the coordinate of the board
+ * being loaded, so a key minted for board A is structurally incapable of being
+ * offered to board B. That check used to be `fragmentKeys.coord === b.coord`
+ * against a single-board link, and removing it passed the entire suite because a
+ * `#board=` link is boardD-filtered by discoverOwnerBoards down to exactly ONE
+ * coordinate — there was no second board for a key to leak to. The
+ * whole-portfolio link makes the board list genuinely multi-board, so the scope
+ * is now enforced in production on every load. It stays witnessed directly:
+ * main.fragmentkey.test.ts, "PER-BOARD KEY SCOPE" (single-board keys in a
+ * multi-board list) and main.portfolio.test.ts (a portfolio map that covers some
+ * boards and not others).
+ *
+ * EXPORTED FOR TESTS ONLY.
  */
 export async function loadBoardItems(
   boards: DiscoveredBoard[],
@@ -249,7 +256,7 @@ export async function loadBoardItems(
   identity: Identity,
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
-  fragmentKeys?: { coord: string; keys: FragmentKeys },
+  fragmentKeys?: PortfolioKeys,
 ): Promise<{ items: Item[]; confidential: boolean }> {
   const out: Item[] = [];
   let confidential = false;
@@ -270,15 +277,16 @@ export async function loadBoardItems(
         b.boardD,
         unwrap,
       );
-      // ready-df0: an `rd board --with-key` link supplies the CEK the page could
-      // never unwrap for itself (no secret key here, so no ECDH). Scoped to the
-      // ONE coordinate the same fragment names — never applied to another board
-      // that happened to come back in the same discovery — and applied AFTER
-      // derivation so it adds keys without displacing anything the signed grants
-      // established, cutover above all. See applyFragmentKeys.
-      if (fragmentKeys && fragmentKeys.coord === b.coord) {
-        applyFragmentKeys(keyring, b.coord, fragmentKeys.keys);
-      }
+      // ready-df0/ready-4d9: a key-bearing link supplies the CEK the page could
+      // never unwrap for itself (no secret key here, so no ECDH). Looked up by
+      // THIS board's coordinate, so a key the link carries for another board is
+      // never applied here — with a portfolio link the map genuinely holds other
+      // boards' keys, which is what makes this lookup a control rather than a
+      // formality. Applied AFTER derivation so it adds keys without displacing
+      // anything the signed grants established, cutover above all. See
+      // applyFragmentKeys.
+      const linkKeys = fragmentKeys?.get(b.coord);
+      if (linkKeys) applyFragmentKeys(keyring, b.coord, linkKeys);
       if (keyring.cutover(b.coord) !== null) confidential = true;
       const src = foldItemSource(
         {
@@ -299,25 +307,94 @@ export async function loadBoardItems(
 }
 
 /**
+ * keyOwners lists the distinct owner pubkeys named by a portfolio link's key
+ * material. Derived from the board COORDINATES the keys are filed under, so it
+ * cannot disagree with the scope those keys are applied at.
+ */
+function keyOwners(keys: PortfolioKeys | undefined): string[] {
+  if (!keys) return [];
+  const out: string[] = [];
+  for (const coord of keys.keys()) {
+    const parsed = parseBoardCoord(coord);
+    if (parsed) out.push(parsed.owner);
+  }
+  return out;
+}
+
+/**
+ * fragmentKeyMap normalizes BOTH key-bearing link shapes to the one thing
+ * loadBoardItems consumes: coordinate -> key material.
+ *
+ * A single-board link's keys belong to the ONE coordinate the same fragment
+ * names, and that binding is made here, once, at the only place both halves are
+ * in scope. Downstream there is no "the board this link was about" — only a
+ * coordinate lookup — which is why board A's key cannot reach board B.
+ */
+function fragmentKeyMap(fragment: ParsedFragment): PortfolioKeys | undefined {
+  if (fragment.kind === "board" && fragment.keys) return new Map([[fragment.board, fragment.keys]]);
+  if (fragment.kind === "portfolio") return fragment.keys;
+  return undefined;
+}
+
+/**
  * confidentialNotice states BOTH halves — what was read and what was not —
  * because either half alone misleads. "N decrypted" with no mention of the rest
- * hides that the board is partly invisible; "N sealed" with no mention of the
- * rest reads like a failure even when most of the board rendered.
+ * hides that the view is partly invisible; "N sealed" with no mention of the
+ * rest reads like a failure even when most of it rendered.
+ *
+ * `boardCount` exists because ready-4d9 made the multi-board case real: saying
+ * "this board is confidential" over a 24-board portfolio misstates both what is
+ * sealed and whose owner to ask about it.
  */
-function confidentialNotice(items: Item[]): string {
+function confidentialNotice(items: Item[], boardCount: number): string {
   const sealed = items.filter((i) => i.title === PLACEHOLDER);
   const opened = items.length - sealed.length;
+  const subject = boardCount > 1 ? `${boardCount} boards in this view are confidential` : "This board is confidential";
+  const owner = boardCount > 1 ? "Ask those boards' owners" : "Ask the board owner";
   const parts = [
     opened > 0
-      ? `This board is confidential; ${opened} of ${items.length} titles were decrypted in your browser.`
-      : "This board is confidential.",
+      ? `${subject}; ${opened} of ${items.length} titles were decrypted in your browser.`
+      : `${subject}.`,
   ];
   if (sealed.length > 0) {
     parts.push(
-      `${sealed.length} of ${items.length} items are sealed to a key you do not hold — they show ${PLACEHOLDER}. Ask the board owner to grant this key access.`,
+      `${sealed.length} of ${items.length} items are sealed to a key you do not hold — they show ${PLACEHOLDER}. ${owner} to grant this key access.`,
     );
   }
   return parts.join(" ");
+}
+
+/**
+ * unservedBoardsNotice names the boards a link carries KEYS for that no relay in
+ * this link served a DEFINITION for. They render as nothing at all: discovery
+ * only mints a coordinate from a verified kind-30301, so a board with no
+ * published definition is not "empty", it is absent — and absent is
+ * indistinguishable from "this board has no work" unless the page says so.
+ *
+ * This is not hypothetical. The first live run of `rd board --portfolio
+ * --with-key` on the real portfolio emitted keys for 15 boards while
+ * wss://relay.3dl.network served kind-30301 definitions for 10 of them, so five
+ * boards silently did not appear. The keys are proof the reader is entitled to
+ * those boards; their absence is a publishing gap on the relay, not an
+ * authorization outcome, and conflating the two is exactly the confusion this
+ * item's done condition 2 forbids.
+ *
+ * Returns "" when nothing is missing, so the notice does not grow a paragraph
+ * for the ordinary case.
+ */
+function unservedBoardsNotice(keys: PortfolioKeys | undefined, boards: DiscoveredBoard[]): string {
+  if (!keys) return "";
+  const found = new Set(boards.map((b) => b.coord));
+  const missing = [...keys.keys()].filter((coord) => !found.has(coord));
+  if (missing.length === 0) return "";
+  const names = missing
+    .map((coord) => parseBoardCoord(coord)?.boardD ?? coord)
+    .sort()
+    .join(", ");
+  return (
+    `This link also carries read keys for ${missing.length} board(s) that no relay it names has published a definition for, so they are NOT shown at all: ${names}. ` +
+    `That is a publishing gap, not a permission problem — the keys are here; the boards are not on the relay.`
+  );
 }
 
 function safeEncodeNpub(pubkeyHex: string): string {
@@ -362,6 +439,21 @@ export async function afterLogin(
         { onStatus },
       );
       boards = discoverOwnerBoards(authorityEvents, [parsedCoord.owner], parsedCoord.boardD);
+    } else if (fragment.kind === "portfolio") {
+      // ready-4d9. The WHOLE portfolio: no boardD filter, so discovery returns
+      // every board these owners published. The owner set is the viewer plus
+      // every owner named in the link's own key material — the viewer alone
+      // would miss a confidential board owned by someone else that this key was
+      // granted read access to, and the link is carrying that board's key.
+      //
+      // Owners are still only a QUERY hint. discoverOwnerBoards schnorr-verifies
+      // every kind-30301 and drops any whose author is not in this set, so a
+      // hostile relay cannot add a board here, and the keyring is still derived
+      // per board from owner-signed grants below.
+      relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
+      const owners = [...new Set([identity.pubkey, ...keyOwners(fragment.keys)])];
+      authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS, authors: owners }, { onStatus });
+      boards = discoverOwnerBoards(authorityEvents, owners);
     } else {
       // fragment.kind === "none": own-boards discovery (ready-dbf done condition 3).
       relays = await deps.loadRelays();
@@ -373,6 +465,7 @@ export async function afterLogin(
       boards = discoverOwnerBoards(authorityEvents, [identity.pubkey]);
     }
 
+    const linkKeys = fragmentKeyMap(fragment);
     const { items, confidential } = await loadBoardItems(
       boards,
       relays,
@@ -380,18 +473,20 @@ export async function afterLogin(
       identity,
       deps,
       onStatus,
-      fragment.kind === "board" && fragment.keys
-        ? { coord: fragment.board, keys: fragment.keys }
-        : undefined,
+      linkKeys,
     );
     connecting.remove();
+
+    const notice = [confidential ? confidentialNotice(items, boards.length) : "", unservedBoardsNotice(linkKeys, boards)]
+      .filter((s) => s !== "")
+      .join(" ");
 
     mountBoardWorkspace(root, items, {
       viewerId: identity.pubkey,
       boards: boards.map((b) => ({ coord: b.coord, title: b.title || "(confidential board)" })),
       identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${canSign(identity.auth) ? "" : " (read-only)"}`,
       emptyBoardsNote: "No boards found.",
-      notice: confidential ? confidentialNotice(items) : undefined,
+      notice: notice !== "" ? notice : undefined,
     });
   } catch (err) {
     connecting.textContent = err instanceof Error ? err.message : String(err);
@@ -446,9 +541,15 @@ export function main(deps: BoardDeps = defaultDeps): void {
   // witnessed directly: main.fragmentkey.test.ts, "the pk= identity CANNOT SIGN".
   //
   // Decryption comes from the fragment's own keys, threaded through afterLogin.
-  if (fragment.kind === "board" && fragment.viewer) {
+  //
+  // ready-4d9: a `--portfolio` link is the same act at portfolio scope — it also
+  // names its viewer in pk=, and it also opens read-only for exactly the reasons
+  // above. Its keys buy MORE reading (every board, not one) and still zero
+  // signing, so the identity it mints is the same read-only shape.
+  const linkViewer = fragment.kind === "portfolio" || fragment.kind === "board" ? fragment.viewer : undefined;
+  if (linkViewer) {
     const identity: Identity = {
-      pubkey: fragment.viewer,
+      pubkey: linkViewer,
       auth: authTransition({ type: "login", method: "readOnly" }),
     };
     void afterLogin(root, identity, fragment, deps);
