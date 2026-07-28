@@ -321,6 +321,61 @@ strfry --config=/etc/strfry.conf sync ws://relay-a.internal:7777 --dir=down
 `--dir=both` reconciles in both directions. For continuous reconciliation, wrap
 this in a systemd timer (future work; not required for ready-efe).
 
+## Backfilling a relay that predates the history (ready-260)
+
+Relay endpoints are configured **globally** (`~/.config/rd/rd.json`), so a newly
+added relay is immediately a write target for every project. But an event only
+reaches a relay as a **side effect of a write**. A project that has not been
+written to since the relay was added has therefore never sent it anything —
+nothing is misconfigured, the history simply predates the relay. To a browser
+client reading only that relay, those boards do not exist, and there is no
+in-product signal distinguishing "this board is empty" from "this board was
+never published here".
+
+The repair is a **verbatim re-send** of events already signed and already durable
+in `.ready/nostr-log.jsonl`. Nothing is re-signed, rebuilt, or re-stamped: every
+event keeps its original id, `created_at` and signature, so a relay that already
+holds one treats it as a duplicate. That is what makes the whole operation
+idempotent and safe to repeat. **Any path that re-signed would mint new event ids
+and fork the history.**
+
+```bash
+# 1. See what WOULD be sent — no relay contact at all.
+rd log publish --board --dry-run --relay wss://relay.3dl.network
+
+# 2. Converge this project's board onto ONE relay: measure the gap, re-send only
+#    that, repeat until the read-back matches.
+rd relay repair --relay wss://relay.3dl.network --rounds 8
+
+# 3. Independent proof (fresh REQ against that relay alone).
+rd relay audit  --relay wss://relay.3dl.network
+rd relay audit  --relay wss://relay.3dl.network --boards   # every 30301 it serves
+
+# Whole portfolio, dry run then apply:
+scripts/relay-backfill.sh --relay wss://relay.3dl.network
+scripts/relay-backfill.sh --relay wss://relay.3dl.network --apply --jobs 2
+```
+
+**Never trust the publish report.** `reduceEventOutcome`
+(`pkg/sync/relayclass.go`) reports an event as accepted when **any** write relay
+accepts it. With the two LAN relays accepting everything, a total rejection by
+the public relay is invisible in that report — the ready-f7b failure at bulk
+scale. `--relay` pins a publish to one relay so its verdict is the whole verdict,
+and `rd relay audit` re-reads that relay with fresh subscriptions.
+
+**The audit compares projections, not counts.** Kinds 30301/30302/39301 are
+addressable, so a relay retains one event per coordinate while the local log
+retains every historical re-materialization. A correctly backfilled board
+legitimately shows far fewer events on the relay than locally. What must match is
+the set of addressable coordinates (and the winning event for each) plus every
+non-addressable status event by id.
+
+**Publish order matters.** A bulk re-send decides the relay's final projection
+for addressable kinds, so events go out in ascending `created_at` with
+same-second ties sent lowest-id **last** — the NIP-33 winner is the lowest id, so
+this makes the winner the last write for its coordinate whether the relay
+implements the tie-break or merely keeps the last write.
+
 ## NIP-65 relay discovery (outbox model)
 
 The portfolio identity advertises its read/write relays via a NIP-65 `kind:10002`

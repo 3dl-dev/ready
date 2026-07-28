@@ -751,16 +751,16 @@ var citationExceptions = map[string]string{
 	"PendingFilter|pkg/views/views.go|86@decl83": "§15.1 recap: a bare `:86` pointing " +
 		"at PendingFilter's `scheduled` case; PendingFilter's own declaration+body is " +
 		"cited exactly at :83 (§13.5, `:83-91`)",
-	"PublishEventsUnique|pkg/sync/nostroutbound.go|381@decl380": "§16.8: the " +
+	"PublishEventsUnique|pkg/sync/nostroutbound.go|544@decl543": "§16.8: the " +
 		"`guardReservedBoard` call site one line into PublishEventsUnique's body " +
-		"(:381); PublishEventsUnique itself is declared at :380",
-	"PublishItemWithReason|pkg/sync/nostroutbound.go|183@decl177": "§18.x table: " +
-		"a bare `:183` inside PublishItemWithReason's body (one of several detail " +
+		"(:544); PublishEventsUnique itself is declared at :543",
+	"PublishItemWithReason|pkg/sync/nostroutbound.go|185@decl179": "§18.x table: " +
+		"a bare `:185` inside PublishItemWithReason's body (one of several detail " +
 		"lines cited from the same clause); PublishItemWithReason's own " +
-		"declaration+body is cited exactly at :177 (`:177-210`)",
-	"PublishStatusChange|pkg/sync/nostroutbound.go|223@decl219": "§18.x table: " +
-		"a bare `:223` inside PublishStatusChange's body; PublishStatusChange " +
-		"itself is declared at :219",
+		"declaration+body is cited exactly at :179 (`:179-212`)",
+	"PublishStatusChange|pkg/sync/nostroutbound.go|225@decl221": "§18.x table: " +
+		"a bare `:225` inside PublishStatusChange's body; PublishStatusChange " +
+		"itself is declared at :221",
 	"ReadyFilter|pkg/views/views.go|61@decl60": "§13.3: the NOT-terminal conjunct " +
 		"(:61-63), one line into ReadyFilter's body; ReadyFilter is never cited " +
 		"at its own declaration line (:60) — only via its per-conjunct detail lines",
@@ -789,9 +789,9 @@ var citationExceptions = map[string]string{
 	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|615@decl602": "§27.x: the " +
 		"project-prefix assignment (:615) inside publishEngagedItemsNostr's body; " +
 		"its declaration is cited exactly at :602 (§26.3)",
-	"publishEvents|pkg/sync/nostroutbound.go|419@decl418": "§16.8: the " +
-		"`guardReservedBoard` call site one line into publishEvents's body (:419); " +
-		"publishEvents itself is declared at :418",
+	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
+		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
+		"publishEvents itself is declared at :581",
 	"publishItemCardEditNostr|cmd/rd/nostr.go|406@decl389": "§18.10: the " +
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:406); " +
 		"its declaration+body is cited exactly at :389 (`:389-419`)",

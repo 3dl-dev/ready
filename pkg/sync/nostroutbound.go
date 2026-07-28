@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -316,23 +318,184 @@ func (p *Publisher) PublishCardEdit(ctx context.Context, card CardSpec, createdA
 //     boardCoord — the same board-membership tag ReconcileBoard filters relay
 //     queries by, so what this publishes is exactly what a board-scoped
 //     reconcile on another machine will later fetch.
+//
+// ORDERING (ready-260): the scoped events are sent in ascending created_at
+// order, ties broken by event id. Kinds 30301/30302/39301 are ADDRESSABLE — a
+// relay keeps only the newest event per (kind, pubkey, d) coordinate — so the
+// order a bulk republish sends them in decides what the relay's final
+// projection is. Local-log APPEND order is not created_at order (events arrive
+// from reconcile, negentropy download, and git-log merges in whatever order
+// they were fetched), so sending in append order could hand a relay an OLDER
+// card after a newer one. A well-behaved relay refuses the older one, but rd
+// must not depend on that: sorting makes the last write per coordinate the
+// newest by construction, so the relay's projection converges to the SAME
+// latest-wins state the local log projects regardless of relay strictness.
+//
+// TRANSPORT (ready-260): a board publish uses the BATCHED relay path (one
+// websocket per relay for the whole board) rather than one dial per event.
+// Nothing about the bytes changes — each event still goes out verbatim with its
+// original id, created_at and signature — only the number of connections does.
+// A 4,500-event board over a scale-to-zero relay is minutes batched and hours
+// dialed per event.
 func (p *Publisher) PublishBoard(ctx context.Context, boardCoord string) (PublishResult, error) {
-	events, err := p.Log.ReadAll()
+	scoped, err := p.boardScopedEvents(boardCoord)
 	if err != nil {
-		return PublishResult{}, fmt.Errorf("sync: reading log for board publish: %w", err)
-	}
-	scoped := make([]*nostr.Event, 0, len(events))
-	for _, e := range events {
-		if boardCoord == "" || EventBelongsToBoard(e, boardCoord) {
-			scoped = append(scoped, e)
-		}
+		return PublishResult{}, err
 	}
 	if err := p.guardReservedBoard(scoped); err != nil {
 		return PublishResult{}, err
 	}
 	var res PublishResult
-	p.relayPublish(ctx, &res, scoped)
+	p.relayPublishBatch(ctx, &res, scoped)
 	return res, nil
+}
+
+// boardScopedEvents reads the authoritative log and returns the events that
+// belong to boardCoord (everything, when boardCoord is ""), id-deduped and
+// sorted into the publish order PublishBoard's doc comment specifies. It is the
+// SINGLE definition of "what a board publish would send", shared by the dry-run
+// plan (PlanBoardPublish) and the real publish, so a plan can never describe a
+// different event set than the write that follows it.
+func (p *Publisher) boardScopedEvents(boardCoord string) ([]*nostr.Event, error) {
+	events, err := p.Log.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("sync: reading log for board publish: %w", err)
+	}
+	seen := make(map[string]bool, len(events))
+	scoped := make([]*nostr.Event, 0, len(events))
+	for _, e := range events {
+		if e == nil || seen[e.ID] {
+			continue
+		}
+		if boardCoord == "" || EventBelongsToBoard(e, boardCoord) {
+			seen[e.ID] = true
+			scoped = append(scoped, e)
+		}
+	}
+	sortForPublish(scoped)
+	return scoped, nil
+}
+
+// sortForPublish orders events for a bulk republish: created_at ASCENDING, and
+// on a same-second tie id DESCENDING.
+//
+// The tie direction is deliberate and is the inverse of the primary key. The
+// canonical winner of a same-second collision between two addressable events is
+// the one with the LOWEST id (newerThan / NIP-33), so sending ids in DESCENDING
+// order within a second makes that winner the LAST event written for its
+// coordinate. A relay implementing the NIP-33 tie-break retains it either way; a
+// relay that simply keeps the last write retains it too. Sorting ties ascending
+// would invert the winner on the latter.
+//
+// Shared by the full board publish and the delta repair (BoardRelayDelta), so a
+// gap-closing re-send lands in the same order a full one would.
+func sortForPublish(events []*nostr.Event) {
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].CreatedAt != events[j].CreatedAt {
+			return events[i].CreatedAt < events[j].CreatedAt
+		}
+		return events[i].ID > events[j].ID
+	})
+}
+
+// PublishBoardDelta closes the measured gap between the local log and ONE relay
+// for one board: it audits (a fresh read-back), publishes ONLY the events that
+// relay is missing or holds a stale version of, and returns the audit taken
+// BEFORE the repair plus the number of events sent.
+//
+// It publishes to relayURL alone, not to the configured write relay set — the
+// gap it measured is that relay's gap, and mixing in relays that already hold
+// the events would put the ambiguous "accepted by ANY relay" report back in the
+// middle of a repair whose entire purpose is to be unambiguous about one relay.
+func (p *Publisher) PublishBoardDelta(ctx context.Context, relayURL, boardCoord string) (BoardRelayAudit, int, error) {
+	local, err := p.Log.ReadAll()
+	if err != nil {
+		return BoardRelayAudit{}, 0, fmt.Errorf("sync: reading log for board repair: %w", err)
+	}
+	audit, delta, err := BoardRelayDelta(ctx, relayURL, local, boardCoord)
+	if err != nil {
+		return audit, 0, err
+	}
+	if len(delta) == 0 {
+		return audit, 0, nil
+	}
+	if err := p.guardReservedBoard(delta); err != nil {
+		return audit, 0, err
+	}
+	one := *p
+	one.WriteRelays = []string{relayURL}
+	var res PublishResult
+	one.relayPublishBatch(ctx, &res, delta)
+	return audit, len(delta), nil
+}
+
+// BoardPublishPlan is the DRY-RUN description of a board publish (ready-260):
+// exactly what PublishBoard would send, computed from the local authoritative
+// log with no network access at all. A bulk republish writes to production data
+// across every board in a portfolio, so the operator gets to see the shape of
+// the write — how many events, of which kinds, over what time range, and
+// whether the board's own definition event is even present locally — BEFORE any
+// relay is dialed.
+type BoardPublishPlan struct {
+	// BoardCoord is the scope; "" means the whole local log (unpinned project).
+	BoardCoord string `json:"board_coord"`
+	// Relays are the write relays the real publish would target.
+	Relays []string `json:"relays"`
+	// Events is the total number of distinct events that would be sent.
+	Events int `json:"events"`
+	// ByKind counts the events per nostr kind (map key is the kind as a string
+	// so the JSON form is stable and self-describing).
+	ByKind map[string]int `json:"by_kind"`
+	// Items is the number of DISTINCT work items in scope (distinct "d" tags
+	// across kind-30302 cards) — the number a board reader ultimately renders,
+	// as opposed to the raw event count which includes every historical
+	// re-materialization of each card.
+	Items int `json:"items"`
+	// HasBoardDefinition reports whether a kind-30301 definition event for this
+	// exact coordinate is present locally. False means the board cannot be made
+	// discoverable by publishing, no matter how many cards go out — the reader
+	// enumerates boards from 30301 events.
+	HasBoardDefinition bool `json:"has_board_definition"`
+	// OldestCreatedAt/NewestCreatedAt bound the scoped events' timestamps (0
+	// when there are none).
+	OldestCreatedAt int64 `json:"oldest_created_at"`
+	NewestCreatedAt int64 `json:"newest_created_at"`
+}
+
+// PlanBoardPublish computes the dry run for PublishBoard(boardCoord). It reads
+// only the local log and touches no relay, so it is safe to run against every
+// project in a portfolio before deciding to write anything.
+func (p *Publisher) PlanBoardPublish(boardCoord string) (BoardPublishPlan, error) {
+	scoped, err := p.boardScopedEvents(boardCoord)
+	if err != nil {
+		return BoardPublishPlan{}, err
+	}
+	plan := BoardPublishPlan{
+		BoardCoord: boardCoord,
+		Relays:     append([]string(nil), p.WriteRelays...),
+		Events:     len(scoped),
+		ByKind:     map[string]int{},
+	}
+	items := map[string]bool{}
+	for _, e := range scoped {
+		plan.ByKind[strconv.Itoa(e.Kind)]++
+		if e.Kind == KindCard {
+			if d := tagValue(e, "d"); d != "" {
+				items[d] = true
+			}
+		}
+		if e.Kind == KindBoard && BoardCoord(e.PubKey, tagValue(e, "d")) == boardCoord {
+			plan.HasBoardDefinition = true
+		}
+		if plan.OldestCreatedAt == 0 || e.CreatedAt < plan.OldestCreatedAt {
+			plan.OldestCreatedAt = e.CreatedAt
+		}
+		if e.CreatedAt > plan.NewestCreatedAt {
+			plan.NewestCreatedAt = e.CreatedAt
+		}
+	}
+	plan.Items = len(items)
+	return plan, nil
 }
 
 // EventBelongsToBoard reports whether e is a member of the board named by
@@ -442,62 +605,9 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	reachedRelay := false
 	for _, e := range events {
 		attempts, outcome, permReason := publishEventToRelays(ctx, p.WriteRelays, e, timeout, p.Production)
-		ack := EventAck{EventID: e.ID, Kind: e.Kind}
-		for _, a := range attempts {
-			ra := RelayAck{Relay: a.Relay, Accepted: a.Accepted, Message: a.Message}
-			if a.Err != nil {
-				ra.Err = a.Err.Error()
-			}
-			// Classified outcome, not the raw bool: an OK,false "duplicate:" reply
-			// means the relay already holds the event, so it counts as delivered.
-			if a.Outcome == outcomeAccepted {
-				ack.AnyRelay = true
-			}
-			ack.Acks = append(ack.Acks, ra)
-		}
-		if ack.AnyRelay {
+		if p.applyRelayOutcome(res, e, attempts, outcome, permReason) {
 			reachedRelay = true
 		}
-
-		switch outcome {
-		case outcomeAccepted:
-			// Stored by at least one relay — nothing to buffer.
-		case outcomePermanent:
-			// No relay will ever accept this exact event. Dead-letter it instead
-			// of re-buffering forever (ready-1c2). Still durable in the log.
-			ack.Permanent = true
-			ack.Reason = permReason
-			if p.PendingPath == "" {
-				// No on-disk queue configured; the event remains durable in the
-				// authoritative log. Surface it so it is not silently lost.
-				res.Rejected = true
-				fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s); no pending path — retained in authoritative log only\n", e.ID, permReason)
-				break
-			}
-			if derr := appendRejectedEvent(rejectedPathFor(p.PendingPath), RejectedRecord{Event: e, Reason: permReason}); derr != nil {
-				// Dead-letter write failed — fall back to the retry buffer so the
-				// event is not lost from EVERY on-disk queue (symmetry with
-				// FlushNostrPending; the fresh publish must not be the odd path).
-				fmt.Fprintf(os.Stderr, "warning: sync: dead-letter write failed (%v); buffering %s for retry instead\n", derr, e.ID)
-				if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: sync: buffering nostr event to pending: %v\n", bufErr)
-				}
-				res.Buffered = true
-				break
-			}
-			res.Rejected = true
-			fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s) — dead-lettered to %s, will NOT retry\n", e.ID, permReason, NostrRejectedFile)
-		default: // outcomeTransient
-			// Reached no relay for a retryable reason — buffer for later flush.
-			// Already durable in the log.
-			res.Buffered = true
-			if p.PendingPath != "" {
-				if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: sync: buffering nostr event to pending: %v\n", bufErr)
-				}
-			}
-		}
-		res.Events = append(res.Events, ack)
 	}
 
 	// Auto-drain the offline backlog. If this publish proved relay connectivity,
@@ -506,6 +616,135 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	// human ever runs a manual flush. Best-effort and gated on a non-empty buffer
 	// so it costs nothing on the common path; never fails the operation (the events
 	// are already durable in the local log). Re-publish is idempotent by event id.
+	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
+	}
+}
+
+// applyRelayOutcome records ONE event's per-relay attempts on res and carries
+// out the disposition its reduced outcome demands: accepted -> nothing, permanent
+// -> dead-letter (ready-1c2), transient -> buffer for retry. It returns whether
+// at least one relay accepted the event (the caller's auto-drain trigger).
+//
+// EXTRACTED (ready-260) so the per-event dial path (relayPublish) and the
+// batched one-connection path (relayPublishBatch) share a SINGLE definition of
+// what happens to an event after the relays have spoken. Duplicating this
+// switch was the obvious alternative and the wrong one: the two paths would
+// then be free to drift on dead-lettering, buffering, or ack shape, and a bulk
+// backfill would silently behave differently from an ordinary write.
+func (p *Publisher) applyRelayOutcome(res *PublishResult, e *nostr.Event, attempts []relayAttempt, outcome relayOutcome, permReason string) bool {
+	ack := EventAck{EventID: e.ID, Kind: e.Kind}
+	for _, a := range attempts {
+		ra := RelayAck{Relay: a.Relay, Accepted: a.Accepted, Message: a.Message}
+		if a.Err != nil {
+			ra.Err = a.Err.Error()
+		}
+		// Classified outcome, not the raw bool: an OK,false "duplicate:" reply
+		// means the relay already holds the event, so it counts as delivered.
+		if a.Outcome == outcomeAccepted {
+			ack.AnyRelay = true
+		}
+		ack.Acks = append(ack.Acks, ra)
+	}
+
+	switch outcome {
+	case outcomeAccepted:
+		// Stored by at least one relay — nothing to buffer.
+	case outcomePermanent:
+		// No relay will ever accept this exact event. Dead-letter it instead
+		// of re-buffering forever (ready-1c2). Still durable in the log.
+		ack.Permanent = true
+		ack.Reason = permReason
+		if p.PendingPath == "" {
+			// No on-disk queue configured; the event remains durable in the
+			// authoritative log. Surface it so it is not silently lost.
+			res.Rejected = true
+			fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s); no pending path — retained in authoritative log only\n", e.ID, permReason)
+			break
+		}
+		if derr := appendRejectedEvent(rejectedPathFor(p.PendingPath), RejectedRecord{Event: e, Reason: permReason}); derr != nil {
+			// Dead-letter write failed — fall back to the retry buffer so the
+			// event is not lost from EVERY on-disk queue (symmetry with
+			// FlushNostrPending; the fresh publish must not be the odd path).
+			fmt.Fprintf(os.Stderr, "warning: sync: dead-letter write failed (%v); buffering %s for retry instead\n", derr, e.ID)
+			if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: sync: buffering nostr event to pending: %v\n", bufErr)
+			}
+			res.Buffered = true
+			break
+		}
+		res.Rejected = true
+		fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s) — dead-lettered to %s, will NOT retry\n", e.ID, permReason, NostrRejectedFile)
+	default: // outcomeTransient
+		// Reached no relay for a retryable reason — buffer for later flush.
+		// Already durable in the log.
+		res.Buffered = true
+		if p.PendingPath != "" {
+			if bufErr := appendPendingEvent(p.PendingPath, e); bufErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: sync: buffering nostr event to pending: %v\n", bufErr)
+			}
+		}
+	}
+	res.Events = append(res.Events, ack)
+	return ack.AnyRelay
+}
+
+// relayPublishBatch is relayPublish's BULK counterpart (ready-260): it publishes
+// the whole event slice to each write relay over ONE websocket connection
+// (GuardedPublishMany) instead of one dial per event, then applies the IDENTICAL
+// per-event disposition via applyRelayOutcome — same classification, same
+// dead-lettering, same buffering, same ack shape.
+//
+// The per-relay ack is retained for EVERY event, which is the point: a backfill's
+// whole risk is that one relay (the public one) silently rejects everything while
+// the LAN relays accept, and reduceEventOutcome then reports the event as
+// accepted. The reduced outcome still drives buffering (an event durable on ANY
+// relay needs no retry), but the caller can read the per-relay Acks to see
+// exactly which relay took what — and the authoritative check remains an
+// independent read-back (AuditBoardOnRelay), never this report.
+func (p *Publisher) relayPublishBatch(ctx context.Context, res *PublishResult, events []*nostr.Event) {
+	if len(events) == 0 {
+		return
+	}
+	// attempts[i] accumulates one relayAttempt per write relay for events[i].
+	attempts := make([][]relayAttempt, len(events))
+	for _, relay := range p.WriteRelays {
+		acks, err := GuardedPublishMany(ctx, relay, events, p.Production)
+		for i := range events {
+			var a relayAttempt
+			if i < len(acks) {
+				ak := acks[i]
+				a = relayAttempt{Relay: relay, Accepted: ak.Accepted, Message: ak.Message, Err: ak.Err}
+			} else {
+				// PublishMany always returns len(events) acks; this is a
+				// belt-and-braces fallback so a future contract change cannot
+				// turn into an index panic mid-backfill.
+				a = relayAttempt{Relay: relay, Err: err}
+			}
+			a.Outcome = classifyRelayResult(a.Accepted, a.Message, a.Err)
+			attempts[i] = append(attempts[i], a)
+		}
+	}
+
+	reachedRelay := false
+	for i, e := range events {
+		outcomes := make([]relayOutcome, 0, len(attempts[i]))
+		permReason := ""
+		for _, a := range attempts[i] {
+			if a.Outcome == outcomePermanent && permReason == "" {
+				permReason = relayLabel(a.Relay, a.Message)
+			}
+			outcomes = append(outcomes, a.Outcome)
+		}
+		if p.applyRelayOutcome(res, e, attempts[i], reduceEventOutcome(outcomes), permReason) {
+			reachedRelay = true
+		}
+	}
+
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = nostr.DefaultTimeout
+	}
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
 		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
 	}
