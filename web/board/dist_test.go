@@ -180,11 +180,15 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 //
 // Neither scheme-less trigger subsumes the other, and both are needed. The
 // delimiter alone would miss "//evil.example" with no path. The DNS shape
-// alone is what this scan required for one round of ready-8c5, and it let
-// every dotless and every numeric host through: an IPv4 quad, a bracketed
-// IPv6 literal, a single-label intranet name, a host hidden behind userinfo,
-// a host:port. Every one of them shipped green through a real build. A host
-// does not have to look like a DNS name to be a third-party origin.
+// alone was the only scheme-less trigger for one round of ready-8c5, and
+// every host that is not DNS-shaped went through it: an IPv4 quad, a
+// bracketed IPv6 literal, a single-label intranet name, a host:port. Each of
+// those four was re-confirmed green through a real `npm run build` with the
+// delimiter trigger deleted. ("//user@evil.example/x" is in the rows below
+// for a different reason: once authorityRe strips the userinfo the host is
+// DNS-shaped, so either trigger catches it — what that row pins is that the
+// scan looks past "user@" for the host at all.) A host does not have to look
+// like a DNS name to be a third-party origin.
 //
 // The delimiter requirement — rather than treating any authority-shaped run
 // as a reference — is what keeps "//" usable as punctuation. "//" is also
