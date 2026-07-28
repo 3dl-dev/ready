@@ -1,0 +1,422 @@
+/* ready.3dl.dev/board workspace (ready-445). Palette matches index.html's
+   existing dark shell (#0b0d12 / #e6e8eb) — this app has no theme toggle
+   today, so there is nothing to react to for prefers-color-scheme. */
+
+.board-root {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  text-align: left;
+  align-items: stretch;
+}
+
+/* ---- Gate rail: the signature element. Deliberately loud when non-empty,
+   quiet when empty. Never shrink this to fit more board. ---- */
+.gate-rail {
+  border: 2px solid #e8a33d;
+  background: rgba(232, 163, 61, 0.12);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+.gate-rail.empty {
+  border: 1px solid #2a2d35;
+  background: transparent;
+  padding: 0.4rem 0.75rem;
+  color: #6b7280;
+  font-size: 0.85rem;
+  border-radius: 6px;
+}
+.gate-rail-heading {
+  margin: 0 0 0.5rem;
+  color: #e8a33d;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.gate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.gate-item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  cursor: pointer;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+}
+.gate-item:hover {
+  background: rgba(232, 163, 61, 0.15);
+}
+.gate-type {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #e8a33d;
+  border: 1px solid #e8a33d;
+  border-radius: 4px;
+  padding: 0.05rem 0.4rem;
+}
+.gate-item-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #9aa1ac;
+  font-size: 0.8rem;
+}
+
+/* ---- Workspace grid: left tree / center / (optional) detail ---- */
+.board-workspace {
+  display: grid;
+  align-items: start;
+  gap: 0;
+  min-height: 0;
+}
+
+.left-tree,
+.board-center,
+.detail-pane {
+  min-height: 0;
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+  scrollbar-width: none; /* Firefox: scroll without a visible scrollbar */
+}
+.left-tree::-webkit-scrollbar,
+.board-center::-webkit-scrollbar,
+.detail-pane::-webkit-scrollbar {
+  display: none;
+}
+
+.left-tree {
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  border-right: 1px solid #1c1f26;
+}
+.left-tree-heading {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin: 0.75rem 0 0.35rem;
+}
+.epic-list,
+.epic-children,
+.label-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.epic-children {
+  padding-left: 0.85rem;
+}
+
+/* EPICS are FILLED colour tokens; LABELS are OUTLINED pills. Never confused. */
+.epic-token {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #10131a;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  margin: 0.15rem 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.epic-token.active {
+  outline: 2px solid #e6e8eb;
+}
+.epic-rollup {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.label-pill {
+  display: inline-block;
+  border: 1px solid #454b57;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  margin: 0.15rem 0.25rem 0.15rem 0;
+  font-size: 0.75rem;
+  color: #c7cbd3;
+  background: transparent;
+  cursor: pointer;
+}
+.label-pill.active {
+  border-color: #7c9cff;
+  color: #7c9cff;
+}
+.label-pill.outlined {
+  cursor: default;
+}
+
+.board-center {
+  padding: 0 0.75rem;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #1c1f26;
+  margin-bottom: 0.5rem;
+}
+.facet {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+.facet-name {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+.facet-chip {
+  border: 1px solid #454b57;
+  background: transparent;
+  color: #c7cbd3;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.facet-chip.active {
+  background: #7c9cff;
+  color: #10131a;
+  border-color: #7c9cff;
+}
+.clear-filters {
+  margin-left: auto;
+  background: transparent;
+  color: #9aa1ac;
+  border: 1px solid #454b57;
+  border-radius: 6px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+
+.swimlane {
+  margin-bottom: 1rem;
+}
+.swimlane-header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+.swimlane-rollup {
+  color: #6b7280;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.lane-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+.column {
+  background: #12151c;
+  border-radius: 8px;
+  padding: 0.5rem;
+  min-height: 3rem;
+}
+.column-header {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: #9aa1ac;
+}
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.card {
+  background: #1a1e27;
+  border: 1px solid #2a2d35;
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  cursor: grab;
+}
+.card:hover {
+  border-color: #454b57;
+}
+.card-top {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: 0.7rem;
+  color: #9aa1ac;
+}
+.card-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.card-age {
+  margin-left: auto;
+}
+.project-chip {
+  display: inline-block;
+  font-size: 0.65rem;
+  color: #9aa1ac;
+  border: 1px solid #2a2d35;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  margin-top: 0.2rem;
+}
+.card-title {
+  font-size: 0.9rem;
+  margin: 0.25rem 0;
+}
+.card-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+.card-status-line {
+  font-size: 0.75rem;
+  color: #7c9cff;
+  margin-top: 0.25rem;
+}
+.card-frees {
+  display: inline-block;
+  font-size: 0.7rem;
+  color: #7cffb2;
+  margin-top: 0.2rem;
+}
+
+.transient-error {
+  color: #ff8a8a;
+  font-size: 0.8rem;
+}
+
+/* ---- Detail pane ---- */
+.detail-resizer {
+  cursor: col-resize;
+  width: 6px;
+  align-self: stretch;
+  background: transparent;
+}
+.detail-resizer:hover {
+  background: #2a2d35;
+}
+.detail-pane {
+  border-left: 1px solid #1c1f26;
+  padding: 0.5rem 0.75rem;
+}
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.detail-header h2 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+.detail-close {
+  background: transparent;
+  border: none;
+  color: #9aa1ac;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.detail-id {
+  color: #6b7280;
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.gate-banner {
+  background: rgba(232, 163, 61, 0.15);
+  border: 1px solid #e8a33d;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+}
+.gate-approve,
+.gate-deny {
+  border: 1px solid #454b57;
+  background: transparent;
+  color: #e6e8eb;
+  border-radius: 4px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+.detail-context {
+  color: #c7cbd3;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+.detail-deps h3,
+.detail-timeline + h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin: 0.75rem 0 0.3rem;
+}
+.detail-dep-list,
+.detail-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.detail-dep-item.cross-board {
+  color: #6b7280;
+  font-style: italic;
+}
+.cross-board-warning {
+  color: #e8a33d;
+  font-size: 0.8rem;
+}
+.timeline-entry {
+  color: #c7cbd3;
+}
+
+/* ---- Focus visibility ---- */
+.board-root :focus-visible {
+  outline: 2px solid #7c9cff;
+  outline-offset: 2px;
+}
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .board-root * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ---- Responsive: below 1000px the left tree hides and detail becomes a
+   fixed overlay ---- */
+@media (max-width: 999px) {
+  .board-workspace {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .left-tree {
+    display: none;
+  }
+  .detail-pane {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(90vw, 420px) !important;
+    max-height: 100vh;
+    background: #0b0d12;
+    z-index: 20;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
+  }
+  .detail-resizer {
+    display: none;
+  }
+}
