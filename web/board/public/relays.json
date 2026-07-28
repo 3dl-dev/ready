@@ -1,0 +1,4 @@
+{
+  "_comment": "Runtime relay config for the no-token own-boards discovery path (ready-dbf done condition 5). Ops-editable without a rebuild. See src/lib/relayconfig.ts.",
+  "ownBoardsRelays": ["wss://relay.3dl.network"]
+}
