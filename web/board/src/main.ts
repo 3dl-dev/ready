@@ -36,7 +36,7 @@ const BUILD_STAMP: string = import.meta.env.VITE_BUILD_STAMP ?? "dev-local";
 import { authTransition, canSign, type AuthTransition } from "./lib/auth";
 import { hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
 import { decodeNpub, encodeNpub } from "./lib/npub";
-import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
+import { parseAndStripFragment, type FragmentKeys, type ParsedFragment } from "./lib/fragment";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
 import {
   fetchEventsFromRelays,
@@ -46,7 +46,7 @@ import {
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
-import { deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
+import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 import type { EncryptedBoardSet } from "./lib/envelope";
 import { PLACEHOLDER } from "./lib/envelope";
@@ -240,6 +240,7 @@ async function loadBoardItems(
   identity: Identity,
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
+  fragmentKeys?: { coord: string; keys: FragmentKeys },
 ): Promise<{ items: Item[]; confidential: boolean }> {
   const out: Item[] = [];
   let confidential = false;
@@ -260,6 +261,15 @@ async function loadBoardItems(
         b.boardD,
         unwrap,
       );
+      // ready-df0: an `rd board --with-key` link supplies the CEK the page could
+      // never unwrap for itself (no secret key here, so no ECDH). Scoped to the
+      // ONE coordinate the same fragment names — never applied to another board
+      // that happened to come back in the same discovery — and applied AFTER
+      // derivation so it adds keys without displacing anything the signed grants
+      // established, cutover above all. See applyFragmentKeys.
+      if (fragmentKeys && fragmentKeys.coord === b.coord) {
+        applyFragmentKeys(keyring, b.coord, fragmentKeys.keys);
+      }
       if (keyring.cutover(b.coord) !== null) confidential = true;
       const src = foldItemSource(
         {
@@ -361,6 +371,9 @@ export async function afterLogin(
       identity,
       deps,
       onStatus,
+      fragment.kind === "board" && fragment.keys
+        ? { coord: fragment.board, keys: fragment.keys }
+        : undefined,
     );
     connecting.remove();
 
@@ -393,6 +406,23 @@ export function main(): void {
   } catch {
     fragment = { kind: "none" };
     fragmentError = true;
+  }
+
+  // ready-df0: an `rd board --with-key` link names, in `pk=`, the PUBLIC pubkey
+  // it was minted for, so there is nothing left for the visitor to supply — no
+  // extension to install, no npub to paste. Skip the login form and open the
+  // board directly. The identity is deliberately marked read-only: this page
+  // holds no signing key (canSign() false also means keyUnwrapper() returns
+  // neverUnwraps, so an unrelated extension that happens to be installed is
+  // never asked to decrypt a board for a pubkey that did not authenticate).
+  // Decryption comes from the fragment's own keys, threaded through afterLogin.
+  if (fragment.kind === "board" && fragment.viewer) {
+    const identity: Identity = {
+      pubkey: fragment.viewer,
+      auth: authTransition({ type: "login", method: "readOnly" }),
+    };
+    void afterLogin(root, identity, fragment);
+    return;
   }
 
   renderLogin(root, fragment, (identity) => {

@@ -42,16 +42,60 @@ package main
 // to whoever presents it, so a link for an already-authorized recipient must
 // never carry one, even an unconsumed/informational one.
 //
-// SECURITY: the link conveys NO secret and NO read access on its own for a
-// confidential board. Read access comes ONLY from the owner-signed kind-39301
-// role-grant, which wraps the board CEK to a specific grantee (ready-216). A
-// stranger holding a board URL can at most self-mint a read-only sync that
-// imports ciphertext it cannot decrypt — authorization is the grant, not the link.
+// SECURITY: by default the link conveys NO secret and NO read access on its own
+// for a confidential board. Read access comes ONLY from the owner-signed
+// kind-39301 role-grant, which wraps the board CEK to a specific grantee
+// (ready-216). A stranger holding a board URL can at most self-mint a read-only
+// sync that imports ciphertext it cannot decrypt — authorization is the grant,
+// not the link.
+//
+// ready-df0 — THE ONE EXCEPTION, AND WHY IT IS OPT-IN ONLY.
+//
+//	rd board --with-key      -> the own-board URL above, PLUS this key's already-
+//	                            unwrapped board read key(s) in the fragment:
+//	                            pk=<viewer pubkey>&cek=<epoch>:<hex>[,...]&ltk=<hex>.
+//
+// THE PROBLEM IT SOLVES: a confidential board's CEK is NIP-44-wrapped TO a
+// pubkey, so unwrapping it needs that key's SECRET. A read-only npub pasted into
+// the hosted board page is a PUBLIC key — it can never unwrap anything, so the
+// owner of the work saw a wall of "[encrypted]" and the only sanctioned fix was
+// a NIP-07 browser extension. The owner rejected that outright. ready-9f5
+// already settled that the board is an independent static page with no rd
+// binary and no localhost daemon, so the key can only arrive via the URL, via
+// browser storage (which still needs the URL to fill it), or via an extension.
+// The URL is what is left.
+//
+// WHY THE EXPOSURE IS ACCEPTABLE, as a decision and not an accident:
+//   - A fragment is NEVER sent to a server: no access log, no Referer header, no
+//     CDN cache. It is already the trust model for the rd1_ claim token above,
+//     and web/board/src/lib/fragment.ts strips it via history.replaceState in a
+//     `finally` immediately after parsing (ready-dbf #6, ready-62d1), so it does
+//     not linger in the address bar or in browser history.
+//   - A CEK decrypts ONE BOARD'S CONTENT. It is not an identity, it CANNOT sign,
+//     and it conveys no write authority — that still comes only from an
+//     owner-signed kind-39301 grant. This is a materially weaker exposure than
+//     the nsec-in-an-extension alternative it replaces. The nsec never enters
+//     the page, and nothing here needs it.
+//   - Residual risk, accepted: the link is a bearer credential at rest in
+//     terminal scrollback and the clipboard — the same place `rd board share`
+//     tokens already live. That is why it is BEHIND A FLAG and why emitting one
+//     prints a warning line to stderr: a link carrying a key must always be a
+//     deliberate act, never a silent default.
+//
+// `rd board share` NEVER embeds a key, with or without any flag. Third-party
+// access stays grant-based — an owner-signed kind-39301 wrapping the CEK to that
+// SPECIFIC grantee, revocable by rotation — which is a strictly stronger
+// property than a bearer link, and it is the single boundary this file must not
+// blur. There is no --with-key on the share subcommand and
+// TestBoardShareCmd_NeverEmbedsKeyMaterial is the rejection test for that.
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,20 +134,129 @@ func boardURL(host, token string) string {
 	return host + "#" + token
 }
 
+// boardKeyFragment is the OPT-IN key material `rd board --with-key` embeds in
+// an own-board link (ready-df0). A nil *boardKeyFragment is the default and
+// makes ownBoardURL emit exactly the bytes it emitted before ready-df0 — that
+// identity is what keeps bare `rd board` key-free, and it is asserted by
+// TestBoardCmd_Default_NoKeyMaterial.
+//
+// `viewer` is a PUBLIC pubkey (the identity the page should open as, so nobody
+// has to paste an npub); `ceks` and `ltk` are SECRET.
+type boardKeyFragment struct {
+	viewer string           // 64-hex pubkey of the key that minted this link
+	ceks   map[int][32]byte // epoch -> content-encryption key
+	ltk    [32]byte         // label-token key
+	hasLTK bool
+}
+
+// carriesSecret reports whether this fragment actually ships key material, as
+// opposed to only the public viewer pubkey. It is what decides whether the
+// warning line is printed — the user must be told when, and only when, the link
+// is a bearer credential.
+func (f *boardKeyFragment) carriesSecret() bool {
+	return f != nil && (len(f.ceks) > 0 || f.hasLTK)
+}
+
+// cekParam renders the held CEKs as "<epoch>:<64-hex>[,<epoch>:<64-hex>...]",
+// ascending by epoch. EVERY held epoch travels, not just the current one: a
+// board that has rotated has cards sealed under older epochs, and shipping only
+// the newest key would leave those cards showing the placeholder in the browser
+// even though this key can read them in the CLI (see BoardKeyring.Epochs).
+func (f *boardKeyFragment) cekParam() string {
+	epochs := make([]int, 0, len(f.ceks))
+	for ep := range f.ceks {
+		epochs = append(epochs, ep)
+	}
+	sort.Ints(epochs)
+	parts := make([]string, 0, len(epochs))
+	for _, ep := range epochs {
+		cek := f.ceks[ep]
+		parts = append(parts, strconv.Itoa(ep)+":"+hex.EncodeToString(cek[:]))
+	}
+	return strings.Join(parts, ",")
+}
+
 // ownBoardURL builds the URL for YOUR OWN board: no rd1_ token, no claim-nonce —
 // your key already holds owner access, so nothing needs to be conveyed. The
-// fragment carries only the board coordinate and relay set a hosted board page
-// needs to know what to open. Deliberately a DIFFERENT shape than boardURL's
-// rd1_ fragment so an own-board link can never be mistaken for (or later
-// confused with) a claim/share link.
-func ownBoardURL(host, coord string, relays []string) string {
+// fragment carries the board coordinate and relay set a hosted board page needs
+// to know what to open. Deliberately a DIFFERENT shape than boardURL's rd1_
+// fragment so an own-board link can never be mistaken for (or later confused
+// with) a claim/share link.
+//
+// `keys` is nil for every caller except `rd board --with-key` (ready-df0), and
+// nil produces byte-for-byte the pre-ready-df0 fragment. When non-nil it appends
+// pk= (public) and, for a confidential board this key can read, cek= / ltk=
+// (secret). web/board/src/lib/fragment.ts parses exactly these five params.
+func ownBoardURL(host, coord string, relays []string, keys *boardKeyFragment) string {
 	v := url.Values{}
 	v.Set("board", coord)
 	if len(relays) > 0 {
 		v.Set("relays", strings.Join(relays, ","))
 	}
+	if keys != nil {
+		if keys.viewer != "" {
+			v.Set("pk", keys.viewer)
+		}
+		if len(keys.ceks) > 0 {
+			v.Set("cek", keys.cekParam())
+		}
+		if keys.hasLTK {
+			v.Set("ltk", hex.EncodeToString(keys.ltk[:]))
+		}
+	}
 	return host + "#" + v.Encode()
 }
+
+// ownBoardKeys derives, from the LOCAL signed log only (no relay round-trip),
+// the key material this machine's key holds for `coord`, plus whether the board
+// is confidential at all.
+//
+// It reuses rdSync.DeriveBoardKeyring — the SAME authorization computation the
+// read path uses — rather than reaching into any local key cache, so the four
+// checks that decide whether a wrapped key becomes a usable CEK (signature,
+// owner-signed, p-tag names this reader, the wrap actually opens) all still run.
+// A key this machine cannot legitimately derive can therefore never be embedded
+// in a link.
+//
+// `confidential` comes from the keyring's board-global cutover, which is set by
+// ANY owner CEK-bearing grant regardless of who it is addressed to. So "the
+// board is confidential but I hold no key" is distinguishable from "the board is
+// not confidential", and the two get different advice on stderr.
+func ownBoardKeys(dir, coord string) (keys *boardKeyFragment, confidential bool, err error) {
+	k, err := nostrKey()
+	if err != nil {
+		return nil, false, err
+	}
+	owner, boardD, ok := rdSync.ParseBoardCoord(coord)
+	if !ok {
+		return nil, false, fmt.Errorf("pinned board %q is malformed", coord)
+	}
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		return nil, false, fmt.Errorf("rd board --with-key: read local log: %w", err)
+	}
+	kr := rdSync.DeriveBoardKeyring(events, k, owner, boardD)
+	f := &boardKeyFragment{viewer: k.PubKeyHex(), ceks: map[int][32]byte{}}
+	for _, ep := range kr.Epochs(coord) {
+		if cek, held := kr.CEK(coord, ep); held {
+			f.ceks[ep] = cek
+		}
+	}
+	if ltk, held := kr.LTK(coord); held {
+		f.ltk, f.hasLTK = ltk, true
+	}
+	_, confidential = kr.Cutover(coord)
+	return f, confidential, nil
+}
+
+// boardKeyWarning is the ONE line printed to stderr whenever an emitted link
+// actually carries key material (ready-df0 done condition 4). It exists so a
+// user can never paste a key-bearing link into a shared channel believing it is
+// inert, which is precisely what the default key-free link IS.
+//
+// stderr, not stdout, so `rd board --with-key | pbcopy` still copies exactly the
+// URL and the human still sees the warning.
+const boardKeyWarning = "WARNING: this link CARRIES THIS BOARD'S READ KEY in its fragment — anyone who opens it can read every title on this board. Treat it like a password: do not paste it into chat, a ticket, or any shared channel."
 
 // resolveGranteePubkey accepts either an npub1... (NIP-19 bech32) or a bare
 // 64-hex pubkey — the same two forms `rd grant`/`rd follow` accept — and
@@ -141,19 +294,36 @@ be conveyed to anyone. The URL just tells the hosted board page which board
 and relays to open; it carries no claim-nonce for ` + "`rd grant --claim`" + ` to
 ever bind a stranger's key to.
 
+  rd board --with-key               ALSO embed this key's board read key in
+                                     the fragment, so the page decrypts a
+                                     CONFIDENTIAL board with no browser
+                                     extension and nothing to paste. The
+                                     resulting link is a BEARER CREDENTIAL
+                                     for this board's content.
   rd board share <npub-or-pubkey>   issue a grant to a KNOWN key, then print
                                      the URL (zero-wait: the grant is durable
                                      on the relay before they click).
   rd board share                    mint a one-use claim-nonce link for
                                      someone whose key you don't know yet.
 
+WITHOUT --with-key (the default), and for every ` + "`rd board share`" + ` link:
+
 ` + boardSecurityNote + `
+
+WITH --with-key, that changes for THIS link and only this link: the fragment
+also carries the content-encryption key(s) your key already holds for this
+board (and the label-token key, if you hold one), so the hosted page can
+decrypt in your browser. A fragment is never sent to a server and the page
+strips it from the address bar immediately, but the link itself is a bearer
+credential while it sits in your scrollback or clipboard — anyone you send it
+to can read this board. It carries NO signing key and NO write authority: a
+content key cannot sign, and writes still require an owner-signed grant.
+Sharing with someone else should still be ` + "`rd board share <npub>`" + `, which
+wraps the key to THAT key alone and never puts one in a URL.
 
 --host / $RD_BOARD_HOST overrides the hosted-board origin (default:
 ` + defaultBoardHost + ` — a real, TLS-serving, DNS-resolving host that
-serves a page. That page is currently a build placeholder; the browser-served
-board UI has not shipped yet, so the URL is not yet useful to open — see
-ready-1ab).`,
+serves the browser board UI: open the printed URL and it renders this board).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, native := nostrNativeProject()
@@ -161,7 +331,33 @@ ready-1ab).`,
 			return fmt.Errorf("rd board requires a nostr-native project (a pinned board) — run: rd link <coord> first")
 		}
 		coord := nostrPinnedBoard(dir)
-		fmt.Println(ownBoardURL(boardHost(cmd), coord, inviteRelaySet()))
+
+		withKey, _ := cmd.Flags().GetBool("with-key")
+		var keys *boardKeyFragment
+		var confidential bool
+		if withKey {
+			k, conf, err := ownBoardKeys(dir, coord)
+			if err != nil {
+				return err
+			}
+			keys, confidential = k, conf
+		}
+
+		fmt.Println(ownBoardURL(boardHost(cmd), coord, inviteRelaySet(), keys))
+
+		// Said AFTER the URL, on stderr, so piping the URL stays clean while
+		// the human still reads what they just minted.
+		if withKey {
+			errOut := cmd.ErrOrStderr()
+			switch {
+			case keys.carriesSecret():
+				fmt.Fprintln(errOut, boardKeyWarning)
+			case confidential:
+				fmt.Fprintln(errOut, "NOTE: no key embedded — this board is confidential but your key holds no read key for it; ask the owner to run: rd grant "+keys.viewer)
+			default:
+				fmt.Fprintln(errOut, "NOTE: no key embedded — this board is not confidential, so there is nothing to decrypt.")
+			}
+		}
 		return nil
 	},
 }
@@ -229,11 +425,18 @@ identity, then send you back a pubkey; complete the invite with:
 		// later bind to THEIR OWN key via `rd grant --claim`, which is exactly
 		// the credential-leak this path must not create. Same plain
 		// board+relays fragment shape as the own-board URL — no rd1_ token.
+		//
+		// ready-df0: the nil `keys` argument is the boundary. `rd board share`
+		// has no --with-key and must never grow one: the recipient's read access
+		// is the kind-39301 grant published just above, which wraps the CEK to
+		// THAT pubkey and can be revoked by rotating the epoch. Putting a CEK in
+		// this URL would replace a revocable, per-grantee capability with an
+		// unrevocable bearer credential — see TestBoardShareCmd_NeverEmbedsKeyMaterial.
 		board := nostrPinnedBoard(dir)
 		if _, _, ok := rdSync.ParseBoardCoord(board); !ok {
 			return fmt.Errorf("pinned board %q is malformed", board)
 		}
-		fmt.Println(ownBoardURL(host, board, inviteRelaySet()))
+		fmt.Println(ownBoardURL(host, board, inviteRelaySet(), nil))
 		return nil
 	},
 }
@@ -246,6 +449,10 @@ var hostFlagUsage = fmt.Sprintf("hosted-board origin override (default: $RD_BOAR
 
 func init() {
 	boardCmd.Flags().String("host", "", hostFlagUsage)
+	// ready-df0. Deliberately OFF by default and deliberately absent from
+	// boardShareCmd: a link that carries a key is always an explicit act, and a
+	// link for someone else is always a grant.
+	boardCmd.Flags().Bool("with-key", false, "embed this key's board read key in the link fragment so a browser can decrypt a confidential board with no extension — the link becomes a bearer credential for this board's content")
 
 	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")

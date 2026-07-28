@@ -13,7 +13,7 @@
 // grant, and a revoked member reaching for an epoch it was never given.
 
 import { describe, expect, it } from "vitest";
-import { deriveBoardKeyring, parseRoleGrant, KIND_ROLE_GRANT } from "./keyring";
+import { applyFragmentKeys, deriveBoardKeyring, parseRoleGrant, KIND_ROLE_GRANT } from "./keyring";
 import { nip07KeyUnwrapper, neverUnwraps, decodeWrappedKey } from "./keyunwrap";
 import { fakeNip44Signer } from "./fakesigner";
 import { bytesToHex, hexToBytes } from "./sha256";
@@ -211,5 +211,75 @@ describe("decodeWrappedKey — the string boundary NIP-07 forces", () => {
     expect(recovered.length === 32 && bytesToHex(recovered) === CEK_EPOCH1).toBe(false);
     // And the adapter fails closed on it rather than handing back 32 wrong bytes.
     expect(decodeWrappedKey(returned)).toBeNull();
+  });
+});
+
+// ready-df0. applyFragmentKeys is the ONLY way key material enters a keyring
+// without passing this module's four relay-facing admission checks, so its exact
+// blast radius is the thing to pin: which coordinate it may touch, and what it
+// is forbidden to touch at all.
+describe("applyFragmentKeys — the `rd board --with-key` seam", () => {
+  const OTHER_COORD = `30301:${OWNER_PUB}:otherboard`;
+
+  /** A reader holding NOTHING for this board: no signer, so not one of the four
+   * checks that could mint a key has anything to mint from. */
+  const emptyKeyring = () => deriveBoardKeyring(grants, MEMBER_PUB, OWNER_PUB, BOARD_D, neverUnwraps);
+
+  it("adds every supplied epoch to the NAMED coordinate", async () => {
+    const kr = await emptyKeyring();
+    expect(kr.cek(BOARD_COORD, 1)).toBeNull();
+
+    applyFragmentKeys(kr, BOARD_COORD, {
+      ceks: [
+        { epoch: 1, key: hexToBytes(CEK_EPOCH1) },
+        { epoch: 2, key: hexToBytes(CEK_EPOCH2) },
+      ],
+      ltk: hexToBytes(LTK),
+    });
+
+    expect(kr.epochs(BOARD_COORD)).toEqual([1, 2]);
+    expect(bytesToHex(kr.cek(BOARD_COORD, 1)!)).toBe(CEK_EPOCH1);
+    expect(bytesToHex(kr.cek(BOARD_COORD, 2)!)).toBe(CEK_EPOCH2);
+    expect(bytesToHex(kr.ltk(BOARD_COORD)!)).toBe(LTK);
+  });
+
+  it("SCOPING: touches no other coordinate — a link's key can never spill onto another board", async () => {
+    const kr = await emptyKeyring();
+    applyFragmentKeys(kr, BOARD_COORD, {
+      ceks: [{ epoch: 1, key: hexToBytes(CEK_EPOCH1) }],
+      ltk: hexToBytes(LTK),
+    });
+
+    expect(kr.cek(OTHER_COORD, 1)).toBeNull();
+    expect(kr.ltk(OTHER_COORD)).toBeNull();
+    expect(kr.epochs(OTHER_COORD)).toEqual([]);
+  });
+
+  it("cannot declare a board confidential, and cannot un-declare one", async () => {
+    // cutover is the fold gate's input: it decides whether post-cutover
+    // cleartext is quarantined. It must stay a function of owner-signed grants
+    // ALONE, or a link could switch that gate off.
+    const fresh = await deriveBoardKeyring([], MEMBER_PUB, OWNER_PUB, BOARD_D, neverUnwraps);
+    applyFragmentKeys(fresh, BOARD_COORD, { ceks: [{ epoch: 1, key: hexToBytes(CEK_EPOCH1) }] });
+    expect(fresh.cutover(BOARD_COORD)).toBeNull();
+
+    const derived = await emptyKeyring();
+    expect(derived.cutover(BOARD_COORD)).toBe(CUTOVER);
+    applyFragmentKeys(derived, BOARD_COORD, { ceks: [{ epoch: 1, key: hexToBytes(CEK_EPOCH1) }] });
+    expect(derived.cutover(BOARD_COORD)).toBe(CUTOVER);
+  });
+
+  it("drops a key of the wrong size and a non-positive epoch rather than binding them", async () => {
+    const kr = await emptyKeyring();
+    applyFragmentKeys(kr, BOARD_COORD, {
+      ceks: [
+        { epoch: 1, key: new Uint8Array(16) },
+        { epoch: 0, key: hexToBytes(CEK_EPOCH1) },
+        { epoch: -3, key: hexToBytes(CEK_EPOCH1) },
+      ],
+      ltk: new Uint8Array(31),
+    });
+    expect(kr.epochs(BOARD_COORD)).toEqual([]);
+    expect(kr.ltk(BOARD_COORD)).toBeNull();
   });
 });
