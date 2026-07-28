@@ -42,7 +42,7 @@ write command read through — is `ProjectItems`, which replays the local
 append-only signed-event log into `map[itemID]*state.Item`
 (`pkg/sync/nostrproject.go:146`). An independent client MUST implement §2–§12
 against this function. It is reached from the CLI via `nostrProjectAllItems`
-(`cmd/rd/nostr.go:894`), which is the sole read spine on a nostr-native project.
+(`cmd/rd/nostr.go:914`), which is the sole read spine on a nostr-native project.
 
 **§1.2** `pkg/state.DeriveAll` (`pkg/state/state.go:405`) is the **campfire-era
 fold**: it replays `work:*` convention messages from `[]msgrec.MessageRecord`. On
@@ -1028,10 +1028,10 @@ changed for this document.
 **§16.1 One durable act, two phases.** Every mutation builds one or more signed
 events, appends them to the local append-only log (`Log.Append`, phase 1), then
 best-effort publishes them to the write relays (phase 2)
-(`Publisher.publishEvents`, `pkg/sync/nostroutbound.go:418-432`). **The log
+(`Publisher.publishEvents`, `pkg/sync/nostroutbound.go:581-595`). **The log
 append is the mutation.** A phase-1 failure aborts with an error
-(`:425-427`); a phase-2 failure never fails the mutation — the event is buffered
-for retry (`relayPublish`, `:437`) and the local log remains authoritative. An
+(`:588-590`); a phase-2 failure never fails the mutation — the event is buffered
+for retry (`relayPublish`, `:600`) and the local log remains authoritative. An
 independent client MUST treat its own durable store as the commit point and the
 relay as replication, not as the writer of record.
 
@@ -1100,8 +1100,8 @@ is a quarantined one (§3, `pkg/sync/envelope.go:100-116`).
 **§16.8 The reserved-board guard.** Any `Publisher` not marked `Production` is
 refused the instant a built event addresses board d-tag `"ready"` — the board
 event itself, or any `a` tag whose d-component matches
-(`hitsReservedBoard`, `pkg/sync/nostroutbound.go:85-99`; `guardReservedBoard`,
-`:110-120`, called from `publishEvents` `:419` and `PublishEventsUnique` `:381`).
+(`hitsReservedBoard`, `pkg/sync/nostroutbound.go:87-101`; `guardReservedBoard`,
+`:112-122`, called from `publishEvents` `:582` and `PublishEventsUnique` `:544`).
 The real CLI publisher sets `Production: true` (`cmd/rd/nostr.go:263`). This is a
 repo-local test-safety rail, not a protocol rule, but a conformance harness that
 constructs a `Publisher` will hit it.
@@ -1151,10 +1151,10 @@ first has the lower id).
 
 **§17.6 One `created_at` per publish call, shared by every event in it.** A
 create publishes board + card + issue + status all stamped with the same value
-(`PublishItemWithReason`, `pkg/sync/nostroutbound.go:183`, `:189`, `:195`,
-`:203` — all passed the same `createdAt`); a status change publishes card + status
+(`PublishItemWithReason`, `pkg/sync/nostroutbound.go:185`, `:191`, `:197`,
+`:205` — all passed the same `createdAt`); a status change publishes card + status
 (and possibly the issue event) at one value
-(`PublishStatusChange`, `:223`, `:228`, `:233`). Because the events land in the
+(`PublishStatusChange`, `:225`, `:230`, `:235`). Because the events land in the
 log before the next mutation reads it, a subsequent mutation to the same item is
 stamped strictly later (§17.2).
 
@@ -1280,12 +1280,12 @@ projection, `:516-529`), defaults `For` to the signer unless `--for` was given
 `created_at` (§17.6): the board event **iff** the signer is the board author
 (§16.6), the card, the kind-1621 issue event iff none exists yet and the board is
 plaintext (§19.6), and a kind-1630 status event carrying `status=inbox`
-(`PublishItemWithReason`, `pkg/sync/nostroutbound.go:177-210`). A fresh item is
+(`PublishItemWithReason`, `pkg/sync/nostroutbound.go:179-212`). A fresh item is
 therefore ALWAYS created with at least one authoritative status event, so §6.11
 (card `s` tag stands alone) is unreachable for rd-created items.
 
 **§18.9 Card edit.** A pure field edit publishes ONLY a refreshed card, with no
-status event (`PublishCardEdit`, `pkg/sync/nostroutbound.go:285-293`, via
+status event (`PublishCardEdit`, `pkg/sync/nostroutbound.go:287-295`, via
 `publishItemCardEditNostr`, `cmd/rd/nostr.go:389-419`). This is the hybrid
 model's invariant: **a card edit can neither add to nor erase history** (§5.5,
 §6.5) — history lives only in the status chain. An independent client that wants
@@ -1353,9 +1353,9 @@ coordinate where rd expects a card coordinate. **Emit card-coordinate `a` first,
 board-coordinate `a` second.**
 
 **§19.6 The issue event (kind 1621) is written at most once per item.**
-`ensureIssueEvent` (`pkg/sync/nostroutbound.go:252-275`) scans the local log for
+`ensureIssueEvent` (`pkg/sync/nostroutbound.go:254-277`) scans the local log for
 an existing 1621 whose `d` tag matches the item (`FindIssueEventID`,
-`pkg/sync/nostrwire.go:502-509`) and builds a new one only on a miss (`pkg/sync/nostroutbound.go:270-274`).
+`pkg/sync/nostrwire.go:502-509`) and builds a new one only on a miss (`pkg/sync/nostroutbound.go:272-276`).
 It emits tags `d`=item id and `subject`=title, with the description as Content
 (`BuildIssueEvent`, `pkg/sync/nostrwire.go:477-495`). **On a confidential board
 the issue event is suppressed entirely** (`pkg/sync/nostroutbound.go:260-262`) —
@@ -1384,9 +1384,9 @@ for nothing else; to transition someone else's item it needs maintainer level
 
 **§19.9 Every status event rides with a refreshed card.** No live path publishes
 a bare status event. `PublishStatusChange`
-(`pkg/sync/nostroutbound.go:219-243`) always builds the card FIRST (`:223`), uses
-its event id as the status event's `e` anchor (`:233`), and publishes
-`[card, (issue), status]` in that order (`:237-241`). A client MUST publish the
+(`pkg/sync/nostroutbound.go:221-245`) always builds the card FIRST (`:225`), uses
+its event id as the status event's `e` anchor (`:235`), and publishes
+`[card, (issue), status]` in that order (`:239-243`). A client MUST publish the
 card first for the same reason: the `e` tag names a concrete event that must
 exist.
 
@@ -1736,11 +1736,11 @@ resolves `i` tags after all items are known (§8.2). Nothing here is a new event
 shape — §18.8 covers it entirely.
 
 **§26.4 Not browser-reachable, dispositioned here so no writer is an orphan.**
-`rd log publish` (`cmd/rd/nostr.go:488-569`) and `rd log publish --board`
-(`runPublishBoard`, `:600-633`) are operator republish tools — the first
+`rd log publish` (`cmd/rd/nostr.go:488-580`) and `rd log publish --board`
+(`runPublishBoard`, `:617-653`) are operator republish tools — the first
 re-materializes one item's current state (re-deriving its reason from history,
-`lastStatusReason`, `:578-585`), the second re-sends already-durable log events
-verbatim without re-signing. `rd log put` (`:689-749`) is a demo/diagnostic
+`lastStatusReason`, `:589-596`), the second re-sends already-durable log events
+verbatim without re-signing. `rd log put` (`:709-769`) is a demo/diagnostic
 primitive that builds a `CardSpec` by hand. `rd grant`/`rd revoke`/`rd kill`
 publish kind-39301 role grants (`cmd/rd/authz_nostr.go:45-76`) — authorization,
 not item state, and specified as a READ input in §12. `rd sync` / `rd relay

@@ -45,6 +45,19 @@ import (
 // includes the surrounding quotes from source, hence the trim below).
 const nostrImportPath = "github.com/3dl-dev/ready/pkg/nostr"
 
+// guardedPublishNames is the set of pkg/nostr identifiers that reach the
+// network write and must therefore only ever be referenced through this
+// package's sanctioned wrappers. "Publish" is the original per-event write
+// (GuardedPublish); "PublishMany" is the ready-260 batch write
+// (GuardedPublishMany) that republishes a whole board over one connection. A
+// new network-write primitive added to pkg/nostr MUST be added here too,
+// otherwise the chokepoint is silently narrower than its own doc claims — the
+// scan matches on identifier NAME, so an unlisted name is invisible to it.
+var guardedPublishNames = map[string]bool{
+	"Publish":     true,
+	"PublishMany": true,
+}
+
 // chokepointAllowlist is the CLOSED set of files permitted to reference
 // pkg/nostr's Publish directly (by any binding). Adding to this list requires
 // the same justification GuardedPublish's own doc comment gives: a file here
@@ -135,7 +148,7 @@ func fileReferencesNostrPublish(path string) (bool, error) {
 		}
 		switch expr := n.(type) {
 		case *ast.SelectorExpr:
-			if expr.Sel == nil || expr.Sel.Name != "Publish" {
+			if expr.Sel == nil || !guardedPublishNames[expr.Sel.Name] {
 				return true
 			}
 			if id, ok := expr.X.(*ast.Ident); ok {
@@ -153,7 +166,7 @@ func fileReferencesNostrPublish(path string) (bool, error) {
 			// qualified reference like foo.Publish on an unrelated package) or
 			// when it's a declaration site (func/param/field name), which
 			// ast.Inspect also visits but which is not a USE of the import.
-			if dotImport && expr.Name == "Publish" {
+			if dotImport && guardedPublishNames[expr.Name] {
 				found = true
 				return false
 			}
@@ -359,6 +372,35 @@ import (
 
 func adversaryDotImportPublish(ctx context.Context, relayURL string, e *Event) {
 	_, _, _ = Publish(ctx, relayURL, e)
+}
+`)
+	assertFlagged(t, root, wantRel)
+}
+
+// TestPublishChokepoint_CatchesBatchPublishManyCall locks the ready-260 batch
+// write primitive into the SAME chokepoint as the per-event one. PublishMany is
+// a second way to reach the network write, so a file calling it directly would
+// bypass sync.GuardedPublishMany's reserved-board check exactly as a direct
+// nostr.Publish call bypasses GuardedPublish's — and, before guardedPublishNames
+// existed, the scan matched the literal identifier "Publish" and could not see
+// it at all.
+func TestPublishChokepoint_CatchesBatchPublishManyCall(t *testing.T) {
+	root, err := findModuleRootForChokepointTest()
+	if err != nil {
+		t.Fatalf("locate module root: %v", err)
+	}
+	wantRel := writeChokepointFixture(t, root, "zzz_ready260_publishmany_adversary_probe.go", `package sync
+
+// MUTATION-TEST FIXTURE (TestPublishChokepoint_CatchesBatchPublishManyCall).
+// Must never survive a test run.
+import (
+	"context"
+
+	"github.com/3dl-dev/ready/pkg/nostr"
+)
+
+func adversaryDirectPublishMany(ctx context.Context, relayURL string, evs []*nostr.Event) {
+	_, _ = nostr.PublishMany(ctx, relayURL, evs)
 }
 `)
 	assertFlagged(t, root, wantRel)

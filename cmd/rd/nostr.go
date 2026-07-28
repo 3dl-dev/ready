@@ -497,11 +497,22 @@ var nostrPublishCmd = &cobra.Command{
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		boardFlag, _ := cmd.Flags().GetBool("board")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		relayOverride, _ := cmd.Flags().GetStringArray("relay")
+		if !boardFlag && (dryRun || len(relayOverride) > 0) {
+			// Fail loudly rather than silently ignoring a safety flag: an
+			// operator who typed --dry-run and got a real write would have every
+			// reason to expect nothing happened (ready-260).
+			return fmt.Errorf("--dry-run and --relay apply only to --board")
+		}
 		if boardFlag {
 			if len(args) != 0 {
 				return fmt.Errorf("--board takes no item-id argument (it publishes every event for the pinned board)")
 			}
-			return runPublishBoard()
+			if dryRun {
+				return runPublishBoardPlan(relayOverride)
+			}
+			return runPublishBoard(relayOverride)
 		}
 		if len(args) != 1 {
 			return fmt.Errorf("publish requires an item-id argument, or --board to publish the whole board")
@@ -597,7 +608,13 @@ func lastStatusReason(item *state.Item) string {
 // unscoped, mirroring nostrReconcileBoardIntoLog's ReconcileBoard fallback for the
 // same unpinned case (ready-7ec) — an unpinned install has no board scope to
 // filter by, so "the board" is trivially "everything this identity has written".
-func runPublishBoard() error {
+//
+// relayOverride (ready-260), when non-empty, REPLACES the configured write
+// relays for this call. Publishing to every configured relay makes the result
+// ambiguous — reduceEventOutcome reports an event as accepted when ANY relay
+// takes it, so a relay that rejects everything is invisible. Naming one relay
+// makes its verdict the whole verdict.
+func runPublishBoard(relayOverride []string) error {
 	dir, ok := readyProjectDir()
 	if !ok {
 		return fmt.Errorf("no .ready project directory found")
@@ -608,6 +625,9 @@ func runPublishBoard() error {
 	}
 	if !ok {
 		return fmt.Errorf("no project dir for publisher")
+	}
+	if len(relayOverride) > 0 {
+		pub.WriteRelays = relayOverride
 	}
 	boardCoord := nostrPinnedBoard(dir)
 	res, err := pub.PublishBoard(context.Background(), boardCoord)

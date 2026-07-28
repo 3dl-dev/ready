@@ -155,6 +155,44 @@ func GuardedPublish(ctx context.Context, relayURL string, e *nostr.Event, produc
 	return nostr.Publish(withPublishProduction(ctx, production), relayURL, e)
 }
 
+// GuardedPublishMany is GuardedPublish's BATCH counterpart (ready-260): the
+// single sanctioned entry point to pkg/nostr's PublishMany, which republishes a
+// whole board's already-signed events over ONE websocket connection instead of
+// one dial per event.
+//
+// Same guard contract as GuardedPublish, applied to the WHOLE batch: a
+// Publisher not marked production may not send ANY event addressing the
+// reserved production board coordinate, and because a batch is one operator
+// intent, a single offending event refuses the entire call before any dial —
+// sending "the rest of the batch" would be precisely the partial, silently
+// incomplete write this guard exists to prevent. The returned ack slice is
+// always len(events) long (every entry carrying the refusal), so callers zip
+// acks onto events by index without a length check.
+//
+// pkg/nostr.PublishMany ALSO consults the nostr.PublishGuard hook per event
+// (relayclass.go's init installs it), so the class guard still applies to any
+// caller that somehow reaches PublishMany without coming through here — exactly
+// as it does for Publish.
+func GuardedPublishMany(ctx context.Context, relayURL string, events []*nostr.Event, production bool) ([]nostr.PublishAck, error) {
+	if !production {
+		for _, e := range events {
+			if !hitsReservedBoard(e) {
+				continue
+			}
+			err := fmt.Errorf("sync: refusing to dial %s with a %d-event batch containing a kind %d event addressing the reserved production board coordinate %q — not marked production (ready-6d0 chokepoint guard, ready-260 batch path); use an isolated board D-tag, or thread production=true from a sanctioned CLI path if this really is a production write", relayURL, len(events), e.Kind, reservedProductionBoardD)
+			acks := make([]nostr.PublishAck, len(events))
+			for i := range acks {
+				if events[i] != nil {
+					acks[i].EventID = events[i].ID
+				}
+				acks[i].Err = err
+			}
+			return acks, err
+		}
+	}
+	return nostr.PublishMany(withPublishProduction(ctx, production), relayURL, events)
+}
+
 // publishProductionCtxKey is the unexported context key carrying this call's
 // production opt-in down into pkg/nostr.Publish, for nostr.PublishGuard
 // (installed below in init) to read. It is unexported and its type is defined
