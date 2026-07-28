@@ -202,10 +202,35 @@ function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
         retries: 0,
         timeoutMs: 2000,
       });
-      capture.snapshot = events;
+      // ready-bad: main.ts now makes a SECOND round of fetches (the per-board
+      // item query). Record only the FIRST snapshot -- the board-discovery one
+      // -- so every anti-vacuity assertion below keeps asserting about the
+      // unverified board snapshot it was written against, rather than silently
+      // re-pointing at the item fetch.
+      if (capture.snapshot.length === 0) capture.snapshot = events;
       return events;
     },
   };
+}
+
+/**
+ * expectItemFetchesScopedToRenderedBoards asserts that every query AFTER the
+ * board-discovery one is a per-board item fetch (ready-bad) whose "#a" scope
+ * names a board that actually survived signature verification and reached the
+ * DOM. This is deliberately stronger than asserting an exact filter list: a
+ * forged or impersonated kind-30301 must not be able to induce an item fetch
+ * for a board it invented, which an exact-match assertion would not notice if
+ * the fetch list happened to be rewritten.
+ */
+function expectItemFetchesScopedToRenderedBoards(capture: Capture, root: HTMLElement): void {
+  const rendered = new Set(renderedBoards(root).map((b) => b.coord));
+  for (const f of capture.filters.slice(1)) {
+    const scope = f["#a"];
+    expect(scope, `item fetch ${JSON.stringify(f)} is not #a-scoped`).toBeDefined();
+    for (const coord of scope ?? []) {
+      expect(rendered, `item fetch scoped to unrendered board ${coord}`).toContain(coord);
+    }
+  }
 }
 
 /** Every board the page actually rendered, as {title, coord} in DOM order. */
@@ -303,8 +328,13 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // 1. The hostile relay really was queried, via the config relay set (a
       //    bare visit carries no link relays), asking for the LOGGED-IN key's
       //    kind-30301 events.
-      expect(FakeRelayWebSocket.urls).toEqual([CONFIG_RELAY]);
-      expect(capture.filters).toEqual([{ kinds: [30301], authors: [identity.pubkey] }]);
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([CONFIG_RELAY]);
+      expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [identity.pubkey] });
+      // ready-bad: every later query is a per-board item fetch, and each must be
+      // #a-scoped to a board that SURVIVED verification. Stronger than the old
+      // exact-match: it also forbids an item fetch leaking to a board the
+      // forged/impersonated events tried to introduce.
+      expectItemFetchesScopedToRenderedBoards(capture, root);
 
       // 1b. ANTI-VACUITY. The unverified snapshot main.ts received contained all
       //     seven events, INCLUDING the three that must be rejected — each named
@@ -369,9 +399,10 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
 
       // LINK_RELAY and CONFIG_RELAY are different URLs, so this distinguishes
       // the two relay sources — the link's list wins when it is non-empty.
-      expect(FakeRelayWebSocket.urls).toEqual([LINK_RELAY]);
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
       // The link's coordinate, not the viewer's key, names the author here.
-      expect(capture.filters).toEqual([{ kinds: [30301], authors: [OWNER] }]);
+      expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [OWNER] });
+      expectItemFetchesScopedToRenderedBoards(capture, root);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
         { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
@@ -389,7 +420,7 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         deps,
       );
 
-      expect(FakeRelayWebSocket.urls).toEqual([CONFIG_RELAY]);
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([CONFIG_RELAY]);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
         { title: "Beta Board", coord: boardCoord(OWNER, "beta") },
@@ -449,7 +480,7 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
 
       // A claim link is an invitation, not an authorization: nothing may be
       // fetched or rendered until the owner grants the key.
-      expect(FakeRelayWebSocket.urls).toEqual([]);
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([]);
       expect(capture.filters).toEqual([]);
       expect(renderedBoards(root)).toEqual([]);
       expectNoneOfOwnersBoardsRendered(root);
@@ -507,7 +538,8 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
     await afterLogin(root, stranger, { kind: "none" }, deps);
 
     // The REQ carried STRANGER's key — main.ts asked for its own boards.
-    expect(capture.filters).toEqual([{ kinds: [30301], authors: [STRANGER] }]);
+    expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [STRANGER] });
+    expectItemFetchesScopedToRenderedBoards(capture, root);
     // ANTI-VACUITY: the relay ignored that filter and served everything, so
     // the genuine boards really were in front of main.ts when it rendered.
     expect(capture.snapshot.map((e) => e.id).sort()).toEqual(

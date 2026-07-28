@@ -32,6 +32,9 @@ export interface NostrFilter {
   kinds?: number[];
   authors?: string[];
   ["#d"]?: string[];
+  /** Board-coordinate tag scope ("30301:<owner>:<d>"), mirroring the Go
+   * client's BoardSyncFilter (pkg/sync/nostrinbound.go:84). */
+  ["#a"]?: string[];
   limit?: number;
 }
 
