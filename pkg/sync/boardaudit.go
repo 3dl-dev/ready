@@ -461,6 +461,13 @@ type PortfolioBoard struct {
 	CreatedAt int64  `json:"created_at"`
 	Title     string `json:"title,omitempty"`
 	Verified  bool   `json:"verified"`
+	// Archived reports whether THIS event (the one the relay actually served for
+	// the coordinate) carries the archived marker (ready-a9b, IsBoardArchived).
+	// Addressable events mean a compliant relay serves at most one 30301 per
+	// (kind, pubkey, d), so this needs no separate latest-wins pass the way a
+	// multi-relay merge would — it is exactly what that relay would hand a
+	// browser today.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // FetchPortfolioBoards runs the ready-260 done-condition query against ONE
@@ -493,6 +500,7 @@ func FetchPortfolioBoards(ctx context.Context, relayURL, owner string) ([]Portfo
 			CreatedAt: e.CreatedAt,
 			Title:     tagValue(e, "title"),
 			Verified:  e.Verify() == nil,
+			Archived:  IsBoardArchived(e),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].D < out[j].D })

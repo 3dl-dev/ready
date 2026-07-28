@@ -20,6 +20,10 @@ import {
   delta,
   forgedSig,
   impersonator,
+  ARCHIVE_OWNER,
+  plainBeforeArchive,
+  archivedBoard,
+  archivedThenRevived,
 } from "./boardevents.fixtures";
 
 describe("discoverOwnerBoards", () => {
@@ -31,7 +35,46 @@ describe("discoverOwnerBoards", () => {
       boardCoord(OWNER, "beta"),
       boardCoord(OWNER, "gamma"),
     ]);
-    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board"); // first occurrence wins
+    // LATEST-WINS (ready-a9b), not first-in-array: alphaDup (created_at
+    // 1700000004) is a LATER republish of the same "alpha" coordinate than
+    // alpha (1700000001), and a relay merge can serve them in either order —
+    // array position is relay-answer order, not a trust or recency signal
+    // (this is exactly the divergence a multi-relay portfolio gather already
+    // has to account for; see board_portfolio.go's portfolioGather doc). The
+    // winner must be the newer one regardless of which the array lists first.
+    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board Dup");
+  });
+
+  it("latest-wins is order-independent: the newer event wins even when listed FIRST in the array", () => {
+    const got = discoverOwnerBoards([alphaDup, alpha], [OWNER], "");
+    expect(got.find((b) => b.boardD === "alpha")?.title).toBe("Alpha Board Dup");
+  });
+
+  it("ready-a9b: drops a board whose WINNING (latest) definition carries the archived marker", () => {
+    const got = discoverOwnerBoards([archivedBoard], [ARCHIVE_OWNER], "");
+    expect(got).toEqual([]);
+  });
+
+  it("ready-a9b: a LATER archive hides a board that was previously plain, order-independent", () => {
+    // plainBeforeArchive (created_at 1700000010) -> archivedBoard (1700000020,
+    // archived) — the real shape `rd board archive` publishes over an
+    // existing plain definition. The winner (later created_at) carries the
+    // marker, so the coordinate must be dropped regardless of array order.
+    expect(discoverOwnerBoards([plainBeforeArchive, archivedBoard], [ARCHIVE_OWNER], "")).toEqual([]);
+    expect(discoverOwnerBoards([archivedBoard, plainBeforeArchive], [ARCHIVE_OWNER], "")).toEqual([]);
+  });
+
+  it("ready-a9b: an archived board reappears once a LATER definition drops the marker (rd board unarchive), order-independent", () => {
+    // archivedBoard (1700000020, archived) -> archivedThenRevived (1700000030,
+    // marker dropped) — the real shape `rd board unarchive` publishes.
+    for (const events of [
+      [archivedBoard, archivedThenRevived],
+      [archivedThenRevived, archivedBoard],
+    ]) {
+      const got = discoverOwnerBoards(events, [ARCHIVE_OWNER], "");
+      expect(got.map((b) => b.boardD)).toEqual(["archiveme"]);
+      expect(got[0].title).toBe("Archive Me");
+    }
   });
 
   it("single-board filter restricts discovery to one d", () => {

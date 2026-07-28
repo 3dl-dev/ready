@@ -635,3 +635,45 @@ func maxInt64(a, b int64) int64 {
 	}
 	return b
 }
+
+// WinningBoardEvent returns the latest-wins (§4.5) kind-30301 event for exactly
+// coord among events, applying the SAME tie-break newerThan uses for cards:
+// greatest created_at, then lowest event id. Every candidate is independently
+// schnorr-verified — events is typically a relay answer, and a relay is
+// untrusted — so a forged or tampered event never wins and never masks (or
+// fakes) an archived marker (ready-a9b). Returns (nil, false) when no verified
+// kind-30301 event for coord exists in events.
+//
+// Appended at file end, not grouped next to newerThan, so this ready-a9b
+// addition causes ZERO line-number drift for every ProjectItems clause this
+// file already carries (board-fold-spec.md's citations are exact-line, see
+// internal/foldvectors/citations_test.go) — inserting mid-file here would have
+// shifted every citation below it for no reason connected to what changed.
+//
+// This is the read-side counterpart `rd board archive` (and the CLI portfolio
+// gather's archived-board filter) uses to answer "what does this board's
+// definition say right now" without duplicating ProjectItems' whole §3 gate
+// sequence — board events carry no read-trust or confidential-envelope
+// concerns (§2.1: "a board event carries status-authority policy only"), so
+// dedup + verify is the entire rule.
+func WinningBoardEvent(events []*nostr.Event, coord string) (*nostr.Event, bool) {
+	var winner *nostr.Event
+	for _, e := range events {
+		if e == nil || e.Kind != KindBoard {
+			continue
+		}
+		if BoardCoord(e.PubKey, tagValue(e, "d")) != coord {
+			continue
+		}
+		if e.Verify() != nil {
+			continue
+		}
+		if winner == nil || newerThan(e, winner) {
+			winner = e
+		}
+	}
+	if winner == nil {
+		return nil, false
+	}
+	return winner, true
+}

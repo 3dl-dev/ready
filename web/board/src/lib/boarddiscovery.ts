@@ -43,11 +43,44 @@ export interface DiscoveredBoard {
   title: string;
 }
 
+/** newerBoardEvent mirrors fold.ts's newerThan / pkg/sync's newerThan
+ * (board-fold-spec.md §4.5) EXACTLY: greatest created_at wins; on a tie the
+ * lexicographically LOWEST event id wins. Board discovery needs its own
+ * latest-wins pass — separate from fold.ts's, which folds ITEMS for one
+ * already-known coordinate — because a relay snapshot here can hold more than
+ * one kind-30301 event per coordinate (a multi-relay merge where relays
+ * disagree on which definition is current), and which one wins decides
+ * whether the "archived" marker (ready-a9b) is honoured or missed. */
+function newerBoardEvent(a: NostrEvent, b: NostrEvent): boolean {
+  if (a.created_at !== b.created_at) return a.created_at > b.created_at;
+  return a.id < b.id;
+}
+
+/** isArchivedBoard mirrors pkg/sync.IsBoardArchived: any non-empty "archived"
+ * tag value counts, matching isConfidential's presence-based style so a later
+ * marker version does not need a matching release to keep being honoured. */
+function isArchivedBoard(e: NostrEvent): boolean {
+  return tagValue(e, "archived") !== "";
+}
+
 /**
- * discoverOwnerBoards mirrors DiscoverOwnerBoards exactly: given a relay
- * event snapshot and the set of owner pubkeys the caller resolved the follow
- * target to, return every 30301 board coordinate those owners published —
- * sorted, de-duplicated by coordinate, filtered to boardD when non-empty.
+ * discoverOwnerBoards mirrors DiscoverOwnerBoards, extended by two rules
+ * DiscoverOwnerBoards does not need (it enumerates coordinates for `rd
+ * follow`'s one-time bind, never renders a board list): given a relay event
+ * snapshot and the set of owner pubkeys the caller resolved the follow target
+ * to, return every 30301 board coordinate those owners published — sorted,
+ * de-duplicated by coordinate, filtered to boardD when non-empty, and:
+ *
+ *   - latest-wins per coordinate (newerBoardEvent) when the snapshot holds
+ *     more than one kind-30301 event for it, instead of first-seen-in-array —
+ *     the array order is relay-answer order, not a trust signal, and picking
+ *     a stale definition would un-hide an archived board or misrender a
+ *     retitled one depending on which relay answered first.
+ *   - a coordinate whose WINNING definition carries the archived marker
+ *     (ready-a9b, isArchivedBoard) is dropped from the result entirely: this
+ *     is the browser-side half of `rd board archive`'s contract (the CLI
+ *     portfolio gather is the other half, cmd/rd/board_portfolio.go's
+ *     filterArchivedBoards).
  *
  * Every candidate is schnorr-verified (verifyEvent) before it contributes a
  * coordinate: a forged/tampered kind-30301 served by a hostile relay, or one
@@ -64,8 +97,7 @@ export function discoverOwnerBoards(
   const owners = new Set(ownerPubkeys.filter((pk) => pk !== ""));
   if (owners.size === 0) return [];
 
-  const seen = new Set<string>();
-  const out: DiscoveredBoard[] = [];
+  const winners = new Map<string, NostrEvent>();
 
   for (const e of events) {
     if (!e || e.kind !== KIND_BOARD) continue;
@@ -80,9 +112,14 @@ export function discoverOwnerBoards(
     if (boardD !== "" && d !== boardD) continue;
 
     const coord = boardCoord(e.pubkey, d);
-    if (seen.has(coord)) continue;
-    seen.add(coord);
-    out.push({ coord, ownerPubkey: e.pubkey, boardD: d, title: tagValue(e, "title") });
+    const cur = winners.get(coord);
+    if (!cur || newerBoardEvent(e, cur)) winners.set(coord, e);
+  }
+
+  const out: DiscoveredBoard[] = [];
+  for (const [coord, e] of winners) {
+    if (isArchivedBoard(e)) continue;
+    out.push({ coord, ownerPubkey: e.pubkey, boardD: tagValue(e, "d"), title: tagValue(e, "title") });
   }
 
   out.sort((a, b) => (a.coord < b.coord ? -1 : a.coord > b.coord ? 1 : 0));

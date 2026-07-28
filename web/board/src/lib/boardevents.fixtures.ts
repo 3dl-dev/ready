@@ -88,3 +88,44 @@ export const impersonator: NostrEvent = {
   content: "",
   sig: "768b4679199403b5d0bd0c9df8a7d1ae5eaa4be0e6c5d0eca03d6499e1ebdfce66b5f09483bc5976d5b9e240dc61aa4d696619014d31cca4343e69bc81009860",
 };
+
+// ready-a9b fixtures below: a SEPARATE owner keypair (ARCHIVE_OWNER), signed
+// by the real Go signer (pkg/sync.BuildBoardEvent -> pkg/nostr.Event.Sign)
+// exactly like the fixtures above, generated for this item specifically to
+// exercise BuildBoardEvent's "archived" tag and the resulting latest-wins /
+// filter behaviour discoverOwnerBoards must implement. Three definitions of
+// the SAME "archiveme" coordinate, strictly increasing created_at:
+//   plainBeforeArchive (1700000010) -> archivedBoard (1700000020, archived)
+//   -> archivedThenRevived (1700000030, archived tag dropped again)
+// exactly the shape `rd board archive` then `rd board unarchive` publish.
+export const ARCHIVE_OWNER = "2f202bc0511b0436820558d97732ee3f12e8d844094d8fd9eb73f84f5cee26d4";
+
+export const plainBeforeArchive: NostrEvent = {
+  id: "37a5360c288a94d5fbe6c140423d08ccb876da088f38e77e0b3ff09cd34c35b2",
+  pubkey: ARCHIVE_OWNER,
+  created_at: 1700000010,
+  kind: 30301,
+  tags: [["d", "archiveme"], ["title", "Archive Me"], ["p", ARCHIVE_OWNER]],
+  content: "",
+  sig: "4a0dfb4cf025d971e3043b1591774bc1d018785ca6f54c524055358fe320b3e8590f3b8fa97ecbd97c4f0fd4fbb1d9d94bbf4d4b091882e331430f10933eab04",
+};
+
+export const archivedBoard: NostrEvent = {
+  id: "ca9c108412fbc255c00328d614a57b5737c63db076abf6ff66527b845c2beeae",
+  pubkey: ARCHIVE_OWNER,
+  created_at: 1700000020,
+  kind: 30301,
+  tags: [["d", "archiveme"], ["title", "Archive Me"], ["archived", "1"], ["p", ARCHIVE_OWNER]],
+  content: "",
+  sig: "67f2a1cc3b4c4418a2dce38d95265724edf433f35d6110cc98833a3802be3939dbd55f038b9999281762ad450fb2ffdf69dd516f5cdac80985c818f182521606",
+};
+
+export const archivedThenRevived: NostrEvent = {
+  id: "4ca4b3747ee27d26bb04eccdcac68cb81c326a9d1efbb388fee0459b20f10078",
+  pubkey: ARCHIVE_OWNER,
+  created_at: 1700000030,
+  kind: 30301,
+  tags: [["d", "archiveme"], ["title", "Archive Me"], ["p", ARCHIVE_OWNER]],
+  content: "",
+  sig: "0edfc1b8d8f84707d0fdebf8c64d36cf2f10597696e449cc36180fb989591231fe07b6c1ffa0c71601fe7c5de87c2164b6853ab40d5ed4ae0febaf24e9f0c4a2",
+};
