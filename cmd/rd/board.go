@@ -247,19 +247,37 @@ func browserOpenableRelays(host string, relays []string) (kept, dropped []string
 	return kept, dropped
 }
 
-// boardLinkRelays is the relay list EVERY browser-facing board link is built
-// from: the CLI's configured relay set narrowed by browserOpenableRelays, with a
-// note on stderr naming anything left out.
+// boardLinkRelays is the relay list the `relays=` PARAMETER of a board=/pk=
+// fragment is built from: the CLI's configured relay set narrowed by
+// browserOpenableRelays, with a note on stderr naming anything left out.
 //
-// The note exists so the emitted link never quietly differs from the configured
-// set — a user reading `relays=` should not have to work out which of his relays
-// silently did not make it. It goes to stderr, never stdout, so `rd board | pbcopy`
-// still copies exactly the URL (ready-1df).
+// SCOPE — READ THIS BEFORE ADDING A CALLER. This function's output is only ever
+// correct for the two fragment shapes web/board actually reads a relay list out
+// of: `#board=<coord>&relays=…` and `#pk=<hex>&relays=…`. Those are the two
+// branches in main.ts's afterLogin that evaluate `fragment.relays`. Every other
+// thing rd prints is NOT one of them, and narrowing it is a live defect rather
+// than a harmless extra safety margin:
 //
-// When the filter empties the list the link simply carries no relays= at all,
-// which is not a dead end: web/board falls back to its own same-origin
-// relays.json for a fragment that names none (main.ts:
+//   - The rd1_ CLAIM TOKEN printed by `rd board share` (bare) and by `rd invite`
+//     is redeemed by `rd join` — A CLI. main.ts's afterLogin returns at
+//     `fragment.kind === "claim"` (renderAwaitingAuthorization) BEFORE any
+//     fetchEvents, and `payload.relays` has no reader anywhere in web/board/src.
+//     Filtering it does not protect a browser from anything; it strands the CLI
+//     that does read it. See runNostrInvite's header for what that cost.
+//
+// The stderr note exists so the emitted link never quietly differs from the
+// configured set — a user reading `relays=` should not have to work out which of
+// his relays silently did not make it. It goes to stderr, never stdout, so
+// `rd board | pbcopy` still copies exactly the URL (ready-1df).
+//
+// When the filter empties the list, a board=/pk= link simply carries no relays=
+// at all, and for THOSE TWO SHAPES that is not a dead end: web/board falls back
+// to its own same-origin relays.json (main.ts:
 // `fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays()`).
+// That fallback is a property of the board=/pk= branches and of nothing else —
+// it does NOT rescue an rd1_ token, whose consumer is `rd join` and which has no
+// same-origin anything to fall back to. An empty relay list in a token is a dead
+// token, which is precisely why no token is built from this function.
 func boardLinkRelays(errOut io.Writer, host string) []string {
 	kept, dropped := browserOpenableRelays(host, inviteRelaySet())
 	if len(dropped) > 0 {
@@ -604,13 +622,30 @@ board.
 		errOut := cmd.ErrOrStderr()
 
 		if len(args) == 0 {
-			// ready-634: the relay list travels INSIDE the rd1_ token here, so the
-			// browser filter has to be applied at the mint, not at the URL. It is
-			// applied on THIS path and not in `rd invite`: a share link is opened by
-			// someone else, in a browser, from an https page, whereas `rd invite`'s
-			// token is redeemed by `rd join` in a CLI that can dial ws:// perfectly
-			// well and may be the only way to reach a LAN relay.
-			token, err := runNostrInviteTo(ttl, boardLinkRelays(errOut, host))
+			// NO BROWSER FILTER HERE, and that is the fix for a regression this
+			// call site shipped. ready-634's narrowing was applied to this token
+			// on the theory that "a share link is opened by someone else, in a
+			// browser". Half of that is true and the wrong half was acted on: the
+			// URL is opened in a browser, but the browser reads NOTHING out of the
+			// token's relay list. main.ts's afterLogin hits
+			// `fragment.kind === "claim"`, renders renderAwaitingAuthorization and
+			// RETURNS before any fetchEvents; `payload.relays` has no reader in
+			// web/board/src at all. The token's only consumer is `rd join` — a
+			// CLI, which dials ws:// perfectly well and for a teammate on the same
+			// LAN may have no other way in. boardShareCmd's own Long text still
+			// advertises exactly that route ("or run 'rd join <token>' with the
+			// raw token").
+			//
+			// What the filter actually did on a ws://-only project: the token
+			// carried relays:null, `rd join` printed "Joined board … READ-ONLY"
+			// and skipped relay adoption entirely (redeemNostrClaimToken step 4 is
+			// `if len(p.Relays) > 0`), so no rd.json was written and `rd ready`
+			// returned nothing — a silent, successful-looking join of a project
+			// with zero relays. This token therefore carries the FULL configured
+			// set, identically to `rd invite`'s, which is the same token redeemed
+			// by the same command. See
+			// TestBoardShareToken_RoundTripsThroughRdJoinOverWs.
+			token, err := runNostrInvite(ttl)
 			if err != nil {
 				return err
 			}

@@ -31,11 +31,15 @@ package main
 
 import (
 	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/rdconfig"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
 	"github.com/spf13/pflag"
 )
@@ -331,34 +335,231 @@ func TestBoardLink_CarriesNoRelayABrowserCannotOpen(t *testing.T) {
 		}
 	})
 
-	// The bare share form carries its relays INSIDE the rd1_ token, so the filter
-	// has to reach the mint, not just the URL. This is the form a scheme check on
-	// the printed string would silently miss.
-	t.Run("rd board share (bare, relays inside the token)", func(t *testing.T) {
-		_, _, _, dir := boardTestEnv(t)
-		setProjectRelays(t, dir, append(append([]string{}, lan...), public)...)
+	// The bare share form is NOT one of these shapes and is deliberately absent
+	// from this test — see TestBoardShareToken_IsACliTokenAndKeepsEveryRelay for
+	// why applying this predicate to it was a bug rather than extra safety.
+}
 
-		out := captureStdoutPipe(t, func() {
-			if err := boardShareCmd.RunE(boardShareCmd, nil); err != nil {
-				t.Fatalf("rd board share: %v", err)
-			}
-		})
-		p, err := decodeNostrClaimToken(extractToken(t, findURLLine(t, out)))
-		if err != nil {
-			t.Fatalf("decode token: %v", err)
+// TestBoardShareToken_IsACliTokenAndKeepsEveryRelay IS THE REGRESSION.
+//
+// ready-634's filter was applied to the rd1_ token minted by the bare
+// `rd board share`, on the reasoning that the link is "opened by someone else,
+// in a browser". The URL is; the token's relay list is not read by any browser.
+// web/board's afterLogin hits `fragment.kind === "claim"`, renders
+// renderAwaitingAuthorization and RETURNS before any fetchEvents, and
+// `payload.relays` has no reader anywhere in web/board/src. The token's only
+// consumer is `rd join` — a CLI — which is the route boardShareCmd's own help
+// text advertises ("or run 'rd join <token>' with the raw token").
+//
+// The fixture is ws://-ONLY, which is the shape that made the regression fatal
+// rather than cosmetic: under the filter the token carried relays:null and the
+// join below had nothing to dial. A build that reintroduces the filter fails
+// this test on the first assertion, and TestBoardShareToken_RoundTripsThroughRdJoinOverWs
+// fails on what that costs a user.
+//
+// ANTI-TAUTOLOGY, and the thing this test must not be allowed to "fix": the
+// board=/pk= link shapes in TestBoardLink_CarriesNoRelayABrowserCannotOpen are
+// still filtered, from this same configured relay set. The two facts hold at
+// once because they are about two different readers.
+func TestBoardShareToken_IsACliTokenAndKeepsEveryRelay(t *testing.T) {
+	lan, public := mixedRelayEnv(t)
+	all := append(append([]string{}, lan...), public)
+	_, _, _, dir := boardTestEnv(t)
+	setProjectRelays(t, dir, all...)
+
+	out, errOut := captureBoardShareArgv(t)
+	p, err := decodeNostrClaimToken(extractToken(t, findURLLine(t, out)))
+	if err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	if len(p.Relays) != len(all) {
+		t.Fatalf("the rd1_ token carries relays=%v, want all %d configured relays — its consumer is `rd join`, a CLI, and a ws:// LAN relay may be the only way a teammate can reach this board", p.Relays, len(all))
+	}
+	for _, want := range all {
+		if !slices.Contains(p.Relays, want) {
+			t.Errorf("relay %q was filtered out of a token redeemed by `rd join`; token relays = %v", want, p.Relays)
 		}
-		assertBrowserOpenable(t, "the rd1_ token in `rd board share`", p.Relays)
-		if len(p.Relays) != 1 || p.Relays[0] != public {
-			t.Fatalf("token relays = %v, want exactly %s", p.Relays, public)
+	}
+
+	// The URL this token rides in is `<host>#rd1_...`: there is no relays=
+	// parameter for a browser to read, which is the structural reason the browser
+	// filter has nothing to do here.
+	frag := findURLLine(t, out)
+	if i := strings.Index(frag, "#"); i < 0 || !strings.HasPrefix(frag[i+1:], "rd1_") {
+		t.Fatalf("`rd board share` printed %q, want a <host>#rd1_<token> claim URL", frag)
+	}
+	if got := linkRelays(t, out); got != nil {
+		t.Errorf("the bare share URL grew a relays= parameter (%v) — that shape is read by afterLogin's board=/pk= branches, and this link is a claim token that never reaches them", got)
+	}
+
+	// AND THE CONTRADICTION IS GONE. This path used to print, in one breath, a
+	// NOTE naming relays it had dropped ("The CLI itself still syncs through
+	// them.") immediately followed by "this project has no relays configured".
+	// Both cannot be true; the second was false. Nothing is dropped now, so
+	// neither line has anything to say.
+	if strings.Contains(errOut, "no relays configured") {
+		t.Errorf("`rd board share` told the owner his project has no relays configured while %d are; stderr = %q", len(all), errOut)
+	}
+	if strings.Contains(errOut, "not in this link") {
+		t.Errorf("`rd board share` reported omitting relays from a token that carries all of them; stderr = %q", errOut)
+	}
+}
+
+// TestBoardShareToken_RoundTripsThroughRdJoinOverWs is the outcome the item is
+// actually about, proved end to end against a LIVE ws:// relay: mint with
+// `rd board share`, redeem with `rd join` in a clean $RD_HOME, and read the
+// owner's item back.
+//
+// A unit assertion on the token's relay list would not have caught the shape of
+// this regression, because the damage was DOWNSTREAM and silent:
+// redeemNostrClaimToken's relay adoption is `if len(p.Relays) > 0`, so an empty
+// list skipped it, wrote no rd.json, and the join still printed
+// "Joined board … READ-ONLY". The user saw a successful join of a project with
+// zero relays and an empty `rd ready`. This test therefore asserts on the JOINED
+// MACHINE'S STATE — its rd.json names the relay, and the owner's item is in its
+// log — not on the token.
+//
+// The relay is ws:// only, in-process, and really speaks NIP-01: the join dials
+// a real websocket through the production relayInviteMedium.
+func TestBoardShareToken_RoundTripsThroughRdJoinOverWs(t *testing.T) {
+	ownerKey, boardD, coord, dir := boardTestEnv(t)
+	relay := newStoringRelay(t)
+	t.Cleanup(relay.close)
+	setProjectRelays(t, dir, relay.url()) // ws:// ONLY — the LAN case, exactly
+
+	// The owner publishes one item, so "the join worked" can be read off content
+	// rather than off an exit code.
+	const wantTitle = "the item a joiner must be able to read"
+	ownerLog := rdSync.NewNostrLog(filepath.Join(t.TempDir(), "owner-log.jsonl"))
+	ownerPub := &rdSync.Publisher{Key: ownerKey, Log: ownerLog}
+	boardSpec := rdSync.BoardSpec{BoardD: boardD, Title: boardD, Maintainers: []string{ownerKey.PubKeyHex()}}
+	if _, err := ownerPub.PublishItem(nil, &boardSpec, rdSync.CardSpec{
+		ItemID: "ready-rt1", Title: wantTitle, Status: "active",
+		Priority: "p1", Type: "task", BoardD: boardD, BoardAuthor: ownerKey.PubKeyHex(),
+	}, time.Now().Unix()); err != nil {
+		t.Fatalf("owner PublishItem: %v", err)
+	}
+	published, err := ownerLog.ReadAll()
+	if err != nil {
+		t.Fatalf("reading the owner's log: %v", err)
+	}
+	relay.seed(published...)
+
+	// MINT — through the real cobra parser, as a user types it.
+	out, _ := captureBoardShareArgv(t)
+	token := extractToken(t, findURLLine(t, out))
+
+	// REDEEM — clean $RD_HOME, clean project dir, production join path.
+	joinBase := t.TempDir()
+	joinHome := filepath.Join(joinBase, "rdhome")
+	joinDir := filepath.Join(joinBase, "project")
+	for _, d := range []string{joinHome, joinDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
 		}
-		// And the printed line never names a blocked relay either, at the byte
-		// level: the token is base64, so a parameter check alone would miss it.
-		for _, r := range lan {
-			if strings.Contains(out, r) {
-				t.Errorf("the share link mentions %q somewhere in its bytes:\n%s", r, out)
-			}
+	}
+	t.Setenv("RD_HOME", joinHome)
+	if err := os.Chdir(joinDir); err != nil {
+		t.Fatalf("chdir to the joiner's project: %v", err)
+	}
+	joinOut := captureStdoutPipe(t, func() {
+		if err := joinViaNostrInviteToken(token, false, ""); err != nil {
+			t.Fatalf("rd join <token>: %v", err)
 		}
 	})
+	if !strings.Contains(joinOut, "Joined board") {
+		t.Fatalf("`rd join` did not report a join:\n%s", joinOut)
+	}
+
+	// (1) rd.json EXISTS AND NAMES THE RELAY.
+	//
+	// The os.Stat is not belt-and-braces: rdconfig.Load returns a ZERO Config and
+	// a NIL error when the file is absent, so a Load-only check would read the
+	// regression — no rd.json at all — as an empty relay list and could be
+	// "satisfied" by a weaker assertion. The file must be there.
+	cfgPath := rdconfig.Path(joinHome)
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("`rd join` reported success but wrote no rd.json at %s (%v) — this is the regression exactly: relay adoption is skipped when the token carries no relays, and the joiner is left with a project it can never sync", cfgPath, err)
+	}
+	cfg, err := rdconfig.Load(joinHome)
+	if err != nil {
+		t.Fatalf("the joiner's rd.json is unreadable: %v", err)
+	}
+	var endpoints []string
+	for _, e := range cfg.RelayEndpoints {
+		endpoints = append(endpoints, e.URL)
+	}
+	if !slices.Contains(endpoints, relay.url()) {
+		t.Fatalf("the joiner's rd.json names relays %v, not the ws:// relay %q the token was minted against — `rd ready` on this machine can reach nothing", endpoints, relay.url())
+	}
+
+	// (2) THE BOARD IS PINNED.
+	syncCfg, err := rdconfig.LoadSyncConfig(joinDir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig(joiner): %v", err)
+	}
+	if syncCfg.Board != coord {
+		t.Errorf("the joiner pinned board %q, want %q", syncCfg.Board, coord)
+	}
+
+	// (3) `rd ready` WORKS. allProjectItems is the exact accessor the ready/list
+	// commands read from, driven here against the joiner's $RD_HOME and project
+	// dir — so this is the user-visible outcome ("run 'rd ready' to see the
+	// project's items now", which the join itself just promised), not a proxy for
+	// it. Under the regression this returned nothing.
+	items, err := allProjectItems()
+	if err != nil {
+		t.Fatalf("allProjectItems on the joined machine (what `rd ready` reads): %v", err)
+	}
+	found := false
+	for _, it := range items {
+		if it != nil && it.Title == wantTitle {
+			found = true
+		}
+	}
+	if !found {
+		var titles []string
+		for _, it := range items {
+			if it != nil {
+				titles = append(titles, it.Title)
+			}
+		}
+		t.Fatalf("`rd ready` on the joined machine shows %d item(s) %v and not the owner's %q — nothing came back over the ws:// relay, which is exactly what a join with an empty relay set looks like from the user's side", len(items), titles, wantTitle)
+	}
+	if relay.reqs() == 0 {
+		t.Error("the ws:// relay was never queried — the join did not actually dial the relay in the token")
+	}
+}
+
+// captureBoardShareArgv runs the bare `rd board share` through the REAL root
+// command with real argv, returning stdout and stderr separately.
+//
+// Driving from the root rather than calling boardShareCmd.RunE is the same
+// discipline TestBoardShareCmd_NoArgvEmitsKeyMaterial applies: what a RunE does
+// says nothing about what cobra accepts, and stderr is only routed where the
+// command's ErrOrStderr() points once the root has wired it.
+func captureBoardShareArgv(t *testing.T, argv ...string) (stdout, stderr string) {
+	t.Helper()
+	var sink strings.Builder
+	rootCmd.SetErr(&sink)
+	rootCmd.SetOut(&sink)
+	defaults := map[string]string{}
+	boardShareCmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { defaults[f.Name] = f.DefValue })
+	t.Cleanup(func() {
+		rootCmd.SetErr(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetArgs(nil)
+		for name, def := range defaults {
+			_ = boardShareCmd.Flags().Set(name, def)
+		}
+	})
+	out := captureStdoutPipe(t, func() {
+		rootCmd.SetArgs(append([]string{"board", "share"}, argv...))
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("`rd board share %s`: %v", strings.Join(argv, " "), err)
+		}
+	})
+	return out, sink.String()
 }
 
 // TestBoardLink_DroppedRelaysAreNamedOnStderr: a link whose relay list silently

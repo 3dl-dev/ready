@@ -389,20 +389,31 @@ func adoptInviteRelays(rdHome string, relays []string) error {
 // generates ONLY a one-use claim-nonce — NO key, NO grant is published at mint — and
 // records the nonce locally as UNCLAIMED. Returns the token the invite command prints.
 //
-// The token carries the FULL configured relay set, ws:// LAN relays included: an
-// `rd invite` token is redeemed by `rd join` in a CLI, which dials a websocket
-// directly and for a teammate on the same LAN may have no other way in. The
-// browser-facing variant is runNostrInviteTo (see `rd board share`, ready-634).
+// THE RELAY SET IS ALWAYS inviteRelaySet(), THE FULL CONFIGURED ONE, ws:// LAN
+// relays included — and there is deliberately no parameter to make it anything
+// else. An rd1_ claim token is redeemed by `rd join` IN A CLI, which dials a
+// websocket directly and for a teammate on the same LAN may have no other way
+// in. Both minting commands (`rd invite` and the bare `rd board share`) produce
+// the same token for the same consumer, so both get the same set.
+//
+// There used to be a runNostrInviteTo(ttl, relays) seam so `rd board share`
+// could pass a browser-filtered list, on the theory that its token is read by a
+// browser. It is not: web/board's afterLogin returns at
+// `fragment.kind === "claim"` before any fetchEvents and never touches
+// `payload.relays`. On a ws://-only project that seam minted relays:null, and
+// `rd join` then skipped relay adoption (step 4 below is `if len(p.Relays) > 0`),
+// wrote no rd.json, and still printed "Joined board … READ-ONLY" — a join that
+// looked successful and left `rd ready` with nothing to read. The seam is GONE
+// rather than merely unused: a filtered relay list has no correct caller here,
+// so there is no longer a way to hand one in.
+//
+// The zero-relay warning below is consequently TRUE whenever it fires. It reads
+// off the project's actual configuration, so it can only mean what it says — a
+// local-only project. It is not reachable via a filter that discarded relays the
+// project really has, which is how it once came to be printed one line after a
+// note saying those relays exist and the CLI still syncs through them.
 func runNostrInvite(ttl time.Duration) (string, error) {
-	return runNostrInviteTo(ttl, inviteRelaySet())
-}
-
-// runNostrInviteTo is runNostrInvite with the token's relay list supplied by the
-// caller. It exists for ready-634: `rd board share` prints a link a stranger
-// opens IN A BROWSER, from an https page, so the relays inside that token must be
-// ones a browser is allowed to dial — and that narrowing must not leak into
-// `rd invite`, whose token is redeemed by a CLI.
-func runNostrInviteTo(ttl time.Duration, relays []string) (string, error) {
+	relays := inviteRelaySet()
 	dir, native := nostrNativeProject()
 	if !native {
 		return "", fmt.Errorf("rd invite requires a nostr-native project (a pinned board) — run: rd link <coord> first")
