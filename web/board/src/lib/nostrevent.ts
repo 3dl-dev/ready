@@ -116,3 +116,14 @@ export function tagValue(e: Pick<NostrEvent, "tags">, name: string): string {
   }
   return "";
 }
+
+/** tagValues returns the values of every tag whose name matches, in tag
+ * order. Mirrors pkg/sync/nostrwire.go's tagValues (used for repeatable tags:
+ * "i" per blocking dependency, "l" per label). */
+export function tagValues(e: Pick<NostrEvent, "tags">, name: string): string[] {
+  const out: string[] = [];
+  for (const t of e.tags) {
+    if (t.length >= 2 && t[0] === name) out.push(t[1]);
+  }
+  return out;
+}
