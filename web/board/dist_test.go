@@ -35,10 +35,17 @@ import (
 //
 // Stated plainly, because this test is easy to over-trust: it scans source
 // text. It cannot see a URL that is assembled at runtime ("http"+"s://x"),
-// escaped ("\x68ttps://x"), or read out of data the page loads later. What
-// it catches is an external reference written down in the shipped bundle —
-// the accidental CDN import, the dependency that inlines a font URL, the
-// hand-edited <script src>. Nothing stronger should be claimed for it.
+// escaped ("\x68ttps://x"), or read out of data the page loads later. Nor
+// can it see one exact scheme-less shape — a dotless host with no path,
+// query or fragment, e.g. fetch("//telemetry") — because those bytes are
+// also a JavaScript line comment reading "telemetry" and nothing short of
+// lexing minified JS tells the two apart (see scanExternalRefs). Add any
+// path, or any dot in the host, and it is caught.
+//
+// What it catches is an external reference written down in the shipped
+// bundle — the accidental CDN import, the dependency that inlines a font
+// URL, the hand-edited <script src>. Nothing stronger should be claimed
+// for it.
 func TestDist_NoExternalReferences(t *testing.T) {
 	dist := buildDist(t)
 
@@ -188,7 +195,7 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 // without going back to rejecting the token itself, which is what banned
 // license banners and wss:// literals from the bundle before ready-8c5.
 //
-// Consequences worth naming, both in the false-POSITIVE direction:
+// Consequences worth naming. Two are false POSITIVES:
 //
 //   - A URL written inside a line comment in the CODE region (not the
 //     trailing banner region) still fails, e.g. a source comment reading
@@ -198,6 +205,16 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 // Both are left in because the alternative — deciding comment-ness and
 // string-ness by lexing minified JavaScript — fails in the direction of a
 // false PASS. Rewording a comment is cheaper than a missed CDN reference.
+//
+// One is a false NEGATIVE, and it is the exact residue of the two triggers
+// above: a scheme-less reference to a dotless host with no path, query or
+// fragment — fetch("//telemetry"), fetch("//localhost") — is NOT reported.
+// It fires neither trigger, and it cannot: those same bytes are also a
+// JavaScript line comment whose text is the single word "telemetry", which
+// is what "//a" in real minified output usually is. Nothing distinguishes
+// them without lexing. The hole is narrow — one dot in the host or one "/"
+// after it closes it — and closing it by hand would mean rejecting every
+// one-word line comment in the bundle.
 func scanExternalRefs(content string, exemptFrom int) []externalRef {
 	var refs []externalRef
 	for _, m := range urlAuthorityRe.FindAllStringSubmatchIndex(content, -1) {
@@ -404,6 +421,16 @@ func TestExternalRefScan_Predicate(t *testing.T) {
 			`<script type="module" src="/board/assets/index-abc.js"></script>`, 0},
 		{"doubled slash with no host after it", "chunk.js",
 			`const p="a//b",q="x//1.2"`, 0},
+
+		// --- known false negative, pinned so it stays visible -------------
+		//
+		// This row is NOT a property worth having. It records the one shape
+		// the scan provably cannot see (scanExternalRefs says why): the bytes
+		// are equally a fetch to a dotless intranet host and a line comment
+		// reading "telemetry". If a future change closes this, that is an
+		// improvement — delete the row, do not weaken the change to keep it.
+		{"KNOWN GAP: dotless host with no path is indistinguishable from a one-word line comment", "chunk.js",
+			`fetch("//telemetry")`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanExternalRefs(tc.content, exemptRegionStart(tc.path, tc.content))
@@ -424,7 +451,7 @@ func TestExternalRefScan_Predicate(t *testing.T) {
 //     against the env var never reaching the build — wrong name, Vite
 //     define misconfiguration, etc).
 //  2. It is embedded via the interpolation main.ts actually uses to render
-//     it: `` `build:${STAMP}` `` (tsc/esbuild preserve template-literal
+//     it: “ `build:${STAMP}` “ (tsc/esbuild preserve template-literal
 //     syntax through minification, only renaming the identifier). This
 //     second check is why checking (1) alone is not enough: a mutation
 //     that keeps `const BUILD_STAMP = ...` referenced somewhere (so tsc's
