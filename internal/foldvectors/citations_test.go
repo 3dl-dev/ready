@@ -681,9 +681,9 @@ var citationExceptions = map[string]string{
 	"grantTrusts|pkg/sync/nostrproject.go|235@decl135": "§3.4/§25.4: CALL site inside " +
 		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:235-237) and " +
 		"§25.4's restatement); grantTrusts itself is declared at :135",
-	"newerGrant|pkg/sync/rolegrant.go|449@decl568": "§4.4: CALL site — the ascending sort " +
-		"is expressed as `newerGrant(grants[j], grants[i])` (:449-451); newerGrant itself " +
-		"is declared at :568",
+	"newerGrant|pkg/sync/rolegrant.go|487@decl605": "§4.4: CALL site — the ascending sort " +
+		"is expressed as `newerGrant(grants[j], grants[i])` (:487-489); newerGrant itself " +
+		"is declared at :605",
 	"FocusFilter|pkg/views/views.go|47@decl185": "§13.2: CALL site inside Named's " +
 		"ViewFocus case (`return FocusFilter(\"\")`, :47); FocusFilter itself is " +
 		"declared at :185",
@@ -712,9 +712,9 @@ var citationExceptions = map[string]string{
 		"sealStatusPayload but cites the `statusPayload` struct (:230-234) that " +
 		"documents the JSON shape it marshals, not the func's own body; " +
 		"sealStatusPayload itself is declared at :308",
-	"boardConfidentialEnvelope|cmd/rd/confidential.go|82@decl84": "§27.1-area: cites " +
-		"boardConfidentialEnvelope's OWN 6-line doc comment (:78-83, cited range :82-83), " +
-		"not its body; the func itself is declared at :84",
+	"boardConfidentialEnvelope|cmd/rd/confidential.go|83@decl85": "§27.1-area: cites " +
+		"boardConfidentialEnvelope's OWN 6-line doc comment (:79-84, cited range :83-84), " +
+		"not its body; the func itself is declared at :85",
 	"CardCoord|pkg/sync/nostrwire.go|370@decl196": "§27.8: CALL site inside " +
 		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :370); " +
 		"CardCoord itself is declared at :196",
@@ -771,9 +771,9 @@ var citationExceptions = map[string]string{
 		"BlockedBy drain-and-rebuild step (:453-460) inside applyDepAndGateStatus's " +
 		"body; its declaration is at :452 (a separate call-site exception already " +
 		"covers :435, a doc-comment exception already covers :439)",
-	"boardConfidentialEnvelope|cmd/rd/confidential.go|138@decl84": "§11.10: the " +
-		"epoch-1 bootstrap step (:138-155) inside boardConfidentialEnvelope's body; " +
-		"its declaration is at :84 (a separate doc-comment exception already covers :82)",
+	"boardConfidentialEnvelope|cmd/rd/confidential.go|139@decl85": "§11.10: the " +
+		"epoch-1 bootstrap step (:139-159) inside boardConfidentialEnvelope's body; " +
+		"its declaration is at :85 (a separate doc-comment exception already covers :83)",
 	"encWellFormed|pkg/sync/envelope.go|74@decl73": "§25.2: the `enc != \"1\"` " +
 		"check one line into encWellFormed's body (:74); encWellFormed's own " +
 		"declaration+body is cited exactly at :73 (§11.2, `:73-85`)",

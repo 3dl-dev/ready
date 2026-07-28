@@ -195,8 +195,8 @@ event set, which is what makes replay convergent across machines
 
 **§4.4 Grant ordering.** 39301 grants replay oldest-first under the same key:
 `newerGrant` is `newerThan` on `(created_at, id)`
-(`pkg/sync/rolegrant.go:568-573`), and the ascending sort is expressed as
-`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:449-451`). Last
+(`pkg/sync/rolegrant.go:605-610`), and the ascending sort is expressed as
+`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:487-489`). Last
 cap-valid grant applied per grantee wins (`:454-486`).
 
 **§4.5 Board ordering.** Latest-wins per board coordinate under `newerThan`
@@ -625,20 +625,58 @@ plaintext))`, fresh `crypto/rand` nonce per event
 restates frozen §3 and MUST NOT drift from it.
 
 **§11.10 Epoch model.** Epochs are integers `>= 1`. Bootstrap mints epoch 1
-(`boardConfidentialEnvelope`, `cmd/rd/confidential.go:138-155`) via an
+(`boardConfidentialEnvelope`, `cmd/rd/confidential.go:139-159`) via an
 owner-signed self-grant (`publishOwnerCEKSelfGrant`,
-`cmd/rd/confidential.go:243-266`) and wraps it to existing members
-(`wrapEpochToMembers`, `:194`). A grant whose `cek_epoch < 1` is rejected outright
+`cmd/rd/confidential.go:305-335`) and wraps it to existing members
+(`wrapEpochToMembers`, `:253`). A grant whose `cek_epoch < 1` is rejected outright
 by keyring derivation (`pkg/sync/keydist.go:164-170`) — it contributes neither a
 key nor a cutover.
 
-**§11.11 Rotation on revoke.** `rekeyBoardOnRevoke`
-(`cmd/rd/confidential.go:324-353`) mints a fresh CEK at `curEpoch + 1`
-(`:342-343`), self-grants it, and re-wraps it — with the **stable LTK** — to every
-remaining read-trusted member EXCLUDING the revoked key (`:351-353`). Cards
-authored after the revoke are unreadable by that key (forward secrecy); historical
-cards stay readable by it (accepted limit, frozen §4). No-op on a plaintext board
-or when the signer is not the owner (`:325-327`).
+**§11.11 Rotation.** A rotation mints a FRESH random CEK at `OldEpoch + 1`
+(`rotateBoardEpoch`, `cmd/rd/confidential.go:459-477`), publishes the owner
+self-grant for it, and re-wraps it — with the **stable LTK** — to the membership
+computed by the plan. The new key is never derived from the old one (`:460`,
+`MintKey`), so a compromised epoch confers nothing about its successor. Two entry
+points share that one implementation:
+
+- `rd revoke` / `rd kill` rotate automatically (`rekeyBoardOnRevoke`,
+  `cmd/rd/confidential.go:486-505`), excluding the just-revoked key. It is a
+  no-op — not an error — on a plaintext board, a non-owner signer, or a board
+  whose CEK was never bootstrapped (`:487-498`), because a revoke must still
+  succeed on those.
+- `rd confidential rotate` (`cmd/rd/confidential_cmd.go`) rotates on demand, for
+  a key that leaked with no member to revoke. It REFUSES, with a stated reason
+  and no write, in each of those same states (`planBoardRotation`,
+  `cmd/rd/confidential.go:410-457`).
+
+**§11.11a Rotation does not touch history.** A rotation publishes kind-39301
+grants and NOTHING else. No card is re-sealed, re-signed or invalidated: every
+event already in the log keeps its ciphertext, its `cek_epoch` marker and its id.
+Cards sealed under epochs `<= OldEpoch` therefore stay readable by every holder of
+those epochs — including the compromised key and any `rd board --with-key` link
+minted before the rotation. Rotation closes the FUTURE only; it cannot recall what
+the leaked key could already read. Re-sealing history would be strictly worse than
+the leak (it would fork thousands of signed events and lock out every member that
+missed the rotation), so it is forbidden, not merely unimplemented.
+
+**§11.11b The withheld set is EVERY revoked key, not the last one.**
+`rotationMembership` (`cmd/rd/confidential.go:209-225`) wraps the new epoch to
+each grant-holder whose winning cap-valid grant is non-revoked, minus the board
+owner (self-granted separately) and minus an explicitly excluded pubkey. The
+revoked filter is load-bearing and distinct from that exclusion: `DeriveLevels` /
+`DeriveReadTrust` deliberately KEEP a revoked key in the membership map so its
+past events stay admissible (§4, prospective revocation), so wrapping to
+"everyone in the map except the key being revoked right now" would hand the fresh
+CEK back to every key revoked in an EARLIER rotation — forward secrecy would hold
+for exactly one revocation and then unwind.
+
+**§11.11c A re-issued grant carries the member's CURRENT role and label.**
+kind-39301 is addressable on `(boardD, grantee)` (§4.1), so the grant a rotation
+publishes REPLACES the member's existing one. `wrapEpochToMembers`
+(`cmd/rd/confidential.go:253-290`) therefore reads each member's winning role and
+label from the log (`DeriveGrantHolders`, `pkg/sync/rolegrant.go:426-440`) and
+re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
+hardcoded role would silently demote every maintainer on every rotation.
 
 **§11.12 Keyring derivation retains ALL epochs.** `DeriveBoardKeyring`
 (`pkg/sync/keydist.go:178-231`) scans EVERY historical grant, not latest-wins, so
@@ -662,7 +700,7 @@ returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
 **§11.15 Nil-keyring safety.** `boardReadKeyring` may return a nil
-`*BoardKeyring` (`cmd/rd/confidential.go:272-275`), which becomes a NON-nil
+`*BoardKeyring` (`cmd/rd/confidential.go:336-351`), which becomes a NON-nil
 interface value in `ProjectOptions.{Decryptor,EncryptedBoards}`. Every
 `BoardKeyring` method therefore nil-checks its receiver
 (`pkg/sync/keydist.go:72-74`, `:87-89`, `:98-100`, `:111-113`), so a nil keyring
@@ -694,7 +732,7 @@ the map are level 1 by caller convention, NOT level 0
 `until = authoritativeForever` (`pkg/sync/rolegrant.go:415-419`). This is what
 makes grant-derived trust non-circular: owner-signed grants are always admitted.
 
-**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:525-549`):
+**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:562-596`):
 only the board author may grant `maintainer`/`owner` (`:527-529`); the owner may
 grant `contributor`/`revoked` to anyone (`:531-533`); a non-owner signer must
 itself be level `>= 2` (`:534-536`), may never target the board author
@@ -720,7 +758,7 @@ the key set of the level map — board author plus every cap-valid grantee,
 that never received an owner-rooted grant is absent (fail-closed).
 
 **§12.9 One replay, three consumers.** `deriveGrants`
-(`pkg/sync/rolegrant.go:410-502`) is the single replay behind `DeriveLevels`
+(`pkg/sync/rolegrant.go:447-561`) is the single replay behind `DeriveLevels`
 (`:356`), `DeriveReadTrust` (`:394`), `ClaimGrantee` (`:367`) and
 `DeriveAllowlist` (`pkg/sync/allowlist.go:44`) — so the graded read-trust set and
 the coarse relay allowlist cannot drift.
@@ -1084,15 +1122,15 @@ author.
 
 **§16.7 Confidential sealing is decided per write, from the log.** Immediately
 before building the card, every live write calls `setCardEnvelope`
-(`cmd/rd/confidential.go:230-237`) → `boardConfidentialEnvelope` (`:84-156`),
+(`cmd/rd/confidential.go:292-304`) → `boardConfidentialEnvelope` (`:85-160`),
 which returns: `nil` (plaintext) when the project config opts out
-(`boardIsConfidential`, `:55-61`, default **confidential**) or no board is pinned
-(`:92-94`); the current-epoch `Envelope` when the writer's keyring yields one
-(`envelopeFromKeyring`, `:65-76`); a freshly minted epoch-1 CEK+LTK plus an
-owner self-grant when the owner writes first (`:138-155`,
-`publishOwnerCEKSelfGrant`, `:243-266`); or a hard error when the board is
-confidential and the writer holds no key (`:126-132`). A non-owner writing to a
-not-yet-bootstrapped board writes plaintext (`:133-136`). Consequence for an
+(`boardIsConfidential`, `:56-62`, default **confidential**) or no board is pinned
+(`:93-95`); the current-epoch `Envelope` when the writer's keyring yields one
+(`envelopeFromKeyring`, `:66-84`); a freshly minted epoch-1 CEK+LTK plus an
+owner self-grant when the owner writes first (`:139-159`,
+`publishOwnerCEKSelfGrant`, `:305-335`); or a hard error when the board is
+confidential and the writer holds no key (`:127-133`). A non-owner writing to a
+not-yet-bootstrapped board writes plaintext (`:134-138`). Consequence for an
 independent client: **you cannot write to a confidential board without a
 grant-borne CEK.** Publishing a plaintext card there is not a degraded write, it
 is a quarantined one (§3, `pkg/sync/envelope.go:100-116`).
@@ -1168,7 +1206,7 @@ active` produces events at `T` and `T+1`, in that order, deterministically.
 **§17.8 The cutover stamp is the one log-wide exception.** The owner CEK
 self-grant that makes a board confidential is stamped strictly after EVERY event
 in the log, not merely its own scope (`cutoverCreatedAt`,
-`cmd/rd/confidential.go:32-47`), so every pre-existing plaintext card is genuinely
+`cmd/rd/confidential.go:33-55`), so every pre-existing plaintext card is genuinely
 pre-cutover and is grandfathered by the fold gate (§11,
 `pkg/sync/envelope.go:111-114`).
 
@@ -1719,7 +1757,7 @@ file, and every publish helper it uses:
 `publishEngagedItemsNostr` (`:602`) §26.3; `publishImplicitUnblockNostrNative`
 (`:635`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
 `publishItemCardEditNostr` (`cmd/rd/nostr.go:389`) §18.9; `setCardEnvelope`
-(`cmd/rd/confidential.go:230`) §16.7. The remaining non-mutating helpers in the
+(`cmd/rd/confidential.go:292`) §16.7. The remaining non-mutating helpers in the
 same file are dispositioned too, so nothing in it is an orphan:
 `errNotNostrProject` (`:47`), `nostrNativeProject` (`:63`) and `nostrWriteActive`
 (`:77`) → §16.4; `nostrResolveItem` (`:110`) → §16.3; `nostrSelfPubkey` (`:98`) →
@@ -1760,8 +1798,8 @@ with the placeholder.** The read path renders `Title`/`Context` as
 `placeholderText` when a confidential card cannot be decrypted
 (`pkg/sync/nostrproject.go:612-620`), and `Labels` stay opaque tokens. The write
 path builds its envelope from `CurrentEpoch` only
-(`envelopeFromKeyring`, `cmd/rd/confidential.go:65-76`) and errors ONLY when the
-writer holds no key at all (`:126-132`) — it never checks that the card it is
+(`envelopeFromKeyring`, `cmd/rd/confidential.go:66-84`) and errors ONLY when the
+writer holds no key at all (`:127-133`) — it never checks that the card it is
 about to re-seal was actually decryptable. `DeriveBoardKeyring` accumulates epochs
 from the grants present in the LOCAL LOG (`pkg/sync/keydist.go:182-223`), and
 39301 grants are addressable per `(boardD, grantee)` slot
@@ -1772,7 +1810,7 @@ re-seals `title: "[encrypted]"` over the real title — signed, permanent,
 latest-wins. **Question:** should the write path refuse a card edit whose current
 projection contains `placeholderText`, or should grants carry every historical
 epoch, or should `boardConfidentialEnvelope` verify decryptability of the card
-being replaced? The comment at `cmd/rd/confidential.go:82-83` asserts "a
+being replaced? The comment at `cmd/rd/confidential.go:83-84` asserts "a
 placeholder is never re-sealed over real content", which holds only for the
 no-key-at-all case.
 
