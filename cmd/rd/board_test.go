@@ -147,14 +147,18 @@ func extractToken(t *testing.T, url string) string {
 // byte-shape-indistinguishable from a share link (a real security
 // regression, not a cosmetic one). This test FAILS if that token is ever
 // reintroduced.
+//
+// ready-1df: the single-board form is now `rd board --this-board --no-key` (the
+// bare command prints the whole portfolio). Those two flags reproduce the exact
+// bytes this test was written against — see runBoardCmd's doc — so every
+// assertion below is unchanged.
 func TestBoardCmd_OwnBoard_PlainURL_NoToken(t *testing.T) {
 	_, _, coord, _ := boardTestEnv(t)
 
-	out := captureStdoutPipe(t, func() {
-		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board: %v", err)
-		}
-	})
+	out, _, err := tryBoardCmd(t, boardFlags{thisBoard: true, noKey: true})
+	if err != nil {
+		t.Fatalf("rd board --this-board --no-key: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 1 {
 		t.Fatalf("rd board printed %d line(s), want exactly 1 URL:\n%s", len(lines), out)
@@ -569,33 +573,51 @@ func TestBoardCmd_Help_StatesLinkConveysNoReadAccess(t *testing.T) {
 // (https://ready.3dl.dev/board#board=...). Anchoring this test on the real
 // RunE output means the doc string and the emitted bytes can never
 // independently drift apart again without failing CI.
+// ready-1df widened this test rather than adapting it. `rd board` now emits TWO
+// shapes — the portfolio `#pk=...` one for the bare command and the single-board
+// `#board=...` one for --this-board — and --help documents both, so BOTH are
+// driven here against real RunE output. Documenting one shape while printing
+// another is precisely the drift this test exists to make impossible, and a
+// second shape doubles the surface it has to cover.
 func TestBoardCmd_Help_URLShapeMatchesEmittedURL(t *testing.T) {
 	boardTestEnv(t)
 	t.Setenv("RD_BOARD_HOST", "")
 	if err := boardCmd.Flags().Set("host", ""); err != nil {
 		t.Fatalf("reset --host: %v", err)
 	}
-
-	out := captureStdoutPipe(t, func() {
-		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board: %v", err)
-		}
-	})
-	emitted := strings.TrimSpace(out)
-	i := strings.Index(emitted, "#")
-	if i < 0 {
-		t.Fatalf("rd board output %q has no '#' fragment", emitted)
-	}
-	if strings.HasSuffix(emitted[:i], "/") {
-		t.Fatalf("rd board output %q has a '/' immediately before the '#' fragment", emitted)
-	}
-
 	help := boardCmd.Long
-	if !strings.Contains(help, "<board-host>#board=") {
-		t.Fatalf("rd board --help Long text does not document the actually-emitted shape %q (host directly followed by '#', no slash); Long =\n%s", "<board-host>#board=", help)
+
+	for _, c := range []struct {
+		what      string
+		flags     boardFlags
+		wantParam string // the fragment's FIRST parameter, as emitted
+		wantDoc   string // the shape --help must document for it
+	}{
+		{"bare `rd board` (portfolio)", boardFlags{}, "#pk=", "<board-host>#pk="},
+		{"`rd board --this-board`", boardFlags{thisBoard: true}, "#board=", "<board-host>#board="},
+	} {
+		out, _, err := tryBoardCmd(t, c.flags)
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		emitted := findURLLine(t, out)
+		i := strings.Index(emitted, "#")
+		if i < 0 {
+			t.Fatalf("%s output %q has no '#' fragment", c.what, emitted)
+		}
+		if strings.HasSuffix(emitted[:i], "/") {
+			t.Fatalf("%s output %q has a '/' immediately before the '#' fragment", c.what, emitted)
+		}
+		if !strings.Contains(emitted, c.wantParam) {
+			t.Fatalf("%s printed %q, which does not carry %q — the fixture is not exercising the shape it claims to", c.what, emitted, c.wantParam)
+		}
+		if !strings.Contains(help, c.wantDoc) {
+			t.Fatalf("rd board --help Long text does not document the actually-emitted shape %q (host directly followed by '#', no slash) for %s; Long =\n%s", c.wantDoc, c.what, help)
+		}
 	}
+
 	if strings.Contains(help, "<board-host>/#") {
-		t.Fatalf("rd board --help Long text still documents the stale %q shape, which is NOT what `rd board` prints (%q); Long =\n%s", "<board-host>/#", emitted, help)
+		t.Fatalf("rd board --help Long text still documents the stale %q shape, which is NOT what `rd board` prints; Long =\n%s", "<board-host>/#", help)
 	}
 }
 
@@ -643,11 +665,10 @@ func TestBoardCmd_DefaultHost_EmitsConfiguredHost(t *testing.T) {
 		t.Fatalf("reset --host: %v", err)
 	}
 
-	out := captureStdoutPipe(t, func() {
-		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board: %v", err)
-		}
-	})
+	out, _, err := tryBoardCmd(t, boardFlags{})
+	if err != nil {
+		t.Fatalf("rd board: %v", err)
+	}
 	line := strings.TrimSpace(out)
 
 	const wantPrefix = "https://ready.3dl.dev/board#"

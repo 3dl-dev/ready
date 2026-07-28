@@ -14,8 +14,11 @@ package main
 //	   is unbuilt (TestBoardPortfolio_ReachesBoardsBeyondThePinnedOne).
 //	*  it never carries a key this machine cannot legitimately derive
 //	   (TestBoardPortfolio_NeverEmbedsAKeyThisKeyCannotRead).
-//	*  bare `rd board --portfolio` emits ZERO key material on a project where
-//	   --with-key demonstrably emits some (TestBoardPortfolio_Default_NoKeyMaterial).
+//	*  `rd board --no-key` emits ZERO key material on a project where the bare
+//	   command demonstrably emits some (TestBoardPortfolio_NoKey_NoKeyMaterial).
+//	*  and, since ready-1df, that BARE command — no flags at all — is the one that
+//	   prints the whole-portfolio decrypted link
+//	   (TestBoardCmd_BareCommand_IsTheWholePortfolioDecrypted, board_ergonomics_test.go).
 //	*  the warning says PORTFOLIO, not board, and differs from the single-board
 //	   one (TestBoardPortfolio_WarningStatesTheWiderBlastRadius).
 //	*  `rd board share` emits no key material under ANY argv the real cobra
@@ -124,11 +127,15 @@ func portfolioEnv(t *testing.T) (owner *nostr.Key, pinnedCoord, siblingCoord, fo
 // runBoardPortfolioCmd drives the REAL cobra RunE with the real flags, and
 // returns stdout and stderr separately (the URL is pipeable; the warning is not
 // in the pipe).
+//
+// ready-1df: the portfolio is what BARE `rd board` does, so withKey==true sets no
+// flag at all — the helper's happy path is now the literal zero-flag invocation
+// the owner types.
 func runBoardPortfolioCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 	t.Helper()
 	out, errOut, err := tryBoardPortfolioCmd(t, withKey, false)
 	if err != nil {
-		t.Fatalf("rd board --portfolio (--with-key=%v): %v", withKey, err)
+		t.Fatalf("rd board (keys=%v): %v", withKey, err)
 	}
 	return out, errOut
 }
@@ -139,19 +146,27 @@ func runBoardPortfolioCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 // command returned an error and printed no URL" is the assertion.
 func tryBoardPortfolioCmd(t *testing.T, withKey, allowPartial bool) (stdout, stderr string, runErr error) {
 	t.Helper()
-	setFlag := func(name, value string) {
-		if err := boardCmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set --%s: %v", name, err)
-		}
-	}
-	setFlag("portfolio", "true")
-	setFlag("with-key", fmt.Sprint(withKey))
-	setFlag("allow-partial", fmt.Sprint(allowPartial))
-	t.Cleanup(func() {
-		_ = boardCmd.Flags().Set("portfolio", "false")
-		_ = boardCmd.Flags().Set("with-key", "false")
-		_ = boardCmd.Flags().Set("allow-partial", "false")
-	})
+	return tryBoardCmd(t, boardFlags{noKey: !withKey, allowPartial: allowPartial})
+}
+
+// boardFlags is the escape-hatch set ready-1df left on `rd board`. The zero value
+// is the BARE command — which is the point of the item, so a test that wants the
+// owner's real invocation passes boardFlags{}.
+type boardFlags struct {
+	noKey        bool
+	thisBoard    bool
+	strict       bool
+	allowPartial bool
+}
+
+// tryBoardCmd drives the REAL cobra RunE with a given escape-hatch set and
+// returns stdout, stderr and the error separately.
+func tryBoardCmd(t *testing.T, f boardFlags) (stdout, stderr string, runErr error) {
+	t.Helper()
+	setBoardFlag(t, "no-key", fmt.Sprint(f.noKey))
+	setBoardFlag(t, "this-board", fmt.Sprint(f.thisBoard))
+	setBoardFlag(t, "strict", fmt.Sprint(f.strict))
+	setBoardFlag(t, "allow-partial", fmt.Sprint(f.allowPartial))
 
 	var errBuf bytes.Buffer
 	boardCmd.SetErr(&errBuf)
@@ -234,7 +249,9 @@ func portfolioFragment(t *testing.T, out string) url.Values {
 
 // TestBoardPortfolio_ReachesBoardsBeyondThePinnedOne IS THE ITEM. A link that
 // only ever covered this directory's pinned board would satisfy every other test
-// in this file and deliver nothing the owner asked for.
+// in this file and deliver nothing the owner asked for. Since ready-1df it also
+// runs on the BARE command, so it doubles as the proof that zero flags reaches
+// beyond this directory.
 func TestBoardPortfolio_ReachesBoardsBeyondThePinnedOne(t *testing.T) {
 	owner, pinnedCoord, siblingCoord, _, _, pinned1, pinned2, sibling, _ := portfolioEnv(t)
 
@@ -309,27 +326,28 @@ func TestBoardPortfolio_NeverEmbedsAKeyThisKeyCannotRead(t *testing.T) {
 	}
 }
 
-// TestBoardPortfolio_Default_NoKeyMaterial IS THE GATE. It runs on a project
-// where --with-key demonstrably DOES emit keys, so a regression that made key
-// embedding the default would be caught here.
-func TestBoardPortfolio_Default_NoKeyMaterial(t *testing.T) {
+// TestBoardPortfolio_NoKey_NoKeyMaterial IS THE GATE on the --no-key escape
+// hatch. It runs on a project where the bare command demonstrably DOES emit
+// keys, so a regression that made --no-key a no-op — which would hand a bearer
+// credential to a user who explicitly asked for none — is caught here.
+func TestBoardPortfolio_NoKey_NoKeyMaterial(t *testing.T) {
 	_, _, _, _, _, pinned1, pinned2, sibling, _ := portfolioEnv(t)
 
-	// Not vacuous: the same project with --with-key really does emit keys.
+	// Not vacuous: the same project without --no-key really does emit keys.
 	withOut, _ := runBoardPortfolioCmd(t, true)
 	if portfolioFragment(t, withOut).Get("keys") == "" {
-		t.Fatal("precondition failed: --portfolio --with-key emitted no keys on a project with readable confidential boards")
+		t.Fatal("precondition failed: bare `rd board` emitted no keys on a project with readable confidential boards")
 	}
 
 	out, errOut := runBoardPortfolioCmd(t, false)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 1 {
-		t.Fatalf("`rd board --portfolio` printed %d line(s) to stdout, want exactly 1 URL:\n%s", len(lines), out)
+		t.Fatalf("`rd board --no-key` printed %d line(s) to stdout, want exactly 1 URL:\n%s", len(lines), out)
 	}
 	v := portfolioFragment(t, out)
 	for _, param := range []string{"keys", "cek", "ltk"} {
 		if got := v.Get(param); got != "" {
-			t.Errorf("`rd board --portfolio` fragment carries %s=%q — key material must be opt-in only", param, got)
+			t.Errorf("`rd board --no-key` fragment carries %s=%q — --no-key means no key material at all", param, got)
 		}
 	}
 	assertNoKeyHex(t, out, pinned1, pinned2, sibling)
@@ -384,7 +402,7 @@ func TestBoardPortfolio_WarningStatesTheWiderBlastRadius(t *testing.T) {
 	notice := strings.TrimSpace(errOut)
 
 	if notice == "" {
-		t.Fatal("`rd board --portfolio --with-key` said NOTHING about the link carrying keys")
+		t.Fatal("bare `rd board` said NOTHING about the link carrying keys — with minting as the default, this warning is the only thing left guarding it")
 	}
 	if n := len(strings.Split(notice, "\n")); n != 1 {
 		t.Errorf("the key notice is %d lines, want exactly 1:\n%s", n, notice)
@@ -472,6 +490,16 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 
 	// Flags that could plausibly be typed at a share command by someone who read
 	// `rd board --help`, in every combination and both spellings cobra accepts.
+	//
+	// ready-1df REPLACED THE FLAGS, SO THE BATTERY IS REBUILT AGAINST BOTH SETS.
+	// The old opt-ins (--with-key / --portfolio / --allow-partial) are still fired
+	// here even though two of them no longer exist anywhere: an argv naming a
+	// removed flag must be REJECTED, and a future edit that resurrected one on this
+	// subcommand would be caught by the same assertions. The new escape hatches
+	// (--no-key / --this-board / --strict / --allow-partial) are fired because they
+	// are what a user reading today's --help would actually type — including
+	// --no-key, whose NEGATIVE spelling is the new way someone might expect a key
+	// to be involved at all.
 	argvs := [][]string{
 		{},
 		{pub},
@@ -493,8 +521,7 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 		{"--host", "https://example.test", "--with-key", pub},
 		{"--host", "https://example.test", "--portfolio", "--with-key", pub},
 		{"--ttl", "1h", "--with-key"},
-		// ready-4d9 follow-up: --allow-partial is the THIRD flag on `rd board`
-		// that touches the key-bearing path. It relaxes a completeness guard, so
+		// ready-4d9 follow-up: --allow-partial relaxes a completeness guard, so
 		// the attack surface it adds gets the same treatment as the other two.
 		{"--allow-partial"},
 		{"--allow-partial=true"},
@@ -503,6 +530,26 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 		{"--portfolio", "--with-key", "--allow-partial", pub},
 		{"--allow-partial", "--with-key", "--portfolio", pub},
 		{"--host", "https://example.test", "--portfolio", "--with-key", "--allow-partial", pub},
+		// ready-1df's escape hatches, in the same combinatorial spirit. --no-key is
+		// the interesting one: it is the only flag whose name suggests that OMITTING
+		// it would produce a key, which is exactly the reasoning that must not carry
+		// over to this subcommand.
+		{"--no-key"},
+		{"--no-key=true"},
+		{"--no-key=false"},
+		{"--no-key", pub},
+		{"--no-key=false", pub},
+		{"--this-board"},
+		{"--this-board", pub},
+		{"--this-board", "--no-key=false", pub},
+		{"--strict"},
+		{"--strict", pub},
+		{"--strict", "--no-key=false", "--this-board", pub},
+		{"--allow-partial", "--no-key=false", pub},
+		{"--role", "owner", "--no-key=false", pub},
+		{"--label", "x", "--this-board", pub},
+		{"--host", "https://example.test", "--no-key=false", "--this-board", "--allow-partial", pub},
+		{"--ttl", "1h", "--no-key=false"},
 	}
 
 	accepted := 0
@@ -560,26 +607,42 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 	}
 
 	// And the flags really are absent from this subcommand, named explicitly so
-	// the reason is legible at the failure site.
-	for _, flag := range []string{"with-key", "portfolio", "allow-partial"} {
+	// the reason is legible at the failure site. Both the removed opt-ins and the
+	// flags that replaced them: a resurrection of either is the same defect.
+	for _, flag := range []string{"with-key", "portfolio", "allow-partial", "no-key", "this-board", "strict"} {
 		if f := boardShareCmd.Flags().Lookup(flag); f != nil {
 			t.Errorf("`rd board share` has a --%s flag — third-party read access must stay the owner-signed kind-39301 grant, never a key in a URL", flag)
 		}
 	}
 }
 
-// TestBoardPortfolio_Help_DocumentsTheWiderCredential: --help must not sell
-// --portfolio without saying what it costs, in the same way ready-df0 required
-// of --with-key.
+// TestBoardPortfolio_Help_DocumentsTheWiderCredential: --help must not hand over
+// the wider credential without saying what it costs, in the same way ready-df0
+// required of the single-board one.
+//
+// ready-1df RAISED THIS BAR RATHER THAN LOWERING IT. The portfolio link used to
+// cost two flags to obtain, so a user reaching it had at least read two flag
+// descriptions. It is now what the bare command prints, so the help text is the
+// ONLY place a user learns the scope before pasting it somewhere — and the
+// sentences below have to be about the DEFAULT, not about an opt-in.
 func TestBoardPortfolio_Help_DocumentsTheWiderCredential(t *testing.T) {
 	lower := strings.ToLower(boardCmd.Long)
-	for _, want := range []string{"--portfolio", "entire portfolio", "bearer\ncredential"} {
-		if !strings.Contains(lower, want) && !strings.Contains(strings.ReplaceAll(lower, "\n", " "), strings.ReplaceAll(want, "\n", " ")) {
-			t.Errorf("rd board --help does not say %q about the portfolio link; Long =\n%s", want, boardCmd.Long)
+	flat := strings.ReplaceAll(lower, "\n", " ")
+	for _, want := range []string{"every board", "entire portfolio", "bearer credential"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("rd board --help does not say %q about the link it prints by default; Long =\n%s", want, boardCmd.Long)
 		}
 	}
-	usage := boardCmd.Flags().Lookup("portfolio").Usage
-	if !strings.Contains(strings.ToLower(usage), "every board") {
-		t.Errorf("--portfolio flag usage does not say it covers every board: %q", usage)
+	// The narrowing escape hatch says what it narrows TO, or a user who wants one
+	// board cannot find it.
+	usage := strings.ToLower(boardCmd.Flags().Lookup("this-board").Usage)
+	for _, want := range []string{"this", "board"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("--this-board flag usage does not say it narrows to this directory's board: %q", usage)
+		}
+	}
+	// And the key-free escape hatch says what it costs to use it.
+	if noKey := strings.ToLower(boardCmd.Flags().Lookup("no-key").Usage); !strings.Contains(noKey, "key") {
+		t.Errorf("--no-key flag usage does not mention keys: %q", noKey)
 	}
 }

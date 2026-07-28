@@ -1,27 +1,38 @@
 package main
 
-// ready-df0: `rd board --with-key` — the CLI half of "the owner clicks the link
-// and the titles are readable".
+// ready-df0: the single-board key link — the CLI half of "the owner clicks the
+// link and the titles are readable".
+//
+// ready-1df MOVED THE FLAG, NOT THE BOUNDARY. What was `rd board --with-key` is
+// now `rd board --this-board` (key-bearing by default, because a link to your own
+// board goes to your own clipboard from a key already on your own disk), and what
+// was bare `rd board` is now `rd board --this-board --no-key`. Every assertion
+// below is preserved verbatim against the new spelling: the key-free link is
+// still byte-identical to the pre-ready-df0 fragment, the share boundary has not
+// moved, and the bearer-credential warning still fires on every key-bearing link.
+// That last one is now load-bearing rather than decorative — with minting as the
+// default it is the ONLY thing left that keeps a bearer credential from being
+// handed over silently.
 //
 // WHAT THESE TESTS ARE ABOUT. Embedding a content key in a URL is a deliberate
 // widening of what a board link conveys, so the tests here are shaped around the
 // BOUNDARIES of that widening rather than around the happy path (which the
 // browser suite proves at the DOM: web/board/src/main.fragmentkey.test.ts):
 //
-//	*  bare `rd board` still emits ZERO key material, on a board that is really
-//	   confidential and where the key really is available to embed
-//	   (TestBoardCmd_Default_NoKeyMaterial — the gate).
+//	*  `rd board --this-board --no-key` emits ZERO key material, on a board that
+//	   is really confidential and where the key really is available to embed
+//	   (TestBoardCmd_NoKey_NoKeyMaterial — the gate).
 //	*  a key-bearing link carries EXACTLY the four parameters something reads,
-//	   and no more (TestBoardCmd_WithKey_FragmentParamAllowlist — least
+//	   and no more (TestBoardCmd_ThisBoard_FragmentParamAllowlist — least
 //	   privilege; read its comment for why the LTK is gone).
 //	*  `rd board share`, in BOTH its forms, never embeds key material and has no
 //	   flag that could make it (TestBoardShareCmd_NeverEmbedsKeyMaterial — the
 //	   boundary the item calls "the single most important" one: third-party read
 //	   access stays an owner-signed, per-grantee, revocable kind-39301 grant).
 //	*  a key-bearing link SAYS SO on stderr, in one line
-//	   (TestBoardCmd_WithKey_AnnouncesThatTheLinkCarriesAKey).
+//	   (TestBoardCmd_ThisBoard_AnnouncesThatTheLinkCarriesAKey).
 //	*  a board with nothing to decrypt gets no key
-//	   (TestBoardCmd_WithKey_NonConfidentialBoard_EmbedsNoKey).
+//	   (TestBoardCmd_ThisBoard_NonConfidentialBoard_EmbedsNoKey).
 //
 // Every fixture below is REAL: real minted CEKs, really NIP-44-wrapped by
 // pkg/sync.WrapKey into a really-signed kind-39301 owner grant appended to the
@@ -35,13 +46,35 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	rdSync "github.com/3dl-dev/ready/pkg/sync"
+	"github.com/spf13/pflag"
 )
+
+// boardOwnFlagNames lists the flags `rd board` DECLARES ITSELF, sorted — cobra's
+// auto-generated --help and the root command's persistent flags excluded, since
+// neither is part of this command's designed surface and both are present on
+// every subcommand by construction.
+//
+// It exists so the tests that reason about "the flags rd board has" (are they all
+// documented? is any of them also on `rd board share`?) enumerate rather than
+// hand-list. ready-1df's whole cause was three flags added by three agents, none
+// of whom had a reason to look at the other two.
+func boardOwnFlagNames() []string {
+	var out []string
+	boardCmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) {
+		if f.Name != "help" {
+			out = append(out, f.Name)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
 
 // confidentialBoardEnv builds on boardTestEnv and bootstraps the project's
 // pinned board as CONFIDENTIAL, exactly the way the owner's own bootstrap does:
@@ -50,7 +83,7 @@ import (
 //
 // The LTK is still bootstrapped, and the CLI's keyring still derives it, even
 // though no link carries it any more — that is the point: the returned `ltk` is
-// what TestBoardCmd_WithKey_FragmentParamAllowlist proves is WITHHELD. A fixture
+// what TestBoardCmd_ThisBoard_FragmentParamAllowlist proves is WITHHELD. A fixture
 // that stopped minting one would turn that test vacuous.
 //
 // TWO epochs, not one, because a rotated board is the case a naive
@@ -113,18 +146,18 @@ func confidentialBoardEnv(t *testing.T) (owner *nostr.Key, coord, dir string, ce
 	return owner, coord, dir, cek1, cek2, ltk
 }
 
-// runBoardCmd drives the REAL cobra RunE — the same entry point a real
-// invocation takes — and returns stdout and stderr separately. The split matters,
-// because the URL goes
-// to stdout so it stays pipeable while the key warning goes to stderr so a human
-// still reads it.
+// runBoardCmd drives the REAL cobra RunE for the SINGLE-BOARD form — the same
+// entry point a real invocation takes — and returns stdout and stderr separately.
+// The split matters, because the URL goes to stdout so it stays pipeable while
+// the key warning goes to stderr so a human still reads it.
+//
+// ready-1df: `--this-board` selects this directory's board, and `--no-key` is the
+// opt OUT. withKey==true is therefore `rd board --this-board`; withKey==false is
+// `rd board --this-board --no-key`.
 func runBoardCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 	t.Helper()
-	if err := boardCmd.Flags().Set("with-key", fmt.Sprint(withKey)); err != nil {
-		t.Fatalf("set --with-key: %v", err)
-	}
-	// boardCmd is a package-level var shared by every test in this package.
-	t.Cleanup(func() { _ = boardCmd.Flags().Set("with-key", "false") })
+	setBoardFlag(t, "this-board", "true")
+	setBoardFlag(t, "no-key", fmt.Sprint(!withKey))
 
 	var errBuf bytes.Buffer
 	boardCmd.SetErr(&errBuf)
@@ -132,10 +165,27 @@ func runBoardCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 
 	out := captureStdoutPipe(t, func() {
 		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board (--with-key=%v): %v", withKey, err)
+			t.Fatalf("rd board --this-board (keys=%v): %v", withKey, err)
 		}
 	})
 	return out, errBuf.String()
+}
+
+// setBoardFlag sets one boardCmd flag and restores its DEFAULT afterwards.
+// boardCmd is a package-level var shared by every test in this package, so a flag
+// left set leaks into the next test — which, now that `rd board` mints by
+// default, would silently change what the next test is even running.
+func setBoardFlag(t *testing.T, name, value string) {
+	t.Helper()
+	f := boardCmd.Flags().Lookup(name)
+	if f == nil {
+		t.Fatalf("boardCmd has no --%s flag", name)
+	}
+	def := f.DefValue
+	if err := boardCmd.Flags().Set(name, value); err != nil {
+		t.Fatalf("set --%s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = boardCmd.Flags().Set(name, def) })
 }
 
 // fragmentOf splits the emitted URL and parses its fragment as a query string.
@@ -153,9 +203,9 @@ func fragmentOf(t *testing.T, out string) url.Values {
 	return v
 }
 
-// TestBoardCmd_WithKey_EmbedsEveryHeldEpoch is done condition 1's CLI half: the
+// TestBoardCmd_ThisBoard_EmbedsEveryHeldEpoch is done condition 1's CLI half: the
 // link carries the key material this key actually holds, unwrapped.
-func TestBoardCmd_WithKey_EmbedsEveryHeldEpoch(t *testing.T) {
+func TestBoardCmd_ThisBoard_EmbedsEveryHeldEpoch(t *testing.T) {
 	owner, coord, _, cek1, cek2, _ := confidentialBoardEnv(t)
 
 	out, _ := runBoardCmd(t, true)
@@ -176,7 +226,7 @@ func TestBoardCmd_WithKey_EmbedsEveryHeldEpoch(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_WithKey_FragmentParamAllowlist is the least-privilege gate on the
+// TestBoardCmd_ThisBoard_FragmentParamAllowlist is the least-privilege gate on the
 // emitted link: a key-bearing URL carries EXACTLY four parameters and every one
 // of them has to earn its place.
 //
@@ -191,7 +241,7 @@ func TestBoardCmd_WithKey_EmbedsEveryHeldEpoch(t *testing.T) {
 //
 // So the allowlist below is the standing rule, and a would-be sixth parameter
 // (or a returning ltk=) fails here until someone edits this list on purpose.
-func TestBoardCmd_WithKey_FragmentParamAllowlist(t *testing.T) {
+func TestBoardCmd_ThisBoard_FragmentParamAllowlist(t *testing.T) {
 	_, _, _, _, _, ltk := confidentialBoardEnv(t)
 
 	out, _ := runBoardCmd(t, true)
@@ -214,18 +264,18 @@ func TestBoardCmd_WithKey_FragmentParamAllowlist(t *testing.T) {
 	assertNoKeyHex(t, out, ltk)
 }
 
-// TestBoardCmd_Default_NoKeyMaterial IS THE GATE (done condition 3). It runs on
+// TestBoardCmd_NoKey_NoKeyMaterial IS THE GATE (done condition 3). It runs on
 // a board that is genuinely confidential and where the CLI genuinely holds the
 // keys — so a regression that made embedding the default would be caught here
 // and nowhere else. TestBoardURL_NoSecretMaterial's own-board case runs on a
 // board with no key material at all and therefore cannot detect it.
-func TestBoardCmd_Default_NoKeyMaterial(t *testing.T) {
+func TestBoardCmd_NoKey_NoKeyMaterial(t *testing.T) {
 	_, coord, _, cek1, cek2, ltk := confidentialBoardEnv(t)
 
-	// Not vacuous: --with-key on this same project really does emit the keys.
+	// Not vacuous: the same project WITHOUT --no-key really does emit the keys.
 	withOut, _ := runBoardCmd(t, true)
 	if fragmentOf(t, withOut).Get("cek") == "" {
-		t.Fatal("precondition failed: --with-key emitted no cek on a confidential board this key can read")
+		t.Fatal("precondition failed: `rd board --this-board` emitted no cek on a confidential board this key can read")
 	}
 
 	out, errOut := runBoardCmd(t, false)
@@ -259,8 +309,20 @@ func TestBoardCmd_Default_NoKeyMaterial(t *testing.T) {
 func TestBoardShareCmd_NeverEmbedsKeyMaterial(t *testing.T) {
 	_, _, _, cek1, cek2, ltk := confidentialBoardEnv(t)
 
-	if f := boardShareCmd.Flags().Lookup("with-key"); f != nil {
-		t.Fatal("`rd board share` has a --with-key flag — third-party read access must stay the owner-signed kind-39301 grant, never a key in a URL")
+	// ready-1df renamed the key-bearing flags, so name them by ENUMERATION rather
+	// than by hand: every flag `rd board` declares for ITSELF must be absent from
+	// the share subcommand. A flag added to `rd board` later is caught with no edit
+	// here, which is the point — the removed opt-ins were each added by a different
+	// agent who did not read the composed surface.
+	for _, name := range boardOwnFlagNames() {
+		// --host is the one flag both commands legitimately share: it names the
+		// hosted-board ORIGIN and conveys nothing about a key.
+		if name == "host" {
+			continue
+		}
+		if got := boardShareCmd.Flags().Lookup(name); got != nil {
+			t.Fatalf("`rd board share` has a --%s flag — third-party read access must stay the owner-signed kind-39301 grant, never a key in a URL", name)
+		}
 	}
 
 	grantee, err := nostr.GenerateKey()
@@ -292,11 +354,11 @@ func TestBoardShareCmd_NeverEmbedsKeyMaterial(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_WithKey_AnnouncesThatTheLinkCarriesAKey covers done condition 4:
+// TestBoardCmd_ThisBoard_AnnouncesThatTheLinkCarriesAKey covers done condition 4:
 // a user must not be able to paste a key-bearing link somewhere public believing
 // it is inert. The announcement is on stderr so `rd board --with-key | pbcopy`
 // still copies exactly the URL.
-func TestBoardCmd_WithKey_AnnouncesThatTheLinkCarriesAKey(t *testing.T) {
+func TestBoardCmd_ThisBoard_AnnouncesThatTheLinkCarriesAKey(t *testing.T) {
 	_, _, _, _, _, _ = confidentialBoardEnv(t)
 
 	out, errOut := runBoardCmd(t, true)
@@ -322,10 +384,10 @@ func TestBoardCmd_WithKey_AnnouncesThatTheLinkCarriesAKey(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_WithKey_NonConfidentialBoard_EmbedsNoKey covers done condition 6:
+// TestBoardCmd_ThisBoard_NonConfidentialBoard_EmbedsNoKey covers done condition 6:
 // there is nothing to decrypt on a plaintext board, so nothing is embedded — and
 // the user is told why rather than being left to wonder where the key went.
-func TestBoardCmd_WithKey_NonConfidentialBoard_EmbedsNoKey(t *testing.T) {
+func TestBoardCmd_ThisBoard_NonConfidentialBoard_EmbedsNoKey(t *testing.T) {
 	owner, _, coord, _ := boardTestEnv(t) // no confidential bootstrap: no CEK-bearing grants
 
 	out, errOut := runBoardCmd(t, true)
@@ -352,12 +414,12 @@ func TestBoardCmd_WithKey_NonConfidentialBoard_EmbedsNoKey(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_WithKey_FragmentShapeMatchesBrowserParser pins the wire format
+// TestBoardCmd_ThisBoard_FragmentShapeMatchesBrowserParser pins the wire format
 // the browser parses (web/board/src/lib/fragment.ts decodeKeyParams). The two
 // implementations live in different languages and different test suites, so this
 // asserts the exact grammar the TypeScript side accepts against bytes the REAL
 // command printed — the same drift-proofing ready-df6 applied to the host.
-func TestBoardCmd_WithKey_FragmentShapeMatchesBrowserParser(t *testing.T) {
+func TestBoardCmd_ThisBoard_FragmentShapeMatchesBrowserParser(t *testing.T) {
 	_, _, _, _, _, _ = confidentialBoardEnv(t)
 
 	out, _ := runBoardCmd(t, true)
@@ -415,8 +477,13 @@ func TestBoardCmd_Help_DoesNotClaimTheHostedPageIsAPlaceholder(t *testing.T) {
 		"boardShareCmd.Long":              boardShareCmd.Long,
 		"boardShareCmd.Short":             boardShareCmd.Short,
 		"boardCmd --host flag usage":      boardCmd.Flags().Lookup("host").Usage,
-		"boardCmd --with-key flag usage":  boardCmd.Flags().Lookup("with-key").Usage,
 		"boardShareCmd --host flag usage": boardShareCmd.Flags().Lookup("host").Usage,
+	}
+	// ready-1df replaced three opt-ins with four escape hatches. Enumerate the
+	// flag set from cobra rather than naming flags by hand, so a flag added later
+	// cannot slip a stale claim into --help without being scanned.
+	for _, name := range boardOwnFlagNames() {
+		surfaces["boardCmd --"+name+" flag usage"] = boardCmd.Flags().Lookup(name).Usage
 	}
 	stale := []string{
 		"placeholder",
@@ -435,20 +502,31 @@ func TestBoardCmd_Help_DoesNotClaimTheHostedPageIsAPlaceholder(t *testing.T) {
 		}
 	}
 
-	// And the flag this item added is documented where a user looks for it.
-	if !strings.Contains(boardCmd.Long, "--with-key") {
-		t.Errorf("rd board --help does not document --with-key; Long =\n%s", boardCmd.Long)
+	// And every flag a user can actually type is documented where a user looks
+	// for it. ready-1df's whole point was a composed surface nobody had read end
+	// to end; an undocumented escape hatch is how that starts again.
+	var undocumented []string
+	for _, name := range boardOwnFlagNames() {
+		if !strings.Contains(boardCmd.Long, "--"+name) {
+			undocumented = append(undocumented, "--"+name)
+		}
+	}
+	if len(undocumented) > 0 {
+		t.Errorf("rd board --help does not document %v; Long =\n%s", undocumented, boardCmd.Long)
 	}
 }
 
-// TestBoardCmd_Help_StatesTheKeyLinkIsABearerCredential: --help must not sell
-// --with-key without saying what it costs. The default link's "conveys no read
-// access" note is still there for the default link (proven by
-// TestBoardCmd_Help_StatesLinkConveysNoReadAccess), so the help text has to hold
-// both statements at once without either one silently covering for the other.
+// TestBoardCmd_Help_StatesTheKeyLinkIsABearerCredential: --help must not sell a
+// key-bearing link without saying what it costs. Since ready-1df that link is
+// what the BARE command prints, which raises the stakes rather than lowering
+// them — the cost sentence now has to be there for a user who typed no flag at
+// all. The key-free link's "conveys no read access" note is still there too
+// (proven by TestBoardCmd_Help_StatesLinkConveysNoReadAccess), so the help text
+// has to hold both statements at once without either one silently covering for
+// the other.
 func TestBoardCmd_Help_StatesTheKeyLinkIsABearerCredential(t *testing.T) {
 	lower := strings.ToLower(boardCmd.Long)
-	for _, want := range []string{"bearer credential", "with-key"} {
+	for _, want := range []string{"bearer credential", "--no-key"} {
 		if !strings.Contains(lower, want) {
 			t.Errorf("rd board --help does not say %q about the key-bearing link; Long =\n%s", want, boardCmd.Long)
 		}

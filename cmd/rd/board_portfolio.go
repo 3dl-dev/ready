@@ -2,11 +2,17 @@ package main
 
 // ready-4d9: ONE link that opens the WHOLE portfolio decrypted.
 //
-// `rd board --with-key` (ready-df0) mints a link for the pinned board of the
+// `rd board --this-board` (ready-df0) mints a link for the pinned board of the
 // current directory. The owner has ~24 boards, so answering "give me a link to
 // the whole portfolio" with that command means 24 links. This file is the other
 // half: gather every board THIS key can read (pkg/sync.DerivePortfolioKeyring),
 // and serialize all of their keys into one fragment.
+//
+// ready-1df made this file's path the DEFAULT — bare `rd board` runs
+// runBoardPortfolio — because the epic's premise was always "every work item
+// across all of his rd boards on ONE board". See cmd/rd/board.go's header for
+// the FOR-ME / FOR-SOMEONE-ELSE boundary that decides what may be a default and
+// what may never be.
 //
 // WHY THE KEY MATERIAL IS A BINARY BLOB AND NOT A LONGER cek= LIST.
 //
@@ -47,8 +53,17 @@ package main
 // relays answered (relayFetchMany / portfolioGather), and — because "answered" is
 // a much weaker fact than "served everything" — which relays answered SHORT of
 // the grants the read can prove exist (portfolioGather.short, detectShortAnswers).
-// Either kind of shortfall REFUSES to mint by default; --allow-partial mints a
-// link whose warning says partial and names what fell short.
+//
+// THE TWO SHORTFALLS CONCLUDE DIFFERENTLY (ready-1df). A relay that NEVER
+// ANSWERED refuses to mint — nothing is known about what it held, so a board may
+// genuinely be missing from the link — and --allow-partial is the named way
+// through, minting a link whose warning says PARTIAL and names what fell short.
+// A relay that ANSWERED SHORT mints and says so: every board it failed to serve
+// is one this read already has from the local log or another relay, so nothing is
+// missing from the link; what is missing is that relay's COPY. --strict restores
+// the older, stricter reading. portfolioGather.lostRelay has the full argument,
+// and it matters in practice: 32 of the owner's boards live only on his LAN
+// relays, so the conflated gate refused on every single invocation.
 //
 // AND THE CLEAN PATH IS SCOPED, TOO, because the gate is a floor and not a proof.
 // A relay that serves a subset of what it holds and then sends EOSE is
@@ -58,13 +73,14 @@ package main
 // was established ("no shortfall was detectable") rather than what was not
 // ("nothing was missed"). portfolioGather's doc has the full epistemics.
 // Everything else is unchanged and
-// still load-bearing: opt-in flag only, never a default; the fragment never
-// reaches a server and the page strips it in a `finally`; a CEK cannot sign and
-// conveys no write authority; the nsec never enters the page. And `rd board
-// share` STILL emits no key material under any flag combination — it has neither
-// --with-key nor --portfolio, and its RunE passes a hardcoded nil to
-// ownBoardURL. That nil is the structural guard; the flags' absence is only the
-// first fence.
+// still load-bearing: the bearer-credential warning on EVERY key-bearing link
+// (which, since ready-1df made minting the default, is the whole of what keeps
+// that default safe); the fragment never reaches a server and the page strips it
+// in a `finally`; a CEK cannot sign and conveys no write authority; the nsec
+// never enters the page. And `rd board share` STILL emits no key material under
+// any flag combination — it has no key-bearing flag, and its RunE passes a
+// hardcoded nil to ownBoardURL. That nil is the structural guard; the flags'
+// absence is only the first fence.
 
 import (
 	"context"
@@ -177,8 +193,52 @@ type portfolioGather struct {
 // separately (scopeClause's asked == 0 branch).
 //
 // It is NOT a statement that the portfolio is whole — see the type's doc for the
-// ceiling this cannot reach.
+// ceiling this cannot reach. It is also NOT the refusal condition any more —
+// that is lostRelay; see it for why the two kinds of shortfall got different
+// conclusions (ready-1df).
 func (g portfolioGather) complete() bool { return len(g.missed) == 0 && len(g.short) == 0 }
+
+// lostRelay reports the ONE kind of shortfall that can actually cost this link a
+// board: a relay that never answered.
+//
+// ready-1df — WHY THE TWO KINDS OF SHORTFALL NOW CONCLUDE DIFFERENTLY. The gate
+// used to refuse on complete() — unanswered relays and short answers alike — and
+// that conflation is what made `--allow-partial` a flag the owner had to type to
+// look at his own work. Thirty-two of his boards (rdtestagentproj4uw,
+// rdtestbackendc0, e2eproj, veriproj, existing2 ...) live only on his LAN relays
+// and were never pushed to the public one, so the public relay answered SHORT on
+// every single invocation and the command refused every single time. The board
+// PAGE already handles that exact situation gracefully — "That is a publishing
+// gap, not a permission problem — the keys are here; the boards are not on the
+// relay" — so the CLI was refusing for something the product already explains.
+//
+// The two facts are not the same fact:
+//
+//   - A RELAY THAT NEVER ANSWERED is an EMPTY set of observations. Nothing is
+//     known about what it held. Boards that exist only there are missing from
+//     the link and there is no way to see that from the URL. That is real data
+//     loss, and it still REFUSES (--allow-partial is the named way through).
+//   - A RELAY THAT ANSWERED SHORT served everything it was going to serve, and
+//     the difference between that and the floor is, by construction, grants this
+//     read ALREADY HAS from somewhere else — the local log or another relay.
+//     They are in the union, so they are in the link. Nothing was lost from the
+//     link; what the shortfall proves is that the relay has not been given
+//     everything, which is a replication fact about the relay, not a gap in the
+//     credential. (The unprovable residue — a relay quietly withholding boards
+//     nothing else knows — is the CEILING, and it is exactly as unreachable for
+//     a relay that served in full. It is not a reason to treat these two
+//     differently; scopeClause states it for both.)
+//
+// So the detection stays (it is ready-4d9's, and it is mutation-proven); what
+// changed is what it CONCLUDES. A short answer now mints and says which relay is
+// behind and which boards it owes. --strict restores the old, stricter reading
+// for anyone who wants a link only when nothing at all fell short.
+func (g portfolioGather) lostRelay() bool { return len(g.missed) > 0 }
+
+// publishingGap reports that a relay answered but had not been given boards this
+// read can prove exist. The keys are in the link; the boards are not on that
+// relay — the same distinction the board page draws in its own banner.
+func (g portfolioGather) publishingGap() bool { return len(g.short) > 0 }
 
 // reason renders BOTH kinds of shortfall for the operator-facing refusal. The two
 // are kept apart in the text because the fix differs: an unanswered relay has to
@@ -219,16 +279,29 @@ func (g portfolioGather) shortfallSummary() string {
 // about the board set — never more.
 //
 // This is the sentence that stops "every relay answered" from being printed as
-// "your entire portfolio". It covers the two ways a link is minted with NO
-// detected shortfall, which are not the same fact and must not share wording: no
-// relay was consulted at all, and relays were consulted and none fell short. The
-// third way a link gets minted — --allow-partial over a known shortfall — never
-// reaches here; that branch says PARTIAL and names what fell short
+// "your entire portfolio". It covers the three ways a link is minted without a
+// LOST relay, which are not the same fact and must not share wording:
+//
+//	asked == 0        nobody was consulted at all.
+//	publishingGap()   everyone answered, but a relay had not been given some of
+//	                  the boards this read proved exist. Nothing is missing from
+//	                  the LINK — those keys came from the local log or another
+//	                  relay and travel in it — but their CARDS will be empty in a
+//	                  browser pointed at that relay. ready-1df: this is the case
+//	                  the CLI used to refuse over, while the page already
+//	                  explained it correctly.
+//	default           everyone answered and nobody was detectably short.
+//
+// The fourth way a link gets minted — --allow-partial over an unanswered relay —
+// never reaches here; that branch says PARTIAL and names what fell short
 // (shortfallSummary).
 func (g portfolioGather) scopeClause() string {
 	switch {
 	case g.asked == 0:
 		return "SCOPE: no read relays are configured, so this covers what THIS MACHINE's local log holds and nothing was asked of the network — a board that exists only on a relay was never looked for."
+	case g.publishingGap():
+		return fmt.Sprintf("SCOPE: %d of %d read relay(s) answered, and %s. That is a PUBLISHING GAP, not a permission problem — the keys are here and they are in this link; those boards are just not on that relay, so their cards will be empty in a browser until it is back-filled. Beyond that, a relay that quietly serves a SUBSET of what it holds cannot be told apart from one that holds only that much, so this is 'no further shortfall was detectable', not 'nothing was missed'.",
+			g.answered(), g.asked, g.shortfallSummary())
 	default:
 		return fmt.Sprintf("SCOPE: %d of %d read relay(s) answered and none served short of what this read proved exists — but a relay that quietly serves a SUBSET of what it holds cannot be told apart from one that holds only that much, so this is 'no shortfall was detectable', not 'nothing was missed'.", g.answered(), g.asked)
 	}
@@ -302,7 +375,7 @@ func portfolioGrantEvents(ctx context.Context, dir, self string, onRetry func(st
 
 	// Nothing at all to derive from is fatal regardless of what the caller is
 	// willing to tolerate: there is no link to mint, partial or otherwise.
-	if !gather.complete() && len(out) == 0 {
+	if gather.lostRelay() && len(out) == 0 {
 		return src, gather, fmt.Errorf("rd board --portfolio: no grants could be read (relays unreachable): %s", gather.reason())
 	}
 	return src, gather, nil
@@ -485,22 +558,22 @@ func portfolioURL(host, viewer string, relays []string, blob string) string {
 	return host + "#" + strings.Join(parts, "&")
 }
 
-// runBoardPortfolio is `rd board --portfolio [--with-key]`: ONE URL covering
-// every board this key can read.
+// runBoardPortfolio is what bare `rd board` runs (ready-1df): ONE URL covering
+// every board this key can read, carrying their read keys.
 //
-// WITHOUT --with-key it prints only the public shape (pk= + relays=), which is
-// still useful — the page opens the viewer's whole board list with no npub to
-// paste — and carries no secret whatsoever. WITH --with-key it also carries the
-// keys= blob and warns, on stderr, that the link is now a portfolio-wide bearer
-// credential.
+// With --no-key (withKey == false) it prints only the public shape (pk= +
+// relays=), which is still useful — the page opens the viewer's whole board list
+// with no npub to paste — and carries no secret whatsoever. Otherwise it also
+// carries the keys= blob and warns, on stderr, that the link is a
+// portfolio-wide bearer credential.
 //
-// The URL goes to stdout and everything else to stderr, so
-// `rd board --portfolio --with-key | pbcopy` copies exactly the URL while the
-// human still reads the warning.
-func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, allowPartial bool) error {
+// The URL goes to stdout and everything else to stderr, so `rd board | pbcopy`
+// copies exactly the URL while the human still reads the warning.
+func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, strict, allowPartial bool) error {
 	host := boardHost(cmd)
-	relays := inviteRelaySet()
 	errOut := cmd.ErrOrStderr()
+	// ready-634: only relays a browser on this host's origin can actually open.
+	relays := boardLinkRelays(errOut, host)
 
 	// Past argv validation: every failure below is a RUNTIME condition (an
 	// unreachable relay), not a mistyped command, so dumping the flag table on
@@ -517,7 +590,7 @@ func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, allowPartial boo
 			return err
 		}
 		fmt.Println(portfolioURL(host, k.PubKeyHex(), relays, ""))
-		fmt.Fprintln(errOut, "NOTE: no keys embedded — this link opens every board you can see, but a CONFIDENTIAL board's titles will show as placeholders unless the browser has a NIP-07 extension holding your key. Add --with-key to embed them (the link then becomes a bearer credential for your whole portfolio).")
+		fmt.Fprintln(errOut, "NOTE: no keys embedded (--no-key) — this link opens every board you can see, but a CONFIDENTIAL board's titles will show as placeholders unless the browser has a NIP-07 extension holding your key. Drop --no-key to embed them (the link then becomes a bearer credential for your whole portfolio).")
 		return nil
 	}
 
@@ -542,23 +615,38 @@ func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, allowPartial boo
 		return err
 	}
 
-	// THE GATE. A gather with a DETECTED shortfall cannot produce this link by
-	// default. The boards behind a whole-portfolio credential are a SET the link
-	// implies it covers; if a relay went unanswered, or answered without serving
-	// grants the rest of the read proves exist, boards known only to that relay
-	// are missing and NOTHING in the printed URL shows it. --allow-partial is the
-	// explicit, informed way through (the offline owner still gets a link, and
-	// gets told what it is).
+	// THE GATE (ready-4d9, re-scoped by ready-1df). A relay that NEVER ANSWERED
+	// cannot produce this link by default. The boards behind a whole-portfolio
+	// credential are a SET the link implies it covers; nothing is known about what
+	// an unanswered relay held, so boards known only to it are missing and NOTHING
+	// in the printed URL shows it. --allow-partial is the explicit, informed way
+	// through (the offline owner still gets a link, and gets told what it is), and
+	// it is NAMED HERE so nobody has to know it exists in advance.
+	//
+	// A relay that answered SHORT does not reach this branch by default — see
+	// lostRelay's doc for why the two are different facts, and --strict below for
+	// the stricter reading.
 	//
 	// This gate is a FLOOR, not a proof of completeness, and the wording below is
 	// bounded accordingly — see portfolioGather's doc for the ceiling no gate here
 	// can reach.
-	if !gather.complete() && !allowPartial {
-		return fmt.Errorf(`rd board --portfolio --with-key: INCOMPLETE BOARD GATHER — refusing to mint a link that would look whole and is not.
+	if gather.lostRelay() && !allowPartial {
+		return fmt.Errorf(`rd board: INCOMPLETE BOARD GATHER — refusing to mint a link that would look whole and is not.
   Shortfall: %s
   %d of %d read relays answered. This key holds read keys for %d board(s) from what this read could see, but any board known only to the relay(s) above is missing, and the printed URL would not show that.
   Fix the relay and re-run, or pass --allow-partial to mint the narrower link on purpose (its warning then says it is partial and names what was missed)`,
 			gather.reason(), gather.answered(), gather.asked, keys.boardCount())
+	}
+	// --strict is the opt-in to the OLD, stricter reading: refuse on anything the
+	// gather could detect, including a publishing gap. It is for someone who wants
+	// a link only when nothing at all fell short; it is not the default, because
+	// for the owner it fires on every invocation over boards that are simply not
+	// on that relay and never will be.
+	if strict && !gather.complete() {
+		return fmt.Errorf(`rd board --strict: PUBLISHING GAP — refusing to mint because a relay had not been given every board this read proved exists.
+  Shortfall: %s
+  The keys for those boards ARE in this gather (%d board(s)) — they came from the local log or another relay — so the link would carry them; what fell short is the relay's copy, and their cards would be empty in the browser. Back-fill that relay and re-run, or drop --strict to mint anyway (the warning then names the gap)`,
+			gather.reason(), keys.boardCount())
 	}
 
 	blob := ""
@@ -572,7 +660,7 @@ func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, allowPartial boo
 	switch {
 	case keys.carriesSecret():
 		fmt.Fprintln(errOut, portfolioKeyWarning(keys.boardCount(), gather))
-	case !gather.complete():
+	case gather.lostRelay():
 		fmt.Fprintln(errOut, "WARNING: PARTIAL — no keys embedded, but "+gather.shortfallSummary()+", so this is not a statement that you hold no read keys. Boards known only to that relay were never seen. Re-run when the relay is reachable and serving in full.")
 	default:
 		fmt.Fprintln(errOut, "NOTE: no keys embedded — this key holds no read key for any confidential board, so there is nothing to decrypt. Ask each board's owner to run: rd grant "+keys.viewer)
@@ -595,6 +683,16 @@ func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, allowPartial boo
 // opposite, in the same breath as the count, and names the relay whose boards are
 // missing.
 //
+// THE PUBLISHING-GAP CASE SHARES THE CLEAN WORDING, DELIBERATELY (ready-1df). A
+// relay that answered short cost the LINK nothing — every board it failed to
+// serve is one this read already holds from the local log or another relay, so
+// it travels in the blob either way — and the blast radius really is the whole
+// portfolio. What differs is the SCOPE CLAUSE, which names the relay that is
+// behind and says the cards will be empty in a browser until it is back-filled.
+// It must NOT say PARTIAL: the link is not narrower, and calling it partial would
+// train the owner to ignore the word on the one link where it means a board is
+// genuinely missing.
+//
 // AND THE CLEAN BRANCH IS SCOPED TOO. "ENTIRE PORTFOLIO" stays, because as a
 // statement of BLAST RADIUS — what the bearer of this link can read — it is the
 // conservative direction and the user must not underestimate it. What is NOT
@@ -609,11 +707,11 @@ func portfolioKeyWarning(n int, g portfolioGather) string {
 	if n == 1 {
 		boards = "board"
 	}
-	if !g.complete() {
+	if g.lostRelay() {
 		return fmt.Sprintf("WARNING: this link is PARTIAL and CARRIES THE READ KEYS FOR %d CONFIDENTIAL %s in its fragment — anyone who opens it can read every title on %s. It is NOT your whole portfolio: %s, so boards known only to there are MISSING from this link and from the count. Re-run when that relay is reachable and serving in full to get the complete link. It is still a bearer credential for %s: treat it like a password — do not paste it into chat, a ticket, or any shared channel.",
 			n, strings.ToUpper(boards), pluralBoards(n), g.shortfallSummary(), pluralBoards(n))
 	}
-	return fmt.Sprintf("WARNING: this link CARRIES THE READ KEYS FOR ALL %d CONFIDENTIAL %s THIS GATHER COULD FIND in its fragment — anyone who opens it can read every title in your ENTIRE PORTFOLIO, not just one board. It is a far wider credential than a single-board `rd board --with-key` link. %s Treat it like a password: do not paste it into chat, a ticket, or any shared channel.",
+	return fmt.Sprintf("WARNING: this link CARRIES THE READ KEYS FOR ALL %d CONFIDENTIAL %s THIS GATHER COULD FIND in its fragment — anyone who opens it can read every title in your ENTIRE PORTFOLIO, not just one board. It is a bearer credential, and a far wider one than a single-board `rd board --this-board` link. %s Treat it like a password: do not paste it into chat, a ticket, or any shared channel.",
 		n, strings.ToUpper(boards), g.scopeClause())
 }
 
