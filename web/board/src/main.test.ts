@@ -43,8 +43,8 @@
 // Also newly covered here: the fragment.kind === "claim" branch, which returns
 // before any relay query and is the other place afterLogin renders off the
 // auth state (renderAwaitingAuthorization reads identity.auth.readOnly).
-import { beforeEach, describe, expect, it } from "vitest";
-import { afterLogin, type BoardDeps, type Identity } from "./main";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterLogin, main, type BoardDeps, type Identity } from "./main";
 import { authTransition, canSign } from "./lib/auth";
 import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord } from "./lib/boarddiscovery";
@@ -521,5 +521,44 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
     expect(root.querySelector("p.identity")?.textContent).toBe(
       expectedIdentityLine(STRANGER, true),
     );
+  });
+});
+
+// ready-62d1: a malformed #rd1_ fragment must not take the page down, and must
+// still be stripped from the URL. Both used to fail — parseAndStripFragment
+// threw before its strip ran, and main() called it at module top level with no
+// catch, so NOTHING rendered on what is the first-touch surface for a shared
+// invite: no heading, no NIP-07 button, no npub form, no error text. The user
+// could not even log in to recover, and the claim-nonce stayed in the address
+// bar and history in exactly the case where a token most wants removing.
+describe("ready-62d1: malformed board link", () => {
+  it("still renders a usable login page, and strips the bad fragment", () => {
+    document.body.innerHTML = '<div id="app"></div>';
+    const replaceState = vi.fn();
+    const origHistory = window.history;
+    Object.defineProperty(window, "history", {
+      value: { replaceState },
+      configurable: true,
+      writable: true,
+    });
+    window.location.hash = "#rd1_!!!!not-base64!!!!";
+
+    try {
+      expect(() => main()).not.toThrow();
+
+      const root = document.getElementById("app")!;
+      // A login control the user can actually recover through.
+      expect(root.querySelector("button")).not.toBeNull();
+      // And an honest explanation of what went wrong.
+      expect(root.textContent).toContain("not valid");
+      // The bad token does not linger in the URL or in history.
+      expect(replaceState).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "history", {
+        value: origHistory,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 });

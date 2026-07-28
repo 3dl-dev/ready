@@ -228,13 +228,41 @@ export async function afterLogin(
   }
 }
 
-function main(): void {
+export function main(): void {
   const root = document.getElementById("app");
   if (!root) return;
-  const fragment = parseAndStripFragment();
+
+  // ready-62d1: a malformed #rd1_ fragment must not take the page down. It used
+  // to: parseAndStripFragment threw here with no catch, so the whole module died
+  // and NOTHING rendered -- no heading, no NIP-07 button, no npub form, no error.
+  // The user could not even log in to recover, on the first-touch surface for a
+  // shared invite. Degrade to a normal login page with a visible notice. The
+  // fragment is stripped either way; see parseAndStripFragment's `finally`.
+  let fragment: ParsedFragment;
+  let fragmentError = false;
+  try {
+    fragment = parseAndStripFragment();
+  } catch {
+    fragment = { kind: "none" };
+    fragmentError = true;
+  }
+
   renderLogin(root, fragment, (identity) => {
     void afterLogin(root, identity, fragment);
   });
+
+  // Appended AFTER renderLogin, which calls root.replaceChildren() and would
+  // otherwise wipe this notice.
+  if (fragmentError) {
+    root.append(
+      el("p", {
+        className: "fragment-error",
+        textContent:
+          "That board link is not valid — it may have been truncated in transit. " +
+          "Ask whoever shared it for a fresh link, or log in above to see your own boards.",
+      }),
+    );
+  }
 }
 
 main();

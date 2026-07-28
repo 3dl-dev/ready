@@ -90,10 +90,16 @@ export function parseFragment(hash: string): ParsedFragment {
  * being consumed. Call once, at startup.
  */
 export function parseAndStripFragment(loc: Location = window.location): ParsedFragment {
-  const parsed = parseFragment(loc.hash);
-  if (loc.hash !== "") {
-    const url = loc.pathname + loc.search;
-    window.history.replaceState(null, "", url);
+  // ready-62d1: strip in a `finally`, so a malformed fragment is removed from
+  // the address bar and history even though parsing it throws. Stripping used
+  // to run only after a successful parse, which meant a corrupted claim-nonce
+  // -- the exact case where a token most wants removing -- stayed in the URL.
+  try {
+    return parseFragment(loc.hash);
+  } finally {
+    if (loc.hash !== "") {
+      const url = loc.pathname + loc.search;
+      window.history.replaceState(null, "", url);
+    }
   }
-  return parsed;
 }
