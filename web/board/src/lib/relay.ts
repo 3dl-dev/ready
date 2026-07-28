@@ -32,6 +32,12 @@ export interface NostrFilter {
   kinds?: number[];
   authors?: string[];
   ["#d"]?: string[];
+  /** Board-membership coordinate filter — how a board's cards (kind 30302) are
+   * fetched: `#a: ["30301:<owner>:<boardD>"]`. Confidential boards keep every
+   * routing tag in the clear precisely so this REQ keeps working unchanged
+   * (envelope spec §0). */
+  ["#a"]?: string[];
+  ["#p"]?: string[];
   limit?: number;
 }
 

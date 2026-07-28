@@ -49,6 +49,7 @@ import { authTransition, canSign } from "./lib/auth";
 import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord } from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
+import { neverUnwraps } from "./lib/keyunwrap";
 import type { NostrEvent } from "./lib/nostrevent";
 import {
   OWNER,
@@ -193,6 +194,11 @@ interface Capture {
 function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
   FakeRelayWebSocket.reset(served);
   return {
+    // ready-c4b: no key material for these cases. The confidential read path
+    // has its own suite (main.confidential.test.ts); here an identity that
+    // holds no board key is the right default, and it keeps every assertion
+    // below about verification rather than decryption.
+    keyUnwrapper: () => neverUnwraps,
     loadRelays: async () => [CONFIG_RELAY],
     fetchEvents: async (relays, filter, opts) => {
       capture.filters.push(filter);
@@ -369,9 +375,19 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
 
       // LINK_RELAY and CONFIG_RELAY are different URLs, so this distinguishes
       // the two relay sources — the link's list wins when it is non-empty.
-      expect(FakeRelayWebSocket.urls).toEqual([LINK_RELAY]);
+      // ready-c4b: the board path now opens a SECOND subscription to the same
+      // relay set (the board's 30302 cards, after its 30301/39301 authority
+      // events). The property under test is WHICH relays were used, not how
+      // many sockets — so compare the distinct set.
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
       // The link's coordinate, not the viewer's key, names the author here.
-      expect(capture.filters).toEqual([{ kinds: [30301], authors: [OWNER] }]);
+      // ready-c4b added the 39301 role grants to the first REQ (a confidential
+      // board's read key rides inside an owner-signed grant) and a second REQ
+      // for the board's cards, scoped by the board coordinate.
+      expect(capture.filters).toEqual([
+        { kinds: [30301, 39301], authors: [OWNER] },
+        { kinds: [30302], "#a": [boardCoord(OWNER, "alpha")] },
+      ]);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
         { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
@@ -389,7 +405,8 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         deps,
       );
 
-      expect(FakeRelayWebSocket.urls).toEqual([CONFIG_RELAY]);
+      // Same second-subscription note as above (ready-c4b).
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([CONFIG_RELAY]);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
         { title: "Beta Board", coord: boardCoord(OWNER, "beta") },
@@ -471,6 +488,7 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
   describe("relay failure surfaces instead of an empty board list", () => {
     it("shows the relay error and renders no board list when no relay can be reached", async () => {
       const deps: BoardDeps = {
+        keyUnwrapper: () => neverUnwraps,
         loadRelays: async () => [CONFIG_RELAY],
         fetchEvents: async () => {
           throw new Error("relay: could not reach any relay: socket error");

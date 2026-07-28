@@ -24,7 +24,7 @@
 const BUILD_STAMP: string = import.meta.env.VITE_BUILD_STAMP ?? "dev-local";
 
 import { authTransition, canSign, type AuthTransition } from "./lib/auth";
-import { hasNip07Extension, loginWithExtension } from "./lib/nip07";
+import { hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
 import { decodeNpub, encodeNpub } from "./lib/npub";
 import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
@@ -36,6 +36,10 @@ import {
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
+import { deriveBoardKeyring, KIND_ROLE_GRANT } from "./lib/keyring";
+import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
+import { projectCards, KIND_CARD, type BoardItem } from "./lib/carditems";
+import { PLACEHOLDER } from "./lib/envelope";
 
 export interface Identity {
   pubkey: string;
@@ -53,12 +57,25 @@ export interface Identity {
 export interface BoardDeps {
   loadRelays: () => Promise<string[]>;
   fetchEvents: (relays: string[], filter: NostrFilter, opts: FetchEventsOptions) => Promise<NostrEvent[]>;
+  /**
+   * keyUnwrapper resolves the signer that can unwrap a confidential board's CEK
+   * for `identity`. It is a function of the identity, not a constant, because of
+   * a specific hazard: a visitor may have an extension installed AND be viewing
+   * a board through a read-only npub that is NOT the extension's key. Handing
+   * the extension's keys to that view would decrypt a board for a pubkey that
+   * did not authenticate. So the production implementation returns the real
+   * unwrapper only for an identity that can sign — i.e. one whose pubkey came
+   * out of getPublicKey() — and the no-keys unwrapper otherwise.
+   */
+  keyUnwrapper: (identity: Identity) => KeyUnwrapper;
 }
 
-/** Production wiring: same-origin relays.json + the real WebSocket client. */
+/** Production wiring: same-origin relays.json + the real WebSocket client +
+ * the browser extension's NIP-44 namespace. */
 export const defaultDeps: BoardDeps = {
   loadRelays: () => loadOwnBoardsRelays(),
   fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
+  keyUnwrapper: (identity) => (canSign(identity.auth) ? nip07KeyUnwrapper(nip44Provider()) : neverUnwraps),
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -165,6 +182,112 @@ function renderBoards(root: HTMLElement, boards: DiscoveredBoard[]): void {
   root.append(list);
 }
 
+/**
+ * renderItems draws one row per item. `title` is set through textContent, never
+ * innerHTML, so a decrypted title is text and cannot become markup.
+ *
+ * An item whose free text could not be opened is rendered with the class
+ * "encrypted" and the PLACEHOLDER string. That combination is deliberate and is
+ * the UI half of failing closed: the row still exists (its status, priority and
+ * type are clear tags and are perfectly readable), but the title says
+ * "[encrypted]" rather than going blank. A blank cell would read as "this item
+ * has no title", which is false; the placeholder reads as "you are not holding
+ * the key for this one", which is true.
+ */
+function renderItems(root: HTMLElement, items: BoardItem[]): void {
+  if (items.length === 0) {
+    root.append(el("p", { className: "no-items", textContent: "No items on this board." }));
+    return;
+  }
+  const list = el(
+    "ul",
+    { className: "item-list" },
+    items.map((it) => {
+      const title = el("span", {
+        className: it.decrypted ? "item-title" : "item-title encrypted",
+        textContent: it.title,
+      });
+      if (!it.decrypted) {
+        title.title = `Sealed under CEK epoch ${it.epoch ?? "?"} — this key holds no grant for it.`;
+      }
+      const meta = el("span", {
+        className: "item-meta",
+        textContent: [it.status, it.priority, it.type].filter((s) => s !== "").join(" · "),
+      });
+      return el("li", { className: it.decrypted ? "item" : "item sealed" }, [
+        el("code", { className: "item-id", textContent: it.id }),
+        title,
+        meta,
+      ]);
+    }),
+  );
+  root.append(list);
+}
+
+/**
+ * renderBoardItems is the confidential read path end to end (ready-c4b): fetch
+ * the board's cards, derive this reader's key material from the owner-signed
+ * grants already in hand, project, render.
+ *
+ * The keyring is derived from `authorityEvents` — the same snapshot the board
+ * itself came from — so a card can never introduce its own key. Deriving it
+ * BEFORE projecting also means the fold gate knows the board is confidential
+ * even for a reader who holds nothing, which is what keeps post-cutover
+ * cleartext quarantined for a stranger instead of rendered.
+ *
+ * A failure anywhere here degrades to a visible message; it never leaves the
+ * page half-rendered and never falls back to showing clear tags in place of
+ * sealed text.
+ */
+async function renderBoardItems(
+  root: HTMLElement,
+  identity: Identity,
+  parsed: { owner: string; boardD: string },
+  coord: string,
+  relays: string[],
+  authorityEvents: NostrEvent[],
+  deps: BoardDeps,
+  onStatus: (e: RelayStatusEvent) => void,
+): Promise<void> {
+  const loading = el("p", { className: "loading-items", textContent: "Loading items…" });
+  root.append(loading);
+  try {
+    const cardEvents = await deps.fetchEvents(relays, { kinds: [KIND_CARD], ["#a"]: [coord] }, { onStatus });
+    const keyring = await deriveBoardKeyring(
+      authorityEvents,
+      identity.pubkey,
+      parsed.owner,
+      parsed.boardD,
+      deps.keyUnwrapper(identity),
+    );
+    const items = projectCards(cardEvents, { coord, keyring });
+    loading.remove();
+
+    // The notice states BOTH halves — what was read and what was not — because
+    // either half alone misleads. "N decrypted" with no mention of the rest
+    // hides that the board is partly invisible; "N sealed" with no mention of
+    // the rest reads like a failure even when most of the board rendered.
+    if (keyring.cutover(coord) !== null) {
+      const sealed = items.filter((i) => !i.decrypted);
+      const opened = items.length - sealed.length;
+      const parts = [
+        opened > 0
+          ? `This board is confidential; ${opened} of ${items.length} titles were decrypted in your browser.`
+          : "This board is confidential.",
+      ];
+      if (sealed.length > 0) {
+        parts.push(
+          `${sealed.length} of ${items.length} items are sealed to a key you do not hold — they show ${PLACEHOLDER}. Ask the board owner to grant this key access.`,
+        );
+      }
+      root.append(el("p", { className: "confidential-notice", textContent: parts.join(" ") }));
+    }
+    renderItems(root, items);
+  } catch (err) {
+    loading.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
 function renderIdentityBar(root: HTMLElement, identity: Identity): void {
   const npub = safeEncodeNpub(identity.pubkey);
   root.append(
@@ -208,13 +331,18 @@ export async function afterLogin(
       const parsedCoord = parseBoardCoord(fragment.board);
       if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(fragment.board)}`);
       const relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
+      // One REQ for the owner's authority events: the 30301 board itself and
+      // every 39301 role grant. The grants are where a confidential board's read
+      // key rides, so this single query carries both "which board" and "can I
+      // read it".
       const events = await deps.fetchEvents(
         relays,
-        { kinds: [30301], authors: [parsedCoord.owner] },
+        { kinds: [30301, KIND_ROLE_GRANT], authors: [parsedCoord.owner] },
         { onStatus },
       );
       connecting.remove();
       renderBoards(root, discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD));
+      await renderBoardItems(root, identity, parsedCoord, fragment.board, relays, events, deps, onStatus);
       return;
     }
 

@@ -7,8 +7,12 @@ package sync
 // grantee.
 
 import (
+	"encoding/hex"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/3dl-dev/ready/pkg/nip44"
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/state"
 )
@@ -191,5 +195,106 @@ func TestKeydistIgnoresNonOwnerCEK(t *testing.T) {
 	}
 	if _, ok := kr.Cutover(boardCoord); ok {
 		t.Fatal("a non-owner grant set the board cutover — board falsely marked confidential")
+	}
+}
+
+// TestKeydistWrapPayloadIsHexForBrowserSigners pins the encoding of the NIP-44
+// wrap's PLAINTEXT (ready-c4b), which is the property that decides whether a
+// browser can ever hold a board key.
+//
+// A browser unwraps only through NIP-07's
+// `window.nostr.nip44.decrypt(pubkey, ciphertext)`, and that call returns a
+// STRING — extensions finish with a UTF-8 TextDecoder. A raw 32-byte CEK is
+// essentially never valid UTF-8, and a non-fatal decoder replaces each malformed
+// run with U+FFFD, destroying the key with no error anywhere. So the wrap
+// plaintext MUST be text. This test fails if WrapKey ever goes back to sealing
+// raw bytes, which would look completely fine to every Go test in the tree while
+// silently making web/board's confidential path impossible.
+func TestKeydistWrapPayloadIsHexForBrowserSigners(t *testing.T) {
+	owner, member := kdKey(t), kdKey(t)
+	cek, err := MintKey()
+	if err != nil {
+		t.Fatalf("MintKey: %v", err)
+	}
+
+	wrapped := kdWrap(t, owner, member.PubKeyHex(), cek)
+
+	// Look at the wrap plaintext directly, the way a NIP-07 signer would hand it
+	// to the page.
+	pt, err := nip44.Open(member, owner.PubKeyHex(), wrapped)
+	if err != nil {
+		t.Fatalf("nip44.Open: %v", err)
+	}
+	if got, want := len(pt), hex.EncodedLen(32); got != want {
+		t.Fatalf("wrap plaintext is %d bytes, want %d — WrapKey must seal lowercase hex, not raw key bytes (a NIP-07 signer returns a string and would mangle raw bytes)", got, want)
+	}
+	if want := hex.EncodeToString(cek[:]); string(pt) != want {
+		t.Fatalf("wrap plaintext = %q, want %q", pt, want)
+	}
+	// The exact property the encoding exists for: a UTF-8 round trip through a
+	// JS-style string boundary is lossless.
+	if !utf8.Valid(pt) {
+		t.Fatalf("wrap plaintext is not valid UTF-8 — a NIP-07 signer's string return would corrupt it")
+	}
+
+	// And it still round-trips to the same key.
+	got, err := unwrapKey(member, owner.PubKeyHex(), wrapped)
+	if err != nil {
+		t.Fatalf("unwrapKey: %v", err)
+	}
+	if got != cek {
+		t.Fatalf("unwrapKey returned a different key than WrapKey sealed")
+	}
+}
+
+// TestKeydistUnwrapAcceptsLegacyRawPayload pins the back-compat half: grants
+// minted BEFORE ready-c4b sealed the raw 32 bytes, and they are already on
+// relays. Those must keep unwrapping, or enabling confidential mode again would
+// be the only way to read an existing board.
+func TestKeydistUnwrapAcceptsLegacyRawPayload(t *testing.T) {
+	owner, member := kdKey(t), kdKey(t)
+	cek, err := MintKey()
+	if err != nil {
+		t.Fatalf("MintKey: %v", err)
+	}
+
+	// The pre-ready-c4b wrap: seal the raw bytes.
+	legacy, err := nip44.Seal(owner, member.PubKeyHex(), cek[:])
+	if err != nil {
+		t.Fatalf("nip44.Seal: %v", err)
+	}
+
+	got, err := unwrapKey(member, owner.PubKeyHex(), legacy)
+	if err != nil {
+		t.Fatalf("unwrapKey(legacy raw payload): %v", err)
+	}
+	if got != cek {
+		t.Fatalf("legacy raw payload unwrapped to the wrong key")
+	}
+}
+
+// TestKeydistUnwrapRejectsWrongLengthPayload keeps the accept-two-encodings
+// branch from becoming accept-anything: a payload that is neither 32 raw bytes
+// nor 64 hex characters is an error, and every caller reads an error as "the
+// reader holds no key" (placeholder, never a guess).
+func TestKeydistUnwrapRejectsWrongLengthPayload(t *testing.T) {
+	owner, member := kdKey(t), kdKey(t)
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"too short", []byte("deadbeef")},
+		{"hex length but not hex", []byte(strings.Repeat("z", 64))},
+		{"33 raw bytes", make([]byte, 33)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, err := nip44.Seal(owner, member.PubKeyHex(), tc.payload)
+			if err != nil {
+				t.Fatalf("nip44.Seal: %v", err)
+			}
+			if _, err := unwrapKey(member, owner.PubKeyHex(), w); err == nil {
+				t.Fatalf("unwrapKey accepted a %d-byte payload %q; it must fail closed", len(tc.payload), tc.payload)
+			}
+		})
 	}
 }
