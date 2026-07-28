@@ -20,6 +20,19 @@
 //                                     shape — third-party read access is the
 //                                     owner-signed kind-39301 grant, which
 //                                     wraps the key to one specific grantee.
+//   #pk=<hex>&relays=<list>[&keys=<base64url>]
+//                                 -- WHOLE-PORTFOLIO link (`rd board
+//                                     --portfolio [--with-key]`, ready-4d9).
+//                                     NO board= — and that ABSENCE is the
+//                                     discriminator: pk= with no board= means
+//                                     "open every board this viewer can see",
+//                                     which is exactly the own-boards discovery
+//                                     path main.ts already had. keys= carries
+//                                     the read keys for EVERY confidential board
+//                                     the minting key holds, board-scoped, in
+//                                     the compact binary format
+//                                     portfoliokeys.ts decodes. `rd board share`
+//                                     never mints this shape either.
 //   ...&ltk=<hex>                 -- LEGACY, PARSED BUT NOT EMITTED. `rd board
 //                                     --with-key` used to append the board's
 //                                     label-token key. It was dropped on
@@ -48,12 +61,16 @@
 // load-bearing: see parseAndStripFragment's `finally`.
 //
 // MALFORMED KEY MATERIAL THROWS, it is not silently dropped. A truncated
-// cek=/ltk=/pk= means the LINK was damaged in transit, and the honest outcome
-// is main.ts's "ask whoever shared it for a fresh link" notice — not a board
-// full of placeholders the reader cannot explain. Rejection here is also the
-// fail-closed direction: no partially-decoded key ever reaches the keyring.
+// cek=/ltk=/pk=/keys= means the LINK was damaged in transit, and the honest
+// outcome is main.ts's "ask whoever shared it for a fresh link" notice — not a
+// board full of placeholders the reader cannot explain. Rejection here is also
+// the fail-closed direction: no partially-decoded key ever reaches the keyring.
+// For keys= that rejection is TOTAL by construction (portfoliokeys.ts): no
+// proper prefix of a valid blob decodes, so a portfolio link cannot arrive
+// half-eaten and render as a portfolio that merely looks small.
 
 import { hexToBytes } from "./sha256";
+import { decodePortfolioKeys, type PortfolioKeys } from "./portfoliokeys";
 
 const RD1_PREFIX = "rd1_";
 const NOSTR_CLAIM_VERSION = 3;
@@ -101,6 +118,22 @@ export type ParsedFragment =
        * link. */
       keys?: FragmentKeys;
     }
+  | {
+      /**
+       * PORTFOLIO — `rd board --portfolio` (ready-4d9). Every board this viewer
+       * can see, in one link. There is no `board` field on purpose: the shape is
+       * defined by pk= WITHOUT board=, and main.ts answers it with the
+       * unfiltered own-boards discovery it already had.
+       */
+      kind: "portfolio";
+      relays: string[];
+      /** PUBLIC pubkey the page opens as, from `pk=`. Always present — it is
+       * what makes the shape identifiable and what removes the login form. */
+      viewer: string;
+      /** Per-board secret key material from `keys=`, keyed by board coordinate.
+       * Absent for `rd board --portfolio` without --with-key. */
+      keys?: PortfolioKeys;
+    }
   | { kind: "none" };
 
 function base64UrlDecode(s: string): string {
@@ -138,21 +171,53 @@ export function parseFragment(hash: string): ParsedFragment {
 
   const params = new URLSearchParams(raw);
   const board = params.get("board");
+  const pk = params.get("pk");
+  const portfolioParam = params.get("keys");
+
   if (board) {
-    const relaysParam = params.get("relays") ?? "";
-    const relays = relaysParam
-      .split(",")
-      .map((r) => r.trim())
-      .filter((r) => r !== "");
+    // A SINGLE-BOARD link must not also carry portfolio key material: the two
+    // shapes scope keys differently (one implicit coordinate vs. explicit
+    // coordinates), and silently honouring both would make "which board does
+    // this key belong to" a question with two answers.
+    if (portfolioParam !== null) {
+      throw new Error("fragment: board= and keys= cannot both be present — a link is either one board or the whole portfolio");
+    }
+    const relays = parseRelays(params);
     const out: ParsedFragment = { kind: "board", board, relays };
-    const viewer = params.get("pk");
-    if (viewer !== null) out.viewer = decodeHexKeyParam("pk", viewer);
+    if (pk !== null) out.viewer = decodeHexKeyParam("pk", pk);
     const keys = decodeKeyParams(params.get("cek"), params.get("ltk"));
     if (keys) out.keys = keys;
     return out;
   }
 
+  // PORTFOLIO: pk= with no board=. See the ParsedFragment "portfolio" variant.
+  if (pk !== null) {
+    const out: ParsedFragment = {
+      kind: "portfolio",
+      relays: parseRelays(params),
+      viewer: decodeHexKeyParam("pk", pk),
+    };
+    if (portfolioParam !== null) out.keys = decodePortfolioKeys(portfolioParam);
+    return out;
+  }
+
+  // keys= with no pk= is a damaged link, not a plain visit: the key material
+  // arrived but the identity it was minted for did not, so the page could not
+  // open the right boards even though it is holding their keys. Say so instead
+  // of quietly showing a login form.
+  if (portfolioParam !== null) {
+    throw new Error("fragment: keys= is present but pk= is missing — the link is incomplete");
+  }
+
   return { kind: "none" };
+}
+
+/** parseRelays reads the shared `relays=<comma-list>` parameter. */
+function parseRelays(params: URLSearchParams): string[] {
+  return (params.get("relays") ?? "")
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => r !== "");
 }
 
 /** decodeHexKeyParam validates one 64-lowercase-hex fragment parameter. The

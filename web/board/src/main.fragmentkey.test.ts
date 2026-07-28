@@ -425,7 +425,12 @@ describe("PER-BOARD KEY SCOPE — a key for one board is never offered to anothe
       linkIdentity(OWNER_PUB),
       noExtensionDeps,
       () => {},
-      { coord: fragmentCoord, keys: bothEpochKeys() },
+      // ready-4d9 turned this argument into a coordinate -> keys MAP (the shape
+      // a portfolio link produces). A single-board link is now the one-entry
+      // case of it, which is exactly what main.ts's fragmentKeyMap builds — so
+      // this helper still models a `#board=` link faithfully, and the scoping
+      // question it asks is unchanged.
+      new Map([[fragmentCoord, bothEpochKeys()]]),
     );
   }
 

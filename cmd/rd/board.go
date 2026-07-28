@@ -315,6 +315,14 @@ ever bind a stranger's key to.
                                      extension and nothing to paste. The
                                      resulting link is a BEARER CREDENTIAL
                                      for this board's content.
+  rd board --portfolio              ONE link for EVERY board this key can
+                                     read, not just this directory's board.
+  rd board --portfolio --with-key   the same whole-portfolio link, carrying
+                                     every one of those boards' read keys.
+                                     The resulting link is a BEARER
+                                     CREDENTIAL for your ENTIRE PORTFOLIO —
+                                     strictly wider than --with-key alone,
+                                     which covers one board.
   rd board share <npub-or-pubkey>   issue a grant to a KNOWN key, then print
                                      the URL (zero-wait: the grant is durable
                                      on the relay before they click).
@@ -348,6 +356,14 @@ serves the browser board UI: open the printed URL and it renders this board).`,
 		coord := nostrPinnedBoard(dir)
 
 		withKey, _ := cmd.Flags().GetBool("with-key")
+		// ready-4d9. --portfolio switches the SCOPE of the link from this
+		// directory's pinned board to every board this key can read; --with-key
+		// still independently decides whether any key material travels. Keeping
+		// them orthogonal is what keeps --with-key the ONE flag that can put a
+		// secret in a URL, on either scope.
+		if portfolio, _ := cmd.Flags().GetBool("portfolio"); portfolio {
+			return runBoardPortfolio(cmd, dir, withKey)
+		}
 		var keys *boardKeyFragment
 		var confidential bool
 		if withKey {
@@ -468,6 +484,11 @@ func init() {
 	// boardShareCmd: a link that carries a key is always an explicit act, and a
 	// link for someone else is always a grant.
 	boardCmd.Flags().Bool("with-key", false, "embed this key's board read key in the link fragment so a browser can decrypt a confidential board with no extension — the link becomes a bearer credential for this board's content")
+	// ready-4d9. Also OFF by default and also absent from boardShareCmd: a
+	// whole-portfolio link is a wider act than a single-board one, so it can
+	// never be what a bare command prints, and a link for someone else is still
+	// always a grant.
+	boardCmd.Flags().Bool("portfolio", false, "print ONE link covering EVERY board this key can read, not just this directory's board (with --with-key the link carries every one of those boards' read keys)")
 
 	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")
