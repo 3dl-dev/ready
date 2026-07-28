@@ -36,6 +36,7 @@ import {
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
+import { foldItemSource } from "./lib/itemsource";
 import { mountBoardWorkspace } from "./board/render";
 import type { Item } from "./board/types";
 import "./board/board.css";
@@ -170,17 +171,62 @@ function renderBoards(root: HTMLElement, boards: DiscoveredBoard[]): void {
 
 /**
  * Mounts the board workspace (ready-445: gate rail, left tree, swimlaned
- * columns, detail pane) below the verified board list. `items` is empty in
- * production today because there is no client-side event->Item projection
- * yet — see ./lib/itemsource.ts's header for why that is a deliberate
- * boundary (ready-35b's job, not this one's) rather than an oversight. The
- * workspace itself is fully built and tested against hand-built Item
- * fixtures (src/board/*.test.ts); only the data feeding it is pending.
+ * columns, detail pane) below the verified board list.
+ *
+ * ready-bad: `items` used to be empty in production because no client-side
+ * event->Item projection existed. ready-35b landed one (PR #141) that passes
+ * all 36 conformance vectors byte-for-byte and matched `rd list --json --all`
+ * across three real boards with zero unexplained field diffs, so the workspace
+ * now renders real work. See ./lib/itemsource.ts for the adapter.
  */
 function mountBoardWorkspaceShell(root: HTMLElement, identity: Identity, items: Item[] = []): void {
   const workspaceRoot = el("div", { className: "board-workspace-root" });
   root.append(workspaceRoot);
   mountBoardWorkspace(workspaceRoot, items, { viewerId: identity.pubkey });
+}
+
+/**
+ * loadBoardItems fetches the card and status events for the given boards and
+ * folds them into the UI's Item[].
+ *
+ * Kinds mirror what the Go fold consumes (spec §2): 30302 cards, and
+ * 1630/1631/1632 status / close / cancel. Board definitions (30301) are
+ * fetched separately and have already been schnorr-verified upstream.
+ *
+ * `trusted: null` disables the read-trust gate (spec §3.4) deliberately: the
+ * fold re-verifies every event's signature itself (fold.ts, proven by the
+ * forged_events_dropped vector), so the gate would be a weaker second check.
+ * Failures are non-fatal — a board that will not load must not take the whole
+ * page down, which is the ready-62d1 lesson applied one layer up.
+ */
+async function loadBoardItems(
+  boards: DiscoveredBoard[],
+  relays: string[],
+  deps: BoardDeps,
+  onStatus: (e: RelayStatusEvent) => void,
+): Promise<Item[]> {
+  const out: Item[] = [];
+  for (const b of boards) {
+    try {
+      const events = await deps.fetchEvents(
+        relays,
+        // Kinds mirror pkg/sync/nostrinbound.go's BoardSyncFilter exactly:
+        // 30302 card, 1630/1631/1632/1633 status open/resolved/closed/draft,
+        // 39301 role-grant (grants carry the board "a" coordinate and are what
+        // a granted contributor's read-trust derives from).
+        { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [b.coord] },
+        { onStatus },
+      );
+      const src = foldItemSource(
+        { trusted: null, maintainers: null, pinnedBoard: b.coord, decryptor: null, encryptedBoards: null },
+        b.coord,
+      );
+      out.push(...src.loadItems(events));
+    } catch {
+      // Skip this board; the others still render.
+    }
+  }
+  return out;
 }
 
 function renderIdentityBar(root: HTMLElement, identity: Identity): void {
@@ -231,18 +277,22 @@ export async function afterLogin(
         { kinds: [30301], authors: [parsedCoord.owner] },
         { onStatus },
       );
+      const boards = discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD);
+      const items = await loadBoardItems(boards, relays, deps, onStatus);
       connecting.remove();
-      renderBoards(root, discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD));
-      mountBoardWorkspaceShell(root, identity);
+      renderBoards(root, boards);
+      mountBoardWorkspaceShell(root, identity, items);
       return;
     }
 
     // fragment.kind === "none": own-boards discovery (done condition 3).
     const relays = await deps.loadRelays();
     const events = await deps.fetchEvents(relays, { kinds: [30301], authors: [identity.pubkey] }, { onStatus });
+    const boards = discoverOwnerBoards(events, [identity.pubkey]);
+    const items = await loadBoardItems(boards, relays, deps, onStatus);
     connecting.remove();
-    renderBoards(root, discoverOwnerBoards(events, [identity.pubkey]));
-    mountBoardWorkspaceShell(root, identity);
+    renderBoards(root, boards);
+    mountBoardWorkspaceShell(root, identity, items);
   } catch (err) {
     connecting.textContent = err instanceof Error ? err.message : String(err);
   }
