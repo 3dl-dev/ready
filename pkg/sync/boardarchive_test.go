@@ -61,6 +61,40 @@ func TestBuildBoardEvent_ArchivedTag(t *testing.T) {
 	}
 }
 
+// TestIsBoardArchived_AnyNonEmptyValueCounts pins the forward-compatibility
+// rule ArchivedTagValue's doc comment claims but no existing test exercised:
+// "any NON-EMPTY tag value counts as archived... a future marker version does
+// not need a matching Go release to keep being honoured as archived". Every
+// OTHER test in this file only ever builds an "archived" tag via
+// BuildBoardEvent, which always writes ArchivedTagValue ("1") — so tightening
+// IsBoardArchived to `tagValue(e, "archived") == ArchivedTagValue` would pass
+// every one of them while silently un-hiding a board carrying a hypothetical
+// future marker value. This test hand-builds an event (bypassing
+// BuildBoardEvent, which cannot express a non-"1" value) with archived="v2",
+// signs it for real, and requires IsBoardArchived to still report true.
+func TestIsBoardArchived_AnyNonEmptyValueCounts(t *testing.T) {
+	k := testKey(t)
+	e := &nostr.Event{
+		Kind:      KindBoard,
+		CreatedAt: 1700000000,
+		Tags: [][]string{
+			{"d", "future-marker"},
+			{"title", "Future Marker Board"},
+			{"archived", "v2-hidden"},
+		},
+		Content: "",
+	}
+	if err := e.Sign(k); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if v, _ := findTag(e.Tags, "archived"); v == ArchivedTagValue {
+		t.Fatalf("test fixture bug: archived tag %q equals ArchivedTagValue, defeats the point of this test", v)
+	}
+	if !IsBoardArchived(e) {
+		t.Fatal("IsBoardArchived false for a non-\"1\" but non-empty archived tag value — forward-compat rule broken")
+	}
+}
+
 func TestIsBoardArchived_NilAndAbsentSafe(t *testing.T) {
 	if IsBoardArchived(nil) {
 		t.Fatal("IsBoardArchived(nil) = true, want false")

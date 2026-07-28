@@ -131,13 +131,47 @@ func assertBoardSpecUnchanged(t *testing.T, e *nostr.Event, wantTitle string, wa
 
 // TestBoardArchiveCmd_RefusesForeignOwnerCoordinate proves board-fold-spec.md
 // §16.6 ("the board event is written only by its owner") holds for archiving:
-// naming a coordinate whose owner is NOT this signing key must be refused,
-// and — the part a mere error-string assertion would miss — must append
-// NOTHING to the local log for that foreign coordinate.
+// naming a coordinate whose owner is NOT this signing key must be refused.
+//
+// The weakest satisfying input here would be a foreign-owner coordinate that
+// does not exist ANYWHERE (local log or relays) — but that input can't tell
+// the ownership guard apart from having no guard at all: with the guard
+// deleted, runBoardArchiveToggle still falls through to "no existing
+// kind-30301 definition found" and still returns a non-nil error, so an
+// assertion of "err != nil" (and "log did not grow") passes either way. That
+// false confidence is exactly the gap ready-a9b's adversary review found.
+//
+// The realistic, discriminating input: a foreign owner's board event that
+// DOES already exist in the local log — precisely what `rd follow` leaves
+// behind for boards you read but don't own — AND this key's OWN board at the
+// identical "d" tag ("shared-name" is a plausible collision: board d-tags are
+// owner-scoped, not globally unique). With the guard present, naming the
+// foreign coordinate is refused before any lookup happens. With the guard
+// DELETED: ParseBoardCoord still reports isCoord=true, but the owner check
+// that would reject it is gone, so boardD/coord become the FOREIGN
+// coordinate; WinningBoardEvent(events, foreignCoord) correctly finds the
+// stranger's event (matched by ITS OWN pubkey+d, not by who is asking); its
+// title/maintainers get carried into BuildBoardEvent — but that call always
+// signs with THIS key, so the event actually published lands at
+// "30301:<self>:shared-name", i.e. self's OWN board coordinate, and its
+// title/maintainers get overwritten with the stranger's. The command would
+// print "archived 30301:<stranger>:shared-name" (the ORIGINAL arg) — a false
+// statement, since what was actually mutated was self's own board. This test
+// pins BOTH the refusal and the non-clobber, so either failure mode is
+// caught.
 func TestBoardArchiveCmd_RefusesForeignOwnerCoordinate(t *testing.T) {
-	_, _, _, dir := boardTestEnv(t)
-	strangerOwner := testCLIKey(t)
-	foreignCoord := rdSync.BoardCoord(strangerOwner.PubKeyHex(), "not-mine")
+	owner, _, _, dir := boardTestEnv(t)
+	self := owner.PubKeyHex()
+	stranger := testCLIKey(t)
+
+	const sharedD = "shared-name"
+	foreignCoord := rdSync.BoardCoord(stranger.PubKeyHex(), sharedD)
+	selfCoord := rdSync.BoardCoord(self, sharedD)
+
+	// The stranger's board already exists locally (e.g. from `rd follow`)...
+	seedBoard(t, dir, stranger, sharedD, "Stranger Title", []string{stranger.PubKeyHex()}, 1700000000)
+	// ...AND this key owns a board of the identical name.
+	seedBoard(t, dir, owner, sharedD, "My Title", []string{self}, 1700000001)
 
 	before, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
 	if err != nil {
@@ -159,6 +193,12 @@ func TestBoardArchiveCmd_RefusesForeignOwnerCoordinate(t *testing.T) {
 	if len(after) != len(before) {
 		t.Fatalf("refused archive still appended to the log: before=%d after=%d", len(before), len(after))
 	}
+
+	// The discriminating assertion: self's OWN same-named board must survive
+	// completely untouched — still its own title and maintainer, not the
+	// stranger's.
+	win := winningBoardInLog(t, dir, selfCoord)
+	assertBoardSpecUnchanged(t, win, "My Title", []string{self})
 }
 
 // TestBoardArchiveCmd_NoExistingBoard_Errors proves archiving never INVENTS a

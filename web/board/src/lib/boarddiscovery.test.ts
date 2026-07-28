@@ -24,6 +24,11 @@ import {
   plainBeforeArchive,
   archivedBoard,
   archivedThenRevived,
+  TIE_OWNER,
+  tiePlain,
+  tieArchived,
+  FUTUREVER_OWNER,
+  futureVersionArchived,
 } from "./boardevents.fixtures";
 
 describe("discoverOwnerBoards", () => {
@@ -75,6 +80,43 @@ describe("discoverOwnerBoards", () => {
       expect(got.map((b) => b.boardD)).toEqual(["archiveme"]);
       expect(got[0].title).toBe("Archive Me");
     }
+  });
+
+  it("ready-a9b H2: on a GENUINE created_at tie, the lexicographically LOWEST event id wins — order-independent, and it must match pkg/sync's tie-break exactly", () => {
+    // tiePlain and tieArchived share the SAME created_at (1700000040): a real
+    // tie, not a strictly-increasing republish like alpha/alphaDup above.
+    // tieArchived's id is lexicographically lower than tiePlain's, so the
+    // documented rule ("on a tie the lexicographically LOWEST event id wins")
+    // says tieArchived wins and the coordinate is dropped as archived.
+    //
+    // This is the exact scenario newerBoardEvent's own doc comment claims
+    // (without a test to back it) "mirrors fold.ts's newerThan / pkg/sync's
+    // newerThan EXACTLY". Flipping the tie-break's comparison
+    // (`a.id < b.id` -> `a.id > b.id`) makes tiePlain win instead — passing
+    // all other tests here (none of which contain a genuine tie) while
+    // silently un-hiding an archived board in the browser that the CLI (whose
+    // Go tie-break IS covered, TestProjection_ConvergesUnderPermutation)
+    // still drops. That divergence — CLI and browser disagreeing on which
+    // definition of the same coordinate is current — is precisely what this
+    // feature must not do.
+    for (const events of [
+      [tiePlain, tieArchived],
+      [tieArchived, tiePlain],
+    ]) {
+      const got = discoverOwnerBoards(events, [TIE_OWNER], "");
+      expect(got).toEqual([]);
+    }
+  });
+
+  it("ready-a9b H3: ANY non-empty archived value counts, not just ArchivedTagValue (\"1\") — forward-compat for a future marker version", () => {
+    // futureVersionArchived carries archived="v2-hidden", not "1". The doc
+    // comment on isArchivedBoard claims this is deliberate: "a later marker
+    // version does not need a matching release to keep being honoured as
+    // archived". Tightening the check to exact-value equality (=== "1")
+    // passes every other test in this file (none of them use a non-"1"
+    // value) while silently un-hiding this board.
+    const got = discoverOwnerBoards([futureVersionArchived], [FUTUREVER_OWNER], "");
+    expect(got).toEqual([]);
   });
 
   it("single-board filter restricts discovery to one d", () => {
