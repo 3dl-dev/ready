@@ -151,7 +151,8 @@ describe("one portfolio link renders MULTIPLE boards' titles in plaintext", () =
     // owner grant sets the cutover), but its key was never in the link.
     await afterLogin(root, linkIdentity(), portfolioFragment(portfolioKeys()), noExtensionDeps);
 
-    const gammaSealed = renderedItems().filter((i) => i.id === "gamma-001");
+    const rendered = renderedItems();
+    const gammaSealed = rendered.filter((i) => i.id === "gamma-001");
     expect(gammaSealed.length, "gamma's sealed card did not render at all").toBe(1);
     expect(gammaSealed[0].title).toBe(PLACEHOLDER);
     expect(gammaSealed[0].sealed).toBe(true);
@@ -159,6 +160,26 @@ describe("one portfolio link renders MULTIPLE boards' titles in plaintext", () =
     // sealed" is about the key, not about the board being invisible.
     expect(pageText()).toContain("Gamma legacy plaintext");
     assertGammaStaysSealed();
+
+    // NOT VACUOUS, and specifically a SCOPING proof rather than an AEAD one.
+    //
+    // Two ways this assertion could hold for the wrong reason, both closed here.
+    // (a) The keys never reached the fold at all — then every board is sealed and
+    // "gamma is sealed" says nothing; so a board the link DOES carry a key for is
+    // asserted to have opened in the same load.
+    // (b) A key leaked across boards and merely failed to decrypt — that cannot
+    // happen in this fixture, because GAMMA_CEK is byte-identical to
+    // ALPHA_CEK_EPOCH1 (see the generator's CROSS-BOARD TRAP note). Alpha's key
+    // IS gamma's key, so a fold that offered it to gamma would render
+    // "GAMMA SECRET TITLE" instead of failing an AEAD, and this test would go red.
+    // The unit-level pin on the same rule is keyring.test.ts; the describe block
+    // below drives it through loadBoardItems directly.
+    const alpha = rendered.filter((i) => i.id === "alpha-001");
+    expect(alpha.length, "alpha-001 did not render — the fixture never reached the fold").toBe(1);
+    expect(alpha[0].title, "no board opened at all, so gamma being sealed proves nothing").toBe(
+      "Alpha epoch one card",
+    );
+    expect(alpha[0].sealed).toBe(false);
   });
 
   it("the notice counts BOARDS, not one board, and says how much was decrypted", async () => {

@@ -323,10 +323,16 @@ ever bind a stranger's key to.
                                      CREDENTIAL for your ENTIRE PORTFOLIO —
                                      strictly wider than --with-key alone,
                                      which covers one board. If any read relay
-                                     does not answer, this REFUSES to print a
-                                     link rather than print a narrower one
-                                     that looks whole; --allow-partial mints
-                                     it anyway and labels it partial.
+                                     does not answer, or answers without
+                                     serving grants this read proves exist,
+                                     this REFUSES to print a link rather than
+                                     print a narrower one that looks whole;
+                                     --allow-partial mints it anyway and
+                                     labels it partial. A clean gather means
+                                     no shortfall was DETECTABLE — a relay
+                                     that quietly serves a subset of what it
+                                     holds cannot be caught from one query,
+                                     so the link says what it could find.
   rd board share <npub-or-pubkey>   issue a grant to a KNOWN key, then print
                                      the URL (zero-wait: the grant is durable
                                      on the relay before they click).
@@ -504,12 +510,13 @@ func init() {
 	// always a grant.
 	boardCmd.Flags().Bool("portfolio", false, "print ONE link covering EVERY board this key can read, not just this directory's board (with --with-key the link carries every one of those boards' read keys)")
 	// ready-4d9 (follow-up). `--portfolio --with-key` REFUSES to mint a link when
-	// a read relay went unanswered, because the boards behind that link are a set
-	// the link claims is whole. This is the informed way through — an offline
-	// owner still gets a link, and the warning on it says it is partial and names
-	// what was missed. Absent from boardShareCmd like the other two: it can only
-	// widen an already-explicit act, never create one.
-	boardCmd.Flags().Bool("allow-partial", false, "with --portfolio --with-key: mint the link even though a read relay never answered, so the board set could not be confirmed complete (the link's warning then says so)")
+	// a read relay went unanswered OR answered short of the grants the read can
+	// prove exist, because the boards behind that link are a set the link implies
+	// it covers. This is the informed way through — an offline owner still gets a
+	// link, and the warning on it says it is partial and names what fell short.
+	// Absent from boardShareCmd like the other two: it can only widen an
+	// already-explicit act, never create one.
+	boardCmd.Flags().Bool("allow-partial", false, "with --portfolio --with-key: mint the link even though a read relay never answered, or answered without serving boards this read proved exist, so the board set could not be confirmed complete (the link's warning then says so)")
 
 	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")

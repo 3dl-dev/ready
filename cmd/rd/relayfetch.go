@@ -45,16 +45,37 @@ type relayFailure struct {
 	Err   error
 }
 
+// relayAnswer is WHAT ONE RELAY SERVED, kept apart from the merged union.
+//
+// The union alone cannot answer "did this relay serve less than another one
+// did", and that question is the only handle anyone has on a relay that accepts
+// a REQ, returns a SUBSET of what it holds, and sends EOSE. Such an answer is a
+// well-formed success at every layer below this one, so if the per-relay event
+// sets are thrown away at the merge, the shortfall is gone for good.
+type relayAnswer struct {
+	Relay  string
+	Events []*nostr.Event
+}
+
 // relayFetchOutcome is the FULL result of a multi-relay read: the merged,
-// de-duplicated events AND the identity of every relay that did not answer.
+// de-duplicated events, WHAT EACH RELAY INDIVIDUALLY SERVED, and the identity of
+// every relay that did not answer.
 //
 // Answered and Failed together account for every relay that was asked, so
 // `len(Failed) == 0` is a positive statement — "every relay we asked answered" —
 // rather than the absence of an error. That distinction is the whole point of the
 // type: an empty error is not evidence of a complete read.
+//
+// PerRelay exists because "answered" is a WEAKER statement than most callers
+// want, and the type must not let them confuse the two. A relay that answers
+// with 3 of the 15 events it holds is in Answered and not in Failed, and it is
+// right that it is: it did answer. Whether the answer was SHORT is a separate
+// question, and it can only be asked by comparing what each relay served against
+// what the reader can otherwise prove exists — which needs these slices.
 type relayFetchOutcome struct {
 	Events   []*nostr.Event
 	Answered []string
+	PerRelay []relayAnswer
 	Failed   []relayFailure
 }
 
@@ -123,12 +144,20 @@ func (o relayFetchOpts) attempts() int {
 // absent; a relay that answers with zero events is a SUCCESS (the relay is up and
 // genuinely holds nothing), which is precisely the distinction the old boolean
 // "did anything come back" could not draw.
+//
+// AND A SHORT ANSWER IS A SUCCESS HERE TOO, deliberately. From one REQ there is
+// nothing in NIP-01 that distinguishes "served all 3 events I hold" from "served
+// 3 of the 15 I hold, then EOSE" — no count, no digest, no continuation marker.
+// This function therefore does not and cannot classify it; it records what each
+// relay served in PerRelay and leaves the comparison to a caller that has
+// something to compare against (see portfolioGather.short in board_portfolio.go).
 var relayFetchMany = func(ctx context.Context, relays []string, filter map[string]any, opts relayFetchOpts) relayFetchOutcome {
 	seen := map[string]*nostr.Event{}
 	out := relayFetchOutcome{}
 
 	for _, r := range relays {
 		var lastErr error
+		var served []*nostr.Event
 		ok := false
 		for attempt := 1; attempt <= opts.attempts(); attempt++ {
 			if err := ctx.Err(); err != nil {
@@ -152,6 +181,7 @@ var relayFetchMany = func(ctx context.Context, relays []string, filter map[strin
 			for _, e := range evs {
 				if e != nil {
 					seen[e.ID] = e
+					served = append(served, e)
 				}
 			}
 			ok = true
@@ -159,6 +189,7 @@ var relayFetchMany = func(ctx context.Context, relays []string, filter map[strin
 		}
 		if ok {
 			out.Answered = append(out.Answered, r)
+			out.PerRelay = append(out.PerRelay, relayAnswer{Relay: r, Events: served})
 		} else {
 			out.Failed = append(out.Failed, relayFailure{Relay: r, Err: lastErr})
 		}
