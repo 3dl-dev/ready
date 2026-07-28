@@ -657,6 +657,12 @@ func TestConfidentialRotateCmdOutputStatesWhatItDoesNotDo(t *testing.T) {
 		"--with-key",         // the previously-minted links
 		"BEFORE this rotation keep working",
 		"cannot recall what the leaked key could already read",
+		// The relay-replacement consequence (ready-44b): addressable grants mean
+		// the old epoch's grants stop being SERVED, even though every existing
+		// local log keeps them. An operator seeding a new machine after a
+		// rotation has to know this.
+		"does NOT keep the old epoch's grants on relays",
+		"ready-44b",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rotate output does not state %q.\n--- output ---\n%s", want, out)
