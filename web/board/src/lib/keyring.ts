@@ -30,6 +30,7 @@ import type { NostrEvent } from "./nostrevent";
 import { tagValue, verifyEvent } from "./nostrevent";
 import { parseBoardCoord, boardCoord } from "./boarddiscovery";
 import type { KeyUnwrapper } from "./keyunwrap";
+import type { FragmentKeys } from "./fragment";
 
 /** KIND_ROLE_GRANT = 39301, matching pkg/sync/rolegrant.go's KindRoleGrant. */
 export const KIND_ROLE_GRANT = 39301;
@@ -221,4 +222,45 @@ export async function deriveBoardKeyring(
     }
   }
   return kr;
+}
+
+/**
+ * applyFragmentKeys adds the key material an `rd board --with-key` link carries
+ * (ready-df0) to a keyring that was ALREADY derived from signed relay events.
+ *
+ * WHY THIS IS NOT A HOLE IN THE FOUR CHECKS ABOVE. Those checks answer "may this
+ * relay-served event mint a key for this reader?" — the relay is untrusted, so
+ * every wrapped key has to prove owner provenance and ECDH binding before it
+ * counts. A fragment key answers a different question. It did not come from a
+ * relay; it came out of the reader's own `rd` on the reader's own machine, where
+ * DeriveBoardKeyring had already run those same four checks against the local
+ * signed log before the CLI would print it. Re-deriving provenance in the
+ * browser is impossible anyway (the whole point is that the page holds no secret
+ * key and so can do no ECDH) and would prove nothing new.
+ *
+ * WHAT IS STILL ENFORCED, and must stay enforced:
+ *  - Keys apply to ONE coordinate — the one named in the same fragment — and
+ *    nowhere else. A key can never leak across boards.
+ *  - Nothing here touches `cutovers`. Whether a board is confidential, and from
+ *    when, still comes ONLY from owner-signed grants (see cutover()), so the
+ *    fold gate that quarantines post-cutover cleartext is untouched: a link
+ *    cannot declare a board confidential, and cannot declare it public either.
+ *  - Nothing here touches event verification. Every card still has to pass its
+ *    own signature check in the fold, and every fetch is still #a-scoped to a
+ *    board that survived verification.
+ *  - A wrong key is still fail-closed: the AEAD simply does not open and the
+ *    title renders as the placeholder, never as ciphertext.
+ *
+ * The keyring is still never persisted — see the class doc above and
+ * nostorage.test.ts.
+ */
+export function applyFragmentKeys(kr: BoardKeyring, coord: string, keys: FragmentKeys): void {
+  for (const { epoch, key } of keys.ceks) {
+    if (key.length === 32 && Number.isSafeInteger(epoch) && epoch >= 1) kr.addCEK(coord, epoch, key);
+  }
+  // keys.ltk arrives only from a link minted before the LTK was dropped from
+  // emission (fragment.ts header). Applied for consistency with the CEKs — the
+  // keyring's shape should not depend on which build minted the link — but
+  // nothing in this app reads BoardKeyring.ltk() today.
+  if (keys.ltk && keys.ltk.length === 32) kr.addLTK(coord, keys.ltk);
 }
