@@ -43,3 +43,70 @@ not affect the production `vite build` output used here, and this
 toolchain never runs `vite dev` in CI or production. Revisit when Vite
 ships a release with a patched esbuild in the 5.x line, or on the next
 routine dependency bump.
+
+## Confidential boards (ready-c4b)
+
+A confidential rd board encrypts only free text — title, description,
+`waiting_on`, labels — into `event.Content`; every relay-indexed routing tag
+stays clear. The wire contract is frozen in
+`docs/design/confidential-boards-envelope.md`; the Go writer is
+`pkg/sync/envelope.go`. The browser reads it like this:
+
+1. Fetch the board's owner-signed kind-39301 role grants alongside the
+   kind-30301 board (`main.ts`). A confidential board's read key rides inside
+   the grant, so one REQ carries both "which board" and "can I read it".
+2. Unwrap the per-board CEK by asking the NIP-07 signer —
+   `window.nostr.nip44.decrypt(ownerPubkey, wrappedCEK)` (`keyunwrap.ts`).
+   **The secret key never enters the page.** That is the architectural premise
+   of the feature, not an optimisation.
+3. Open `base64(nonce(12) ‖ ChaCha20-Poly1305(CEK, plaintext))` under that CEK
+   (`envelope.ts`), and project the cards into items (`carditems.ts`).
+
+The wrapped key's NIP-44 plaintext is 64 lowercase hex characters, not 32 raw
+bytes, because NIP-07's `nip44.decrypt` returns a *string* and every extension
+finishes with a UTF-8 `TextDecoder` — raw key bytes would come back corrupted
+with no error anywhere. See `pkg/sync/keydist.go`'s `WrapKey` and
+`TestKeydistWrapPayloadIsHexForBrowserSigners`.
+
+### Fail closed
+
+When a title cannot be decrypted — no grant, the wrong CEK epoch, a tampered
+ciphertext or auth tag, a truncated envelope — the UI renders the placeholder
+`[encrypted]`, byte-identical to what `rd list` prints. It never renders
+ciphertext, a partially-decrypted string, a blank title, or the clear `title`
+tag (a confidential card does not carry one; if one appears, that is an attack
+shape). ChaCha20-Poly1305 is an AEAD: a tag mismatch means tampering *or* the
+wrong key, and both fail. `src/lib/envelope.test.ts` mutation-proves each of
+those cases against real Go-sealed bytes.
+
+### Nothing is persisted
+
+There is no cache of decrypted titles and no cache of key material. The keyring
+is rebuilt from signed relay events on every load. That costs one signer prompt
+per load and buys "a stolen browser profile contains no board keys and no board
+text". `src/nostorage.test.ts` enforces it structurally: no shipped module may
+even reference `localStorage`, `sessionStorage`, `indexedDB` or
+`document.cookie`.
+
+### Dependencies
+
+`@noble/ciphers` is the one runtime dependency (ChaCha20-Poly1305). Earlier
+board crypto (`sha256.ts`, `secp256k1.ts`, `bech32.ts`) was hand-rolled because
+`dist_test.go`'s external-reference scan rejected every `//` in the bundle,
+which banned dependency license banners outright; ready-8c5 fixed that guard, so
+a vetted library is viable again — and an AEAD is a much worse hand-roll
+candidate than a signature verifier (silent failure mode, constant-time
+130-bit arithmetic). `@noble/curves` and `@noble/hashes` are **dev**
+dependencies only: they back `nip44ref.ts`, the spec-validated NIP-44 v2
+implementation that stands in for a browser extension in tests. Nothing
+reachable from `index.html` imports them.
+
+### Regenerating the test fixtures
+
+`src/lib/confidential.fixtures.ts` is generated from the real Go writer:
+
+```sh
+go run ./web/board/testdata/genconfidential/main.go > web/board/src/lib/confidential.fixtures.ts
+```
+
+Every key in it is freshly generated test-only material.

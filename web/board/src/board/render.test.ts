@@ -36,6 +36,103 @@ describe("gate rail", () => {
     const ids = [...container.querySelectorAll(".gate-item")].map((el) => el.getAttribute("data-id"));
     expect(ids).toEqual(["gated1"]);
   });
+
+  it("says 'Waiting on you' and states the count against the open total", () => {
+    const gated = makeItem({ id: "gated1", status: "waiting", waitingType: "gate", gateMsgId: "m1", gate: "design" });
+    const other = makeItem({ id: "o1", status: "active" });
+    const closed = makeItem({ id: "o2", status: "done" });
+    ws = mountBoardWorkspace(container, [gated, other, closed]);
+    expect(container.querySelector(".gate-rail-heading")?.textContent).toBe("Waiting on you");
+    // "of 2", not "of 3": the closed item is not open work.
+    expect(container.querySelector(".gate-rail-sub")?.textContent).toBe(
+      "1 of 2 — the only ones that cannot move without your decision.",
+    );
+  });
+});
+
+// ready-56b. None of the chrome below existed on the deployed page: no mark, no
+// tally, no search, no sort note, no card cap, no footer. Each is asserted by
+// its rendered STRING, because "the element exists" is what a grep of the
+// bundle proved while the page still looked like a debug dump.
+describe("page chrome (docs/design/board-prototype.html)", () => {
+  it("renders the mark, the live tally, the search box and the New item button", () => {
+    const items = [
+      makeItem({ id: "a", status: "active", project: "ready" }),
+      makeItem({ id: "b", status: "inbox", project: "galtrader" }),
+      makeItem({ id: "c", status: "done", project: "ready" }),
+    ];
+    ws = mountBoardWorkspace(container, items, {
+      boards: [
+        { coord: "30301:owner:ready", title: "ready" },
+        { coord: "30301:owner:galtrader", title: "galtrader" },
+      ],
+    });
+    expect(container.querySelector(".mark")?.textContent).toBe("ready / board");
+    // 2 open (the done one is not), 2 projects, and 2 SHOWN — "shown" counts
+    // cards on the board, and a terminal item has no column, so it is neither
+    // open nor shown even though no filter excluded it.
+    expect(container.querySelector(".tally")?.textContent).toBe("2 open · 2 projects · 2 shown");
+    expect(container.querySelector("input.find")?.getAttribute("placeholder")).toBe(
+      "Filter by word or id",
+    );
+    expect(container.querySelector(".newbtn")?.textContent).toBe("New item");
+  });
+
+  it("states the sort rule under the filter bar", () => {
+    ws = mountBoardWorkspace(container, [makeItem({ status: "active" })]);
+    expect(container.querySelector(".sortnote")?.textContent).toBe(
+      "Sorted by priority, then by how much other work it frees, then by longest untouched.",
+    );
+  });
+
+  it("offers the two flag chips the design calls for", () => {
+    ws = mountBoardWorkspace(container, [makeItem({ status: "active" })]);
+    const chips = [...container.querySelectorAll(".filter-bar .chip")].map((c) => c.textContent);
+    expect(chips).toContain("Untouched 7+ days");
+    expect(chips).toContain("Unblocks others");
+  });
+
+  it("caps a column at 6 cards and discloses the rest behind 'Show all N'", () => {
+    const items = Array.from({ length: 9 }, (_, i) =>
+      makeItem({ id: `i${i}`, status: "active", project: "ready" }),
+    );
+    ws = mountBoardWorkspace(container, items);
+    const cards = () => container.querySelectorAll('.column[data-column="moving"] .card').length;
+    expect(cards()).toBe(6);
+    const more = container.querySelector('.column[data-column="moving"] .more') as HTMLElement;
+    expect(more.textContent).toBe("Show all 9");
+    more.click();
+    expect(cards()).toBe(9);
+    expect(container.querySelector('.column[data-column="moving"] .more')?.textContent).toBe(
+      "Show fewer",
+    );
+  });
+
+  it("renders a footer", () => {
+    ws = mountBoardWorkspace(container, [makeItem({ status: "active" })], {
+      boards: [{ coord: "30301:owner:ready", title: "ready" }],
+    });
+    expect(container.querySelector(".board-foot")?.textContent).toContain("1 board");
+  });
+});
+
+describe("board identity: names, never coordinates", () => {
+  const COORD = "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:dontguess";
+
+  it("a swimlane head shows the board's TITLE, and the coordinate is never printed", () => {
+    const item = makeItem({ id: "x", status: "active", boardCoord: COORD, project: "" });
+    ws = mountBoardWorkspace(container, [item], { boards: [{ coord: COORD, title: "dontguess" }] });
+    expect(container.querySelector(".swimlane .lane-name")?.textContent).toBe("dontguess");
+    expect(container.textContent).not.toContain(COORD);
+  });
+
+  it("a verified board with no items still gets a tree node carrying its coordinate", () => {
+    ws = mountBoardWorkspace(container, [], { boards: [{ coord: COORD, title: "dontguess" }] });
+    const node = container.querySelector(`.left-tree .node[data-board-coord="${COORD}"]`);
+    expect(node?.querySelector(".nm")?.textContent).toBe("dontguess");
+    expect(node?.querySelector(".ct")?.textContent).toBe("0");
+    expect(container.textContent).not.toContain(COORD);
+  });
 });
 
 describe("columns render in the DOM", () => {
@@ -64,7 +161,8 @@ describe("columns render in the DOM", () => {
     const dep = makeItem({ id: "dep", blockedBy: ["blocker"] });
     ws = mountBoardWorkspace(container, [blocker, dep]);
     const card = container.querySelector('.card[data-id="blocker"]')!;
-    expect(card.querySelector(".card-priority")?.textContent).toBe("p0");
+    // The priority chip is upper-cased on the card (prototype: `it.p.toUpperCase()`).
+    expect(card.querySelector(".card-priority")?.textContent).toBe("P0");
     expect(card.querySelector(".card-id")?.textContent).toBe("blocker");
     expect(card.querySelector(".card-title")?.textContent).toBe("Fix the thing");
     const labelTexts = [...card.querySelectorAll(".card-labels .label-pill")].map((n) => n.textContent);
@@ -75,18 +173,59 @@ describe("columns render in the DOM", () => {
 });
 
 describe("epics vs labels styling", () => {
-  it("epic tokens are FILLED (own colour token), label pills stay OUTLINED — never the same class", () => {
-    const epic = makeItem({ id: "epic1", title: "Epic One" });
-    const child = makeItem({ id: "child1", parentId: "epic1", labels: ["bug"] });
+  // ready-56b. The shipped board got BOTH halves of this wrong in a way the
+  // previous version of this test could not see: it filled the whole left-tree
+  // row in a saturated colour, and it filled the card token at full
+  // saturation too, off an eight-colour rainbow palette. The design says the
+  // tree epic is a 7px DOT and the card token is a 13%-opacity wash of one of
+  // five muted project tones. Both are asserted below by VALUE, not by
+  // "a background is set", because "a background is set" is exactly what the
+  // garish version satisfied.
+  it("a tree epic is a coloured DOT beside the name, not a filled row", () => {
+    const epic = makeItem({ id: "epic1", title: "Epic One", project: "ready" });
+    const child = makeItem({ id: "child1", parentId: "epic1", project: "ready" });
     ws = mountBoardWorkspace(container, [epic, child]);
-    const epicToken = container.querySelector(".epic-token");
-    const labelPill = container.querySelector(".left-tree .label-pill");
+    const row = container.querySelector(".left-tree .epic-node .node") as HTMLElement;
+    expect(row).toBeTruthy();
+    // The ROW itself is unpainted…
+    expect(row.style.backgroundColor).toBe("");
+    // …and the dot carries the project's tone (#7A4FB5 for "ready").
+    const dot = row.querySelector(".dot") as HTMLElement;
+    expect(dot).toBeTruthy();
+    expect(dot.style.background).toBe("rgb(122, 79, 181)");
+  });
+
+  it("a card's epic token is a 13% tint of its tone, and label pills stay OUTLINED", () => {
+    const epic = makeItem({ id: "epic1", title: "Epic One", project: "ready" });
+    const child = makeItem({ id: "child1", parentId: "epic1", labels: ["bug"], project: "ready" });
+    ws = mountBoardWorkspace(container, [epic, child]);
+    const epicToken = container.querySelector(".card .epic-token") as HTMLElement;
+    const labelPill = container.querySelector(".left-tree .label-pill") as HTMLElement;
     expect(epicToken).toBeTruthy();
     expect(labelPill).toBeTruthy();
-    expect(epicToken?.classList.contains("label-pill")).toBe(false);
-    expect(labelPill?.classList.contains("epic-token")).toBe(false);
-    // epic token carries a background colour (filled); label pill does not set one.
-    expect((epicToken as HTMLElement).style.backgroundColor).not.toBe("");
+    expect(epicToken.classList.contains("label-pill")).toBe(false);
+    expect(labelPill.classList.contains("epic-token")).toBe(false);
+    // Filled — but at 13%, with a 34% border and the tone as the text colour.
+    expect(epicToken.style.backgroundColor).toBe("rgba(122, 79, 181, 0.13)");
+    expect(epicToken.style.borderColor).toBe("rgba(122, 79, 181, 0.34)");
+    expect(epicToken.style.color).toBe("rgb(122, 79, 181)");
+    // Outlined: the label pill sets no background at all.
+    expect(labelPill.style.backgroundColor).toBe("");
+  });
+
+  it("an unresolved HMAC label token is not rendered as pill text", () => {
+    // A confidential card the reader holds no LTK for carries `l` tags that are
+    // still 64-hex HMACs (pkg/sync/envelope.go labelToken). A 64-character pill
+    // is not a label — it is layout damage. Hide it until it resolves.
+    const hmac = "793ced294e2d146a02e7040578fbe96bbda73f193fc7f8abefd5bf733206126e";
+    const item = makeItem({ id: "conf", labels: [hmac, "bug"], status: "active" });
+    ws = mountBoardWorkspace(container, [item]);
+    const texts = [...container.querySelectorAll(".label-pill")].map((n) => n.textContent ?? "");
+    expect(texts.some((t) => t.includes(hmac))).toBe(false);
+    expect(container.textContent).not.toContain(hmac);
+    // ...and the resolvable label beside it still renders, so this is a filter
+    // and not a "drop every label on a confidential card" bail-out.
+    expect(container.querySelector(".card .label-pill")?.textContent).toBe("bug");
   });
 
   it("an item with no children is NOT an epic, even if it carries level=epic", () => {
@@ -156,7 +295,8 @@ describe("selection and detail pane", () => {
     const grid = () => (container.querySelector(".board-workspace") as HTMLElement).style.gridTemplateColumns;
     expect(grid()).toBe("206px minmax(0, 1fr)");
     ws.selectItem("sel");
-    expect(grid()).toBe("206px minmax(0, 1fr) 340px");
+    // 5px is the drag grip, which only exists while the detail track does.
+    expect(grid()).toBe("206px minmax(0, 1fr) 5px 340px");
   });
 });
 
@@ -175,16 +315,49 @@ describe("detail width clamp", () => {
 });
 
 describe("filters compose in the UI", () => {
-  it("toggling a priority facet chip hides non-matching cards without dropping no-priority cards from the option list", () => {
+  // ready-56b: the filter bar is the prototype's — a swimlane segmented control
+  // plus four chips (P0, P1, Untouched 7+ days, Unblocks others). The old
+  // open-ended facet rows are gone; the assignee one in particular rendered a
+  // chip per full 64-character pubkey and blew the row across the page.
+  it("toggling the P1 chip hides non-matching cards, and toggling it back restores them", () => {
     const withPrio = makeItem({ id: "p1item", priority: "p1", status: "active" });
     const noPrio = makeItem({ id: "noprio", priority: "", status: "active" });
     ws = mountBoardWorkspace(container, [withPrio, noPrio]);
-    expect([...container.querySelectorAll('.facet-priority .facet-chip')].map((c) => c.textContent)).toContain(
-      "No priority",
-    );
-    (container.querySelector('.facet-priority .facet-chip[data-value="p1"]') as HTMLElement).click();
-    const cardIds = [...container.querySelectorAll(".card")].map((c) => c.getAttribute("data-id"));
-    expect(cardIds).toEqual(["p1item"]);
+    const cardIds = () => [...container.querySelectorAll(".card")].map((c) => c.getAttribute("data-id"));
+    expect(cardIds().sort()).toEqual(["noprio", "p1item"]);
+
+    (container.querySelector('.chip[data-pri="p1"]') as HTMLElement).click();
+    expect(cardIds()).toEqual(["p1item"]);
+
+    (container.querySelector('.chip[data-pri="p1"]') as HTMLElement).click();
+    expect(cardIds().sort()).toEqual(["noprio", "p1item"]);
+  });
+
+  it("the 'Unblocks others' chip keeps only items something else waits on", () => {
+    const blocker = makeItem({ id: "blocker", status: "active" });
+    const dependent = makeItem({ id: "dependent", status: "active", blockedBy: ["blocker"] });
+    const loner = makeItem({ id: "loner", status: "active" });
+    ws = mountBoardWorkspace(container, [blocker, dependent, loner]);
+    (container.querySelector('.chip[data-flag="lever"]') as HTMLElement).click();
+    expect([...container.querySelectorAll(".card")].map((c) => c.getAttribute("data-id"))).toEqual([
+      "blocker",
+    ]);
+  });
+
+  it("the header search filters by word or id", () => {
+    const a = makeItem({ id: "aaa-1", title: "Relay must be open infra", status: "active" });
+    const b = makeItem({ id: "bbb-2", title: "Something else entirely", status: "active" });
+    ws = mountBoardWorkspace(container, [a, b]);
+    const find = container.querySelector("input.find") as HTMLInputElement;
+    expect(find.placeholder).toBe("Filter by word or id");
+    ws.setQuery("open infra");
+    expect([...container.querySelectorAll(".card")].map((c) => c.getAttribute("data-id"))).toEqual([
+      "aaa-1",
+    ]);
+    ws.setQuery("bbb-2");
+    expect([...container.querySelectorAll(".card")].map((c) => c.getAttribute("data-id"))).toEqual([
+      "bbb-2",
+    ]);
   });
 
   it("clicking a label pill in the left tree filters the board to that label", () => {

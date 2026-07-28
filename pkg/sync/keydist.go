@@ -21,6 +21,7 @@ package sync
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/3dl-dev/ready/pkg/nip44"
@@ -40,22 +41,58 @@ func MintKey() ([32]byte, error) {
 
 // WrapKey NIP-44-v2-wraps a 32-byte key to granteePubHex, sealed by owner. The
 // result is carried as the grant's "cek"/"ltk" tag.
+//
+// THE PAYLOAD IS LOWERCASE HEX, NOT RAW BYTES (ready-c4b). NIP-44 v2 itself is
+// binary-clean, but the only way a BROWSER can unwrap this key is NIP-07's
+// `window.nostr.nip44.decrypt(pubkey, ciphertext)`, whose return type is a
+// STRING: every extension in the wild finishes with a UTF-8 TextDecoder, which
+// is lossy for arbitrary bytes (32 random bytes are essentially never valid
+// UTF-8, and a non-fatal decoder substitutes U+FFFD for each malformed run —
+// unrecoverably). Sealing 64 ASCII hex characters instead makes the wrap
+// survive that string boundary byte-for-byte, so the board client can hold a
+// board key without the secret key ever entering the page.
+//
+// This does NOT change the frozen envelope contract
+// (docs/design/confidential-boards-envelope.md): §4 states only the marker
+// contract and explicitly defers "the wrap mechanism" to keydist, which is this
+// file. The AEAD, the ECDH recipient binding and the owner-signature anti-replay
+// binding are all untouched — only the plaintext's encoding changed.
+//
+// unwrapKey still accepts a raw 32-byte payload, so grants minted before this
+// change keep working.
 func WrapKey(owner *nostr.Key, granteePubHex string, key [32]byte) (string, error) {
-	return nip44.Seal(owner, granteePubHex, key[:])
+	return nip44.Seal(owner, granteePubHex, []byte(hex.EncodeToString(key[:])))
 }
 
-// unwrapKey opens a NIP-44 wrap that counterparty (the owner) sealed to reader.
+// unwrapKey opens a NIP-44 wrap that counterparty (the owner) sealed to reader
+// and decodes the 32-byte key from it.
+//
+// Two payload encodings are accepted, disambiguated by length: 64 lowercase-hex
+// characters (what WrapKey emits today, chosen so a NIP-07 browser signer's
+// string return is lossless — see WrapKey) and a raw 32-byte payload (what
+// WrapKey emitted before ready-c4b, kept so already-published grants still
+// unwrap). Anything else is an error, and every caller treats an error as "the
+// reader does not hold this key" — the fail-closed direction.
 func unwrapKey(reader *nostr.Key, counterpartyPubHex, wrapped string) ([32]byte, error) {
 	var out [32]byte
 	pt, err := nip44.Open(reader, counterpartyPubHex, wrapped)
 	if err != nil {
 		return out, err
 	}
-	if len(pt) != 32 {
-		return out, fmt.Errorf("sync: keydist: unwrapped key is %d bytes, want 32", len(pt))
+	switch len(pt) {
+	case hex.EncodedLen(32):
+		decoded, derr := hex.DecodeString(string(pt))
+		if derr != nil {
+			return out, fmt.Errorf("sync: keydist: unwrapped key is not hex: %w", derr)
+		}
+		copy(out[:], decoded)
+		return out, nil
+	case 32:
+		copy(out[:], pt)
+		return out, nil
+	default:
+		return out, fmt.Errorf("sync: keydist: unwrapped key is %d bytes, want %d (hex) or 32 (raw)", len(pt), hex.EncodedLen(32))
 	}
-	copy(out[:], pt)
-	return out, nil
 }
 
 // BoardKeyring is a reader's derived confidential-board key material. It implements

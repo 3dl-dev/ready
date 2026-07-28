@@ -641,7 +641,7 @@ cards stay readable by it (accepted limit, frozen §4). No-op on a plaintext boa
 or when the signer is not the owner (`:325-327`).
 
 **§11.12 Keyring derivation retains ALL epochs.** `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:141-194`) scans EVERY historical grant, not latest-wins, so
+(`pkg/sync/keydist.go:178-231`) scans EVERY historical grant, not latest-wins, so
 a member keeps old-epoch CEKs and historical reads survive (`:136-140`). It
 accepts a key only when: kind is 39301 and `Verify()` passes (`:146-151`); the
 grant binds to `(boardAuthor, boardD)` (`:156-158`); the grant is signed by the
@@ -654,10 +654,10 @@ the anti-retarget guard.
 `created_at` of any owner-signed CEK-bearing grant, tracked regardless of who it
 is addressed to (`pkg/sync/keydist.go:172-175`). `Cutover(coord)` returning
 `ok=true` is exactly "this board is confidential"
-(`pkg/sync/keydist.go:97-103`).
+(`pkg/sync/keydist.go:134-140`).
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
-reader holds (`pkg/sync/keydist.go:110-124`). A member that missed a rotation
+reader holds (`pkg/sync/keydist.go:147-161`). A member that missed a rotation
 returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
@@ -1763,7 +1763,7 @@ path builds its envelope from `CurrentEpoch` only
 (`envelopeFromKeyring`, `cmd/rd/confidential.go:65-76`) and errors ONLY when the
 writer holds no key at all (`:126-132`) — it never checks that the card it is
 about to re-seal was actually decryptable. `DeriveBoardKeyring` accumulates epochs
-from the grants present in the LOCAL LOG (`pkg/sync/keydist.go:145-186`), and
+from the grants present in the LOCAL LOG (`pkg/sync/keydist.go:182-223`), and
 39301 grants are addressable per `(boardD, grantee)` slot
 (`roleGrantD`), so a machine that populated its log from a relay after an epoch
 rotation may hold only the newest grant. Such a member reads a pre-rotation card

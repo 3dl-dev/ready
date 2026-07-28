@@ -49,6 +49,7 @@ import { authTransition, canSign } from "./lib/auth";
 import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord } from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
+import { neverUnwraps } from "./lib/keyunwrap";
 import type { NostrEvent } from "./lib/nostrevent";
 import {
   OWNER,
@@ -193,6 +194,11 @@ interface Capture {
 function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
   FakeRelayWebSocket.reset(served);
   return {
+    // ready-c4b: no key material for these cases. The confidential read path
+    // has its own suite (main.confidential.test.ts); here an identity that
+    // holds no board key is the right default, and it keeps every assertion
+    // below about verification rather than decryption.
+    keyUnwrapper: () => neverUnwraps,
     loadRelays: async () => [CONFIG_RELAY],
     fetchEvents: async (relays, filter, opts) => {
       capture.filters.push(filter);
@@ -233,12 +239,32 @@ function expectItemFetchesScopedToRenderedBoards(capture: Capture, root: HTMLEle
   }
 }
 
-/** Every board the page actually rendered, as {title, coord} in DOM order. */
+/**
+ * Every board the page actually rendered, as {title, coord} in DOM order.
+ *
+ * ready-56b: this used to read `ul.board-list > li` — the raw coordinate dump
+ * that sat above the board and printed nine lines of "30301:<64 hex>:<d>". That
+ * element is deleted; the verified board set now lives where the design puts
+ * it, as the left tree's project nodes. The board's NAME is the rendered text
+ * and its coordinate is a data attribute, which is strictly more assertable
+ * than before: `expectNoCoordinateDump` below pins that the coordinate is NOT
+ * printed as text, and this projection still fails if a board that did not
+ * survive verification reaches the DOM.
+ */
 function renderedBoards(root: HTMLElement): { title: string; coord: string }[] {
-  return Array.from(root.querySelectorAll("ul.board-list > li")).map((li) => ({
-    title: li.querySelector(".board-title")?.textContent ?? "",
-    coord: li.querySelector(".board-coord")?.textContent ?? "",
+  return Array.from(root.querySelectorAll(".left-tree .node[data-board-coord]")).map((node) => ({
+    title: node.querySelector(".nm")?.textContent ?? "",
+    coord: (node as HTMLElement).dataset.boardCoord ?? "",
   }));
+}
+
+/** No board coordinate may appear as rendered TEXT anywhere on the page. This
+ * is the assertion the deleted debug list would have failed. */
+function expectNoCoordinateDump(root: HTMLElement): void {
+  const text = root.textContent ?? "";
+  for (const b of renderedBoards(root)) {
+    expect(text, `coordinate ${b.coord} is printed as text`).not.toContain(b.coord);
+  }
 }
 
 /** Asserts no forged/foreign identifier appears ANYWHERE under root — not
@@ -329,7 +355,10 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       //    bare visit carries no link relays), asking for the LOGGED-IN key's
       //    kind-30301 events.
       expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([CONFIG_RELAY]);
-      expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [identity.pubkey] });
+      // ready-c4b: the authority REQ carries the 39301 role grants alongside
+      // the 30301 boards, because a confidential board's read key rides inside
+      // an owner-signed grant and both must come from ONE snapshot.
+      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [identity.pubkey] });
       // ready-bad: every later query is a per-board item fetch, and each must be
       // #a-scoped to a board that SURVIVED verification. Stronger than the old
       // exact-match: it also forbids an item fetch leaking to a board the
@@ -353,6 +382,10 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       //    the first occurrence's title rather than alphaDup's. This holds for
       //    a signing identity too: verification is NOT gated on canSign.
       expect(renderedBoards(root)).toEqual(OWNERS_GENUINE_BOARDS);
+
+      // 2b. ready-56b: and their coordinates are provenance, not chrome — the
+      //     debug-grade coordinate dump that used to head the page is gone.
+      expectNoCoordinateDump(root);
 
       // 3. Nothing forged leaked anywhere else in the subtree either.
       expectNoForgedContent(root);
@@ -401,7 +434,13 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // the two relay sources — the link's list wins when it is non-empty.
       expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
       // The link's coordinate, not the viewer's key, names the author here.
-      expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [OWNER] });
+      // ready-c4b added the 39301 role grants to the authority REQ (a
+      // confidential board's read key rides inside an owner-signed grant);
+      // ready-bad added the per-board item REQ, scoped by board coordinate.
+      expect(capture.filters).toEqual([
+        { kinds: [30301, 39301], authors: [OWNER] },
+        { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [boardCoord(OWNER, "alpha")] },
+      ]);
       expectItemFetchesScopedToRenderedBoards(capture, root);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
@@ -420,6 +459,10 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         deps,
       );
 
+      // The board path opens a SECOND subscription to the same relay set (the
+      // board's items, after its 30301/39301 authority events). The property
+      // under test is WHICH relays were used, not how many sockets — so
+      // compare the distinct set.
       expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([CONFIG_RELAY]);
       expectSnapshotCarriedTheForgedEvents(capture);
       expect(renderedBoards(root)).toEqual([
@@ -502,6 +545,7 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
   describe("relay failure surfaces instead of an empty board list", () => {
     it("shows the relay error and renders no board list when no relay can be reached", async () => {
       const deps: BoardDeps = {
+        keyUnwrapper: () => neverUnwraps,
         loadRelays: async () => [CONFIG_RELAY],
         fetchEvents: async () => {
           throw new Error("relay: could not reach any relay: socket error");
@@ -538,7 +582,7 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
     await afterLogin(root, stranger, { kind: "none" }, deps);
 
     // The REQ carried STRANGER's key — main.ts asked for its own boards.
-    expect(capture.filters[0]).toEqual({ kinds: [30301], authors: [STRANGER] });
+    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [STRANGER] });
     expectItemFetchesScopedToRenderedBoards(capture, root);
     // ANTI-VACUITY: the relay ignored that filter and served everything, so
     // the genuine boards really were in front of main.ts when it rendered.

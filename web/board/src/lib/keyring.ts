@@ -1,0 +1,224 @@
+// Reader-side confidential-board key material (ready-c4b), the browser port of
+// pkg/sync/keydist.go's DeriveBoardKeyring + pkg/sync/rolegrant.go's
+// parseRoleGrant.
+//
+// A board's read key rides INSIDE the owner-signed kind-39301 role grant: one
+// signed action confers write authority AND the read key. So deriving the
+// keyring is an AUTHORIZATION computation, not a lookup, and it runs entirely on
+// signed events fetched from an untrusted relay. Four independent checks decide
+// whether a wrapped key becomes a usable CEK, and all four are load-bearing:
+//
+//  1. The grant's Schnorr signature verifies (a relay may serve anything).
+//  2. The grant is SIGNED BY THE BOARD OWNER. Only the authz root mints board
+//     keys; a self-signed grant carrying a key someone else minted is ignored,
+//     or any pubkey could introduce a board key and then author cards under it.
+//  3. The grant's SIGNED p tag names this reader. NIP-44 v2 has no AAD, so the
+//     wrap itself does not say who it is for; the binding is the owner's
+//     signature over the p tag.
+//  4. The wrap actually OPENS for this reader. That is the ECDH binding, and it
+//     is what makes a captured wrapped-CEK useless when lifted into a grant
+//     p-tagged to somebody else — re-signing the grant needs the owner's key,
+//     and the wrap will not open for the new grantee.
+//
+// ALL historical grants are scanned, NOT latest-wins: a member keeps the
+// old-epoch CEKs it was already given, so historical reads survive a rotation.
+// A revoked member simply never receives a wrap for the NEW epoch — that is the
+// whole mechanism of forward secrecy here, and it is why revocation shows up in
+// this file as an absence rather than as a rule.
+
+import type { NostrEvent } from "./nostrevent";
+import { tagValue, verifyEvent } from "./nostrevent";
+import { parseBoardCoord, boardCoord } from "./boarddiscovery";
+import type { KeyUnwrapper } from "./keyunwrap";
+
+/** KIND_ROLE_GRANT = 39301, matching pkg/sync/rolegrant.go's KindRoleGrant. */
+export const KIND_ROLE_GRANT = 39301;
+
+const ROLES = new Set(["owner", "maintainer", "contributor", "revoked"]);
+
+/** RoleGrant is the parsed view of a verified kind-39301 event — the fields
+ * this client needs, named as in pkg/sync/rolegrant.go's roleGrant. */
+export interface RoleGrant {
+  signer: string;
+  grantee: string;
+  role: string;
+  boardOwner: string;
+  boardD: string;
+  createdAt: number;
+  wrappedCEK: string;
+  cekEpoch: number;
+  wrappedLTK: string;
+}
+
+/**
+ * parseRoleGrant extracts a RoleGrant from a kind-39301 event, or null when the
+ * event is not a well-formed grant (wrong kind, missing grantee/role,
+ * unrecognized role, or an "a" coordinate that does not name a 30301 board).
+ * Like the Go original it does NOT verify the signature — deriveBoardKeyring
+ * does that first.
+ *
+ * An unparseable cek_epoch tag becomes 0, exactly as Go's strconv.Atoi-with-
+ * fallback does, and deriveBoardKeyring rejects any grant with epoch < 1 rather
+ * than binding a key to a bogus epoch.
+ */
+export function parseRoleGrant(e: NostrEvent): RoleGrant | null {
+  if (!e || e.kind !== KIND_ROLE_GRANT) return null;
+  const grantee = tagValue(e, "p");
+  const role = tagValue(e, "role");
+  if (grantee === "" || role === "" || !ROLES.has(role)) return null;
+  const coord = parseBoardCoord(tagValue(e, "a"));
+  if (!coord) return null;
+
+  let cekEpoch = 0;
+  const rawEpoch = tagValue(e, "cek_epoch");
+  if (rawEpoch !== "" && /^-?\d+$/.test(rawEpoch)) {
+    const n = Number(rawEpoch);
+    if (Number.isSafeInteger(n)) cekEpoch = n;
+  }
+
+  return {
+    signer: e.pubkey,
+    grantee,
+    role,
+    boardOwner: coord.owner,
+    boardD: coord.boardD,
+    createdAt: e.created_at,
+    wrappedCEK: tagValue(e, "cek"),
+    cekEpoch,
+    wrappedLTK: tagValue(e, "ltk"),
+  };
+}
+
+/**
+ * BoardKeyring is what a reader can decrypt, and nothing else. It is the browser
+ * counterpart of pkg/sync/keydist.go's BoardKeyring and answers the same three
+ * questions: which CEK for (board, epoch), which LTK, and when did this board go
+ * confidential.
+ *
+ * IT IS NEVER PERSISTED. There is no serializer here, no toJSON, no storage
+ * call anywhere in this module — see storage.test.ts, which asserts no key
+ * material reaches localStorage / sessionStorage / IndexedDB. The keyring is
+ * rebuilt from signed relay events on every load, which costs one extension
+ * prompt and buys "a stolen browser profile contains no board keys".
+ */
+export class BoardKeyring {
+  private readonly ceks = new Map<string, Map<number, Uint8Array>>();
+  private readonly ltks = new Map<string, Uint8Array>();
+  private readonly cutovers = new Map<string, number>();
+
+  /** cek returns the content key for (coord, epoch), or null when this reader
+   * holds none. Null is the fail-closed answer and every caller renders the
+   * placeholder for it. */
+  cek(coord: string, epoch: number): Uint8Array | null {
+    return this.ceks.get(coord)?.get(epoch) ?? null;
+  }
+
+  /** ltk returns the board's label-token key, or null. Held so a future path
+   * that pushes an `#l` filter to a relay can tokenize the label first (spec
+   * §7); labels themselves are filtered client-side on decrypted plaintext. */
+  ltk(coord: string): Uint8Array | null {
+    return this.ltks.get(coord) ?? null;
+  }
+
+  /**
+   * cutover returns the board-global created_at of the first CEK-bearing owner
+   * grant, or null when the board is not confidential at all.
+   *
+   * It is tracked from EVERY owner CEK grant, not only the ones addressed to
+   * this reader, so a reader who holds no key still knows the board is
+   * confidential — which is what lets the fold gate quarantine post-cutover
+   * cleartext for a stranger instead of rendering it.
+   */
+  cutover(coord: string): number | null {
+    return this.cutovers.get(coord) ?? null;
+  }
+
+  /** epochs lists the CEK epochs this reader holds for a board, ascending.
+   * Diagnostics and tests only. */
+  epochs(coord: string): number[] {
+    return [...(this.ceks.get(coord)?.keys() ?? [])].sort((a, b) => a - b);
+  }
+
+  /** @internal */
+  addCEK(coord: string, epoch: number, cek: Uint8Array): void {
+    let m = this.ceks.get(coord);
+    if (!m) {
+      m = new Map();
+      this.ceks.set(coord, m);
+    }
+    m.set(epoch, cek);
+  }
+
+  /** @internal */
+  addLTK(coord: string, ltk: Uint8Array): void {
+    this.ltks.set(coord, ltk);
+  }
+
+  /** @internal */
+  noteCutover(coord: string, at: number): void {
+    const cur = this.cutovers.get(coord);
+    if (cur === undefined || at < cur) this.cutovers.set(coord, at);
+  }
+}
+
+/**
+ * deriveBoardKeyring scans a relay snapshot for owner-signed kind-39301 grants
+ * and builds this reader's key material for the board (boardAuthor, boardD).
+ * Port of pkg/sync/keydist.go's DeriveBoardKeyring — see the module header for
+ * the four checks and why each one is load-bearing.
+ *
+ * `unwrap` is the signer seam (keyunwrap.ts): in production it prompts the
+ * NIP-07 extension, in tests it is a spec-correct NIP-44 v2 implementation. It
+ * is called only for grants that already passed checks 1-3, so a hostile relay
+ * cannot make the page spam the extension with prompts for grants addressed to
+ * other people.
+ *
+ * Never throws. A malformed grant, a failed unwrap, or a key of the wrong size
+ * is skipped, and the reader ends up holding fewer keys — which renders as more
+ * placeholders, never as a wrong plaintext.
+ */
+export async function deriveBoardKeyring(
+  events: NostrEvent[],
+  readerPubkey: string,
+  boardAuthor: string,
+  boardD: string,
+  unwrap: KeyUnwrapper,
+): Promise<BoardKeyring> {
+  const coord = boardCoord(boardAuthor, boardD);
+  const kr = new BoardKeyring();
+  if (boardAuthor === "" || boardD === "") return kr;
+
+  for (const e of events) {
+    if (!e || e.kind !== KIND_ROLE_GRANT) continue;
+    // CHECK 1 — a relay is untrusted. An unverified grant mints nothing.
+    if (!verifyEvent(e)) continue;
+    const g = parseRoleGrant(e);
+    if (!g) continue;
+    if (g.boardOwner !== boardAuthor || g.boardD !== boardD) continue;
+    // CHECK 2 — only the OWNER mints CEKs. A CEK "wrapped" by anyone else is
+    // ignored: otherwise any pubkey could introduce a board key.
+    if (g.signer !== boardAuthor || g.wrappedCEK === "") continue;
+    // A valid epoch is >= 1 (cards seal under epoch >= 1). Reject a grant whose
+    // cek_epoch tag did not parse rather than binding a key to epoch 0 or
+    // setting the board cutover from a malformed grant.
+    if (g.cekEpoch < 1) continue;
+
+    // Board-global cutover: earliest owner CEK-bearing grant, tracked
+    // regardless of who the grant is addressed to.
+    kr.noteCutover(coord, g.createdAt);
+
+    // CHECK 3 — the SIGNED p tag must name this reader.
+    if (g.grantee !== readerPubkey) continue;
+
+    // CHECK 4 — the wrap must actually open for this reader's key (ECDH
+    // binding). A wrap lifted out of someone else's grant fails here.
+    const cek = await unwrap(g.signer, g.wrappedCEK);
+    if (cek && cek.length === 32) kr.addCEK(coord, g.cekEpoch, cek);
+
+    if (g.wrappedLTK !== "") {
+      const ltk = await unwrap(g.signer, g.wrappedLTK);
+      if (ltk && ltk.length === 32) kr.addLTK(coord, ltk);
+    }
+  }
+  return kr;
+}

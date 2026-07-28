@@ -33,8 +33,11 @@ export interface NostrFilter {
   authors?: string[];
   ["#d"]?: string[];
   /** Board-coordinate tag scope ("30301:<owner>:<d>"), mirroring the Go
-   * client's BoardSyncFilter (pkg/sync/nostrinbound.go:84). */
+   * client's BoardSyncFilter (pkg/sync/nostrinbound.go:84). A confidential
+   * board keeps every routing tag in the clear precisely so this REQ keeps
+   * working unchanged (envelope spec §0). */
   ["#a"]?: string[];
+  ["#p"]?: string[];
   limit?: number;
 }
 

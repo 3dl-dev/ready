@@ -1,40 +1,106 @@
-// The board workspace: gate rail + left tree + swimlaned columns + detail
-// pane. Layout pattern (two/three-pane list+detail, resizable/closeable
-// detail track) is vendored from moot's Feed.tsx / PostRow.tsx /
-// CommentColumn.tsx (github.com/3dl-dev/moot, MIT, same owner) — ported as a
-// LAYOUT PATTERN, not a literal file copy, because this app is vanilla
-// TS+DOM (see main.ts's `el()` helper) and moot's components are React/JSX.
-// What is vendored: the list-selects-into-detail interaction model, the
-// closeable/resizable right track that reclaims width when nothing is
-// selected, and Escape-to-close. See ready-61c for the attribution review.
-import { applyFilters, assigneeBuckets, labelFrequency, NO_PRIORITY, priorityBuckets, UNASSIGNED, type FilterState } from "./filters";
+// The board workspace: header + gate rail + left tree + swimlaned columns +
+// detail pane.
+//
+// NORMATIVE REFERENCE: docs/design/board-prototype.html — the artifact the
+// owner approved on 2026-07-27. Read THAT, not a prose paraphrase of it, before
+// changing anything here. ready-56b exists because the first build of this file
+// was written from a paraphrase: it shipped a page with no header, no tally, no
+// search, no filter chips, no sort note, no card cap, no footer, a rainbow
+// eight-colour epic palette rendered as full-saturation blocks, and a dark-only
+// ground that was not even the design's dark ground. Every constant below that
+// carries a hex value or a px value came out of the prototype's :root or its
+// render functions; board.css mirrors its <style> block rule for rule.
+//
+// Layout pattern (two/three-pane list+detail, resizable/closeable detail track)
+// is vendored from moot's Feed.tsx / PostRow.tsx / CommentColumn.tsx
+// (github.com/3dl-dev/moot, MIT, same owner) — ported as a LAYOUT PATTERN, not a
+// literal file copy, because this app is vanilla TS+DOM. What is vendored: the
+// list-selects-into-detail interaction model, the closeable/resizable right
+// track that reclaims width when nothing is selected, and Escape-to-close. See
+// ready-61c for the attribution review.
+import { applyFilters, labelFrequency, NO_PRIORITY, priorityBuckets, type FilterState } from "./filters";
 import { buildEpicTree, buildFreesIndex, deriveEpics, freesCount, type EpicRollup, type EpicTreeNode } from "./graph";
 import { columnize, gatesFilter } from "./views";
 import { sortCards } from "./sort";
-import { statusLine, daysSince } from "./statusline";
+import { statusLine, daysSince, ageLabel } from "./statusline";
 import { isTerminal, type Item } from "./types";
 import { unimplementedWriter, type BoardWriter } from "./write";
+import { PLACEHOLDER } from "../lib/envelope";
 
 export type SwimlaneMode = "project" | "epic" | "priority" | "off";
+
+export interface BoardRef {
+  coord: string;
+  title: string;
+}
 
 export interface WorkspaceOptions {
   /** The logged-in identity, for the "yours" status-line/detail rendering. */
   viewerId?: string;
   writer?: BoardWriter;
   detailWidth?: number;
+  /**
+   * Every board that survived signature verification, whether or not it carries
+   * items. They become the left tree's project nodes, each tagged with
+   * data-board-coord — which is where the deleted coordinate dump's one real
+   * job (recording, checkably, WHICH boards reached the DOM) now lives.
+   */
+  boards?: BoardRef[];
+  /** "Logged in as npub1… (read-only)" — rendered in the header. */
+  identityLine?: string;
+  /** Shown in place of the lanes when `boards` is empty. */
+  emptyBoardsNote?: string;
+  /** Confidential-board explanation, when the viewer is looking at one. */
+  notice?: string;
 }
 
 const DETAIL_MIN = 180;
 const DETAIL_DEFAULT = 340;
 const LEFT_WIDTH = 206;
+const GRIP_WIDTH = 5;
 const RESPONSIVE_BREAKPOINT = 1000;
+/** Cards shown per column before the "Show all N" disclosure (prototype CAP). */
+const CARD_CAP = 6;
+/** An item untouched for this long reads as stale (prototype `stale()`). */
+const STALE_DAYS = 7;
 
-const EPIC_PALETTE = ["#7c9cff", "#ff9d7c", "#7cffb2", "#ffd27c", "#d67cff", "#7cf0ff", "#ff7ca0", "#c4ff7c"];
+/**
+ * FIVE MUTED TONES, one per project — not a rainbow, and not one colour per
+ * epic. Colour on this board means exactly one thing: which project's epic this
+ * is. The five hexes and their assignments are the prototype's EPICS table.
+ * A project outside that table takes a stable tone by hash, so the palette
+ * never grows past five.
+ */
+const PROJECT_TONES = ["#7A4FB5", "#2C7FA8", "#0F7A6E", "#B5711A", "#8A5A5A"] as const;
+const KNOWN_PROJECT_TONE: ReadonlyMap<string, string> = new Map([
+  ["ready", "#7A4FB5"],
+  ["galtrader", "#2C7FA8"],
+  ["forge", "#0F7A6E"],
+  ["dontguess", "#B5711A"],
+  ["3dl", "#8A5A5A"],
+]);
 
-function colorForId(id: string): string {
+/** An `l` tag that is still an HMAC label token — 64 lowercase hex characters
+ * the reader holds no LTK for (pkg/sync/envelope.go's labelToken). A 64-hex
+ * pill is strictly worse than no pill: it is not a label, it is not readable,
+ * and it blows the card's layout out. Hide it until it resolves. */
+const HMAC_LABEL = /^[0-9a-f]{64}$/;
+
+function toneForProject(project: string): string {
+  const known = KNOWN_PROJECT_TONE.get(project);
+  if (known) return known;
   let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return EPIC_PALETTE[h % EPIC_PALETTE.length];
+  for (let i = 0; i < project.length; i++) h = (h * 31 + project.charCodeAt(i)) >>> 0;
+  return PROJECT_TONES[h % PROJECT_TONES.length];
+}
+
+/** tint converts one of the five tones to an rgba wash — the prototype's
+ * tint(). A card's epic token is FILLED at 13% of its colour with a 34% border,
+ * never at full saturation; that is the difference between a designed token and
+ * a highlighter. */
+function tint(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -54,6 +120,11 @@ function byId(items: Item[]): Map<string, Item> {
   return new Map(items.map((i) => [i.id, i]));
 }
 
+/** Labels safe to render. See HMAC_LABEL. */
+function visibleLabels(item: Item): string[] {
+  return (item.labels ?? []).filter((l) => !HMAC_LABEL.test(l));
+}
+
 /** Nearest ancestor of `item` that is itself an epic (has children), walking
  * parentId, or undefined if none. Guards against a malformed parent cycle. */
 function nearestEpicAncestor(item: Item, itemsById: Map<string, Item>, epicIds: Set<string>): Item | undefined {
@@ -68,18 +139,35 @@ function nearestEpicAncestor(item: Item, itemsById: Map<string, Item>, epicIds: 
   return undefined;
 }
 
+/** The three status columns, with the swatch colour each column head carries. */
+const COLUMNS = [
+  { key: "ready", label: "Ready", swatch: "var(--ready)", target: "inbox" },
+  { key: "moving", label: "Moving", swatch: "var(--flight)", target: "active" },
+  { key: "blocked", label: "Blocked", swatch: "var(--blocked)", target: "blocked" },
+] as const;
+
 export class BoardWorkspace {
   private items: Item[];
   private readonly container: HTMLElement;
   private readonly writer: BoardWriter;
   private readonly viewerId?: string;
+  private readonly boards: BoardRef[];
+  private readonly boardTitles: Map<string, string>;
+  private readonly identityLine?: string;
+  private readonly emptyBoardsNote?: string;
+  private readonly notice?: string;
 
   private swimlane: SwimlaneMode = "project";
   private filters: FilterState = {};
+  private query = "";
+  private flagStuck = false;
+  private flagLever = false;
   private scopeEpicId?: string;
+  private scopeProject?: string;
   private selectedId?: string;
   private detailWidth: number;
   private transientError?: string;
+  private expanded = new Set<string>();
   private readonly onKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && this.selectedId !== undefined) {
       this.closeDetail();
@@ -91,6 +179,11 @@ export class BoardWorkspace {
     this.items = items;
     this.writer = options.writer ?? unimplementedWriter;
     this.viewerId = options.viewerId;
+    this.boards = options.boards ?? [];
+    this.boardTitles = new Map(this.boards.map((b) => [b.coord, b.title]));
+    this.identityLine = options.identityLine;
+    this.emptyBoardsNote = options.emptyBoardsNote;
+    this.notice = options.notice;
     this.detailWidth = clampDetailWidth(options.detailWidth ?? DETAIL_DEFAULT);
     document.addEventListener("keydown", this.onKeydown);
     this.render();
@@ -108,6 +201,7 @@ export class BoardWorkspace {
   getState(): {
     swimlane: SwimlaneMode;
     filters: FilterState;
+    query: string;
     scopeEpicId?: string;
     selectedId?: string;
     detailWidth: number;
@@ -115,6 +209,7 @@ export class BoardWorkspace {
     return {
       swimlane: this.swimlane,
       filters: this.filters,
+      query: this.query,
       scopeEpicId: this.scopeEpicId,
       selectedId: this.selectedId,
       detailWidth: this.detailWidth,
@@ -123,11 +218,19 @@ export class BoardWorkspace {
 
   setSwimlane(mode: SwimlaneMode): void {
     this.swimlane = mode;
+    this.expanded.clear();
     this.render();
   }
 
   setFilters(filters: FilterState): void {
     this.filters = filters;
+    this.expanded.clear();
+    this.render();
+  }
+
+  setQuery(q: string): void {
+    this.query = q;
+    this.expanded.clear();
     this.render();
   }
 
@@ -137,8 +240,15 @@ export class BoardWorkspace {
     this.setFilters({ ...this.filters, label: next });
   }
 
+  togglePriorityFilter(bucket: string): void {
+    const current = this.filters.priority ?? [];
+    const next = current.includes(bucket) ? current.filter((p) => p !== bucket) : [...current, bucket];
+    this.setFilters({ ...this.filters, priority: next });
+  }
+
   toggleEpicScope(epicId: string): void {
     this.scopeEpicId = this.scopeEpicId === epicId ? undefined : epicId;
+    this.scopeProject = undefined;
     this.render();
   }
 
@@ -180,17 +290,54 @@ export class BoardWorkspace {
     this.render();
   }
 
+  // ── naming ────────────────────────────────────────────────────────────────
+
+  /**
+   * The grouping key for an item's project lane. Board coordinate first, because
+   * that is the only identifier every item carries in production (the fold sets
+   * no `project` field — there is no project tag on a card).
+   */
+  private projectKeyOf(item: Item): string {
+    return item.boardCoord || item.project || "(unknown project)";
+  }
+
+  /**
+   * The DISPLAYED project name. ready-56b: swimlane heads used to print
+   * "30301:a9f766ae…:dontguess" because projectKeyOf is a coordinate and nothing
+   * translated it. The board's own signed `title` tag is the name; a coordinate
+   * is never shown to a person.
+   */
+  private projectNameOf(key: string): string {
+    return this.boardTitles.get(key) ?? key;
+  }
+
+  private projectNameOfItem(item: Item): string {
+    return this.projectNameOf(this.projectKeyOf(item));
+  }
+
+  private toneForItem(item: Item): string {
+    return toneForProject(this.projectNameOfItem(item));
+  }
+
+  // ── render ────────────────────────────────────────────────────────────────
+
   private render(): void {
     this.container.replaceChildren();
     this.container.classList.add("board-root");
 
-    this.container.append(this.buildGateRail());
+    const top = el("div", { className: "board-top" });
+    top.append(this.buildHeader());
+    if (this.notice) {
+      top.append(el("p", { className: "confidential-notice", textContent: this.notice }));
+    }
+    top.append(this.buildGateRail());
+    this.container.append(top);
 
     const workspace = el("div", { className: "board-workspace" });
     const detailOpen = this.selectedId !== undefined && byId(this.items).has(this.selectedId);
     workspace.classList.toggle("detail-open", detailOpen);
     workspace.style.gridTemplateColumns = detailOpen
-      ? `${LEFT_WIDTH}px minmax(0, 1fr) ${this.detailWidth}px`
+      ? `${LEFT_WIDTH}px minmax(0, 1fr) ${GRIP_WIDTH}px ${this.detailWidth}px`
       : `${LEFT_WIDTH}px minmax(0, 1fr)`;
 
     workspace.append(this.buildLeftTree());
@@ -207,80 +354,305 @@ export class BoardWorkspace {
         el("p", { className: "transient-error", textContent: this.transientError }),
       );
     }
+
+    this.container.append(this.buildFooter());
+  }
+
+  /** Open = every item that is not in a terminal status. The tally counts what
+   * the viewer could act on, not what the fold happened to return. */
+  private openCount(): number {
+    return this.items.filter((i) => !isTerminal(i)).length;
+  }
+
+  private projectCount(): number {
+    if (this.boards.length > 0) return this.boards.length;
+    return new Set(this.items.map((i) => this.projectKeyOf(i))).size;
+  }
+
+  private buildHeader(): HTMLElement {
+    const header = el("header", { className: "board-header" });
+
+    const mark = el("div", { className: "mark", textContent: "ready " });
+    mark.append(el("span", { textContent: "/ board" }));
+    header.append(mark);
+
+    // "shown" is what is ON THE BOARD, so it counts only items that land in one
+    // of the three columns. Counting the filter result instead would report
+    // "290 shown" on a board displaying 175 cards, because a terminal item
+    // survives every filter and then has no column (views.ts columnize).
+    const shown = this.scopedItems().filter((i) => !isTerminal(i)).length;
+    const tally = el("div", { className: "tally" });
+    tally.append(
+      el("b", { textContent: String(this.openCount()) }),
+      " open · ",
+      el("b", { textContent: String(this.projectCount()) }),
+      " projects · ",
+      el("b", { textContent: String(shown) }),
+      " shown",
+    );
+    header.append(tally);
+
+    header.append(el("div", { className: "spacer" }));
+
+    const find = el("input", {
+      className: "find",
+      type: "search",
+      placeholder: "Filter by word or id",
+      value: this.query,
+    });
+    find.setAttribute("aria-label", "Filter");
+    find.addEventListener("input", () => {
+      const caret = find.selectionStart;
+      this.setQuery(find.value);
+      const next = this.container.querySelector<HTMLInputElement>("input.find");
+      if (next) {
+        next.focus();
+        if (caret !== null) next.setSelectionRange(caret, caret);
+      }
+    });
+    header.append(find);
+
+    const newBtn = el("button", { className: "newbtn", textContent: "New item" });
+    newBtn.addEventListener("click", () => {
+      // Honest, not fake: this board is read-only until the publish path lands
+      // (write.ts). A button that pretended to create an item would be worse
+      // than no button — the design calls for the affordance, so it is here,
+      // and it says exactly what it can and cannot do.
+      this.transientError =
+        "Creating items from the board is not wired yet — this page publishes no events. Use `rd create` for now.";
+      this.render();
+    });
+    header.append(newBtn);
+
+    if (this.identityLine) {
+      header.append(el("p", { className: "identity", textContent: this.identityLine }));
+    }
+    return header;
   }
 
   private buildGateRail(): HTMLElement {
     const gated = this.items.filter(gatesFilter());
     if (gated.length === 0) {
-      return el("div", { className: "gate-rail empty", textContent: "Nothing needs you right now" });
+      // .empty's textContent is exactly the one quiet line — the dot and the
+      // heading carry no other text (render.test.ts asserts the whole string).
+      const clear = el("div", { className: "gate-rail empty" }, [
+        el("div", { className: "gate-rail-head" }, [
+          el("span", { className: "gate-rail-dot" }),
+          el("h2", { className: "gate-rail-heading", textContent: "Nothing needs you right now" }),
+        ]),
+      ]);
+      return clear;
     }
-    const rail = el("div", { className: "gate-rail" }, [
-      el("h2", { className: "gate-rail-heading", textContent: `${gated.length} awaiting your decision` }),
-    ]);
+
+    const rail = el("div", { className: "gate-rail" });
+    rail.append(
+      el("div", { className: "gate-rail-head" }, [
+        el("span", { className: "gate-rail-dot" }),
+        el("h2", { className: "gate-rail-heading", textContent: "Waiting on you" }),
+        el("span", {
+          className: "gate-rail-sub",
+          textContent: `${gated.length} of ${this.openCount()} — the only ones that cannot move without your decision.`,
+        }),
+      ]),
+    );
+
     const list = el("ul", { className: "gate-list" });
     for (const item of gated) {
       const li = el("li", { className: "gate-item", dataset: { id: item.id } });
-      li.append(
-        el("span", { className: "gate-type", textContent: item.gate || item.waitingType || "gate" }),
+      const button = el("button", { className: "gate-item-button" }, [
         el("span", { className: "gate-item-id", textContent: item.id }),
         el("span", { className: "gate-item-title", textContent: item.title }),
-      );
-      li.addEventListener("click", () => this.selectItem(item.id));
+        el("span", { className: "gate-item-age", textContent: ageLabel(item.updatedAt) }),
+      ]);
+      button.addEventListener("click", () => this.selectItem(item.id));
+      li.append(button);
       list.append(li);
     }
     rail.append(list);
     return rail;
   }
 
+  // ── left tree ─────────────────────────────────────────────────────────────
+
   private buildLeftTree(): HTMLElement {
-    const tree = el("div", { className: "left-tree" });
+    const tree = el("nav", { className: "left-tree" });
+    tree.setAttribute("aria-label", "Structure");
+
+    tree.append(el("h3", { className: "left-tree-heading", textContent: "Structure" }));
+    tree.append(
+      el("p", { className: "side-sub", textContent: "Epics group work; a project may hold several." }),
+    );
+
+    tree.append(
+      this.buildTreeNode({
+        scope: "",
+        name: "Everything",
+        count: this.items.length,
+        dotColour: "var(--ink-3)",
+        current: !this.scopeProject && !this.scopeEpicId,
+        onClick: () => {
+          this.scopeProject = undefined;
+          this.scopeEpicId = undefined;
+          this.render();
+        },
+      }),
+    );
+
     const epics = deriveEpics(this.items);
     const epicTree = buildEpicTree(epics);
+    const countByProject = new Map<string, number>();
+    for (const item of this.items) {
+      const key = this.projectKeyOf(item);
+      countByProject.set(key, (countByProject.get(key) ?? 0) + 1);
+    }
 
-    tree.append(el("h3", { className: "left-tree-heading", textContent: "Epics" }));
-    const epicList = el("ul", { className: "epic-list" });
-    for (const node of epicTree) epicList.append(this.buildEpicNode(node));
-    tree.append(epicList);
+    // Every VERIFIED board gets a node, even one holding no items: "this board
+    // exists and is empty" is a different fact from "this board is not yours",
+    // and the node is where data-board-coord records which boards reached the
+    // DOM (see WorkspaceOptions.boards).
+    const keys =
+      this.boards.length > 0
+        ? this.boards.map((b) => b.coord)
+        : [...countByProject.keys()].sort((a, b) => a.localeCompare(b));
 
-    tree.append(el("h3", { className: "left-tree-heading", textContent: "Labels" }));
-    const labelList = el("ul", { className: "label-list" });
-    for (const { label, count } of labelFrequency(this.items)) {
-      const li = el("li", { className: "label-list-item" });
-      const active = (this.filters.label ?? []).includes(label);
-      const pill = el("span", {
-        className: `label-pill${active ? " active" : ""}`,
-        textContent: `${label} (${count})`,
+    const list = el("ul", { className: "project-list" });
+    for (const key of keys) {
+      const name = this.projectNameOf(key);
+      const node = this.buildTreeNode({
+        scope: `proj:${key}`,
+        name,
+        count: countByProject.get(key) ?? 0,
+        dotColour: "var(--line)",
+        twisty: "▾",
+        boardCoord: this.boardTitles.has(key) ? key : undefined,
+        current: this.scopeProject === key,
+        onClick: () => {
+          this.scopeProject = this.scopeProject === key ? undefined : key;
+          this.scopeEpicId = undefined;
+          this.render();
+        },
       });
+      const li = el("li", { className: "project-node" }, [node]);
+      const epicsHere = epicTree.filter((n) => this.projectKeyOf(n.rollup.epic) === key);
+      if (epicsHere.length > 0) {
+        const epicList = el("ul", { className: "epic-list" });
+        for (const n of epicsHere) epicList.append(this.buildEpicNode(n, 0));
+        li.append(epicList);
+      }
+      list.append(li);
+    }
+    // Epics whose project is not in the board list still have to appear.
+    const orphanEpics = epicTree.filter((n) => !keys.includes(this.projectKeyOf(n.rollup.epic)));
+    if (orphanEpics.length > 0) {
+      const epicList = el("ul", { className: "epic-list" });
+      for (const n of orphanEpics) epicList.append(this.buildEpicNode(n, 0));
+      list.append(el("li", { className: "project-node" }, [epicList]));
+    }
+    tree.append(list);
+
+    tree.append(el("h3", { className: "left-tree-heading labels-heading", textContent: "Labels" }));
+    tree.append(
+      el("p", { className: "side-sub", textContent: "Cross-cutting tags — pick one to filter." }),
+    );
+    const labelList = el("div", { className: "label-list" });
+    const sanitized = this.items.map((i) => ({ ...i, labels: visibleLabels(i) }));
+    for (const { label, count } of labelFrequency(sanitized)) {
+      const active = (this.filters.label ?? []).includes(label);
+      const pill = el("button", {
+        className: `label-pill${active ? " active" : ""}${HOT_LABELS.has(label) && !active ? " hot" : ""}`,
+        dataset: { label },
+      });
+      pill.append(label + " ", el("span", { className: "label-count", textContent: String(count) }));
       pill.addEventListener("click", () => this.toggleLabelFilter(label));
-      li.append(pill);
-      labelList.append(li);
+      labelList.append(pill);
     }
     tree.append(labelList);
     return tree;
   }
 
-  private buildEpicNode(node: EpicTreeNode): HTMLElement {
+  private buildTreeNode(spec: {
+    scope: string;
+    name: string;
+    count: number;
+    dotColour: string;
+    twisty?: string;
+    boardCoord?: string;
+    current: boolean;
+    onClick: () => void;
+  }): HTMLElement {
+    const dataset: Record<string, string> = { scope: spec.scope };
+    if (spec.boardCoord) dataset.boardCoord = spec.boardCoord;
+    const node = el("button", { className: "node", dataset });
+    node.setAttribute("aria-current", String(spec.current));
+    node.append(
+      el("span", { className: "tw", textContent: spec.twisty ?? "" }),
+      el("span", { className: "dot" }),
+      el("span", { className: "nm", textContent: spec.name }),
+      el("span", { className: "ct", textContent: String(spec.count) }),
+    );
+    (node.querySelector(".dot") as HTMLElement).style.background = spec.dotColour;
+    node.addEventListener("click", spec.onClick);
+    return node;
+  }
+
+  /**
+   * An epic in the LEFT TREE is a 7px dot beside the name — never a filled
+   * block. ready-56b: filling the whole row in a saturated colour is what made
+   * the shipped page read as a highlighter rack. The dot carries the colour;
+   * the row carries the name and the rollup.
+   */
+  private buildEpicNode(node: EpicTreeNode, depth: number): HTMLElement {
     const { rollup } = node;
     const li = el("li", { className: "epic-node", dataset: { epicId: rollup.epic.id } });
-    const active = this.scopeEpicId === rollup.epic.id;
-    const row = el("div", { className: `epic-token${active ? " active" : ""}` });
-    row.style.backgroundColor = colorForId(rollup.epic.id);
-    row.append(
-      el("span", { className: "epic-title", textContent: rollup.epic.title }),
-      el("span", { className: "epic-rollup", textContent: `${rollup.closed}/${rollup.total}` }),
-    );
-    row.addEventListener("click", () => this.toggleEpicScope(rollup.epic.id));
+    const row = this.buildTreeNode({
+      scope: rollup.epic.id,
+      name: rollup.epic.title,
+      count: rollup.total,
+      dotColour: this.toneForItem(rollup.epic),
+      current: this.scopeEpicId === rollup.epic.id,
+      onClick: () => this.toggleEpicScope(rollup.epic.id),
+    });
+    row.classList.add("epic-node-row");
+    if (depth > 0) row.classList.add("lvl2");
+    row.style.paddingLeft = `${20 + depth * 13}px`;
     li.append(row);
+
+    if (rollup.total > 0) {
+      const moving = rollup.descendants.filter((d) => d.status === "active").length;
+      const pct = Math.round((moving / rollup.total) * 100);
+      const prog = el("div", { className: "prog" });
+      prog.style.marginLeft = `${33 + depth * 13}px`;
+      const bar = el("i");
+      bar.style.width = `${pct}%`;
+      prog.append(bar);
+      li.append(prog);
+    }
+
     if (node.children.length > 0) {
       const childList = el("ul", { className: "epic-children" });
-      for (const child of node.children) childList.append(this.buildEpicNode(child));
+      for (const child of node.children) childList.append(this.buildEpicNode(child, depth + 1));
       li.append(childList);
     }
     return li;
   }
 
+  // ── centre ────────────────────────────────────────────────────────────────
+
+  private isStale(item: Item): boolean {
+    return daysSince(item.updatedAt) >= STALE_DAYS;
+  }
+
+  private matchesQuery(item: Item): boolean {
+    if (this.query.trim() === "") return true;
+    const haystack = `${item.title} ${item.id} ${this.projectNameOfItem(item)}`.toLowerCase();
+    return haystack.includes(this.query.trim().toLowerCase());
+  }
+
   private scopedItems(): Item[] {
     let items = this.items;
+    if (this.scopeProject) {
+      items = items.filter((i) => this.projectKeyOf(i) === this.scopeProject);
+    }
     if (this.scopeEpicId) {
       const epics = deriveEpics(this.items);
       const scoped = epics.find((r) => r.epic.id === this.scopeEpicId);
@@ -289,60 +661,121 @@ export class BoardWorkspace {
         items = items.filter((i) => ids.has(i.id));
       }
     }
-    return applyFilters(items, this.filters);
+    items = applyFilters(items, this.filters).filter((i) => this.matchesQuery(i));
+    if (this.flagStuck) items = items.filter((i) => this.isStale(i));
+    if (this.flagLever) {
+      const frees = buildFreesIndex(this.items);
+      items = items.filter((i) => freesCount(frees, i.id) > 0);
+    }
+    return items;
   }
 
   private buildCenter(): HTMLElement {
     const center = el("div", { className: "board-center" });
     center.append(this.buildFilterBar());
+    center.append(
+      el("div", {
+        className: "sortnote",
+        textContent:
+          "Sorted by priority, then by how much other work it frees, then by longest untouched.",
+      }),
+    );
+
+    const lanesEl = el("div", { className: "swimlanes" });
+    if (this.boards.length === 0 && this.items.length === 0 && this.emptyBoardsNote) {
+      lanesEl.append(el("div", { className: "empty", textContent: this.emptyBoardsNote }));
+      center.append(lanesEl);
+      return center;
+    }
 
     const filtered = this.scopedItems();
     const lanes = this.groupIntoLanes(filtered);
-    const lanesEl = el("div", { className: "swimlanes" });
-    for (const lane of lanes) lanesEl.append(this.buildLane(lane.key, lane.label, lane.items, lane.rollup));
+    if (lanes.length === 0) {
+      lanesEl.append(
+        el("div", {
+          className: "empty",
+          textContent:
+            this.items.length === 0
+              ? "No items on these boards yet."
+              : "Nothing matches. Clear a filter.",
+        }),
+      );
+    }
+    for (const lane of lanes) {
+      lanesEl.append(this.buildLane(lane.key, lane.label, lane.items, lane.rollup, lane.dotColour));
+    }
     center.append(lanesEl);
     return center;
   }
 
   private buildFilterBar(): HTMLElement {
     const bar = el("div", { className: "filter-bar" });
+    bar.append(el("span", { className: "bar-label", textContent: "Swimlanes" }));
 
-    const swimlaneSelect = el("select", { className: "swimlane-select" });
-    for (const mode of ["project", "epic", "priority", "off"] as SwimlaneMode[]) {
-      const opt = el("option", { value: mode, textContent: mode });
-      if (mode === this.swimlane) opt.selected = true;
-      swimlaneSelect.append(opt);
+    const seg = el("div", { className: "seg" });
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "Swimlanes");
+    for (const [mode, label] of [
+      ["project", "Project"],
+      ["epic", "Epic"],
+      ["priority", "Priority"],
+      ["off", "Off"],
+    ] as [SwimlaneMode, string][]) {
+      const btn = el("button", { textContent: label, dataset: { lane: mode } });
+      btn.setAttribute("aria-pressed", String(this.swimlane === mode));
+      btn.addEventListener("click", () => this.setSwimlane(mode));
+      seg.append(btn);
     }
-    swimlaneSelect.addEventListener("change", () => this.setSwimlane(swimlaneSelect.value as SwimlaneMode));
-    bar.append(el("label", { className: "filter-label", textContent: "Swimlanes " }, [swimlaneSelect]));
+    bar.append(seg);
+    bar.append(el("span", { className: "bar-sep" }));
 
-    bar.append(this.buildFacet("priority", priorityBuckets(this.items), this.filters.priority ?? [], (v) =>
-      v === NO_PRIORITY ? "No priority" : v,
-    ));
-    bar.append(this.buildFacet("assignee", assigneeBuckets(this.items), this.filters.assignee ?? [], (v) =>
-      v === UNASSIGNED ? "Unassigned" : v,
-    ));
-    bar.append(
-      this.buildFacet(
-        "status",
-        [...new Set(this.items.map((i) => i.status))].sort(),
-        this.filters.status ?? [],
-        (v) => v,
-      ),
-    );
-    bar.append(
-      this.buildFacet(
-        "gate",
-        [...new Set(this.items.map((i) => i.gate).filter((g): g is string => !!g))].sort(),
-        this.filters.gate ?? [],
-        (v) => v,
-      ),
-    );
+    for (const bucket of ["p0", "p1"]) {
+      const active = (this.filters.priority ?? []).includes(bucket);
+      const chip = el("button", {
+        className: `chip${active ? " active" : ""}`,
+        textContent: bucket.toUpperCase(),
+        dataset: { pri: bucket },
+      });
+      chip.setAttribute("aria-pressed", String(active));
+      chip.addEventListener("click", () => this.togglePriorityFilter(bucket));
+      bar.append(chip);
+    }
 
-    if (this.scopeEpicId || (this.filters.label ?? []).length > 0) {
-      const clear = el("button", { className: "clear-filters", textContent: "Clear filters" });
+    for (const [flag, label, get, set] of [
+      ["stuck", "Untouched 7+ days", () => this.flagStuck, (v: boolean) => (this.flagStuck = v)],
+      ["lever", "Unblocks others", () => this.flagLever, (v: boolean) => (this.flagLever = v)],
+    ] as [string, string, () => boolean, (v: boolean) => void][]) {
+      const active = get();
+      const chip = el("button", {
+        className: `chip${active ? " active" : ""}`,
+        textContent: label,
+        dataset: { flag },
+      });
+      chip.setAttribute("aria-pressed", String(active));
+      chip.addEventListener("click", () => {
+        set(!get());
+        this.expanded.clear();
+        this.render();
+      });
+      bar.append(chip);
+    }
+
+    const filtering =
+      this.scopeEpicId !== undefined ||
+      this.scopeProject !== undefined ||
+      (this.filters.label ?? []).length > 0 ||
+      (this.filters.priority ?? []).length > 0 ||
+      this.flagStuck ||
+      this.flagLever ||
+      this.query !== "";
+    if (filtering) {
+      const clear = el("button", { className: "chip clear-filters", textContent: "Clear filters" });
       clear.addEventListener("click", () => {
         this.scopeEpicId = undefined;
+        this.scopeProject = undefined;
+        this.flagStuck = false;
+        this.flagLever = false;
+        this.query = "";
         this.setFilters({});
       });
       bar.append(clear);
@@ -351,55 +784,35 @@ export class BoardWorkspace {
     return bar;
   }
 
-  private buildFacet(
-    dimension: keyof FilterState,
-    buckets: string[],
-    active: readonly string[],
-    labelFor: (v: string) => string,
-  ): HTMLElement {
-    const wrap = el("div", { className: `facet facet-${dimension}` }, [
-      el("span", { className: "facet-name", textContent: dimension }),
-    ]);
-    for (const bucket of buckets) {
-      const isActive = active.includes(bucket);
-      const chip = el("button", {
-        className: `facet-chip${isActive ? " active" : ""}`,
-        textContent: labelFor(bucket),
-        dataset: { dimension, value: bucket },
-      });
-      chip.addEventListener("click", () => {
-        const current = (this.filters[dimension] as readonly string[] | undefined) ?? [];
-        const next = current.includes(bucket) ? current.filter((v) => v !== bucket) : [...current, bucket];
-        this.setFilters({ ...this.filters, [dimension]: next });
-      });
-      wrap.append(chip);
-    }
-    return wrap;
-  }
-
-  private groupIntoLanes(items: Item[]): { key: string; label: string; items: Item[]; rollup?: EpicRollup }[] {
+  private groupIntoLanes(
+    items: Item[],
+  ): { key: string; label: string; items: Item[]; rollup?: EpicRollup; dotColour?: string }[] {
     if (this.swimlane === "off") {
-      return [{ key: "off", label: "All items", items }];
+      return [{ key: "off", label: "All work", items }];
     }
     if (this.swimlane === "priority") {
       const buckets = priorityBuckets(items);
       return buckets.map((b) => ({
         key: b,
-        label: b === NO_PRIORITY ? "No priority" : b,
+        label: b === NO_PRIORITY ? "No priority" : b.toUpperCase(),
         items: items.filter((i) => (i.priority || NO_PRIORITY) === b),
       }));
     }
     if (this.swimlane === "project") {
       const groups = new Map<string, Item[]>();
       for (const item of items) {
-        const key = item.project || item.boardCoord || "(unknown project)";
+        const key = this.projectKeyOf(item);
         const list = groups.get(key) ?? [];
         list.push(item);
         groups.set(key, list);
       }
+      // Most gated first, then largest — the prototype's project-lane order:
+      // the lane that needs a human decision should not be below the fold.
+      const gateCount = (key: string): number =>
+        items.filter((i) => this.projectKeyOf(i) === key && gatesFilter()(i)).length;
       return [...groups.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, its]) => ({ key, label: key, items: its }));
+        .sort(([a, ia], [b, ib]) => gateCount(b) - gateCount(a) || ib.length - ia.length || a.localeCompare(b))
+        .map(([key, its]) => ({ key, label: this.projectNameOf(key), items: its }));
     }
     // epic
     const allEpics = deriveEpics(this.items);
@@ -417,105 +830,234 @@ export class BoardWorkspace {
     const rollupById = new Map(allEpics.map((r) => [r.epic.id, r]));
     return [...groups.entries()]
       .sort(([a], [b]) => (a === noEpicKey ? 1 : b === noEpicKey ? -1 : a.localeCompare(b)))
-      .map(([key, its]) => ({
-        key,
-        label: key === noEpicKey ? noEpicKey : rollupById.get(key)?.epic.title ?? key,
-        items: its,
-        rollup: rollupById.get(key),
-      }));
+      .map(([key, its]) => {
+        const rollup = rollupById.get(key);
+        return {
+          key,
+          label: key === noEpicKey ? "No epic" : rollup?.epic.title ?? key,
+          items: its,
+          rollup,
+          dotColour: rollup ? this.toneForItem(rollup.epic) : undefined,
+        };
+      });
   }
 
-  private buildLane(key: string, label: string, items: Item[], rollup?: EpicRollup): HTMLElement {
+  private buildLane(
+    key: string,
+    label: string,
+    items: Item[],
+    rollup?: EpicRollup,
+    dotColour?: string,
+  ): HTMLElement {
     const lane = el("div", { className: "swimlane", dataset: { lane: key } });
-    const header = el("div", { className: "swimlane-header" }, [el("span", { textContent: label })]);
-    if (rollup) header.append(el("span", { className: "swimlane-rollup", textContent: `${rollup.closed}/${rollup.total}` }));
+    const header = el("div", { className: "swimlane-header" });
+    const name = el("span", { className: "lane-name" });
+    if (dotColour) {
+      const dot = el("span", { className: "lane-dot" });
+      dot.style.background = dotColour;
+      name.append(dot);
+    }
+    name.append(label);
+    header.append(name);
+    header.append(el("span", { className: "lane-count", textContent: String(items.length) }));
+    if (rollup) {
+      header.append(
+        el("span", { className: "swimlane-rollup", textContent: `${rollup.closed}/${rollup.total}` }),
+      );
+    }
+    const gated = items.filter(gatesFilter());
+    if (gated.length > 0) {
+      const pill = el("button", {
+        className: "lane-gate",
+        textContent: `${gated.length} waiting on you`,
+      });
+      pill.addEventListener("click", () => this.selectItem(gated[0].id));
+      header.append(pill);
+    }
     lane.append(header);
 
-    const columns = columnize(items);
     const freesIndex = buildFreesIndex(this.items);
     const laneColumns = el("div", { className: "lane-columns" });
-    for (const [colKey, colItems, targetStatus, colLabel] of [
-      ["ready", columns.ready, "inbox", "Ready"],
-      ["moving", columns.moving, "active", "Moving"],
-      ["blocked", columns.blocked, "blocked", "Blocked"],
-    ] as const) {
-      laneColumns.append(this.buildColumn(colKey, colLabel, sortCards(colItems), freesIndex, targetStatus));
+    const columns = columnize(items);
+    const byKey: Record<string, Item[]> = {
+      ready: columns.ready,
+      moving: columns.moving,
+      blocked: columns.blocked,
+    };
+    for (const col of COLUMNS) {
+      laneColumns.append(
+        this.buildColumn(
+          `${key}/${col.key}`,
+          col,
+          sortCards(byKey[col.key]),
+          freesIndex,
+          this.swimlane !== "epic",
+        ),
+      );
     }
     lane.append(laneColumns);
     return lane;
   }
 
   private buildColumn(
-    key: string,
-    label: string,
+    expandKey: string,
+    col: (typeof COLUMNS)[number],
     items: Item[],
     freesIndex: ReturnType<typeof buildFreesIndex>,
-    targetStatus: Item["status"],
+    showEpic: boolean,
   ): HTMLElement {
-    const col = el("div", { className: "column", dataset: { column: key } });
-    col.append(el("h4", { className: "column-header", textContent: `${label} (${items.length})` }));
-    const cardList = el("div", { className: "card-list" });
-    col.append(cardList);
+    const column = el("div", { className: "column", dataset: { column: col.key } });
+    const head = el("div", { className: "column-header" });
+    const swatch = el("i");
+    swatch.style.background = col.swatch;
+    head.append(swatch, `${col.label} `, el("span", { className: "col-n", textContent: String(items.length) }));
+    column.append(head);
 
-    col.addEventListener("dragover", (e) => e.preventDefault());
-    col.addEventListener("drop", (e) => {
+    const cardList = el("div", { className: "card-list" });
+    column.append(cardList);
+
+    column.addEventListener("dragover", (e) => e.preventDefault());
+    column.addEventListener("drop", (e) => {
       e.preventDefault();
       const itemId = e.dataTransfer?.getData("text/plain");
-      if (itemId) void this.handleDrop(itemId, targetStatus);
+      if (itemId) void this.handleDrop(itemId, col.target);
     });
 
-    for (const item of items) cardList.append(this.buildCard(item, freesIndex));
-    return col;
+    if (items.length === 0) {
+      cardList.append(el("div", { className: "empty", textContent: "None" }));
+      return column;
+    }
+
+    const open = this.expanded.has(expandKey);
+    const shown = open ? items : items.slice(0, CARD_CAP);
+    for (const item of shown) cardList.append(this.buildCard(item, freesIndex, showEpic));
+    if (items.length > CARD_CAP) {
+      const more = el("button", {
+        className: "more",
+        textContent: open ? "Show fewer" : `Show all ${items.length}`,
+        dataset: { more: expandKey },
+      });
+      more.addEventListener("click", () => {
+        if (open) this.expanded.delete(expandKey);
+        else this.expanded.add(expandKey);
+        this.render();
+      });
+      cardList.append(more);
+    }
+    return column;
   }
 
-  private buildCard(item: Item, freesIndex: ReturnType<typeof buildFreesIndex>): HTMLElement {
+  /**
+   * CARD ANATOMY (prototype `card()`): border-left coloured by p0 / stale /
+   * status; top row = priority chip + epic token + id + age; title; up to three
+   * OUTLINED label pills plus a dashed "+N"; foot row = one status word and,
+   * pushed right, the "frees N" leverage pill.
+   */
+  private buildCard(item: Item, freesIndex: ReturnType<typeof buildFreesIndex>, showEpic: boolean): HTMLElement {
     const card = el("div", {
       className: "card",
       draggable: true,
       dataset: { id: item.id, status: item.status },
     });
+    if (item.title === PLACEHOLDER) card.classList.add("sealed");
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("aria-current", String(this.selectedId === item.id));
+    card.style.borderLeftColor = this.edgeColour(item);
     card.addEventListener("dragstart", (e) => {
       e.dataTransfer?.setData("text/plain", item.id);
     });
     card.addEventListener("click", () => this.selectItem(item.id));
 
-    const top = el("div", { className: "card-top" }, [
-      el("span", { className: "card-priority", textContent: item.priority || "—" }),
+    const top = el("div", { className: "card-top" });
+    top.append(
+      el("span", {
+        className: `card-priority pri-${item.priority || "none"}`,
+        textContent: item.priority ? item.priority.toUpperCase() : "—",
+      }),
+    );
+
+    const epic = this.epicOf(item);
+    if (showEpic && epic) {
+      const tone = this.toneForItem(epic);
+      const token = el("span", { className: "epic-token" });
+      token.style.color = tone;
+      token.style.backgroundColor = tint(tone, 0.13);
+      token.style.borderColor = tint(tone, 0.34);
+      token.append(el("b"), el("span", { textContent: epic.title }));
+      top.append(token);
+    }
+
+    top.append(
       el("span", { className: "card-id", textContent: item.id }),
-      el("span", { className: "card-age", textContent: `${daysSince(item.createdAt)}d` }),
-    ]);
+      el("span", { className: "card-age", textContent: ageLabel(item.updatedAt) }),
+    );
     card.append(top);
 
-    if (this.swimlane === "off" && (item.project || item.boardCoord)) {
-      card.append(el("span", { className: "project-chip", textContent: item.project || item.boardCoord! }));
+    if (this.swimlane === "off") {
+      card.append(el("span", { className: "project-chip", textContent: this.projectNameOfItem(item) }));
     }
 
     card.append(el("div", { className: "card-title", textContent: item.title }));
 
-    const labels = item.labels ?? [];
+    const labels = visibleLabels(item);
     if (labels.length > 0) {
       const labelWrap = el("div", { className: "card-labels" });
       for (const label of labels.slice(0, 3)) {
-        labelWrap.append(el("span", { className: "label-pill outlined", textContent: label }));
+        const pill = el("button", {
+          className: `label-pill${HOT_LABELS.has(label) ? " hot" : ""}`,
+          textContent: label,
+          dataset: { label },
+        });
+        pill.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.toggleLabelFilter(label);
+        });
+        labelWrap.append(pill);
       }
       if (labels.length > 3) {
-        labelWrap.append(el("span", { className: "label-pill outlined more", textContent: `+${labels.length - 3}` }));
+        labelWrap.append(el("span", { className: "label-pill more", textContent: `+${labels.length - 3}` }));
       }
       card.append(labelWrap);
     }
 
-    card.append(el("div", { className: "card-status-line", textContent: statusLine(item, this.viewerId) }));
-
+    const foot = el("div", { className: "card-foot" });
+    const line = statusLine(item, this.viewerId);
+    foot.append(
+      el("div", { className: `card-status-line ${statusLineClass(line)}`, textContent: line }),
+    );
     const frees = freesCount(freesIndex, item.id);
     if (frees > 0) {
-      card.append(el("span", { className: "card-frees", textContent: `frees ${frees}` }));
+      const pill = el("span", { className: "card-frees", textContent: `frees ${frees}` });
+      pill.title = `Finishing this frees ${frees} other item${frees === 1 ? "" : "s"}`;
+      foot.append(pill);
     }
+    card.append(foot);
 
     return card;
   }
 
+  /** The 3px left edge: P0 first, then "nobody has touched this", then status. */
+  private edgeColour(item: Item): string {
+    if (item.priority === "p0") return "var(--p0)";
+    if (this.isStale(item)) return "var(--line)";
+    if (item.status === "active") return "var(--flight)";
+    if (item.status === "blocked" || item.status === "waiting") return "var(--blocked)";
+    return "var(--ready)";
+  }
+
+  private epicOf(item: Item): Item | undefined {
+    const epics = deriveEpics(this.items);
+    const epicIds = new Set(epics.map((e) => e.epic.id));
+    if (epicIds.has(item.id)) return item;
+    return nearestEpicAncestor(item, byId(this.items), epicIds);
+  }
+
   private buildResizer(): HTMLElement {
     const resizer = el("div", { className: "detail-resizer" });
+    resizer.setAttribute("role", "separator");
+    resizer.setAttribute("aria-orientation", "vertical");
+    resizer.setAttribute("aria-label", "Resize detail panel");
     resizer.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       const startX = e.clientX;
@@ -535,24 +1077,36 @@ export class BoardWorkspace {
   }
 
   private buildDetailPane(item: Item): HTMLElement {
-    const pane = el("div", { className: "detail-pane" });
-    const header = el("div", { className: "detail-header" }, [
-      el("h2", { textContent: item.title }),
-    ]);
-    const closeBtn = el("button", { className: "detail-close", textContent: "×", ["aria-label" as "title"]: "Close" });
-    closeBtn.addEventListener("click", () => this.closeDetail());
-    header.append(closeBtn);
-    pane.append(header);
+    const pane = el("aside", { className: "detail-pane" });
+    pane.setAttribute("aria-label", "Detail");
 
-    pane.append(el("p", { className: "detail-id", textContent: `${item.id} · ${item.project ?? item.boardCoord ?? ""}` }));
+    const top = el("div", { className: "detail-header" });
+    top.append(
+      el("span", {
+        className: `card-priority pri-${item.priority || "none"}`,
+        textContent: item.priority ? item.priority.toUpperCase() : "—",
+      }),
+      el("span", { className: "card-id", textContent: item.id }),
+    );
+    const closeBtn = el("button", { className: "detail-close", textContent: "×" });
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.addEventListener("click", () => this.closeDetail());
+    top.append(closeBtn);
+    pane.append(top);
+
+    const crumb = [this.projectNameOfItem(item)];
+    const epic = this.epicOf(item);
+    if (epic && epic.id !== item.id) crumb.push(epic.title);
+    pane.append(el("p", { className: "detail-id crumb", textContent: crumb.join(" › ") }));
+    pane.append(el("h2", { textContent: item.title }));
 
     if (item.gate && gatesFilter()(item)) {
       const banner = el("div", { className: "gate-banner" }, [
         el("span", { textContent: `Gate: ${item.gate}` }),
       ]);
-      const approve = el("button", { className: "gate-approve", textContent: "Approve" });
+      const approve = el("button", { className: "gate-approve act pri", textContent: "Approve" });
       approve.addEventListener("click", () => void this.handleGateResolve(item.id, true));
-      const deny = el("button", { className: "gate-deny", textContent: "Deny" });
+      const deny = el("button", { className: "gate-deny act", textContent: "Deny" });
       deny.addEventListener("click", () => void this.handleGateResolve(item.id, false));
       banner.append(approve, deny);
       pane.append(banner);
@@ -565,6 +1119,22 @@ export class BoardWorkspace {
     const idIndex = byId(this.items);
     pane.append(this.buildDepSection("Blocked by", item.blockedBy ?? [], idIndex));
     pane.append(this.buildDepSection("Blocks", item.blocks ?? [], idIndex));
+
+    const labels = visibleLabels(item);
+    const labelSection = el("div", { className: "detail-section" }, [
+      el("h3", { textContent: "Labels" }),
+    ]);
+    const labelWrap = el("div", { className: "card-labels" });
+    if (labels.length === 0) {
+      labelWrap.append(el("span", { className: "label-pill more", textContent: "none" }));
+    }
+    for (const label of labels) {
+      labelWrap.append(
+        el("span", { className: `label-pill${HOT_LABELS.has(label) ? " hot" : ""}`, textContent: label }),
+      );
+    }
+    labelSection.append(labelWrap);
+    pane.append(labelSection);
 
     if (item.crossBoardWarnings && item.crossBoardWarnings.length > 0) {
       const warn = el("div", { className: "cross-board-warnings" });
@@ -589,7 +1159,7 @@ export class BoardWorkspace {
   }
 
   private buildDepSection(label: string, ids: string[], idIndex: Map<string, Item>): HTMLElement {
-    const section = el("div", { className: "detail-deps" });
+    const section = el("div", { className: "detail-deps detail-section" });
     section.append(el("h3", { textContent: `${label} (${ids.length})` }));
     const list = el("ul", { className: "detail-dep-list" });
     for (const depId of ids) {
@@ -604,6 +1174,32 @@ export class BoardWorkspace {
     section.append(list);
     return section;
   }
+
+  private buildFooter(): HTMLElement {
+    const foot = el("div", { className: "board-foot" });
+    const n = this.projectCount();
+    foot.append(
+      el("b", { textContent: "Live board." }),
+      ` Reading ${n} board${n === 1 ? "" : "s"} of signed events straight from your relays. ` +
+        "Nothing is cached in this browser — the page is rebuilt from those events on every load.",
+    );
+    return foot;
+  }
+}
+
+/** Labels that always read as urgent — the prototype's HOT set. */
+const HOT_LABELS: ReadonlySet<string> = new Set(["security", "bug", "test-flaky"]);
+
+/** Which of the five foot-row treatments a status line gets. statusline.ts owns
+ * the wording and is the only place the five cases are decided; this maps its
+ * output onto the design's five treatments rather than re-deciding them, so the
+ * two can never disagree about which case an item is in. */
+function statusLineClass(line: string): string {
+  if (line === "yours") return "who you";
+  if (line.startsWith("waits on")) return "waiton";
+  if (line === "agent working") return "who agent";
+  if (line.startsWith("untouched")) return "stale";
+  return "who";
 }
 
 function clampDetailWidth(px: number): number {
@@ -619,4 +1215,4 @@ export function mountBoardWorkspace(
   return new BoardWorkspace(container, items, options);
 }
 
-export { RESPONSIVE_BREAKPOINT };
+export { RESPONSIVE_BREAKPOINT, CARD_CAP };
