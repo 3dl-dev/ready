@@ -400,6 +400,43 @@ func DeriveReadTrust(events []*nostr.Event, boardAuthor, boardD string) map[stri
 	return out
 }
 
+// GrantHolder is the public, non-secret shape of the WINNING cap-valid grant for
+// one grantee: the role string that grant actually carries, its human label, and
+// the numeric level that role maps to. It deliberately carries no key material —
+// the wrapped CEK/LTK are the reader's business (keydist.go), not membership's.
+type GrantHolder struct {
+	Pubkey string `json:"pubkey"`
+	Role   string `json:"role"`
+	Label  string `json:"label,omitempty"`
+	Level  int    `json:"level"`
+}
+
+// DeriveGrantHolders returns the winning cap-valid grant per GRANTEE for the
+// board 30301:<boardAuthor>:<boardD>. The board author is NOT in the result
+// unless it holds a grant of its own: it is the bootstrap trust root, which has
+// a level but no grant to report a role or label from.
+//
+// It exists so a caller that must RE-ISSUE a grant (the CEK-epoch rotation in
+// cmd/rd/confidential.go re-wraps the new key into a fresh grant per member) can
+// carry the member's CURRENT role and label forward. kind-39301 is addressable
+// on (board, grantee), so a re-issued grant REPLACES the member's existing one:
+// re-issuing at a hardcoded role would silently demote every maintainer to
+// contributor on each rotation, and re-issuing with an empty content would erase
+// the human label `rd sessions` and the relay allowlist read from.
+func DeriveGrantHolders(events []*nostr.Event, boardAuthor, boardD string) map[string]GrantHolder {
+	_, _, winning, _ := deriveGrants(events, boardAuthor, boardD)
+	out := make(map[string]GrantHolder, len(winning))
+	for grantee, g := range winning {
+		out[grantee] = GrantHolder{
+			Pubkey: grantee,
+			Role:   g.Role,
+			Label:  g.Label,
+			Level:  roleToLevel(g.Role),
+		}
+	}
+	return out
+}
+
 // deriveGrants is the shared core of DeriveLevels and DeriveAllowlist: it replays
 // the cap-valid winning grant per grantee and returns the level map, the
 // authoritative-until map, AND the winning roleGrant per grantee (which carries the

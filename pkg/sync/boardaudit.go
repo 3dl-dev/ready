@@ -351,6 +351,97 @@ func fetchBoardEventsFromRelay(ctx context.Context, relayURL, boardCoord string)
 	return out, fmt.Errorf("sync: audit read of %s from %s exceeded %d pages — refusing to report a truncated read-back", boardCoord, relayURL, maxAuditPages)
 }
 
+// EventReadBack is the result of reading a SPECIFIC set of already-published
+// events back off ONE relay by id with a fresh REQ.
+//
+// AuditBoardOnRelay answers "is this whole board complete on that relay", which
+// on a 5,000-item board costs a paginated walk of the entire board. A key
+// rotation publishes a handful of grants and needs the narrow question — "did
+// these exact signed events reach the relay a reader reads from" — so this uses
+// the same evidence standard (fresh subscription, independent schnorr verify,
+// compare against what we hold locally) at the granularity of an id set.
+type EventReadBack struct {
+	Relay string `json:"relay"`
+	// Want is how many distinct event ids were asked for.
+	Want int `json:"want"`
+	// Present are the ids the relay served whose bytes verify. Because
+	// nostr.Event.Verify RE-DERIVES the id from the canonical serialization, an
+	// id in this list means the relay served the identical signed event, not
+	// merely something labelled with that id.
+	Present []string `json:"present"`
+	// Missing are the ids the relay did not serve at all (or served in a form
+	// that failed verification, which is not evidence the event is there).
+	Missing []string `json:"missing"`
+	// Unverified are ids the relay answered with an event whose signature or id
+	// derivation did NOT check out — the relay altered or fabricated it. These
+	// are also counted as Missing, because a tampered answer proves nothing about
+	// the real event being retrievable.
+	Unverified []string `json:"unverified,omitempty"`
+	// Match is the pass criterion: every wanted id came back verified.
+	Match bool `json:"match"`
+}
+
+// VerifyEventsOnRelay reads want back off relayURL by id with a fresh
+// subscription and reports which of them that relay actually serves.
+//
+// WHY IT EXISTS (ready-2b25): reduceEventOutcome (relayclass.go) reports an
+// event as accepted as soon as ANY write relay accepts it, and the LAN relays
+// accept everything — so rd's own publish report cannot tell you whether the
+// PUBLIC relay took a write. For a CEK rotation that gap is not cosmetic: the
+// new epoch's grants are the only way a member learns the new key, so a
+// rotation whose grants reached only the LAN is a rotation that silently locked
+// every remote member out of everything written from that moment on.
+//
+// It reads by id through nostr.FetchByIDs, which chunks at MaxREQIDs, so a
+// rotation on a board with hundreds of members is one call.
+func VerifyEventsOnRelay(ctx context.Context, relayURL string, want []*nostr.Event) (EventReadBack, error) {
+	rb := EventReadBack{Relay: relayURL}
+	wanted := make(map[string]bool, len(want))
+	ids := make([]string, 0, len(want))
+	for _, e := range want {
+		if e == nil || e.ID == "" || wanted[e.ID] {
+			continue
+		}
+		wanted[e.ID] = true
+		ids = append(ids, e.ID)
+	}
+	sort.Strings(ids)
+	rb.Want = len(ids)
+	if rb.Want == 0 {
+		rb.Match = true
+		return rb, nil
+	}
+	served, err := nostr.FetchByIDs(ctx, relayURL, ids)
+	if err != nil {
+		return rb, fmt.Errorf("sync: read-back of %d event(s) from %s: %w", len(ids), relayURL, err)
+	}
+	verified := map[string]bool{}
+	tampered := map[string]bool{}
+	for _, e := range served {
+		if e == nil || !wanted[e.ID] {
+			continue // the relay volunteered something we did not ask about
+		}
+		if e.Verify() != nil {
+			tampered[e.ID] = true
+			continue
+		}
+		verified[e.ID] = true
+	}
+	for _, id := range ids {
+		switch {
+		case verified[id]:
+			rb.Present = append(rb.Present, id)
+		default:
+			rb.Missing = append(rb.Missing, id)
+			if tampered[id] {
+				rb.Unverified = append(rb.Unverified, id)
+			}
+		}
+	}
+	rb.Match = len(rb.Missing) == 0
+	return rb, nil
+}
+
 // splitBoardCoord decomposes "30301:<owner>:<boardD>" into its owner and D-tag,
 // reusing the ONE coordinate parser (parseBoardCoord, rolegrant.go) so the audit
 // cannot drift from how the rest of the package reads a board coordinate.
