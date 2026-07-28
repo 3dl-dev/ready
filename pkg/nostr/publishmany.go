@@ -171,7 +171,9 @@ func PublishMany(ctx context.Context, relayURL string, events []*Event) ([]Publi
 		if unacked == 0 {
 			// Nothing in flight and nothing left to write — batch complete.
 			if next >= len(events) {
-				_ = conn.WriteJSON([]any{"CLOSE", "rd-publishmany"})
+				// No CLOSE frame: this connection never opened a subscription,
+				// only wrote EVENTs. Closing the socket (the deferred Close) is
+				// the whole teardown.
 				return acks, nil
 			}
 			continue
