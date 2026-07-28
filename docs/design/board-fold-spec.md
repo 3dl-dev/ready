@@ -42,7 +42,7 @@ write command read through — is `ProjectItems`, which replays the local
 append-only signed-event log into `map[itemID]*state.Item`
 (`pkg/sync/nostrproject.go:146`). An independent client MUST implement §2–§12
 against this function. It is reached from the CLI via `nostrProjectAllItems`
-(`cmd/rd/nostr.go:884`), which is the sole read spine on a nostr-native project.
+(`cmd/rd/nostr.go:894`), which is the sole read spine on a nostr-native project.
 
 **§1.2** `pkg/state.DeriveAll` (`pkg/state/state.go:405`) is the **campfire-era
 fold**: it replays `work:*` convention messages from `[]msgrec.MessageRecord`. On
