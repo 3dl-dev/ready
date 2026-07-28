@@ -10,23 +10,48 @@ package foldvectors_test
 //
 // TestNamedCitationsAnchorToRealDeclarations closes the MOVE gap wherever the
 // doc gives a citation something concrete to anchor to: a `` `FuncName` `` naming
-// a REAL top-level Go func, cited close enough to a `path:line` citation that
-// the func is plausibly what's being cited. For those, the check requires the
-// cited range to fall inside that func's OWN current [declLine, nextFuncDeclLine)
-// span — which breaks the instant the file's line numbers shift, because the
-// func's real span moves but the cited line number, fixed in prose, does not.
-// This covers every top-level func in pkg/sync/nostrproject.go, nostrwire.go,
-// and pkg/views/views.go that the doc happens to name-and-cite this way (see
-// citationExceptions for the documented cases where the named func is genuinely
-// mentioned/called at a DIFFERENT location than its own declaration — those are
-// real, correct citations this span check cannot itself validate and are called
-// out by name instead of silently accepted).
+// a REAL top-level Go func, found by nearestNamedFunc (see its doc for the
+// clause-boundary + closest-real-func-in-source algorithm — NOT a fixed-width
+// regex lookback over raw prose punctuation, which is what left most true
+// declaration-line citations unanchored before this round; see the coverage
+// numbers below). For those, the check requires the cited range to fall
+// inside that func's OWN
+// current [declLine, nextFuncDeclLine) span, unless the citation is a
+// documented, by-hand-verified citationExceptions entry (a genuine call-site
+// or doc-comment cross-reference, or a closest-match ambiguity — see that
+// map's doc). This is what makes inserting one comment line earlier in a
+// heavily-cited file a CI failure instead of a silent rot, PROVEN for
+// pkg/views/views.go and pkg/sync/nostrwire.go by inserting one line at
+// views.go:180 (rotting FocusFilter/LabelFilter/Apply/AllNames) and at
+// nostrwire.go:570 (rotting ItemDriftScope/GrantDriftScope/itemIDForEvent) —
+// both go red under this test and green again once reverted.
 //
-// This is NOT total MOVE coverage: only ~155-210 of the doc's ~712 citations are
-// "named" this way (a bare `path:line` with no adjacent identifier, e.g. citing a
-// struct field or a raw tag name, has nothing for this check to anchor to and is
-// still only bounds-checked). cmd/rd/nostrwrite.go is the one file with total,
-// zero-orphan named coverage (TestSection262CitesEveryNostrwriteFunc).
+// The check IS weaker than exact-line equality for a citation that cites a
+// line PARTWAY INTO a func's body rather than its own declaration line — see
+// the inSpan comment in TestNamedCitationsAnchorToRealDeclarations for
+// exactly which shift shapes that does and does not catch, and why a
+// line-count-only checker cannot close that gap.
+//
+// Measured coverage as of this round: of the 216 citations in the doc whose
+// start line lands EXACTLY on some real top-level func's declaration line
+// (the ground truth for "this citation could be named-and-anchored"), 198
+// (92%) are correctly bound to that exact func by nearestNamedFunc — up from
+// 103 (48%), measured the same way against the same 216-citation ground
+// truth, for the PRIOR lookback-regex extractor this round replaced (it
+// required a literal `(` immediately before the citation's own backtick and
+// so could never match the doc's dominant `(`Name`, path:line)` citation
+// form at all — name and citation in separate backtick spans — nor
+// `` `Name(args)` `` forms separated from their citation by other
+// backtick-quoted text). Coverage is not, and is not claimed to be, 100%:
+// nearestNamedFunc only names a citation when its own
+// clause contains a backtick-quoted real func name within maxCandidateSkip
+// candidates of the citation; a bare `path:line` with no such identifier
+// nearby (e.g. citing a struct field or a raw tag name) has nothing to
+// anchor to and is still only bounds-checked by TestSpecCitationsResolve.
+// cmd/rd/nostrwrite.go is the one file with total, zero-orphan named
+// coverage, independent of nearestNamedFunc's heuristics, via §26.2's
+// explicit bare-`:N` shorthand naming every func by hand
+// (TestSection262CitesEveryNostrwriteFunc).
 //
 // The doc uses a bare `:N` shorthand in two places (§3 and §26.2), each
 // explicitly declaring "a bare `:N` means <path>" for a bounded scope. A
@@ -62,7 +87,7 @@ type citationOcc struct {
 	line      int
 	endLine   int
 	raw       string // matched text, for error messages
-	funcName  string // non-empty if immediately preceded by `funcName` (
+	funcName  string // non-empty if the citation's clause names a real top-level func (see nearestNamedFunc)
 }
 
 var (
@@ -71,15 +96,15 @@ var (
 	shorthandRe = regexp.MustCompile("Citation shorthand for this (section|clause)[^:]*: a bare `:N` means\\s*`([\\w./-]+\\.go):N`")
 	sectionHdrs = regexp.MustCompile(`\n## `)
 	clauseHdrs  = regexp.MustCompile(`\n\*\*§`)
-	// precedingID matches a backtick-quoted identifier that names the citation
-	// immediately following it, allowing up to 50 chars of connective prose
-	// ("is the single-identity wrapper via", "then publishes", etc.) between the
-	// identifier and the opening paren — but NO other backtick in that gap, so a
-	// closer identifier (or the previous citation's own backticks) always wins
-	// over one further back. `\s*\(` (zero-gap) alone missed most of the doc's
-	// "`Name` is/does X (`path:line`)" phrasing and only caught direct
-	// "`Name` (`path:line`)" citations.
-	precedingID = regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_]*)`[^`]{0,50}\\($")
+	boldMarkRe  = regexp.MustCompile(`\*\*`)
+	// candidateNameRe matches a backtick-quoted bare identifier, optionally
+	// followed by a parenthesized argument list INSIDE the same backticks —
+	// `Name` or `Name(args, more)` — and nothing else between the backticks.
+	// An expression like `` `item.Gate == gateType` `` or an indexed lookup
+	// like `` `idset[By]` `` contains a `.`, ` `, `=` or `[` that this pattern
+	// cannot produce, so the whole backtick span fails to match and is never
+	// mistaken for a function name.
+	candidateNameRe = regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_]*)(?:\\([^`]*\\))?`")
 )
 
 func extractShorthandWindows(raw string) []shorthandWindow {
@@ -130,6 +155,167 @@ func windowFor(windows []shorthandWindow, pos int) (string, bool) {
 	return "", false
 }
 
+// boldOpenPositions returns the byte offset of every markdown bold-OPEN
+// marker ("**") in raw. It assumes "**" occurs in strictly alternating
+// open/close pairs — every even-indexed match (0, 2, 4, ...) opens a bold
+// run, every odd-indexed one closes the run just opened — and fails loudly
+// if that parity doesn't hold, since nearestNamedFunc's clause boundaries
+// depend on it. The spec consistently opens each function/section
+// description with a bold label (`**`Name`**`, `**§13.11 `Name(...)`**`,
+// `**Reason:**`, ...), so these positions double as clause boundaries: text
+// between one bold-open and the next belongs to one described subject and is
+// where that subject's name is expected to be mentioned.
+func boldOpenPositions(t *testing.T, raw string) []int {
+	t.Helper()
+	all := boldMarkRe.FindAllStringIndex(raw, -1)
+	if len(all)%2 != 0 {
+		t.Fatalf("found %d `**` bold markers in %s — odd count means an unmatched marker; nearestNamedFunc's clause-boundary detection assumes strict open/close pairs and cannot proceed safely", len(all), specPath)
+	}
+	opens := make([]int, 0, len(all)/2+1)
+	for i, m := range all {
+		if i%2 == 0 {
+			opens = append(opens, m[0])
+		}
+	}
+	return opens
+}
+
+// nearestBoldOpen returns the byte offset of the closest bold-open marker at
+// or before pos, or 0 if none precedes it.
+func nearestBoldOpen(boldOpens []int, pos int) int {
+	start := 0
+	for _, b := range boldOpens {
+		if b > pos {
+			break
+		}
+		start = b
+	}
+	return start
+}
+
+// maxCandidateSkip bounds how many textually-closer, non-matching candidates
+// nearestNamedFunc will look past before giving up on the fallback pass. See
+// that function's doc for why an unbounded look-further-back search is
+// unsafe in an enumeration clause.
+const maxCandidateSkip = 1
+
+// nearestNamedFunc looks backward from a citation at byte offset pos, within
+// [clauseStart, pos), for the backtick-quoted identifier (candidateNameRe)
+// that names it, validated against path's current source — funcSpans,
+// loaded lazily and cached in spansCache.
+//
+// clauseStart bounds the search and must be the LATER (larger) of: (a) the
+// nearest preceding bold-open (nearestBoldOpen / boldOpenPositions — text
+// between one bold-open and the next belongs to one described subject), and
+// (b) the end of the PREVIOUS citation occurrence, INCLUDING any name
+// forwardNamedFunc consumed after it. (b) is required because many clauses
+// are enumerations — "`resolveItemID` (`:300-312`), `clearOrSet` /
+// `ClearSentinel`\n(`:1014-1023`), `appendUnique` (`:1026-1033`), ...
+// `hasTag` (`:272-279`), the replay scratch types `replayState`
+// (`:357-372`), ..." — one bold-open clause, many (name, citation) pairs.
+// Without bound (b), `replayState`'s citation would search all the way back
+// to the clause's bold-open and could walk past several non-func names to
+// `hasTag` — a REAL func, but the wrong one, cited separately earlier in the
+// same enumeration.
+//
+// Within that window, candidates are tried closest-to-the-citation first,
+// capped at maxCandidateSkip non-matching candidates: this is what makes
+// "**§13.12 `LabelFilter(atom)`** — exact match of `atom` against a member of
+// `Item.Labels` ... (`pkg/views/views.go:202-211`)" resolve to LabelFilter
+// and not `atom` — `atom` is textually closer and well-formed, but names a
+// parameter, not a top-level func, so it fails the funcSpans check and the
+// search tries one candidate further back (LabelFilter, which passes). The
+// cap is what stops a long enumeration or multi-sentence run-on — e.g. "...
+// instead of `nostrNextCreatedAt` (§17.2). A republish ... `rd log put`
+// additionally builds its `CardSpec` with no `BoardAuthor` (`:714-722`)" —
+// from walking all the way back past `BoardAuthor`, `CardSpec` and
+// `created_at` (none of them funcs) to seize on `nostrNextCreatedAt`, which
+// has nothing to do with this citation.
+//
+// This closest-wins rule is deliberately NOT overridden by an exact-
+// declaration-line check (preferring whichever candidate's own func starts
+// exactly at the citation's line, regardless of position): that would fix
+// "**§13.11 `FocusFilter(gateType)`** — `ReadyFilter` AND (...)
+// (`pkg/views/views.go:185-196`)" (FocusFilter declared at :185, matching;
+// ReadyFilter at :60, not) but it would ALSO wrongly override the verified
+// "`DelegatedFilter` is the single-identity wrapper via `identitySet`\n
+// (`:113-115`)" case, where DelegatedFilter's OWN declaration also happens
+// to start at :113 (the cited line) yet the correct, hand-verified answer is
+// identitySet (see citationExceptions) — the two cases are structurally
+// identical (closer name is the true subject in one, a coincidental
+// exact-line match in the other) and no syntactic rule distinguishes them.
+// So closest-wins is the ONLY heuristic here, and the FocusFilter/ReadyFilter
+// case is instead a documented citationExceptions entry
+// ("ReadyFilter|pkg/views/views.go|185").
+//
+// Returns "" if no candidate in the window is a real top-level func in path
+// (the citation is then only bounds-checked, not move-detected), or if
+// path's source can't be read.
+func nearestNamedFunc(raw string, clauseStart, pos int, path string, spansCache map[string]map[string]funcSpan) string {
+	if path == "" || clauseStart >= pos {
+		return ""
+	}
+	spans, cached := spansCache[path]
+	if !cached {
+		spans, _ = funcSpans(filepath.Join(repoRootFromFoldvectors, path))
+		spansCache[path] = spans
+	}
+	if len(spans) == 0 {
+		return ""
+	}
+	matches := candidateNameRe.FindAllStringSubmatch(raw[clauseStart:pos], -1)
+	for i := len(matches) - 1; i >= 0 && i >= len(matches)-1-maxCandidateSkip; i-- {
+		if _, ok := spans[matches[i][1]]; ok {
+			return matches[i][1]
+		}
+	}
+	return ""
+}
+
+// forwardNameRe matches the inverse citation order "(`:N[-M]`, `Name`)" —
+// used when a citation is restated after already being introduced in full
+// elsewhere. §25.4 recaps §3.4's `grantTrusts(levels, e.PubKey)` (`:235-237`;
+// ...)` as "(`:235-237`, `grantTrusts`)" — the name AFTER its own citation
+// instead of before. It matches only immediately after the citation's own
+// closing backtick (anchored at the start of the search slice), so it can
+// never reach into unrelated later prose.
+var forwardNameRe = regexp.MustCompile("^,\\s*`([A-Za-z_][A-Za-z0-9_]*)`\\s*\\)")
+
+// forwardNamedFunc is nearestNamedFunc's mirror for the "(`:N`, `Name`)"
+// order: it looks immediately AFTER a citation ending at afterPos for a
+// restated name, validated the same way against path's real top-level funcs.
+// It exists because, without it, a name written after its citation is
+// invisible to backward-only search and instead gets picked up (WRONGLY, as
+// the nearest backward candidate) by whatever citation comes NEXT — which is
+// exactly what happened to §25.4's `:246-248` before this fix: `grantTrusts`
+// sat between it and the preceding `:235-237`, so backward search bound
+// `grantTrusts` to `:246-248` even though `:235-237` is what it actually
+// names. Returns the name and the byte offset just past the match (so the
+// caller can advance its clause boundary past the consumed name) when found.
+func forwardNamedFunc(raw string, afterPos int, path string, spansCache map[string]map[string]funcSpan) (name string, consumedEnd int, ok bool) {
+	if path == "" {
+		return "", afterPos, false
+	}
+	spans, cached := spansCache[path]
+	if !cached {
+		spans, _ = funcSpans(filepath.Join(repoRootFromFoldvectors, path))
+		spansCache[path] = spans
+	}
+	limit := afterPos + 80
+	if limit > len(raw) {
+		limit = len(raw)
+	}
+	m := forwardNameRe.FindStringSubmatchIndex(raw[afterPos:limit])
+	if m == nil {
+		return "", afterPos, false
+	}
+	cand := raw[afterPos+m[2] : afterPos+m[3]]
+	if _, isFunc := spans[cand]; !isFunc {
+		return "", afterPos, false
+	}
+	return cand, afterPos + m[1], true
+}
+
 // extractCitations walks the raw spec text in document order, resolving every
 // bare `:N`/`:N-M` against either an active shorthand window or (failing
 // that) the nearest preceding full citation.
@@ -139,6 +325,7 @@ func extractCitations(t *testing.T, raw string) []citationOcc {
 	if len(windows) != 2 {
 		t.Fatalf("expected 2 declared bare-`:N` shorthand windows (§3, §26.2), found %d — spec shorthand text changed, fix this test", len(windows))
 	}
+	boldOpens := boldOpenPositions(t, raw)
 
 	type rawMatch struct {
 		pos      int
@@ -168,8 +355,10 @@ func extractCitations(t *testing.T, raw string) []citationOcc {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].pos < all[j].pos })
 
+	spansCache := map[string]map[string]funcSpan{}
 	var out []citationOcc
 	lastFull := ""
+	prevEnd := 0
 	for _, m := range all {
 		occ := citationOcc{pos: m.pos, line: m.line, endLine: m.endLine, raw: m.matchStr}
 		if m.full {
@@ -182,20 +371,23 @@ func extractCitations(t *testing.T, raw string) []citationOcc {
 				occ.pathOrNil = lastFull
 			} else {
 				t.Errorf("bare citation %q at byte offset %d has no antecedent file (no prior full citation, no shorthand window)", m.matchStr, m.pos)
+				prevEnd = m.end
 				continue
 			}
 		}
-		// Look back a short window for a `funcName` ( immediately before this
-		// citation's opening backtick, to support content-level verification.
-		// 110 comfortably covers the longest identifier (~35 chars) plus
-		// precedingID's 50-char connective-prose allowance plus backticks/parens.
-		lookback := m.pos - 110
-		if lookback < 0 {
-			lookback = 0
+		clauseStart := nearestBoldOpen(boldOpens, m.pos)
+		if prevEnd > clauseStart {
+			clauseStart = prevEnd
 		}
-		if fm := precedingID.FindStringSubmatch(raw[lookback:m.pos]); fm != nil {
-			occ.funcName = fm[1]
+		occ.funcName = nearestNamedFunc(raw, clauseStart, m.pos, occ.pathOrNil, spansCache)
+		consumedEnd := m.end
+		if occ.funcName == "" {
+			if name, end, ok := forwardNamedFunc(raw, m.end, occ.pathOrNil, spansCache); ok {
+				occ.funcName = name
+				consumedEnd = end
+			}
 		}
+		prevEnd = consumedEnd
 		out = append(out, occ)
 	}
 	return out
@@ -396,30 +588,105 @@ func funcSpans(path string) (map[string]funcSpan, error) {
 	return out, nil
 }
 
-// citationExceptions lists every (funcName, file, citedStartLine) where a named
-// citation legitimately points OUTSIDE that func's own declared span — because
-// the clause is citing where the func is CALLED or documented from, not the
-// func's own body — verified by hand against the source at each key below.
-// TestNamedCitationsAnchorToRealDeclarations fails loudly (via the unused-entry
-// check at the end of that test) if a listed exception stops being hit, so this
-// list cannot silently accumulate stale entries.
+// citationExceptions lists every (funcName, file, citedStartLine, currentDeclLine)
+// where a named citation's cited range legitimately falls outside that func's
+// own current span — verified by hand against the source at each key below.
+// Two distinct reasons land here, both requiring human judgment a line-count
+// checker cannot supply on its own:
+//
+//   - Genuine cross-reference: the clause is citing where the func is
+//     CALLED or documented from, not the func's own body (e.g. grantTrusts,
+//     newerGrant, CardCoord, FocusFilter|...|47, boardConfidentialEnvelope,
+//     applyDepAndGateStatus, publishItemFullCreateNostr, identitySet), or an
+//     enumeration citation spans both a const/type declaration and the func's
+//     own declaration in one range (clearOrSet, ParseCrossCampfireRef,
+//     parseTimestampValue), or the citation documents another (frozen) doc's
+//     now-stale line numbers rather than asserting current ones (BuildCardEvent
+//     |...|237, BuildStatusEvent|...|319 — §15.8 explicitly discusses drift in
+//     confidential-boards-envelope.md's frozen citations; this spec file is
+//     not itself citing those lines as current).
+//   - nearestNamedFunc closest-wins ambiguity: within a single clause, a
+//     textually CLOSER real-func name outranks the clause's actual subject
+//     (ReadyFilter|...|185 — FocusFilter's own clause mentions its
+//     AND-composed dependency `ReadyFilter` closer to the citation than
+//     `FocusFilter` itself; see nearestNamedFunc's doc for why no syntactic
+//     rule can prefer FocusFilter here without also breaking the verified
+//     identitySet|...|113 case, which has the identical shape with the
+//     opposite correct answer). sealStatusPayload|...|230 is the same
+//     shape: the clause names the func but the citation is to a struct
+//     (statusPayload) documenting its JSON shape, not the func's own body.
+//
+// The key embeds BOTH the doc's cited line AND the func's declaration line
+// AT THE TIME each entry was verified. This makes an entry survive a
+// legitimate, unrelated doc edit (which changes neither number) but
+// invalidate itself the moment the NAMED func's declaration moves in its
+// source file (a code move) — the old key stops matching, the citation
+// falls through to the normal error path, and the entry must be re-verified
+// and re-keyed at the func's new declaration line. Keying on citedStartLine
+// alone (the prior scheme) let a code move hide behind a still-valid-looking
+// key forever, since a move changes the func's real span but never the
+// number frozen in the doc.
+//
+// TestNamedCitationsAnchorToRealDeclarations fails loudly (via the
+// unused-entry check at the end of that test) if a listed exception stops
+// being hit, so this list cannot silently accumulate stale entries.
 var citationExceptions = map[string]string{
-	"newerThan|pkg/sync/nostrproject.go|256": "§4.5: newerThan is USED for board " +
+	"newerThan|pkg/sync/nostrproject.go|256@decl552": "§4.5: newerThan is USED for board " +
 		"latest-wins ordering at nostrproject.go:256-258; it's declared at :552",
-	"identitySet|pkg/views/views.go|113": "§13.7: identitySet is CALLED inside " +
+	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
-	"parseTimestampValue|pkg/state/state.go|324": "§14.6: cites the enumeration " +
+	"parseTimestampValue|pkg/state/state.go|324@decl339": "§14.6: cites the enumeration " +
 		"`parseTimestamp` / `parseTimestampValue` (:324-354) spanning BOTH funcs' " +
 		"declarations; parseTimestampValue itself is declared at :339",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|547": "§20.6: CALL site inside " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|547@decl155": "§20.6: CALL site inside " +
 		"runCreateNostr; publishItemFullCreateNostr is declared at :155",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|622": "§21.x: second CALL site, " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|622@decl155": "§21.x: second CALL site, " +
 		"inside runEngageNostr; publishItemFullCreateNostr is declared at :155",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435": "§9.9: CALL site inside " +
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435@decl452": "§9.9: CALL site inside " +
 		"ProjectItems; applyDepAndGateStatus is declared at :452",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|439": "§14.4: cites " +
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|439@decl452": "§14.4: cites " +
 		"applyDepAndGateStatus's OWN 13-line doc comment (:439-451), not its body; " +
 		"the func itself is declared at :452",
+	"grantTrusts|pkg/sync/nostrproject.go|235@decl135": "§3.4/§25.4: CALL site inside " +
+		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:235-237) and " +
+		"§25.4's restatement); grantTrusts itself is declared at :135",
+	"newerGrant|pkg/sync/rolegrant.go|449@decl568": "§4.4: CALL site — the ascending sort " +
+		"is expressed as `newerGrant(grants[j], grants[i])` (:449-451); newerGrant itself " +
+		"is declared at :568",
+	"FocusFilter|pkg/views/views.go|47@decl185": "§13.2: CALL site inside Named's " +
+		"ViewFocus case (`return FocusFilter(\"\")`, :47); FocusFilter itself is " +
+		"declared at :185",
+	"ReadyFilter|pkg/views/views.go|185@decl60": "§13.11: closest-wins ambiguity — " +
+		"FocusFilter's own clause mentions its AND-composed dependency `ReadyFilter` " +
+		"closer to the citation (`pkg/views/views.go:185-196`) than `FocusFilter` " +
+		"itself; the citation is FocusFilter's own declaration+body, FocusFilter is " +
+		"declared at :185, ReadyFilter at :60",
+	"clearOrSet|pkg/state/state.go|1014@decl1018": "§14.6: cites the enumeration " +
+		"`clearOrSet` / `ClearSentinel` (:1014-1023) spanning both the ClearSentinel " +
+		"const's declaration (:1014) and clearOrSet's own body; clearOrSet itself is " +
+		"declared at :1018",
+	"ParseCrossCampfireRef|pkg/state/state.go|1061@decl1063": "§14.8: cites the enumeration " +
+		"`ParseCrossCampfireRef` / `CrossCampfireRef` (:1061-1083) spanning both the " +
+		"CrossCampfireRef type's declaration and ParseCrossCampfireRef's own body; " +
+		"ParseCrossCampfireRef itself is declared at :1063",
+	"BuildCardEvent|pkg/sync/nostrwire.go|237@decl246": "§15.8: documents the FROZEN " +
+		"confidential-boards-envelope.md's now-stale citation for BuildCardEvent " +
+		"(claimed :237-310 when frozen); BuildCardEvent's CURRENT declaration is :246 " +
+		"— this entry records drift, not a live citation of :237",
+	"BuildStatusEvent|pkg/sync/nostrwire.go|319@decl362": "§15.8: documents the FROZEN " +
+		"confidential-boards-envelope.md's now-stale citation for BuildStatusEvent " +
+		"(claimed :319-344 when frozen); BuildStatusEvent's CURRENT declaration is " +
+		":362 — this entry records drift, not a live citation of :319",
+	"sealStatusPayload|pkg/sync/envelope.go|230@decl308": "§18.5-area: names " +
+		"sealStatusPayload but cites the `statusPayload` struct (:230-234) that " +
+		"documents the JSON shape it marshals, not the func's own body; " +
+		"sealStatusPayload itself is declared at :308",
+	"boardConfidentialEnvelope|cmd/rd/confidential.go|82@decl84": "§27.1-area: cites " +
+		"boardConfidentialEnvelope's OWN 6-line doc comment (:78-83, cited range :82-83), " +
+		"not its body; the func itself is declared at :84",
+	"CardCoord|pkg/sync/nostrwire.go|370@decl196": "§27.8: CALL site inside " +
+		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :370); " +
+		"CardCoord itself is declared at :196",
 }
 
 // TestNamedCitationsAnchorToRealDeclarations is ready-cee's done condition 2
@@ -458,11 +725,43 @@ func TestNamedCitationsAnchorToRealDeclarations(t *testing.T) {
 			continue // not a top-level func in this file — nothing to anchor to
 		}
 		anchored++
+		// inSpan is containment, not equality: c.line only has to fall
+		// somewhere inside the func's current [start,end), not match sp.start
+		// exactly. That is intentionally weaker than exact-declaration-line
+		// equality, and the weakness is real, not just theoretical:
+		//
+		// For a citation whose start line EQUALS the func's own declaration
+		// line (the dominant case — FocusFilter, LabelFilter, Apply,
+		// AllNames, ItemDriftScope, GrantDriftScope, itemIDForEvent, ...),
+		// inserting/deleting a line ANYWHERE earlier in the file shifts
+		// sp.start but leaves c.line fixed, so c.line >= sp.start fails
+		// immediately — a 1-line shift is always caught. This is what the
+		// two exploits fixed by this test (views.go:180, nostrwire.go:570)
+		// rely on, and both are proven RED by inserting one comment line.
+		//
+		// For a citation that cites a line partway INTO a func's body
+		// (e.g. ReadyFilter's `pkg/views/views.go:61-63` — line 61 is one
+		// line past ReadyFilter's own `func` line at :60), an insert earlier
+		// in the file shifts sp.start, sp.end AND the func's real content by
+		// the SAME offset, but c.line stays fixed. The citation still
+		// satisfies containment as long as the shift doesn't push c.line
+		// outside the (also-shifted) window — which is exactly the case for
+		// a small shift on a citation that isn't near the func's boundary.
+		// This test does NOT catch that: it bounds-checks a mid-span
+		// citation but does not move-detect it. There is no way to move-
+		// detect it with a line-count-only check, because nothing here
+		// records "how many lines into the func" a mid-span citation is
+		// supposed to be — only the doc's frozen absolute line number and
+		// the func's current span are available, and a small shift changes
+		// both consistently. Distinguishing "still correct after a
+		// consistent shift" from "still accidentally in range" would require
+		// comparing the CITED PROSE against the CITED CODE's content, which
+		// is out of scope for a citation-line checker.
 		inSpan := c.line >= sp.start && c.endLine < sp.end
 		if inSpan {
 			continue
 		}
-		key := fmt.Sprintf("%s|%s|%d", c.funcName, c.pathOrNil, c.line)
+		key := fmt.Sprintf("%s|%s|%d@decl%d", c.funcName, c.pathOrNil, c.line, sp.start)
 		if _, ok := citationExceptions[key]; ok {
 			usedExceptions[key] = true
 			continue
