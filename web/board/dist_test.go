@@ -119,11 +119,29 @@ type externalRef struct {
 // (scheme "https") and a protocol-relative "//x" (scheme "").
 var urlAuthorityRe = regexp.MustCompile(`(?i)(?:([a-z][a-z0-9+.\-]*):)?//`)
 
-// hostShapeRe matches a DNS-style host at the very start of the text that
-// follows a "//": a label, at least one dot, and an alphabetic TLD of two or
-// more characters. "cdn.jsdelivr.net/npm/x" and "fonts.googleapis.com/css2"
-// match; " @license MIT", "# sourceMappingURL=x", and "/home/u/x" do not.
-var hostShapeRe = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}`)
+// authorityRe matches a URL authority at the very start of the text that
+// follows a "//": optional userinfo ("user@"), then a host — a bracketed IP
+// literal ("[::1]", "[2001:db8::1]") or a run of registered-name/IPv4
+// characters — then an optional ":port". Group 1 is the host alone, without
+// userinfo or port.
+//
+// It deliberately does NOT require a dot or a TLD. "10.0.0.5", "localhost",
+// "telemetry" and "[::1]" are all hosts a browser will happily connect to,
+// and every one of them shipped green through a real build while this scan
+// insisted on a DNS shape. Whether a match is a violation is decided by
+// scanExternalRefs, not here; this regex only says where the authority ends.
+//
+// " @license MIT", "# sourceMappingURL=x" and "/home/u/x" do not match at
+// all — a space, "#" and "/" can begin neither userinfo nor a host.
+var authorityRe = regexp.MustCompile(`(?i)^(?:[a-z0-9\-._~%!$&'()*+,;=:]+@)?(\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9\-._~%]*[a-z0-9])?)(?::[0-9]*)?`)
+
+// dnsShapeRe matches a host that is unambiguously a DNS name: at least one
+// dot and an alphabetic TLD of two or more characters. "cdn.jsdelivr.net"
+// and "fonts.googleapis.com" match; "localhost", "10.0.0.5", "b" and "1.2"
+// do not. scanExternalRefs uses it as the second of two independent triggers
+// — see there for why a host that is not DNS-shaped still needs a path,
+// query or fragment delimiter behind it before it counts.
+var dnsShapeRe = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}$`)
 
 // allowedSchemes are the schemes whose authority is not treated as an
 // external reference. ws:/wss: are here because connecting to nostr relays IS
@@ -146,21 +164,40 @@ var allowedSchemes = map[string]bool{"ws": true, "wss": true}
 //     strength the http(s) scan has always had: "https://localhost:8080/x"
 //     and "https://10.0.0.5/x" are violations even though neither has a
 //     DNS-shaped host.
-//   - it carries no scheme AND a DNS-shaped host follows immediately, e.g.
-//     "//cdn.jsdelivr.net/npm/x" or "@import url(//fonts.googleapis.com/x)".
+//   - it carries no scheme AND is followed by something authority-shaped
+//     (authorityRe) that is EITHER terminated by a path, query or fragment
+//     delimiter — "//10.0.0.5/beacon.json", "//localhost:8080/x",
+//     "//telemetry/x", "//[::1]/x", "//user@evil.example/x" — OR whose host
+//     is DNS-shaped, which needs no delimiter: "//cdn.jsdelivr.net" and
+//     "@import url(//fonts.googleapis.com/x)" both count.
 //
-// The host requirement exists only for the scheme-less case, and only
-// because "//" is also the JavaScript line-comment token and the tail of
-// every absolute URL. Rejecting the token itself — what this scan did before
-// ready-8c5 — bans license banners and wss:// literals from the bundle, which
-// is a build rule about punctuation rather than about origins.
+// Neither scheme-less trigger subsumes the other, and both are needed. The
+// delimiter alone would miss "//evil.example" with no path. The DNS shape
+// alone is what this scan required between ready-8c5 and ready-8c5's rework,
+// and it let every dotless and every numeric host through: an IPv4 quad, a
+// bracketed IPv6 literal, a single-label intranet name, a host hidden behind
+// userinfo. All five shipped green through a real build. A host does not
+// have to look like a DNS name to be a third-party origin.
 //
-// Consequence worth naming: a URL written inside a line comment in the CODE
-// region (not the trailing banner region) still fails, e.g. a source comment
-// reading "//github.com/foo/bar". That is a false positive; it is left in
-// because the alternative — deciding comment-ness by lexing minified
-// JavaScript — fails in the direction of a false PASS, and rewording a
-// comment is cheaper than a missed CDN reference.
+// The delimiter requirement — rather than treating any authority-shaped run
+// as a reference — is what keeps "//" usable as punctuation. "//" is also
+// the JavaScript line-comment token and the tail of every absolute URL, so
+// the string "a//b" and the comment "//a" both put host-legal characters
+// right after two slashes. Requiring a "/", "?" or "#" behind an
+// undistinguished host separates "//telemetry/beacon.json" from "a//b"
+// without going back to rejecting the token itself, which is what banned
+// license banners and wss:// literals from the bundle before ready-8c5.
+//
+// Consequences worth naming, both in the false-POSITIVE direction:
+//
+//   - A URL written inside a line comment in the CODE region (not the
+//     trailing banner region) still fails, e.g. a source comment reading
+//     "//github.com/foo/bar".
+//   - So does a string that merely looks like one, e.g. "a//b/c".
+//
+// Both are left in because the alternative — deciding comment-ness and
+// string-ness by lexing minified JavaScript — fails in the direction of a
+// false PASS. Rewording a comment is cheaper than a missed CDN reference.
 func scanExternalRefs(content string, exemptFrom int) []externalRef {
 	var refs []externalRef
 	for _, m := range urlAuthorityRe.FindAllStringSubmatchIndex(content, -1) {
@@ -175,11 +212,15 @@ func scanExternalRefs(content string, exemptFrom int) []externalRef {
 		rest := content[m[1]:]
 		switch {
 		case scheme == "":
-			host := hostShapeRe.FindString(rest)
-			if host == "" {
+			a := authorityRe.FindStringSubmatchIndex(rest)
+			if a == nil {
 				continue
 			}
-			refs = append(refs, externalRef{off: off, what: fmt.Sprintf("protocol-relative reference to //%s", host)})
+			authority, host := rest[a[0]:a[1]], rest[a[2]:a[3]]
+			if !endsAuthority(rest[a[1]:]) && !dnsShapeRe.MatchString(host) {
+				continue
+			}
+			refs = append(refs, externalRef{off: off, what: fmt.Sprintf("protocol-relative reference to //%s", authority)})
 		case allowedSchemes[scheme]:
 			continue
 		default:
@@ -187,6 +228,17 @@ func scanExternalRefs(content string, exemptFrom int) []externalRef {
 		}
 	}
 	return refs
+}
+
+// endsAuthority reports whether rest — the text immediately after an
+// authority — begins with a character that can only be the start of a URL
+// path, query or fragment. Per RFC 3986 those three are the sole ways an
+// authority component may end other than at the end of the URL; a URL's end
+// is not detectable here, because in built output a URL is embedded in
+// JavaScript or CSS and its "end" is whatever quote, paren or semicolon the
+// surrounding syntax happens to use.
+func endsAuthority(rest string) bool {
+	return strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "?") || strings.HasPrefix(rest, "#")
 }
 
 // exemptRegionStart returns the offset in content from which scanExternalRefs
@@ -308,6 +360,34 @@ func TestExternalRefScan_Predicate(t *testing.T) {
 			"<p>hi</p>\n// https://evil.example/x\n", 1},
 		{"every violation is reported, not just the first", "chunk.js",
 			`fetch("https://a.example/x");fetch("//b.example/y")`, 2},
+
+		// A scheme-less reference does not need a DNS-shaped host to reach a
+		// third party. Every row below shipped GREEN through a real build
+		// while this scan required a dot and an alphabetic TLD; each is a
+		// live egress to an origin the page does not control.
+		{"protocol-relative to an IPv4 literal", "chunk.js",
+			`fetch("//10.0.0.5/beacon.json")`, 1},
+		{"protocol-relative to a bracketed IPv6 literal", "chunk.js",
+			`fetch("//[2001:db8::1]/beacon.json")`, 1},
+		{"protocol-relative to loopback IPv6", "chunk.js",
+			`fetch("//[::1]/x")`, 1},
+		{"protocol-relative to a host with a port and no dot", "chunk.js",
+			`const u="//localhost:8080/x"`, 1},
+		{"protocol-relative to a single-label host", "chunk.js",
+			`const u="//telemetry/beacon.json"`, 1},
+		{"protocol-relative carrying userinfo", "chunk.js",
+			`const u="//user@evil.example/x"`, 1},
+		{"protocol-relative to an IPv4 literal in an inline style", "index.html",
+			`<style>body{background:url(//10.0.0.5/a.png)}</style>`, 1},
+		{"protocol-relative to an IPv4 literal with a port", "chunk.js",
+			`fetch("//10.0.0.5:9000/x")`, 1},
+		{"protocol-relative with a query and no path", "chunk.js",
+			`fetch("//telemetry?id=1")`, 1},
+		// The DNS-shape trigger has to survive on its own: a bare origin has
+		// no path, query or fragment to terminate its authority, so the
+		// delimiter rule alone would let this through.
+		{"protocol-relative to a bare DNS origin with no path at all", "chunk.js",
+			`fetch("//evil.example")`, 1},
 
 		// --- must be accepted -------------------------------------------
 		{"preserved license banner at EOF", "chunk.js",
