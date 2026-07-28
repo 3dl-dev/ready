@@ -14,23 +14,31 @@ package foldvectors_test
 // clause-boundary + closest-real-func-in-source algorithm — NOT a fixed-width
 // regex lookback over raw prose punctuation, which is what left most true
 // declaration-line citations unanchored before this round; see the coverage
-// numbers below). For those, the check requires the cited range to fall
-// inside that func's OWN
-// current [declLine, nextFuncDeclLine) span, unless the citation is a
-// documented, by-hand-verified citationExceptions entry (a genuine call-site
-// or doc-comment cross-reference, or a closest-match ambiguity — see that
-// map's doc). This is what makes inserting one comment line earlier in a
-// heavily-cited file a CI failure instead of a silent rot, PROVEN for
-// pkg/views/views.go and pkg/sync/nostrwire.go by inserting one line at
-// views.go:180 (rotting FocusFilter/LabelFilter/Apply/AllNames) and at
-// nostrwire.go:570 (rotting ItemDriftScope/GrantDriftScope/itemIDForEvent) —
-// both go red under this test and green again once reverted.
+// numbers below). For those, the check requires the citation's start line to
+// EXACTLY EQUAL that func's OWN current declaration line (and its end line to
+// stay inside the func's [declLine, nextFuncDeclLine) span), unless the
+// citation is a documented, by-hand-verified citationExceptions entry (a
+// genuine call-site or doc-comment cross-reference, a closest-match
+// ambiguity, or a detail citation into the func's body — see that map's
+// doc). Exact equality — not containment — is what makes BOTH an insertion
+// AND a deletion earlier in a heavily-cited file a CI failure instead of a
+// silent rot: containment alone caught insertions (which push the func's
+// declaration line PAST the frozen citation) but not deletions (which pull
+// it back TOWARD the citation and satisfy `citedLine >= declLine` no matter
+// how much was deleted, surviving on `citedEnd < declEnd` tail slack alone).
+// PROVEN for pkg/views/views.go and pkg/sync/nostrwire.go: inserting one line
+// at views.go:180 (rotting FocusFilter/LabelFilter/Apply/AllNames) and at
+// nostrwire.go:570 (rotting ItemDriftScope/GrantDriftScope/itemIDForEvent),
+// and separately deleting the blank line above `AllNames` in views.go
+// (shifting its declaration from :225 to :224 while the doc still cites
+// :225) — all four go red under this test and green again once reverted.
 //
-// The check IS weaker than exact-line equality for a citation that cites a
-// line PARTWAY INTO a func's body rather than its own declaration line — see
-// the inSpan comment in TestNamedCitationsAnchorToRealDeclarations for
-// exactly which shift shapes that does and does not catch, and why a
-// line-count-only checker cannot close that gap.
+// See the inSpan comment in TestNamedCitationsAnchorToRealDeclarations for
+// why detail citations (a doc reference to a specific line inside a func's
+// body, not its declaration line) can't satisfy equality by construction and
+// are instead required to be documented citationExceptions entries — which,
+// via the @decl-keyed exception format, still get move detection, just by
+// human-verified anchor instead of a line-count heuristic.
 //
 // Measured coverage as of this round: of the 216 citations in the doc whose
 // start line lands EXACTLY on some real top-level func's declaration line
@@ -591,20 +599,21 @@ func funcSpans(path string) (map[string]funcSpan, error) {
 // citationExceptions lists every (funcName, file, citedStartLine, currentDeclLine)
 // where a named citation's cited range legitimately falls outside that func's
 // own current span — verified by hand against the source at each key below.
-// Two distinct reasons land here, both requiring human judgment a line-count
+// Three distinct reasons land here, all requiring human judgment a line-count
 // checker cannot supply on its own:
 //
 //   - Genuine cross-reference: the clause is citing where the func is
 //     CALLED or documented from, not the func's own body (e.g. grantTrusts,
-//     newerGrant, CardCoord, FocusFilter|...|47, boardConfidentialEnvelope,
-//     applyDepAndGateStatus, publishItemFullCreateNostr, identitySet), or an
-//     enumeration citation spans both a const/type declaration and the func's
-//     own declaration in one range (clearOrSet, ParseCrossCampfireRef,
-//     parseTimestampValue), or the citation documents another (frozen) doc's
-//     now-stale line numbers rather than asserting current ones (BuildCardEvent
-//     |...|237, BuildStatusEvent|...|319 — §15.8 explicitly discusses drift in
-//     confidential-boards-envelope.md's frozen citations; this spec file is
-//     not itself citing those lines as current).
+//     newerGrant, CardCoord, FocusFilter|...|47, boardConfidentialEnvelope
+//     |...|82, applyDepAndGateStatus|...|435, publishItemFullCreateNostr,
+//     identitySet), or an enumeration citation spans both a const/type
+//     declaration and the func's own declaration in one range (clearOrSet,
+//     ParseCrossCampfireRef, parseTimestampValue), or the citation documents
+//     another (frozen) doc's now-stale line numbers rather than asserting
+//     current ones (BuildCardEvent|...|237, BuildStatusEvent|...|319 —
+//     §15.8 explicitly discusses drift in confidential-boards-envelope.md's
+//     frozen citations; this spec file is not itself citing those lines as
+//     current).
 //   - nearestNamedFunc closest-wins ambiguity: within a single clause, a
 //     textually CLOSER real-func name outranks the clause's actual subject
 //     (ReadyFilter|...|185 — FocusFilter's own clause mentions its
@@ -615,6 +624,28 @@ func funcSpans(path string) (map[string]funcSpan, error) {
 //     opposite correct answer). sealStatusPayload|...|230 is the same
 //     shape: the clause names the func but the citation is to a struct
 //     (statusPayload) documenting its JSON shape, not the func's own body.
+//   - Detail citation: the clause names a func (often at its own primary,
+//     exactly-anchored citation elsewhere in the doc — e.g. runCloseNostr is
+//     cited at its true declaration by §26.2's `:234`) and ALSO, in a
+//     different clause, cites a narrower range a few lines INTO that same
+//     func's body to point at one specific statement (a field write, a tag,
+//     a branch) rather than the function as a whole. TestNamedCitationsAnchor
+//     ToRealDeclarations requires EXACT equality between a citation's start
+//     line and the func's current declaration line (see inSpan below), so
+//     every one of these — verified correct against current source at the
+//     time each was added — needs an entry here. This is the majority of
+//     the list below (BuildCardEvent|...|291, BuildHistoricalStatusEvent,
+//     BuildStatusEventWithIssueRoot,
+//     CardSpecFromItem, DeriveBoardKeyring, OverdueFilter|...|95,
+//     PendingFilter|...|86, PublishEventsUnique, PublishItemWithReason,
+//     PublishStatusChange, applyDepAndGateStatus|...|453, boardConfidential
+//     Envelope|...|138, encWellFormed, handleWorkCreate, itemFromCard,
+//     itemIDForEvent, publishEngagedItemsNostr, publishEvents,
+//     publishItemCardEditNostr, runApproveNostr, runCloseNostr,
+//     runCreateNostr, runDepAddNostr, runUpdateNostr — 4 distinct detail
+//     ranges). ReadyFilter|...|61 and |...|67 are the same shape but have NO
+//     separate exact-declaration citation anywhere in the doc — ReadyFilter
+//     is only ever cited via its per-conjunct detail lines.
 //
 // The key embeds BOTH the doc's cited line AND the func's declaration line
 // AT THE TIME each entry was verified. This makes an entry survive a
@@ -687,6 +718,107 @@ var citationExceptions = map[string]string{
 	"CardCoord|pkg/sync/nostrwire.go|370@decl196": "§27.8: CALL site inside " +
 		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :370); " +
 		"CardCoord itself is declared at :196",
+
+	// Detail citations (see the third bucket above). Each names a func whose
+	// OWN declaration is either cited exactly elsewhere in the doc, or (for
+	// BuildStatusEventWithIssueRoot and ReadyFilter) never cited at its
+	// declaration line at all — only via these narrower ranges.
+	"BuildHistoricalStatusEvent|pkg/sync/nostrmigrate.go|61@decl49": "§19.7: the " +
+		"`by` tag write (:61-63) inside BuildHistoricalStatusEvent's body; " +
+		"BuildHistoricalStatusEvent is never cited at its own declaration line " +
+		"(:49) — only via this detail range",
+	"BuildCardEvent|pkg/sync/nostrwire.go|291@decl246": "§23.3: the three " +
+		"label-emission-mode branch (:291-311) inside BuildCardEvent's body; " +
+		"BuildCardEvent's own declaration+body is cited exactly at :246 " +
+		"(§5.1, `pkg/sync/nostrwire.go:246-...`)",
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|443@decl416": "§11.5/§19.4: " +
+		"the second `a` tag (board coordinate) construction (:443-446) inside " +
+		"the func's tag-table build; BuildStatusEventWithIssueRoot is never cited " +
+		"at its own declaration line (:416) — only via detail ranges like this one",
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|447@decl416": "§19.4/§24.1: " +
+		"the re-sign-after-tag-mutation step (:447-454); BuildStatusEventWithIssueRoot " +
+		"is never cited at its own declaration line (:416) — only via detail ranges",
+	"CardSpecFromItem|pkg/sync/nostrmigrate.go|110@decl106": "§27.x: the `s` tag " +
+		"write inside CardSpecFromItem's body (:110); CardSpecFromItem's own " +
+		"declaration+body is cited exactly at :106 (§5.6, `:106-127`)",
+	"DeriveBoardKeyring|pkg/sync/keydist.go|145@decl141": "§11.12 recap: " +
+		"\"accumulates epochs from the grants present in the LOCAL LOG\" " +
+		"(:145-186) inside DeriveBoardKeyring's body; DeriveBoardKeyring's own " +
+		"declaration+body is cited exactly at :141 (`:141-194`)",
+	"OverdueFilter|pkg/views/views.go|95@decl94": "§15.6: the `now := time.Now()` " +
+		"construction-time capture (:95) inside OverdueFilter's body; OverdueFilter's " +
+		"own declaration+body is cited exactly at :94 (§13.6, `:94-109`)",
+	"PendingFilter|pkg/views/views.go|86@decl83": "§15.1 recap: a bare `:86` pointing " +
+		"at PendingFilter's `scheduled` case; PendingFilter's own declaration+body is " +
+		"cited exactly at :83 (§13.5, `:83-91`)",
+	"PublishEventsUnique|pkg/sync/nostroutbound.go|381@decl380": "§16.8: the " +
+		"`guardReservedBoard` call site one line into PublishEventsUnique's body " +
+		"(:381); PublishEventsUnique itself is declared at :380",
+	"PublishItemWithReason|pkg/sync/nostroutbound.go|183@decl177": "§18.x table: " +
+		"a bare `:183` inside PublishItemWithReason's body (one of several detail " +
+		"lines cited from the same clause); PublishItemWithReason's own " +
+		"declaration+body is cited exactly at :177 (`:177-210`)",
+	"PublishStatusChange|pkg/sync/nostroutbound.go|223@decl219": "§18.x table: " +
+		"a bare `:223` inside PublishStatusChange's body; PublishStatusChange " +
+		"itself is declared at :219",
+	"ReadyFilter|pkg/views/views.go|61@decl60": "§13.3: the NOT-terminal conjunct " +
+		"(:61-63), one line into ReadyFilter's body; ReadyFilter is never cited " +
+		"at its own declaration line (:60) — only via its per-conjunct detail lines",
+	"ReadyFilter|pkg/views/views.go|67@decl60": "§13.3/§15.1: the " +
+		"not-`scheduled` conjunct (:67-69); ReadyFilter is never cited at its " +
+		"own declaration line (:60) — only via its per-conjunct detail lines",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|453@decl452": "§8.1: the " +
+		"BlockedBy drain-and-rebuild step (:453-460) inside applyDepAndGateStatus's " +
+		"body; its declaration is at :452 (a separate call-site exception already " +
+		"covers :435, a doc-comment exception already covers :439)",
+	"boardConfidentialEnvelope|cmd/rd/confidential.go|138@decl84": "§11.10: the " +
+		"epoch-1 bootstrap step (:138-155) inside boardConfidentialEnvelope's body; " +
+		"its declaration is at :84 (a separate doc-comment exception already covers :82)",
+	"encWellFormed|pkg/sync/envelope.go|74@decl73": "§25.2: the `enc != \"1\"` " +
+		"check one line into encWellFormed's body (:74); encWellFormed's own " +
+		"declaration+body is cited exactly at :73 (§11.2, `:73-85`)",
+	"handleWorkCreate|pkg/state/state.go|565@decl556": "§15.x: a detail range " +
+		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
+		"declaration is cited exactly at :556",
+	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
+		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
+		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
+	"itemIDForEvent|pkg/sync/nostrwire.go|589@decl585": "§9.x: a detail range " +
+		"(:589-600) inside itemIDForEvent's body; itemIDForEvent's own " +
+		"declaration+body is cited exactly at :585 (`:585-602`)",
+	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|615@decl602": "§27.x: the " +
+		"project-prefix assignment (:615) inside publishEngagedItemsNostr's body; " +
+		"its declaration is cited exactly at :602 (§26.3)",
+	"publishEvents|pkg/sync/nostroutbound.go|419@decl418": "§16.8: the " +
+		"`guardReservedBoard` call site one line into publishEvents's body (:419); " +
+		"publishEvents itself is declared at :418",
+	"publishItemCardEditNostr|cmd/rd/nostr.go|406@decl389": "§18.10: the " +
+		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:406); " +
+		"its declaration+body is cited exactly at :389 (`:389-419`)",
+	"runApproveNostr|cmd/rd/nostrwrite.go|304@decl299": "§22.2 recap: a detail " +
+		"range (:304-309) inside runApproveNostr's body; its declaration+body is " +
+		"cited exactly at :299 (`:299-321`, and by §26.2's bare `:299`)",
+	"runCloseNostr|cmd/rd/nostrwrite.go|247@decl234": "§20.5 recap: the implicit " +
+		"unblock call site (:247) inside runCloseNostr's body; its declaration is " +
+		"cited exactly by §26.2's bare `:234`",
+	"runCreateNostr|cmd/rd/nostrwrite.go|537@decl504": "§27.x: the `item.Project` " +
+		"assignment (:537) inside runCreateNostr's body; its declaration+body is " +
+		"cited exactly at :504 (§18.8, `:504-551`)",
+	"runDepAddNostr|cmd/rd/nostrwrite.go|351@decl350": "§21.1/§21.3 recap: the " +
+		"cross-board/read-trust guard (:351-353) one line into runDepAddNostr's " +
+		"body; its declaration is cited exactly by §26.2's bare `:350`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|439@decl430": "§20.4/§24.7 recap: the " +
+		"status-only-update detail range (:439-441); runUpdateNostr's declaration " +
+		"is cited exactly by §26.2's bare `:430`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|443@decl430": "§24.1 recap: the " +
+		"field-rewrite block (:443-465); runUpdateNostr's declaration is cited " +
+		"exactly by §26.2's bare `:430`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|462@decl430": "§16.x/§24.1 recap: the " +
+		"card-edit-publish detail line (:462); runUpdateNostr's declaration is " +
+		"cited exactly by §26.2's bare `:430`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|467@decl430": "§20.4/§24.7 recap: the " +
+		"`Status=<statusTo>` assignment block (:467-478); runUpdateNostr's " +
+		"declaration is cited exactly by §26.2's bare `:430`",
 }
 
 // TestNamedCitationsAnchorToRealDeclarations is ready-cee's done condition 2
@@ -725,39 +857,41 @@ func TestNamedCitationsAnchorToRealDeclarations(t *testing.T) {
 			continue // not a top-level func in this file — nothing to anchor to
 		}
 		anchored++
-		// inSpan is containment, not equality: c.line only has to fall
-		// somewhere inside the func's current [start,end), not match sp.start
-		// exactly. That is intentionally weaker than exact-declaration-line
-		// equality, and the weakness is real, not just theoretical:
+		// inSpan requires EXACT equality between the citation's start line
+		// and the func's CURRENT declaration line — not containment. This is
+		// what closes the move gap in BOTH directions:
 		//
-		// For a citation whose start line EQUALS the func's own declaration
-		// line (the dominant case — FocusFilter, LabelFilter, Apply,
-		// AllNames, ItemDriftScope, GrantDriftScope, itemIDForEvent, ...),
-		// inserting/deleting a line ANYWHERE earlier in the file shifts
-		// sp.start but leaves c.line fixed, so c.line >= sp.start fails
-		// immediately — a 1-line shift is always caught. This is what the
-		// two exploits fixed by this test (views.go:180, nostrwire.go:570)
-		// rely on, and both are proven RED by inserting one comment line.
+		// An INSERT anywhere earlier in the file raises sp.start past the
+		// doc's frozen c.line, so c.line == sp.start fails immediately. A
+		// DELETE anywhere earlier LOWERS sp.start below the frozen c.line,
+		// which ALSO fails immediately under equality — this is the half of
+		// the contract a plain `c.line >= sp.start` containment check missed
+		// (a delete only ever raises sp.start's distance BELOW c.line, so
+		// `>=` stayed satisfied no matter how much got deleted, and the
+		// citation silently pointed at the wrong line). Both directions are
+		// now caught for every citation whose start line names the func's
+		// OWN declaration — proven by the insertion mutations in this file's
+		// package doc comment and by a deletion mutation (removing the blank
+		// line above `AllNames` in pkg/views/views.go, shifting its
+		// declaration from :225 to :224 while the doc still says :225).
 		//
-		// For a citation that cites a line partway INTO a func's body
-		// (e.g. ReadyFilter's `pkg/views/views.go:61-63` — line 61 is one
-		// line past ReadyFilter's own `func` line at :60), an insert earlier
-		// in the file shifts sp.start, sp.end AND the func's real content by
-		// the SAME offset, but c.line stays fixed. The citation still
-		// satisfies containment as long as the shift doesn't push c.line
-		// outside the (also-shifted) window — which is exactly the case for
-		// a small shift on a citation that isn't near the func's boundary.
-		// This test does NOT catch that: it bounds-checks a mid-span
-		// citation but does not move-detect it. There is no way to move-
-		// detect it with a line-count-only check, because nothing here
-		// records "how many lines into the func" a mid-span citation is
-		// supposed to be — only the doc's frozen absolute line number and
-		// the func's current span are available, and a small shift changes
-		// both consistently. Distinguishing "still correct after a
-		// consistent shift" from "still accidentally in range" would require
-		// comparing the CITED PROSE against the CITED CODE's content, which
-		// is out of scope for a citation-line checker.
-		inSpan := c.line >= sp.start && c.endLine < sp.end
+		// For a citation that legitimately cites a line PARTWAY INTO a
+		// func's body (e.g. a specific field write or conditional, not the
+		// function's own declaration line) equality by construction does not
+		// hold today, on an untampered tree, for a citation that was always
+		// correct — there is no way to tell, from the frozen line number and
+		// the current source alone, whether such a citation is "still
+		// correctly offset" or "drifted by exactly the same amount its
+		// offset used to be." Rather than accept that as unclosable, every
+		// such citation is required to be a documented, by-hand-verified
+		// citationExceptions entry (see its doc, "Detail citation" bucket).
+		// Because the exception key embeds the func's declaration line AT
+		// VERIFICATION TIME, a future move of that SAME func invalidates the
+		// entry (the key stops matching) and the citation falls through to
+		// this error path for re-verification — so even detail citations get
+		// move detection, just via a human-checked anchor instead of a
+		// line-count heuristic.
+		inSpan := c.line == sp.start && c.endLine < sp.end
 		if inSpan {
 			continue
 		}
