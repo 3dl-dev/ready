@@ -388,7 +388,21 @@ func adoptInviteRelays(rdHome string, relays []string) error {
 // runNostrInvite mints an rd1_ v3 CLAIM token for the current nostr-native project. It
 // generates ONLY a one-use claim-nonce — NO key, NO grant is published at mint — and
 // records the nonce locally as UNCLAIMED. Returns the token the invite command prints.
+//
+// The token carries the FULL configured relay set, ws:// LAN relays included: an
+// `rd invite` token is redeemed by `rd join` in a CLI, which dials a websocket
+// directly and for a teammate on the same LAN may have no other way in. The
+// browser-facing variant is runNostrInviteTo (see `rd board share`, ready-634).
 func runNostrInvite(ttl time.Duration) (string, error) {
+	return runNostrInviteTo(ttl, inviteRelaySet())
+}
+
+// runNostrInviteTo is runNostrInvite with the token's relay list supplied by the
+// caller. It exists for ready-634: `rd board share` prints a link a stranger
+// opens IN A BROWSER, from an https page, so the relays inside that token must be
+// ones a browser is allowed to dial — and that narrowing must not leak into
+// `rd invite`, whose token is redeemed by a CLI.
+func runNostrInviteTo(ttl time.Duration, relays []string) (string, error) {
 	dir, native := nostrNativeProject()
 	if !native {
 		return "", fmt.Errorf("rd invite requires a nostr-native project (a pinned board) — run: rd link <coord> first")
@@ -404,7 +418,6 @@ func runNostrInvite(ttl time.Duration) (string, error) {
 		return "", err
 	}
 	now := time.Now()
-	relays := inviteRelaySet()
 	if len(relays) == 0 {
 		// A local-only project has no relay for a teammate to sync through, so the
 		// token would be unusable. Warn loudly rather than mint a dead invite.

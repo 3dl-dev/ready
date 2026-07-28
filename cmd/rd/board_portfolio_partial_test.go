@@ -28,14 +28,20 @@ package main
 //
 //	1. An UNREACHABLE relay refuses to mint (IncompleteGather...): no URL on
 //	   stdout, a non-zero return, an error naming the relay and the way through.
-//	2. A relay that ANSWERS SHORT of the local log also refuses (ShortAnswer...),
-//	   naming the boards it did not serve. This is the member that walked through
-//	   the first cut of the gate, because it is in Answered and not in Failed.
+//	2. A relay that ANSWERS SHORT of the local log is DETECTED (ShortAnswer...),
+//	   named, and — since ready-1df — MINTED OVER by default while --strict still
+//	   refuses with every word the old refusal carried. This is the member that
+//	   walked through the first cut of the gate, because it is in Answered and not
+//	   in Failed; it is also the member whose conclusion the owner's own portfolio
+//	   forced a re-think of (32 boards that live only on his LAN relays made the
+//	   conflated gate refuse on every invocation). See portfolioGather.lostRelay.
 //	3. CROSS-RELAY DISAGREEMENT catches a short answer even with an EMPTY local
 //	   log (ShortAnswerAcrossRelays...) — relay A serving 2 boards and relay B
 //	   serving 1 is a proof about B that needs nothing from this machine.
-//	4. --allow-partial mints, and the warning it prints never says "entire
-//	   portfolio" (AllowPartial...): the count and the claim must agree.
+//	4. --allow-partial mints over an UNREACHABLE relay, and the warning it prints
+//	   never says "entire portfolio" (AllowPartial...): the count and the claim
+//	   must agree. When a dead relay and a short one fire together the refusal
+//	   leads with the dead one (UnreachableAndShortTogether...).
 //	5. A COMPLETE gather still says "ENTIRE PORTFOLIO" (CompleteGather...): a gate
 //	   that fired on every read would satisfy 1-3 and destroy the feature. Its
 //	   relay is a FULL MIRROR of the local log, so "the relay answered" and "the
@@ -379,80 +385,162 @@ func TestBoardPortfolio_IncompleteGather_RefusesToMintALink(t *testing.T) {
 	}
 }
 
-// TestBoardPortfolio_ShortAnswer_RefusesToMintALink IS THE MEMBER OF THE CLASS
-// THAT WALKED THROUGH THE FIRST GATE.
+// TestBoardPortfolio_ShortAnswer IS THE MEMBER OF THE CLASS THAT WALKED THROUGH
+// THE FIRST GATE, and — since ready-1df — the member whose CONCLUSION changed.
 //
 // The relay here is up, accepts the REQ, serves the pinned board's grants and
 // sends EOSE. It never mentions the sibling board's grant, which it also holds.
 // Under a gate keyed on "every relay answered", that relay is in Answered, is not
 // in Failed, and the link is minted claiming the whole portfolio — the original
-// bug reproduced through a completely healthy-looking exchange.
+// ready-4d9 bug reproduced through a completely healthy-looking exchange. The
+// DETECTION that catches it is unchanged and still exercised by both subtests
+// below; a fixture that stopped detecting it fails them both.
+//
+// WHAT CHANGED IS WHAT THE DETECTION CONCLUDES BY DEFAULT (ready-1df). A relay
+// that answered short costs this link nothing: every board it failed to serve is
+// one this read already holds from the local log or another relay, so its key
+// travels in the blob either way. What the shortfall proves is that the relay has
+// not been GIVEN everything — a publishing gap, not a permission problem, and the
+// board page already says exactly that. Refusing over it meant the owner's 32
+// LAN-only boards made `rd board` refuse on every single invocation. So the
+// default MINTS and names the gap, and --strict is the opt-in to the older,
+// stricter reading — which is where every assertion about the refusal's WORDING
+// now lives, unchanged.
 //
 // The detection is a FLOOR, not a proof: the local log independently holds a
 // verified grant for the sibling board, so the relay demonstrably did not serve
 // everything matching the filter that exists. See portfolioGather's doc for what
 // this cannot reach, and TestBoardPortfolio_ShortAnswerIsUndetectableWithoutAFloor
 // for that limit standing up as a fixture.
-func TestBoardPortfolio_ShortAnswer_RefusesToMintALink(t *testing.T) {
-	_, pinnedCoord, siblingCoord, _, dir, _, _, _, _ := portfolioEnv(t)
-	log := portfolioLogEvents(t, dir)
-
-	serve := grantsForBoard(log, boardDFromCoord(t, pinnedCoord))
-	withheld := grantsForBoard(log, boardDFromCoord(t, siblingCoord))
-	if len(serve) == 0 || len(withheld) == 0 {
-		t.Fatalf("fixture is not a short answer: serving %d grant(s), withholding %d", len(serve), len(withheld))
-	}
-	relay := newShortRelay(t, serve, withheld)
-	t.Setenv("RD_NOSTR_RELAY_URL", relay.url())
-
-	out, errOut, err := tryBoardPortfolioCmd(t, true, false)
-	if err == nil {
-		t.Fatalf("a relay that served %d of %d boards and sent EOSE minted a link anyway.\nstdout:\n%s\nstderr:\n%s",
-			1, 2, out, errOut)
-	}
-	if relay.reqs() == 0 {
-		t.Fatal("the short relay was never queried — this test would pass without exercising the gather at all")
-	}
-	if strings.Contains(out, "#") || strings.Contains(out, "keys=") {
-		t.Errorf("the refusal still printed a link:\n%s", out)
+func TestBoardPortfolio_ShortAnswer(t *testing.T) {
+	// shortAnswerEnv rebuilds the fixture per-subtest: portfolioEnv chdirs into a
+	// fresh temp project and installs t.Cleanup, so it cannot be shared.
+	shortAnswerEnv := func(t *testing.T) (pinnedCoord, siblingCoord string, pinned1, sibling [32]byte, relay *shortRelay) {
+		t.Helper()
+		_, pinnedCoord, siblingCoord, _, dir, pinned1, _, sibling, _ := portfolioEnv(t)
+		log := portfolioLogEvents(t, dir)
+		serve := grantsForBoard(log, boardDFromCoord(t, pinnedCoord))
+		withheld := grantsForBoard(log, boardDFromCoord(t, siblingCoord))
+		if len(serve) == 0 || len(withheld) == 0 {
+			t.Fatalf("fixture is not a short answer: serving %d grant(s), withholding %d", len(serve), len(withheld))
+		}
+		relay = newShortRelay(t, serve, withheld)
+		t.Setenv("RD_NOSTR_RELAY_URL", relay.url())
+		return pinnedCoord, siblingCoord, pinned1, sibling, relay
 	}
 
-	msg := err.Error()
-	// The distinguishing fact: this relay ANSWERED. A message that called it
-	// unreachable would send the operator to fix the wrong thing.
-	if !strings.Contains(msg, "SHORT") {
-		t.Errorf("the refusal does not say the relay answered SHORT; error = %q", msg)
-	}
-	if strings.Contains(msg, "never answered") {
-		t.Errorf("a relay that answered was reported as unreachable; error = %q", msg)
-	}
-	if !strings.Contains(msg, relay.url()) {
-		t.Errorf("the refusal does not name the relay that fell short; error = %q", msg)
-	}
-	// It names WHICH board is owed, not just that something is.
-	if !strings.Contains(msg, siblingCoord) {
-		t.Errorf("the refusal does not name the board the relay withheld (%s); error = %q", siblingCoord, msg)
-	}
-	if strings.Contains(msg, pinnedCoord) {
-		t.Errorf("the refusal lists a board the relay DID serve (%s) as missing; error = %q", pinnedCoord, msg)
-	}
-	if strings.Contains(strings.ToLower(msg), "entire portfolio") {
-		t.Errorf("the refusal claims 'entire portfolio'; error = %q", msg)
-	}
+	// THE READY-1DF BEHAVIOUR: bare `rd board`, over exactly the fixture that used
+	// to refuse, mints — and the link is not narrower for it.
+	t.Run("default mints and names the publishing gap", func(t *testing.T) {
+		pinnedCoord, siblingCoord, pinned1, sibling, relay := shortAnswerEnv(t)
+
+		out, errOut, err := tryBoardCmd(t, boardFlags{})
+		if err != nil {
+			t.Fatalf("bare `rd board` refused over a relay that merely had not been given a board — that is the publishing gap ready-1df stopped refusing on: %v\nstderr:\n%s", err, errOut)
+		}
+		if relay.reqs() == 0 {
+			t.Fatal("the short relay was never queried — this subtest would pass without exercising the gather at all")
+		}
+
+		// NOTHING WAS LOST. The withheld board's key is in the link, because the
+		// local log had it all along. This is the load-bearing claim behind minting
+		// rather than refusing, and it is asserted against the CEK the fixture
+		// actually minted — not against anything read back out of the link.
+		blob := parseKeysBlob(t, portfolioFragment(t, out).Get("keys"))
+		if got, ok := blob[siblingCoord][1]; !ok || got != sibling {
+			t.Fatalf("the link is missing the withheld board's real CEK (%s) — if minting cost a board, refusing was right after all", siblingCoord)
+		}
+		if got, ok := blob[pinnedCoord][1]; !ok || got != pinned1 {
+			t.Fatal("the link carries no real key for the board the relay DID serve — the fixture never reached the gather")
+		}
+
+		notice := strings.TrimSpace(errOut)
+		// It still says what the link IS.
+		if !strings.Contains(notice, "WARNING") || !strings.Contains(strings.ToLower(notice), "bearer credential") {
+			t.Errorf("the minted link stopped saying it is a bearer credential; warning = %q", notice)
+		}
+		// And it says what fell short, in the product's own terms.
+		if !strings.Contains(strings.ToUpper(notice), "PUBLISHING GAP") {
+			t.Errorf("the warning does not name the shortfall as a PUBLISHING GAP — that is the distinction ready-1df exists to draw; warning = %q", notice)
+		}
+		if !strings.Contains(notice, relay.url()) {
+			t.Errorf("the warning does not name the relay that is behind; warning = %q", notice)
+		}
+		if !strings.Contains(notice, "SHORT") {
+			t.Errorf("the warning no longer says the relay answered SHORT — the detection must still be reported, only its conclusion changed; warning = %q", notice)
+		}
+		// It must NOT be labelled PARTIAL: the link is not narrower, and spending
+		// that word here would train the owner to ignore it on the one link where
+		// a board really is missing.
+		if strings.Contains(notice, "PARTIAL") {
+			t.Errorf("a link that lost nothing was labelled PARTIAL; warning = %q", notice)
+		}
+	})
+
+	// THE OLD READING, PRESERVED BEHIND --strict, with every wording assertion the
+	// pre-ready-1df refusal carried.
+	t.Run("--strict still refuses, and says which relay owes which board", func(t *testing.T) {
+		pinnedCoord, siblingCoord, _, _, relay := shortAnswerEnv(t)
+
+		out, errOut, err := tryBoardCmd(t, boardFlags{strict: true})
+		if err == nil {
+			t.Fatalf("--strict accepted a relay that served 1 of 2 boards and sent EOSE.\nstdout:\n%s\nstderr:\n%s", out, errOut)
+		}
+		if relay.reqs() == 0 {
+			t.Fatal("the short relay was never queried — this subtest would pass without exercising the gather at all")
+		}
+		if strings.Contains(out, "#") || strings.Contains(out, "keys=") {
+			t.Errorf("the refusal still printed a link:\n%s", out)
+		}
+
+		msg := err.Error()
+		// The distinguishing fact: this relay ANSWERED. A message that called it
+		// unreachable would send the operator to fix the wrong thing.
+		if !strings.Contains(msg, "SHORT") {
+			t.Errorf("the refusal does not say the relay answered SHORT; error = %q", msg)
+		}
+		if strings.Contains(msg, "never answered") {
+			t.Errorf("a relay that answered was reported as unreachable; error = %q", msg)
+		}
+		if !strings.Contains(msg, relay.url()) {
+			t.Errorf("the refusal does not name the relay that fell short; error = %q", msg)
+		}
+		// It names WHICH board is owed, not just that something is.
+		if !strings.Contains(msg, siblingCoord) {
+			t.Errorf("the refusal does not name the board the relay withheld (%s); error = %q", siblingCoord, msg)
+		}
+		if strings.Contains(msg, pinnedCoord) {
+			t.Errorf("the refusal lists a board the relay DID serve (%s) as missing; error = %q", pinnedCoord, msg)
+		}
+		if strings.Contains(strings.ToLower(msg), "entire portfolio") {
+			t.Errorf("the refusal claims 'entire portfolio'; error = %q", msg)
+		}
+		// And it names the way through, so --strict is not a dead end.
+		if !strings.Contains(msg, "--strict") {
+			t.Errorf("the refusal does not name the flag that caused it; error = %q", msg)
+		}
+	})
 }
 
-// TestBoardPortfolio_ShortAnswerAcrossRelays_RefusesWithNoLocalFloor is CROSS-RELAY
-// DISAGREEMENT on its own.
+// TestBoardPortfolio_ShortAnswerAcrossRelays_DetectedWithNoLocalFloor is
+// CROSS-RELAY DISAGREEMENT on its own.
 //
 // The local log holds NOTHING about these two boards, so the floor the previous
 // test used does not exist here. The only evidence that relay B is short is that
 // relay A served a verified grant for a board B never mentioned — a proof about B
 // that needs nothing from this machine, and costs nothing extra because both
 // relays were queried anyway.
-func TestBoardPortfolio_ShortAnswerAcrossRelays_RefusesWithNoLocalFloor(t *testing.T) {
+//
+// ready-1df: the DETECTION is what this test is about and it is unchanged. Its
+// conclusion follows the same split as the single-relay case — --strict refuses
+// and names the relay; the default mints, because relay A already supplied the
+// board B was missing, so the link lost nothing. Both are asserted, and the
+// anti-tautology control (two AGREEING relays must not trip anything) runs under
+// --strict, where tripping is possible at all.
+func TestBoardPortfolio_ShortAnswerAcrossRelays_DetectedWithNoLocalFloor(t *testing.T) {
 	owner, _, _, dir := boardTestEnv(t)
 	now := time.Now().Unix()
-	coordA, _, eventsA := offLogBoard(t, owner, "relay-only-a", now)
+	coordA, cekA, eventsA := offLogBoard(t, owner, "relay-only-a", now)
 	coordB, cekB, eventsB := offLogBoard(t, owner, "relay-only-b", now+10)
 	both := append(append([]*nostr.Event{}, eventsA...), eventsB...)
 
@@ -464,9 +552,9 @@ func TestBoardPortfolio_ShortAnswerAcrossRelays_RefusesWithNoLocalFloor(t *testi
 	short := newShortRelay(t, eventsA, eventsB)
 	setProjectRelays(t, dir, full.url(), short.url())
 
-	out, errOut, err := tryBoardPortfolioCmd(t, true, false)
+	out, errOut, err := tryBoardCmd(t, boardFlags{strict: true})
 	if err == nil {
-		t.Fatalf("relay A served 2 boards, relay B served 1, and the command minted a link anyway.\nstdout:\n%s\nstderr:\n%s", out, errOut)
+		t.Fatalf("--strict accepted a read where relay A served 2 boards and relay B served 1.\nstdout:\n%s\nstderr:\n%s", out, errOut)
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, short.url()) {
@@ -481,20 +569,43 @@ func TestBoardPortfolio_ShortAnswerAcrossRelays_RefusesWithNoLocalFloor(t *testi
 	if strings.Contains(msg, coordA) {
 		t.Errorf("the refusal lists a board BOTH relays served (%s) as missing; error = %q", coordA, msg)
 	}
-	// ANTI-TAUTOLOGY. The disagreement is what refused, not the mere presence of
-	// two relays: swap the short one for a SECOND full mirror — same count, same
-	// fixture, same off-log boards — and it mints.
+
+	// AND THE DEFAULT MINTS OVER IT, carrying BOTH boards — including the one the
+	// short relay never mentioned, which relay A supplied. That is the whole
+	// argument for the ready-1df split, asserted on real CEK bytes: the
+	// disagreement proves relay B is behind, and proves nothing about the link.
+	outDefault, errDefault, errRun := tryBoardCmd(t, boardFlags{})
+	if errRun != nil {
+		t.Fatalf("the default refused over a cross-relay publishing gap: %v\nstderr:\n%s", errRun, errDefault)
+	}
+	gapBlob := parseKeysBlob(t, portfolioFragment(t, outDefault).Get("keys"))
+	if got, ok := gapBlob[coordA][1]; !ok || got != cekA {
+		t.Errorf("the minted link is missing board A's real CEK")
+	}
+	if got, ok := gapBlob[coordB][1]; !ok || got != cekB {
+		t.Errorf("the minted link is missing the board the short relay withheld (%s) — it was served by relay A, so nothing was actually lost and minting must reflect that", coordB)
+	}
+	if !strings.Contains(strings.ToUpper(errDefault), "PUBLISHING GAP") {
+		t.Errorf("the default's warning does not name the cross-relay shortfall as a publishing gap; stderr = %q", errDefault)
+	}
+
+	// ANTI-TAUTOLOGY. The disagreement is what refused under --strict, not the
+	// mere presence of two relays: swap the short one for a SECOND full mirror —
+	// same count, same fixture, same off-log boards — and --strict mints.
 	second := newStoringRelay(t)
 	t.Cleanup(second.close)
 	second.seed(both...)
 	setProjectRelays(t, dir, full.url(), second.url())
-	out2, errOut2, err2 := tryBoardPortfolioCmd(t, true, false)
+	out2, errOut2, err2 := tryBoardCmd(t, boardFlags{strict: true})
 	if err2 != nil {
-		t.Fatalf("two relays that AGREE must not trip the gate — the test above would then prove nothing: %v", err2)
+		t.Fatalf("two relays that AGREE must not trip the gate — the assertions above would then prove nothing: %v", err2)
 	}
 	blob := parseKeysBlob(t, portfolioFragment(t, out2).Get("keys"))
 	if got, ok := blob[coordB][1]; !ok || got != cekB {
 		t.Errorf("the agreed link is missing relay-only board B's real CEK — the relays were never actually read; stderr = %q", errOut2)
+	}
+	if strings.Contains(strings.ToUpper(errOut2), "PUBLISHING GAP") {
+		t.Errorf("two relays that agree were reported as a publishing gap; stderr = %q", errOut2)
 	}
 }
 
@@ -601,35 +712,58 @@ func TestBoardPortfolio_AllowPartial_NeverClaimsTheEntirePortfolio(t *testing.T)
 	}
 }
 
-// TestBoardPortfolio_AllowPartial_MintsOverAShortAnswerToo: the opt-in has to
-// cover the whole class, not just the loud member. An --allow-partial that only
-// forgave unreachable relays would leave a short-answer relay as an unconditional
-// wall with no way past it.
-func TestBoardPortfolio_AllowPartial_MintsOverAShortAnswerToo(t *testing.T) {
+// TestBoardPortfolio_UnreachableAndShortTogether_IsReportedAsLoss covers the case
+// where BOTH members of the incompleteness class fire at once, which is where the
+// ready-1df split could most easily be got wrong.
+//
+// A publishing gap alone mints. An unreachable relay alone refuses. Together, the
+// refusal must win — there is a relay whose contents are genuinely unknown — and
+// --allow-partial must then produce a link labelled PARTIAL that names the
+// unreachable relay, not one that has been quietly downgraded to "just a
+// publishing gap" because a short answer was also present.
+func TestBoardPortfolio_UnreachableAndShortTogether_IsReportedAsLoss(t *testing.T) {
 	_, pinnedCoord, siblingCoord, _, dir, pinned1, _, _, _ := portfolioEnv(t)
 	log := portfolioLogEvents(t, dir)
-	relay := newShortRelay(t,
+	short := newShortRelay(t,
 		grantsForBoard(log, boardDFromCoord(t, pinnedCoord)),
 		grantsForBoard(log, boardDFromCoord(t, siblingCoord)))
-	t.Setenv("RD_NOSTR_RELAY_URL", relay.url())
+	setProjectRelays(t, dir, short.url(), deadRelayURL)
 
-	out, errOut, err := tryBoardPortfolioCmd(t, true, true)
-	if err != nil {
-		t.Fatalf("--allow-partial must mint over a short answer as well: %v", err)
+	// DEFAULT: refuses, because one relay's contents are unknown.
+	out, errOut, err := tryBoardCmd(t, boardFlags{})
+	if err == nil {
+		t.Fatalf("a dead relay alongside a short one minted a link anyway.\nstdout:\n%s\nstderr:\n%s", out, errOut)
 	}
-	blob := parseKeysBlob(t, portfolioFragment(t, out).Get("keys"))
+	msg := err.Error()
+	if !strings.Contains(msg, deadRelayURL) || !strings.Contains(msg, "never answered") {
+		t.Errorf("the refusal does not lead with the relay that never answered; error = %q", msg)
+	}
+	if strings.Contains(out, "#") {
+		t.Errorf("the refusal still printed a link:\n%s", out)
+	}
+
+	// --allow-partial: mints, and the label is PARTIAL — the loss, not the gap.
+	out2, errOut2, err2 := tryBoardCmd(t, boardFlags{allowPartial: true})
+	if err2 != nil {
+		t.Fatalf("--allow-partial must mint over an unreachable relay: %v", err2)
+	}
+	blob := parseKeysBlob(t, portfolioFragment(t, out2).Get("keys"))
 	if got, ok := blob[pinnedCoord][1]; !ok || got != pinned1 {
 		t.Fatal("the partial link carries no real key — the fixture never reached the gather")
 	}
-
-	notice := strings.TrimSpace(errOut)
+	notice := strings.TrimSpace(errOut2)
 	if strings.Contains(strings.ToLower(notice), "entire portfolio") {
-		t.Errorf("a link minted over a SHORT answer claims 'entire portfolio'; warning = %q", notice)
+		t.Errorf("a link minted over an unreachable relay claims 'entire portfolio'; warning = %q", notice)
 	}
 	if !strings.Contains(notice, "PARTIAL") {
-		t.Errorf("a link minted over a short answer is not labelled PARTIAL; warning = %q", notice)
+		t.Errorf("a link minted over an unreachable relay is not labelled PARTIAL; warning = %q", notice)
 	}
-	if !strings.Contains(notice, "SHORT") || !strings.Contains(notice, relay.url()) {
+	if !strings.Contains(notice, deadRelayURL) {
+		t.Errorf("the warning does not name the relay that never answered; warning = %q", notice)
+	}
+	// The short relay is still reported too — the split changed conclusions, not
+	// what gets observed.
+	if !strings.Contains(notice, "SHORT") || !strings.Contains(notice, short.url()) {
 		t.Errorf("the warning does not say WHICH relay answered short; warning = %q", notice)
 	}
 }
@@ -914,47 +1048,66 @@ func TestPortfolioGather_PerAttemptDeadlineIsTheOneTheFetchApplies(t *testing.T)
 	}
 }
 
-// TestBoardPortfolio_AllowPartialRejectedWhereItClaimsNothing: the flag relaxes a
-// completeness guarantee, so it must be an error wherever no such guarantee is
-// being made. Silently ignoring it would let a user believe they had opted into
-// something they had not — the same shape of misplaced belief as the bug itself.
-func TestBoardPortfolio_AllowPartialRejectedWhereItClaimsNothing(t *testing.T) {
-	cases := []struct{ portfolio, withKey bool }{
-		{false, false},
-		{false, true},
-		{true, false},
+// TestBoardCmd_CompletenessFlagsRejectedWhereTheyClaimNothing: --allow-partial and
+// --strict both move a completeness GUARANTEE, so each must be an error wherever
+// no such guarantee is being made. Silently ignoring one would let a user believe
+// they had opted into something they had not — the same shape of misplaced belief
+// as the bug itself.
+//
+// ready-1df: the flags that make the claim changed (--portfolio/--with-key became
+// the default; --no-key/--this-board are the ways to opt OUT of it), and the two
+// completeness flags are now also mutually exclusive, so that pair is checked
+// here too. The rejection must always name the flag it rejected, or the user
+// cannot tell which half of their command was the problem.
+func TestBoardCmd_CompletenessFlagsRejectedWhereTheyClaimNothing(t *testing.T) {
+	cases := []struct {
+		name  string
+		flags boardFlags
+		want  string
+	}{
+		{"--allow-partial with --no-key", boardFlags{allowPartial: true, noKey: true}, "--allow-partial"},
+		{"--allow-partial with --this-board", boardFlags{allowPartial: true, thisBoard: true}, "--allow-partial"},
+		{"--allow-partial with both", boardFlags{allowPartial: true, noKey: true, thisBoard: true}, "--allow-partial"},
+		{"--strict with --no-key", boardFlags{strict: true, noKey: true}, "--strict"},
+		{"--strict with --this-board", boardFlags{strict: true, thisBoard: true}, "--strict"},
+		{"--strict with --allow-partial", boardFlags{strict: true, allowPartial: true}, "--strict"},
 	}
 	for _, c := range cases {
-		portfolioEnv(t)
-		setFlag := func(name, value string) {
-			if err := boardCmd.Flags().Set(name, value); err != nil {
-				t.Fatalf("set --%s: %v", name, err)
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			portfolioEnv(t)
+			out, _, err := tryBoardCmd(t, c.flags)
+			if err == nil {
+				t.Fatalf("%s was accepted, where there is no completeness claim to change:\n%s", c.name, out)
 			}
-		}
-		setFlag("allow-partial", "true")
-		setFlag("portfolio", boolStr(c.portfolio))
-		setFlag("with-key", boolStr(c.withKey))
-
-		var err error
-		out := captureStdoutPipe(t, func() { err = boardCmd.RunE(boardCmd, nil) })
-
-		_ = boardCmd.Flags().Set("allow-partial", "false")
-		_ = boardCmd.Flags().Set("portfolio", "false")
-		_ = boardCmd.Flags().Set("with-key", "false")
-
-		if err == nil {
-			t.Errorf("--allow-partial was accepted with --portfolio=%v --with-key=%v, where there is no completeness claim to relax:\n%s", c.portfolio, c.withKey, out)
-			continue
-		}
-		if !strings.Contains(err.Error(), "--allow-partial") {
-			t.Errorf("the rejection does not name the flag it rejected; error = %q", err)
-		}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("the rejection does not name %s; error = %q", c.want, err)
+			}
+			if strings.Contains(out, "#") {
+				t.Errorf("a rejected invocation still printed a link:\n%s", out)
+			}
+		})
 	}
-}
 
-func boolStr(b bool) string {
-	if b {
-		return "true"
+	// ANTI-TAUTOLOGY: each completeness flag ALONE is accepted, so the rejections
+	// above are about the COMBINATION and not about the flag existing.
+	for _, c := range []struct {
+		name  string
+		flags boardFlags
+	}{
+		{"--allow-partial alone", boardFlags{allowPartial: true}},
+		{"--strict alone", boardFlags{strict: true}},
+	} {
+		c := c
+		t.Run(c.name+" is accepted", func(t *testing.T) {
+			portfolioEnv(t) // no relays configured: nothing can fall short
+			out, _, err := tryBoardCmd(t, c.flags)
+			if err != nil {
+				t.Fatalf("%s must be accepted on the link that makes the claim: %v", c.name, err)
+			}
+			if !strings.Contains(out, "#pk=") {
+				t.Errorf("%s printed no portfolio link:\n%s", c.name, out)
+			}
+		})
 	}
-	return "false"
 }
