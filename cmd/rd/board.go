@@ -322,7 +322,11 @@ ever bind a stranger's key to.
                                      The resulting link is a BEARER
                                      CREDENTIAL for your ENTIRE PORTFOLIO —
                                      strictly wider than --with-key alone,
-                                     which covers one board.
+                                     which covers one board. If any read relay
+                                     does not answer, this REFUSES to print a
+                                     link rather than print a narrower one
+                                     that looks whole; --allow-partial mints
+                                     it anyway and labels it partial.
   rd board share <npub-or-pubkey>   issue a grant to a KNOWN key, then print
                                      the URL (zero-wait: the grant is durable
                                      on the relay before they click).
@@ -355,14 +359,24 @@ serves the browser board UI: open the printed URL and it renders this board).`,
 		}
 		coord := nostrPinnedBoard(dir)
 
+		// Keeping --portfolio and --with-key orthogonal is what keeps --with-key
+		// the ONE flag that can put a secret in a URL, on either scope.
 		withKey, _ := cmd.Flags().GetBool("with-key")
+		// ready-4d9 (follow-up). --allow-partial weakens a completeness GUARANTEE,
+		// so it is rejected outright anywhere that guarantee is not being made
+		// rather than silently ignored: a user who believes they passed a
+		// meaningful flag and did not is exactly how the silent-partial link got
+		// shipped in the first place.
+		allowPartial, _ := cmd.Flags().GetBool("allow-partial")
+		portfolio, _ := cmd.Flags().GetBool("portfolio")
+		if allowPartial && !(portfolio && withKey) {
+			return fmt.Errorf("--allow-partial only applies to `rd board --portfolio --with-key` (it opts in to a link whose board set could not be confirmed complete); this invocation makes no completeness claim to relax")
+		}
 		// ready-4d9. --portfolio switches the SCOPE of the link from this
 		// directory's pinned board to every board this key can read; --with-key
-		// still independently decides whether any key material travels. Keeping
-		// them orthogonal is what keeps --with-key the ONE flag that can put a
-		// secret in a URL, on either scope.
-		if portfolio, _ := cmd.Flags().GetBool("portfolio"); portfolio {
-			return runBoardPortfolio(cmd, dir, withKey)
+		// still independently decides whether any key material travels.
+		if portfolio {
+			return runBoardPortfolio(cmd, dir, withKey, allowPartial)
 		}
 		var keys *boardKeyFragment
 		var confidential bool
@@ -489,6 +503,13 @@ func init() {
 	// never be what a bare command prints, and a link for someone else is still
 	// always a grant.
 	boardCmd.Flags().Bool("portfolio", false, "print ONE link covering EVERY board this key can read, not just this directory's board (with --with-key the link carries every one of those boards' read keys)")
+	// ready-4d9 (follow-up). `--portfolio --with-key` REFUSES to mint a link when
+	// a read relay went unanswered, because the boards behind that link are a set
+	// the link claims is whole. This is the informed way through — an offline
+	// owner still gets a link, and the warning on it says it is partial and names
+	// what was missed. Absent from boardShareCmd like the other two: it can only
+	// widen an already-explicit act, never create one.
+	boardCmd.Flags().Bool("allow-partial", false, "with --portfolio --with-key: mint the link even though a read relay never answered, so the board set could not be confirmed complete (the link's warning then says so)")
 
 	boardShareCmd.Flags().String("host", "", hostFlagUsage)
 	boardShareCmd.Flags().Duration("ttl", 2*time.Hour, "token time-to-live for the emitted link")

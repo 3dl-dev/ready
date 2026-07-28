@@ -126,6 +126,19 @@ func portfolioEnv(t *testing.T) (owner *nostr.Key, pinnedCoord, siblingCoord, fo
 // in the pipe).
 func runBoardPortfolioCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 	t.Helper()
+	out, errOut, err := tryBoardPortfolioCmd(t, withKey, false)
+	if err != nil {
+		t.Fatalf("rd board --portfolio (--with-key=%v): %v", withKey, err)
+	}
+	return out, errOut
+}
+
+// tryBoardPortfolioCmd is runBoardPortfolioCmd for the paths that are SUPPOSED to
+// fail: it returns the error instead of failing the test, and it can set
+// --allow-partial. Both are needed by the incomplete-gather tests, where "the
+// command returned an error and printed no URL" is the assertion.
+func tryBoardPortfolioCmd(t *testing.T, withKey, allowPartial bool) (stdout, stderr string, runErr error) {
+	t.Helper()
 	setFlag := func(name, value string) {
 		if err := boardCmd.Flags().Set(name, value); err != nil {
 			t.Fatalf("set --%s: %v", name, err)
@@ -133,9 +146,11 @@ func runBoardPortfolioCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 	}
 	setFlag("portfolio", "true")
 	setFlag("with-key", fmt.Sprint(withKey))
+	setFlag("allow-partial", fmt.Sprint(allowPartial))
 	t.Cleanup(func() {
 		_ = boardCmd.Flags().Set("portfolio", "false")
 		_ = boardCmd.Flags().Set("with-key", "false")
+		_ = boardCmd.Flags().Set("allow-partial", "false")
 	})
 
 	var errBuf bytes.Buffer
@@ -143,11 +158,9 @@ func runBoardPortfolioCmd(t *testing.T, withKey bool) (stdout, stderr string) {
 	t.Cleanup(func() { boardCmd.SetErr(nil) })
 
 	out := captureStdoutPipe(t, func() {
-		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board --portfolio (--with-key=%v): %v", withKey, err)
-		}
+		runErr = boardCmd.RunE(boardCmd, nil)
 	})
-	return out, errBuf.String()
+	return out, errBuf.String(), runErr
 }
 
 // decodedBlob is a board coordinate -> epoch -> CEK view of an emitted keys=
@@ -480,6 +493,16 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 		{"--host", "https://example.test", "--with-key", pub},
 		{"--host", "https://example.test", "--portfolio", "--with-key", pub},
 		{"--ttl", "1h", "--with-key"},
+		// ready-4d9 follow-up: --allow-partial is the THIRD flag on `rd board`
+		// that touches the key-bearing path. It relaxes a completeness guard, so
+		// the attack surface it adds gets the same treatment as the other two.
+		{"--allow-partial"},
+		{"--allow-partial=true"},
+		{"--allow-partial", pub},
+		{"--portfolio", "--with-key", "--allow-partial"},
+		{"--portfolio", "--with-key", "--allow-partial", pub},
+		{"--allow-partial", "--with-key", "--portfolio", pub},
+		{"--host", "https://example.test", "--portfolio", "--with-key", "--allow-partial", pub},
 	}
 
 	accepted := 0
@@ -538,7 +561,7 @@ func TestBoardShareCmd_NoArgvEmitsKeyMaterial(t *testing.T) {
 
 	// And the flags really are absent from this subcommand, named explicitly so
 	// the reason is legible at the failure site.
-	for _, flag := range []string{"with-key", "portfolio"} {
+	for _, flag := range []string{"with-key", "portfolio", "allow-partial"} {
 		if f := boardShareCmd.Flags().Lookup(flag); f != nil {
 			t.Errorf("`rd board share` has a --%s flag — third-party read access must stay the owner-signed kind-39301 grant, never a key in a URL", flag)
 		}
