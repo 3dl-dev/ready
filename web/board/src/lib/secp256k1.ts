@@ -220,3 +220,11 @@ export function schnorrVerify(pubkeyXOnly: Uint8Array, msg: Uint8Array, sig: Uin
 }
 
 export const __internal = { liftX, bigIntTo32Bytes, taggedHash };
+
+// --- Curve-math exports for nip44.ts's ECDH (raw-key-material Diffie-Hellman,
+// used only by the offline key-distribution/parity tooling — see nip44.ts's
+// header for why this is a separate module from the verify-only surface
+// above). These are pure curve arithmetic, not secret-key handling: nothing
+// here reads, generates, or stores a private scalar — a caller supplies one.
+export { liftX, scalarMultiply, toAffine, bytesToBigInt, bigIntTo32Bytes, N };
+export type { AffinePoint, JacobianPoint };
