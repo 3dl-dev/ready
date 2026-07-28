@@ -36,6 +36,9 @@ import {
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
+import { mountBoardWorkspace } from "./board/render";
+import type { Item } from "./board/types";
+import "./board/board.css";
 
 export interface Identity {
   pubkey: string;
@@ -165,6 +168,21 @@ function renderBoards(root: HTMLElement, boards: DiscoveredBoard[]): void {
   root.append(list);
 }
 
+/**
+ * Mounts the board workspace (ready-445: gate rail, left tree, swimlaned
+ * columns, detail pane) below the verified board list. `items` is empty in
+ * production today because there is no client-side event->Item projection
+ * yet — see ./lib/itemsource.ts's header for why that is a deliberate
+ * boundary (ready-35b's job, not this one's) rather than an oversight. The
+ * workspace itself is fully built and tested against hand-built Item
+ * fixtures (src/board/*.test.ts); only the data feeding it is pending.
+ */
+function mountBoardWorkspaceShell(root: HTMLElement, identity: Identity, items: Item[] = []): void {
+  const workspaceRoot = el("div", { className: "board-workspace-root" });
+  root.append(workspaceRoot);
+  mountBoardWorkspace(workspaceRoot, items, { viewerId: identity.pubkey });
+}
+
 function renderIdentityBar(root: HTMLElement, identity: Identity): void {
   const npub = safeEncodeNpub(identity.pubkey);
   root.append(
@@ -215,6 +233,7 @@ export async function afterLogin(
       );
       connecting.remove();
       renderBoards(root, discoverOwnerBoards(events, [parsedCoord.owner], parsedCoord.boardD));
+      mountBoardWorkspaceShell(root, identity);
       return;
     }
 
@@ -223,6 +242,7 @@ export async function afterLogin(
     const events = await deps.fetchEvents(relays, { kinds: [30301], authors: [identity.pubkey] }, { onStatus });
     connecting.remove();
     renderBoards(root, discoverOwnerBoards(events, [identity.pubkey]));
+    mountBoardWorkspaceShell(root, identity);
   } catch (err) {
     connecting.textContent = err instanceof Error ? err.message : String(err);
   }
