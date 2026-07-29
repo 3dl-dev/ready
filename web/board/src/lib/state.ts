@@ -59,6 +59,36 @@ export interface Item {
   label_warnings?: string[]; // never populated by the nostr fold (§10.2) — carried only so the field can be asserted absent.
 
   cross_campfire_warnings?: string[]; // never populated by the nostr fold (§8.9/§14.9).
+
+  /**
+   * redacted mirrors state.Item.Redacted (pkg/state/state.go:157-171): this
+   * item's confidential free text could NOT be decrypted, so title/context/
+   * description hold PLACEHOLDER_TEXT rather than the item's real content.
+   *
+   * IT IS AN IN-BAND REFUSAL SIGNAL FOR A WRITE PATH, not a display hint
+   * (ready-daf; the Go original is ready-76b). A card write rebuilds the WHOLE
+   * latest-wins card from a projected item, so a mutation applied to an item
+   * this reader cannot read re-seals the PLACEHOLDER as the item's content and
+   * destroys the original irreversibly — that is not hypothetical, it destroyed
+   * four items on the ready board. On the Go side every card-publishing path
+   * refuses a Redacted item (cmd/rd/confidential_guard.go's
+   * refuseRedactedRepublish). The browser's write path (board/write.ts) is not
+   * implemented yet; this field exists so that when it lands the signal is
+   * already carried through the fold instead of having to be reconstructed, at
+   * which point "the reader could not decrypt it" would no longer be knowable.
+   *
+   * Like Go's `json:"-"` it is NOT encoded — see encodeItem, which omits it
+   * deliberately: it describes THIS reader's decrypt outcome, not a property of
+   * the item, and must be re-derived every projection rather than carried across
+   * a boundary as a frozen fact. Keeping it out of encodeItem is also what keeps
+   * the vector and live-parity comparisons byte-identical to Go's.
+   *
+   * SCOPE MIRRORS GO EXACTLY: set only by the card free-text branch. An
+   * undecryptable status-event REASON renders as the placeholder in history and
+   * does NOT set this flag, because nostrproject.go:414 does not set it either
+   * and a republish rebuilds the card, not the history.
+   */
+  redacted?: boolean;
 }
 
 // Status lattice (pkg/state/state.go:28-37, spec §7.1).
@@ -138,5 +168,9 @@ export function encodeItem(item: Item): Record<string, unknown> {
   arr("labels", item.labels);
   arr("label_warnings", item.label_warnings);
   arr("cross_campfire_warnings", item.cross_campfire_warnings);
+  // `redacted` is deliberately absent: state.Item.Redacted is `json:"-"` on the
+  // Go side (state.go:171), so emitting it here would break both the vector
+  // comparison and live parity with `rd list --json`. Do not "complete" this
+  // function by adding it. See the field's doc comment in Item.
   return out;
 }

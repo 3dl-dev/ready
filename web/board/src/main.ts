@@ -50,7 +50,8 @@ import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard 
 import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 import type { EncryptedBoardSet } from "./lib/envelope";
-import { PLACEHOLDER } from "./lib/envelope";
+import { PLACEHOLDER, boardCoordOf, isConfidential } from "./lib/envelope";
+import { verifyEvent } from "./lib/nostrevent";
 import { foldItemSource } from "./lib/itemsource";
 import { mountBoardWorkspace } from "./board/render";
 import type { Item } from "./board/types";
@@ -205,21 +206,119 @@ function renderConnecting(root: HTMLElement): HTMLElement {
 }
 
 /**
- * encryptedBoardsOf adapts a BoardKeyring to the fold's EncryptedBoardSet.
+ * Confidentiality is what this reader can HONESTLY say about one board, and it
+ * is deliberately three-valued (ready-daf).
+ *
+ *  - "confidential": ESTABLISHED. An owner-signed CEK-bearing grant was served,
+ *    so both the fact and the cutover instant are known.
+ *  - "unknown": the board carries confidential content, but NO owner grant
+ *    established WHEN it went confidential. The fact is known; the cutover is
+ *    not.
+ *  - "public": nothing this page saw says the board is confidential.
+ *
+ * WHY THE MIDDLE VALUE EXISTS. Before ready-daf there were only two states, and
+ * they were derived from owner grants alone — so the ABSENCE of grants meant
+ * "public". On this transport that inverts the whole posture: the relay set is
+ * public and untrusted, reads are unrestricted BY DESIGN, and nothing obliges a
+ * relay to serve every event it holds. A relay that simply OMITS the kind-39301
+ * grants therefore downgraded a confidential board to apparently-public,
+ * silently, in the reader's browser: the fold's quarantine gate went inert
+ * (shouldQuarantine returns false for `ok:false`) and the page said nothing that
+ * distinguished the board from one that was never confidential at all. That is
+ * the same relay-omission-as-attack shape as ready-dd5, and fail-closed is the
+ * stated posture everywhere else here.
+ *
+ * WHAT THIS CAN AND CANNOT ESTABLISH, stated because it is easy to over-trust.
+ * A browser cannot verify that a relay answered COMPLETELY — there is no proof
+ * of non-omission in NIP-01 — so "public" never means "proven public", it means
+ * "no evidence of confidentiality reached this page". If a relay withholds the
+ * grants AND every sealed card AND the reader holds no key-bearing link, this
+ * page has nothing to go on and will show a public-looking board. What is fixed
+ * here is the case where evidence DID arrive and was being ignored.
+ */
+export type Confidentiality = "public" | "confidential" | "unknown";
+
+/**
+ * sealedEvidence reports whether any event in this board's own snapshot is
+ * SEALED — an owner-independent, in-band witness that the board is confidential.
+ *
+ * It is the signal that survives grant omission: a sealed card is authored and
+ * signed by a board writer, so a relay can only remove it, never fabricate one
+ * that opens. Sealed cards are also the reason a reader is looking at this board
+ * at all, so withholding every one of them is a far more visible act than
+ * dropping a handful of grants.
+ *
+ * The signature check runs LAST because it is the expensive one and the tag
+ * checks eliminate every event on a plaintext board first.
+ */
+function sealedEvidence(events: NostrEvent[], coord: string): boolean {
+  for (const e of events) {
+    if (!e || !isConfidential(e)) continue;
+    if (boardCoordOf(e) !== coord) continue;
+    // A relay is untrusted: an unverifiable event witnesses nothing, in either
+    // direction. This is the same rule deriveBoardKeyring's CHECK 1 applies.
+    if (verifyEvent(e)) return true;
+  }
+  return false;
+}
+
+/**
+ * confidentialityOf decides the three-valued state for ONE board.
+ *
+ * `hasLinkKeys` — this link carries a CEK filed under this coordinate — counts
+ * as evidence, and is INDEPENDENT of the relay: it came out of the reader's own
+ * `rd`, which had already run the four grant checks against its local signed log
+ * before printing the key (see keyring.ts's applyFragmentKeys). A link that
+ * carries a board's read key is a statement that the board HAS a read key.
+ *
+ * Evidence only ever moves a board from "public" to "unknown" — a strictly
+ * TIGHTENING direction, since "unknown" quarantines a superset of what
+ * "confidential" does and grandfathers nothing (see encryptedBoardsOf). So a
+ * hostile relay, or a crafted link, can use this to HIDE a public board's cards
+ * behind a notice that says so out loud; it can never use it to reveal
+ * something. That asymmetry is the reason evidence needs no authorship check:
+ * being wrong here costs visibility, not confidentiality, and the page says
+ * plainly that it could not establish the state.
+ */
+function confidentialityOf(
+  keyring: BoardKeyring,
+  coord: string,
+  events: NostrEvent[],
+  hasLinkKeys: boolean,
+): Confidentiality {
+  if (keyring.cutover(coord) !== null) return "confidential";
+  if (hasLinkKeys || sealedEvidence(events, coord)) return "unknown";
+  return "public";
+}
+
+/**
+ * encryptedBoardsOf adapts a BoardKeyring to the fold's EncryptedBoardSet, for
+ * the ONE board being loaded and in the light of its Confidentiality.
  *
  * This is the gate that makes a confidential board fail closed for a reader who
  * holds nothing: BoardKeyring.cutover() is populated from EVERY owner CEK grant,
  * not only the ones addressed to this reader, so a stranger still learns the
  * board went confidential and post-cutover cleartext is quarantined instead of
- * rendered. Returning `ok:false` here — the shape a naive "I have no keys, so
- * nothing is encrypted" adapter would produce — would render exactly the
- * smuggled-cleartext card the fold gate exists to drop.
+ * rendered. Returning `ok:false` for such a board — the shape a naive "I have no
+ * keys, so nothing is encrypted" adapter would produce — would render exactly
+ * the smuggled-cleartext card the fold gate exists to drop.
+ *
+ * ON "unknown" IT REPORTS cutover 0, ok TRUE (ready-daf). `ok:true` keeps the
+ * gate ON; cutover 0 is the fail-closed reading of an unestablished cutover —
+ * "as far as this reader can prove, this board has been confidential for all of
+ * time" — so shouldQuarantine grandfathers NOTHING and every card that is not a
+ * well-formed sealed envelope is withheld. The alternatives are both wrong:
+ * `ok:false` is the bug this item fixes, and a LATE cutover (e.g.
+ * MAX_SAFE_INTEGER) would grandfather every plaintext card on the board, which
+ * is the same fail-open wearing a different number.
  */
-function encryptedBoardsOf(keyring: BoardKeyring): EncryptedBoardSet {
+function encryptedBoardsOf(keyring: BoardKeyring, state: Confidentiality): EncryptedBoardSet {
   return {
     cutover(coord: string): { cutover: number; ok: boolean } {
       const at = keyring.cutover(coord);
-      return at === null ? { cutover: 0, ok: false } : { cutover: at, ok: true };
+      if (at !== null) return { cutover: at, ok: true };
+      if (state === "unknown") return { cutover: 0, ok: true };
+      return { cutover: 0, ok: false };
     },
   };
 }
@@ -261,6 +360,13 @@ function encryptedBoardsOf(keyring: BoardKeyring): EncryptedBoardSet {
  * multi-board list) and main.portfolio.test.ts (a portfolio map that covers some
  * boards and not others).
  *
+ * CONFIDENTIALITY IS THREE-VALUED HERE (ready-daf). `confidential` is true when
+ * any board in the view is confidential — established OR unestablished, because
+ * in both cases the board IS confidential and the reader must be told. The
+ * separate `unestablished` list names the boards whose cutover could not be
+ * established, which is a different statement and gets its own sentence in the
+ * UI: see confidentialityOf and unestablishedConfidentialityNotice.
+ *
  * EXPORTED FOR TESTS ONLY.
  */
 export async function loadBoardItems(
@@ -271,9 +377,10 @@ export async function loadBoardItems(
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
   fragmentKeys?: PortfolioKeys,
-): Promise<{ items: Item[]; confidential: boolean }> {
+): Promise<{ items: Item[]; confidential: boolean; unestablished: string[] }> {
   const out: Item[] = [];
   let confidential = false;
+  const unestablished: string[] = [];
   const unwrap = deps.keyUnwrapper(identity);
 
   for (const b of boards) {
@@ -301,14 +408,19 @@ export async function loadBoardItems(
       // applyFragmentKeys.
       const linkKeys = fragmentKeys?.get(b.coord);
       if (linkKeys) applyFragmentKeys(keyring, b.coord, linkKeys);
-      if (keyring.cutover(b.coord) !== null) confidential = true;
+      // ready-daf: three-valued, and computed from the board's OWN snapshot
+      // plus the link — not from the presence of relay-supplied grants alone,
+      // whose absence used to read as "public".
+      const state = confidentialityOf(keyring, b.coord, events, linkKeys !== undefined);
+      if (state !== "public") confidential = true;
+      if (state === "unknown") unestablished.push(b.title || b.boardD);
       const src = foldItemSource(
         {
           trusted: null,
           maintainers: null,
           pinnedBoard: b.coord,
           decryptor: keyring,
-          encryptedBoards: encryptedBoardsOf(keyring),
+          encryptedBoards: encryptedBoardsOf(keyring, state),
         },
         b.coord,
       );
@@ -317,7 +429,7 @@ export async function loadBoardItems(
       // Skip this board; the others still render.
     }
   }
-  return { items: out, confidential };
+  return { items: out, confidential, unestablished };
 }
 
 /**
@@ -376,6 +488,38 @@ function confidentialNotice(items: Item[], boardCount: number): string {
     );
   }
   return parts.join(" ");
+}
+
+/**
+ * unestablishedConfidentialityNotice is the UI half of ready-daf: it says, in
+ * the reader's own words, that the page could NOT establish a board's
+ * confidentiality state — instead of presenting that board as public, which is
+ * what the page did before.
+ *
+ * The wording is constrained the same way unservedBoardsNotice's is, and for the
+ * same reason: it must claim exactly what this page can support. It CAN say "no
+ * grant establishing the cutover reached this page". It CANNOT say "the owner
+ * published no grant" (a relay may have omitted it) and it must not imply the
+ * view is complete. Both halves are said out loud, because either alone
+ * misleads: silence reads as "public", and "confidential" alone reads as though
+ * the quarantine is precise when in fact it is withholding cards it cannot
+ * classify.
+ *
+ * Returns "" when every confidential board's cutover was established, so the
+ * ordinary case adds no paragraph.
+ */
+function unestablishedConfidentialityNotice(names: string[]): string {
+  if (names.length === 0) return "";
+  const list = [...names].sort().join(", ");
+  const subject =
+    names.length > 1
+      ? `${names.length} boards in this view carry confidential content`
+      : "This board carries confidential content";
+  return (
+    `CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED: ${subject} (${list}), but no owner-signed grant saying WHEN it became confidential was served by the relays this page reached. ` +
+    `A missing event is not evidence of anything: reads here are unrestricted by design, so any relay can simply omit one. This page therefore treats the board as confidential with an UNKNOWN cutover rather than as public. ` +
+    `Every card on it that is not a sealed envelope is WITHHELD from this view, because a card published before the board went confidential cannot be told apart from cleartext published after. Do not read this view as complete, and do not read it as a public board.`
+  );
 }
 
 /**
@@ -543,7 +687,7 @@ export async function afterLogin(
     }
 
     const linkKeys = fragmentKeyMap(fragment);
-    const { items, confidential } = await loadBoardItems(
+    const { items, confidential, unestablished } = await loadBoardItems(
       boards,
       relays,
       authorityEvents,
@@ -556,6 +700,7 @@ export async function afterLogin(
 
     const notice = [
       confidential ? confidentialNotice(items, boards.length) : "",
+      unestablishedConfidentialityNotice(unestablished),
       unservedBoardsNotice(linkKeys, boards),
       droppedRelaysNotice(fragment),
     ]

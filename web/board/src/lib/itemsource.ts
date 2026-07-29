@@ -90,6 +90,10 @@ export function toUIItem(f: FoldItem, boardCoord?: string): UIItem {
     labels: f.labels,
     labelWarnings: f.label_warnings,
     crossBoardWarnings: f.cross_campfire_warnings,
+    // ready-daf: carried, not dropped. This is the only place the UI item can
+    // learn that its title is a placeholder rather than the item's real text, and
+    // a write path that cannot see it would republish "[encrypted]" as content.
+    redacted: f.redacted,
   };
 }
 

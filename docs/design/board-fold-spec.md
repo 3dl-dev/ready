@@ -1295,6 +1295,16 @@ and three `enc-live` fixtures) before it was noticed (`ready-76b`). `Redacted` i
 deliberately NOT serialized: it describes THIS reader's decrypt outcome, not a
 property of the item, and is re-derived every projection.
 
+The BROWSER fold mirrors the marker (`ready-daf`): `web/board/src/lib/fold.ts`
+sets `Item.redacted` on the same fail-closed branch, `lib/state.ts`'s
+`encodeItem` omits it (matching the Go `json:"-"`, so vector and live-parity
+comparisons are unaffected), and `lib/itemsource.ts` threads it onto the UI item.
+`web/board/src/board/write.ts` is intent-shaped and unimplemented today; whatever
+lands on it MUST refuse a `redacted` item exactly as `refuseRedactedRepublish`
+does. The marker is added BEFORE that write path exists because once the
+placeholder substitution has propagated, "this reader could not read it" is no
+longer recoverable from the projected item.
+
 The refusal is total rather than partial. There is no safe subset of a card to
 rewrite when its free text is unreadable, and degrading silently would hide the
 usual cause — a CEK epoch whose grant no longer exists (§16.10).
