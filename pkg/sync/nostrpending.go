@@ -166,6 +166,15 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	if len(rejected) > 0 {
 		rp := rejectedPathFor(pendingPath)
 		for _, rec := range rejected {
+			// ready-c3e: skip a redundant append if this exact event id is
+			// already dead-lettered (e.g. it was re-buffered to pending by some
+			// other path after a prior flush already recorded it) — same
+			// unbounded-growth guard as applyRelayOutcome, see deadLetterHasEvent.
+			if deadLetterHasEvent(rp, rec.Event.ID) {
+				res.Rejected++
+				res.RejectReasons = append(res.RejectReasons, rec.Reason)
+				continue
+			}
 			if derr := appendRejectedEvent(rp, rec); derr != nil {
 				res.WriteErrors = append(res.WriteErrors, fmt.Sprintf("dead-letter %s: %v", rec.Event.ID, derr))
 				remaining = append(remaining, rec.Event)
