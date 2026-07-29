@@ -40,6 +40,7 @@ import {
   AUTHORITATIVE_FOREVER,
 } from "./rolegrant";
 import { projectItems } from "./fold";
+import { fetchEventsFromRelays } from "./relay";
 import type { ProjectOptions } from "./fold";
 import { bytesToHex, hexToBytes } from "./sha256";
 
@@ -265,7 +266,89 @@ describe("ready-dd5 — pre-verification dedup must not evict a genuine event", 
     expect(levels.get(AGENT.pubkey)).toBe(LEVEL_REVOKED);
     expect(until.get(AGENT.pubkey)).toBe(REVOKE_AT);
   });
+
+  // THE RESIDUAL the first pass missed, end to end. The two tests above call
+  // dedupeExact directly, so they only ever exercised the CROSS-RELAY merge.
+  // fetchFromOneRelay's own paging dedup collapsed on the id too — one layer
+  // earlier — so a SINGLE hostile relay deleted the genuine revoke inside its
+  // own walk and nothing reached the merge to be preserved. This drives the
+  // REAL fetchEventsFromRelays with ONE relay serving the whole committed
+  // vector with forgery B interleaved BEFORE the genuine revoke, then folds
+  // exactly what the transport returned.
+  it("a single hostile relay cannot delete the genuine revoke from the real transport", async () => {
+    const genuine = GENUINE.filter((e): e is NostrEvent => e !== null);
+    // Tampered same-id/same-sig copy served FIRST, so an id-keyed dedup with
+    // either write-wins rule loses one of the two — and the one it loses is the
+    // only event carrying the revocation.
+    const served: NostrEvent[] = [];
+    for (const e of genuine) {
+      if (e === GENUINE_REVOKE) served.push(FORGED_REAL_SIG);
+      served.push(e);
+    }
+
+    const snapshot = await fetchEventsFromRelays(
+      ["wss://hostile.example"],
+      { kinds: [KIND_ROLE_GRANT] },
+      {
+        webSocketCtor: ReplayWebSocket.serving(served) as unknown as typeof WebSocket,
+        retries: 0,
+        timeoutMs: 5000,
+      },
+    );
+
+    // The genuine revoke SURVIVED transport — this is the assertion that was
+    // false before fetchFromOneRelay was fixed (the snapshot held only the
+    // tampered copy).
+    expect(snapshot).toContainEqual(GENUINE_REVOKE);
+    expect(snapshot).toContainEqual(FORGED_REAL_SIG);
+
+    // ...and the fold over that snapshot still honors the revocation.
+    const items = projectItems(snapshot, productionOpts());
+    expect(items.get("ready-v27")?.title).toBe("authored before the revoke");
+    expect(items.get("ready-v27")?.status).toBe("active");
+    const { levels, until } = deriveUnchecked(snapshot);
+    expect(levels.get(AGENT.pubkey)).toBe(LEVEL_REVOKED);
+    expect(until.get(AGENT.pubkey)).toBe(REVOKE_AT);
+  });
 });
+
+/**
+ * ReplayWebSocket is a hermetic relay stub (rule 11 — no real network in a unit
+ * suite): it answers the FIRST REQ with a scripted event list and every later
+ * page of relay.ts's `until` walk with an empty EOSE, which is what ends the
+ * walk. It exists so the test above can exercise the real fetchEventsFromRelays
+ * — including fetchFromOneRelay's dedup — rather than the merge alone.
+ */
+class ReplayWebSocket {
+  private static script: NostrEvent[] = [];
+  static serving(events: NostrEvent[]): typeof ReplayWebSocket {
+    ReplayWebSocket.script = events;
+    return ReplayWebSocket;
+  }
+  onopen: (() => void) | null = null;
+  onerror: ((ev?: unknown) => void) | null = null;
+  onclose: ((ev?: unknown) => void) | null = null;
+  onmessage: ((ev: { data: string }) => void) | null = null;
+  private served = false;
+
+  constructor(_url: string) {
+    queueMicrotask(() => this.onopen?.());
+  }
+  send(data: string): void {
+    const frame = JSON.parse(data) as [string, string, unknown];
+    if (frame[0] !== "REQ") return;
+    const sub = frame[1];
+    const batch = this.served ? [] : ReplayWebSocket.script;
+    this.served = true;
+    queueMicrotask(() => {
+      for (const e of batch) this.onmessage?.({ data: JSON.stringify(["EVENT", sub, e]) });
+      this.onmessage?.({ data: JSON.stringify(["EOSE", sub]) });
+    });
+  }
+  close(): void {
+    /* nothing to release */
+  }
+}
 
 /** jsonable makes Item (which carries BigInt timestamps) comparable. */
 function jsonable(v: unknown): unknown {
