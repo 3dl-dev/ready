@@ -1093,15 +1093,23 @@ changed for this document.
 ## 16. The write model
 
 **§16.1 One durable act, two phases.** Every mutation builds one or more signed
-events, appends them to the local append-only log (`Log.Append`, phase 1), then
-best-effort publishes them to the write relays (phase 2)
-(`Publisher.publishEvents`, `pkg/sync/nostroutbound.go:586-608`). **The log
-append is the mutation.** A phase-1 failure aborts with an error
-(`:601-603`); a phase-2 failure never fails the mutation — the event is buffered
-for retry (`relayPublish`, `:613`) and the local log remains authoritative.
-Immediately before either phase, an oversized event refuses the whole
-mutation instead (`guardEventSizes`, `pkg/sync/nostrsize.go:91-109` —
-ready-c3e). An independent client MUST treat its own durable store as the
+events and appends ALL of them to the local append-only log, unconditionally
+on size (`Log.Append`, phase 1), then best-effort publishes to the write
+relays only the ones within the relay fleet's size ceiling (phase 2)
+(`Publisher.publishEvents`, `pkg/sync/nostroutbound.go:587-613`). **The log
+append is the mutation, and is unconditional** (ready-c3e REWORK: an earlier
+version of this guard refused the WHOLE mutation — including the log append —
+the instant any event was oversized, which froze every future status
+transition for an oversized item, since every status transition rebuilds and
+re-checks the FULL current card; see `pkg/sync/nostrsize.go`'s doc comment for
+the full account). A phase-1 failure aborts with an error (`:600-602`); a
+phase-2 failure never fails the mutation — the event is buffered for retry
+(`relayPublish`, `:652`) and the local log remains authoritative. An event this
+client already knows exceeds every relay's size ceiling skips phase 2
+outright — no relay is even dialed, since the outcome is already certain — and
+is dead-lettered directly instead, the SAME disposition a live relay's own
+"invalid: ... exceeds ... max" reply produces (`Publisher.splitOversized`,
+`:627-647`). An independent client MUST treat its own durable store as the
 commit point and the
 relay as replication, not as the writer of record.
 
@@ -1171,7 +1179,7 @@ is a quarantined one (§3, `pkg/sync/envelope.go:100-116`).
 refused the instant a built event addresses board d-tag `"ready"` — the board
 event itself, or any `a` tag whose d-component matches
 (`hitsReservedBoard`, `pkg/sync/nostroutbound.go:87-101`; `guardReservedBoard`,
-`:112-122`, called from `publishEvents` `:587` and `PublishEventsUnique` `:544`).
+`:112-122`, called from `publishEvents` `:588` and `PublishEventsUnique` `:544`).
 The real CLI publisher sets `Production: true` (`cmd/rd/nostr.go:263`). This is a
 repo-local test-safety rail, not a protocol rule, but a conformance harness that
 constructs a `Publisher` will hit it.

@@ -9,17 +9,34 @@
 // between the local log and every relay, discovered only by an out-of-band
 // audit (rd relay audit), not by the write itself.
 //
-// THE FIX IS "REFUSE", NOT "TRUNCATE". An oversized item genuinely cannot be
-// represented as one signed event under a 64KiB relay cap; the two candidate
-// behaviors are refusing the write (protects integrity, costs the user a retry)
-// or silently truncating the content (loses data invisibly). Truncation is
-// exactly the defect class this whole swarm keeps finding elsewhere (silent
-// data loss dressed up as success) — it is not an option here. Refusing BEFORE
-// the event becomes durable anywhere (local log OR relay), with an error naming
-// the item and the exact byte count, gives the user synchronous, actionable
-// feedback at the one moment they can still act on it (shrink the description /
-// context / progress notes and retry) instead of discovering the problem days
-// later via a stale board.
+// THE FIX IS "REFUSE", NOT "TRUNCATE" — but refuse WHAT is a second decision
+// this file's first version got wrong (ready-c3e REWORK). An oversized item
+// genuinely cannot be represented as one signed event under a 64KiB relay cap;
+// truncating the content (silent data loss dressed up as success) is not an
+// option — that is the exact defect class this whole swarm keeps finding
+// elsewhere. But refusing was originally wired in BEFORE Log.Append too, and
+// that froze the three real stranded items this bug produced (3dl-7e0,
+// 3dl-ece, galtrader-bbd): every status transition rebuilds and re-checks the
+// FULL current card (PublishStatusChange, PublishCardEdit), so `rd claim`, a
+// close verb, and `rd progress` on those items ALL refused, and refused before
+// anything was recorded locally either — no error, no local record, nothing.
+// The local signed log is the source of truth and a relay is a replaceable
+// cache; refusing the LOCAL append inverted that priority.
+//
+// THE CORRECTED RULE: the local Log.Append ALWAYS succeeds, for every event,
+// regardless of size — nostroutbound.go's publishEvents/PublishEventsUnique
+// run phase 1 (log append) unconditionally. Only phase 2 (the relay dial) is
+// refused for an oversized event, and it is refused WITHOUT even attempting
+// the dial (Publisher.splitOversized, nostroutbound.go): the event is
+// dead-lettered directly, through the exact same disposition a live relay's
+// "invalid: ... exceeds ... max" reply would produce (applyRelayOutcome),
+// dedup and all (finding 2 below still applies — retrying the same oversized
+// event never grows nostr-rejected.jsonl further). The operator still gets a
+// clear, actionable signal (PublishResult.Rejected, or a stderr warning with
+// no PendingPath configured) naming the item and the exact byte count, at the
+// one moment they can still act on it (shrink the content and republish) —
+// but the mutation itself (claim/close/progress) now SUCCEEDS and is durable
+// locally, exactly as it would be if every relay in the fleet were offline.
 //
 // WHERE THIS DOES NOT APPLY: republishing already-signed historical events
 // (PublishBoard, PublishBoardDelta / `rd relay repair`, `rd log publish
@@ -79,25 +96,41 @@ func eventSubjectLabel(e *nostr.Event) string {
 	return fmt.Sprintf("item %q", d)
 }
 
+// oversizedEvent measures e and reports whether it exceeds maxEventWireSize —
+// the SINGLE definition of "too big for this fleet's relays" shared by
+// guardEventSizes (the all-or-nothing batch check below, kept for the
+// externally-anchored boundary test) and Publisher.splitOversized
+// (nostroutbound.go — the production wiring, which partitions a batch
+// per-event instead of refusing it whole). A marshal error is reported as
+// NOT oversized (over=false) so a caller falls through to letting the relay
+// itself be the judge, rather than mis-reporting a phantom size.
+func oversizedEvent(e *nostr.Event) (n int, over bool, err error) {
+	n, err = marshaledEventSize(e)
+	if err != nil {
+		return 0, false, err
+	}
+	return n, n > maxEventWireSize, nil
+}
+
 // guardEventSizes refuses the ENTIRE batch the instant any one event exceeds
-// maxEventWireSize — before the caller's Log.Append and before any relay dial
-// (ready-c3e). A batch is one operator intent (create/status-change/edit all
-// build a card + status [+ issue] event together); publishing "the rest" while
-// silently dropping the oversized member would itself be a silent partial
-// write, the exact class of bug this guard exists to prevent. The error names
-// the offending subject (item or board) and the measured byte count against
-// the fixed 64KiB ceiling so the operator has everything needed to act:
-// shrink the content and retry.
+// maxEventWireSize. Retained as the all-or-nothing PRIMITIVE this package's
+// externally-anchored boundary test (TestGuardEventSizes_RealBoundary,
+// nostrsize_test.go) exercises directly against the relay's own limit
+// expression; production writes go through Publisher.splitOversized instead
+// (ready-c3e REWORK — see nostroutbound.go's publishEvents doc for why an
+// oversized event must NOT block the local log append, only the relay dial).
+// The error names the offending subject (item or board) and the measured byte
+// count against the fixed 64KiB ceiling.
 func guardEventSizes(events []*nostr.Event) error {
 	for _, e := range events {
 		if e == nil {
 			continue
 		}
-		n, err := marshaledEventSize(e)
+		n, over, err := oversizedEvent(e)
 		if err != nil {
 			return err
 		}
-		if n <= maxEventWireSize {
+		if !over {
 			continue
 		}
 		return fmt.Errorf(

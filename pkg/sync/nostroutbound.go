@@ -544,11 +544,11 @@ func (p *Publisher) PublishEventsUnique(ctx context.Context, events []*nostr.Eve
 	if err := p.guardReservedBoard(events); err != nil {
 		return PublishResult{}, 0, err
 	}
-	// ready-c3e: same guard as publishEvents — this path (ready-d65 migration)
-	// also mints and appends NEW events, not a verbatim replay of history.
-	if err := guardEventSizes(events); err != nil {
-		return PublishResult{}, 0, err
-	}
+	// The log append MUST succeed regardless of any event's size (ready-c3e
+	// REWORK — see nostrsize.go's doc): this path (ready-d65 migration) also
+	// mints and appends NEW events, not a verbatim replay of history, so it
+	// gets the SAME oversized-event handling as publishEvents below — refused
+	// at the relay dial only, via splitOversized after the append, never here.
 	added, err := p.Log.AppendUnique(events)
 	if err != nil {
 		return PublishResult{}, 0, fmt.Errorf("sync: appending unique to authoritative log: %w", err)
@@ -560,7 +560,8 @@ func (p *Publisher) PublishEventsUnique(ctx context.Context, events []*nostr.Eve
 	// exact "before" id set here, so this over-approximates the fresh set upward only,
 	// never dropping a genuinely new event.)
 	res := PublishResult{}
-	p.relayPublish(ctx, &res, distinctIfAdded(events, added))
+	deliverable := p.splitOversized(&res, distinctIfAdded(events, added))
+	p.relayPublish(ctx, &res, deliverable)
 	return res, added, nil
 }
 
@@ -587,24 +588,62 @@ func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events
 	if err := p.guardReservedBoard(events); err != nil {
 		return res, err
 	}
-	// ready-c3e: refuse an oversized NEW event before it becomes durable
-	// anywhere — before Log.Append (phase 1, below) and before any relay dial
-	// (phase 2). See nostrsize.go's doc for why this is refuse-not-truncate and
-	// why it must not apply to PublishBoard/PublishBoardDelta's verbatim replay
-	// of already-signed history.
-	if err := guardEventSizes(events); err != nil {
-		return res, err
-	}
-	// Phase 1 — append to the authoritative log. This MUST succeed; it is the
-	// durability guarantee independent of any relay.
+	// Phase 1 — append to the authoritative log. This MUST succeed for EVERY
+	// event, regardless of size — it is the durability guarantee independent
+	// of any relay, and independent of whether the event can ever reach one
+	// (ready-c3e REWORK). An earlier version of this guard refused an
+	// oversized event here too, before Log.Append — which froze every future
+	// status transition for the item, since PublishStatusChange/
+	// PublishCardEdit rebuild and re-check the FULL current card on every
+	// call. See nostrsize.go's doc for the full account.
 	for _, e := range events {
 		if err := p.Log.Append(e); err != nil {
 			return res, fmt.Errorf("sync: appending to authoritative log: %w", err)
 		}
 	}
-	// Phase 2 — publish to write relays, best-effort.
-	p.relayPublish(ctx, &res, events)
+	// Phase 2 — publish to write relays, best-effort, EXCEPT any event this
+	// client already knows exceeds every relay's size ceiling (ready-c3e):
+	// splitOversized dead-letters those directly (no relay dial — the outcome
+	// is already certain) and returns only the deliverable remainder. This
+	// must not apply to PublishBoard/PublishBoardDelta's verbatim replay of
+	// already-signed history (nostrsize.go's doc explains why).
+	deliverable := p.splitOversized(&res, events)
+	p.relayPublish(ctx, &res, deliverable)
 	return res, nil
+}
+
+// splitOversized partitions events into those safe to hand to relayPublish and
+// those this client already knows exceed maxEventWireSize (ready-c3e REWORK).
+// An oversized event is NEVER dialed to a relay — the outcome is already
+// certain — and is instead given the SAME disposition applyRelayOutcome gives
+// a live relay's own "invalid: ... exceeds ... max" reply: dead-lettered (with
+// the existing across-round dedup, finding 2 below, so retrying the identical
+// oversized event never grows nostr-rejected.jsonl further) or, with no
+// PendingPath configured, a stderr warning — res.Rejected is set either way.
+// This is deliberately NOT an error return: by the time this runs the event is
+// already durable in the local authoritative log (the caller's Log.Append, in
+// publishEvents/PublishEventsUnique, always runs first), so refusing here only
+// ever affects the relay attempt, never the local write.
+func (p *Publisher) splitOversized(res *PublishResult, events []*nostr.Event) []*nostr.Event {
+	deliverable := make([]*nostr.Event, 0, len(events))
+	for _, e := range events {
+		if e == nil {
+			continue
+		}
+		n, over, err := oversizedEvent(e)
+		if err != nil || !over {
+			// Can't measure it, or it's within the limit — let the relay be
+			// the judge, exactly as before this guard existed.
+			deliverable = append(deliverable, e)
+			continue
+		}
+		reason := fmt.Sprintf(
+			"client-side size guard (ready-c3e): %s is %d bytes, exceeds the 64KiB (%d byte) relay limit every relay in this fleet enforces (strfry default) — no relay was dialed, since every relay in the fleet refuses this size; durable in the local authoritative log regardless — shrink its description/context/progress notes below the limit and republish to reach a relay",
+			eventSubjectLabel(e), n, maxEventWireSize,
+		)
+		p.applyRelayOutcome(res, e, nil, outcomePermanent, reason)
+	}
+	return deliverable
 }
 
 // relayPublish publishes each event to every write relay, best-effort, recording

@@ -21,6 +21,8 @@
 package sync
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -320,28 +322,57 @@ func rejectedPathFor(pendingPath string) string {
 // the relay's gap every round and republishes exactly that gap; for a
 // PERMANENTLY oversized event the gap can never close, so the identical event
 // was re-sent and re-dead-lettered on EVERY round of EVERY repair run — 12MB
-// for 2 distinct events on one project, 3.6MB for 1 on another, growing
-// forever at 5 records per `rd relay repair` invocation. Permanence is a
-// property of the immutable signed bytes (same premise as
+// on one project (8 distinct oversized events across 2 stale coordinates),
+// 3.6MB on another (1 distinct event), growing forever at up to 5 records per
+// `rd relay repair` invocation (re-measured directly against both projects'
+// on-disk nostr-rejected.jsonl; corrected from an earlier restatement that
+// conflated "2 distinct events" with "2 stale coordinates" — not the same
+// count: 3dl has 8 distinct oversized event ids across those 2 coordinates).
+// Permanence is a property of the immutable signed bytes (same premise as
 // classifyRelayResult): once a record for this exact event id exists, a
 // second one carries zero new information, so the caller skips the append
-// instead of growing the file. A read failure (including "file does not
-// exist yet") reports false — the caller then appends the first record,
-// exactly as before this fix.
+// instead of growing the file.
+//
+// FAILS CLOSED ON A BAD RECORD (ready-c3e finding 4, rework): a single
+// malformed or torn line is skipped, not treated as end-of-scan. The prior
+// version used a json.Decoder over the whole stream and returned false the
+// instant Decode failed on ANY record — so one corrupt line positioned BEFORE
+// the target silently disabled dedup for every record after it, permanently
+// restoring the unbounded-growth bug this function exists to fix.
+// appendRejectedEvent's own doc states the file is at-least-once (a crash
+// mid-append may leave a torn line) — that is an ANTICIPATED on-disk state,
+// not a hypothetical, so scanning must tolerate it. A read failure (including
+// "file does not exist yet") reports false — the caller then appends the
+// first record, exactly as before this fix.
 func deadLetterHasEvent(path, eventID string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	dec := json.NewDecoder(f)
+	// Line-based, not json.Decoder-over-the-stream: appendRejectedEvent always
+	// writes exactly one JSON object followed by '\n' per record, so a bad
+	// record's damage is contained to its own line — the reader can resync at
+	// the next '\n' instead of a decode error aborting the whole scan.
+	// bufio.Reader.ReadString has no line-length ceiling (unlike
+	// bufio.Scanner's default token limit), which matters here: a
+	// dead-lettered record's Event.Content is, by definition, an OVERSIZED
+	// event, so lines in this exact file routinely exceed 64KiB.
+	r := bufio.NewReader(f)
 	for {
-		var rec RejectedRecord
-		if err := dec.Decode(&rec); err != nil {
-			return false
+		line, rerr := r.ReadBytes('\n')
+		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			var rec RejectedRecord
+			if uerr := json.Unmarshal(trimmed, &rec); uerr == nil {
+				if rec.Event != nil && rec.Event.ID == eventID {
+					return true
+				}
+			}
+			// A malformed/torn record: skip it and keep scanning. Do NOT
+			// return false here — that was finding (4)'s bug.
 		}
-		if rec.Event != nil && rec.Event.ID == eventID {
-			return true
+		if rerr != nil {
+			return false // EOF (or a read error) — nothing further to scan.
 		}
 	}
 }
