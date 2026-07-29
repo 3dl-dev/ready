@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
@@ -120,12 +121,12 @@ func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
 	}
 
 	// A plain contributor attempting to grant a contributor must be rejected client-side.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0, "")
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer grant = %v, want an 'escalation cap' client-side rejection", err)
 	}
 	// And attempting to revoke must be rejected the same way.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0, "")
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer revoke = %v, want an 'escalation cap' client-side rejection", err)
 	}
@@ -140,6 +141,15 @@ func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
 func TestPublishRoleGrant_ClaimSingleUse(t *testing.T) {
 	setupNostrNativeProject(t)
 	const claim = "cli-claim-01"
+	// ready-c40: a --claim grant is now only honored for a nonce this owner
+	// actually minted via `rd invite` (recorded in unclaimed-invites). Mint the
+	// record here so this test continues to exercise single-use REUSE rejection,
+	// not the (separately covered) unminted-nonce rejection.
+	if err := appendLocalClaim(unclaimedInvitesPath(RDHome()), localClaim{
+		Claim: claim, Board: "irrelevant-for-this-check", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("appendLocalClaim: %v", err)
+	}
 	a, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey a: %v", err)
@@ -148,16 +158,97 @@ func TestPublishRoleGrant_ClaimSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey b: %v", err)
 	}
-	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a", 0, claim); err != nil {
+	if _, err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a", 0, claim); err != nil {
 		t.Fatalf("first --claim grant should succeed: %v", err)
 	}
-	err = publishRoleGrant(b.PubKeyHex(), rdSync.RoleContributor, "b", 0, claim)
+	_, err = publishRoleGrant(b.PubKeyHex(), rdSync.RoleContributor, "b", 0, claim)
 	if err == nil || !strings.Contains(err.Error(), "already consumed") {
 		t.Fatalf("second grant reusing claim = %v, want 'already consumed' refusal", err)
 	}
-	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a2", 0, claim); err != nil {
+	if _, err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a2", 0, claim); err != nil {
 		t.Fatalf("same-key re-grant under its own claim should succeed: %v", err)
 	}
+	assertNoDotCf(t)
+}
+
+// grantNeverAdmitted re-reads dir's authoritative log and folds it through the
+// SAME projection the client trusts (DeriveReadTrust), proving a rejected --claim
+// grant never advanced past publishRoleGrant's error into a state where grantee
+// is admitted — not merely that the call returned an error.
+func grantNeverAdmitted(t *testing.T, dir, boardAuthor, boardD, grantee string) {
+	t.Helper()
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("reading local log for post-rejection fold: %v", err)
+	}
+	if rdSync.DeriveReadTrust(events, boardAuthor, boardD)[grantee] {
+		t.Errorf("grantee %s is in the derived read-trust set after a rejected --claim grant — the rejected grant was folded in anyway", grantee)
+	}
+	for _, e := range events {
+		if e.Kind == rdSync.KindRoleGrant && eventTagValue(e, "p") == grantee {
+			t.Errorf("a role-grant event for %s was appended to the local log despite the rejection: id=%s", grantee, e.ID)
+		}
+	}
+}
+
+// TestPublishRoleGrant_RejectsUnmintedClaim is the ready-c40 reproduction (half
+// a): security sweep ready-348 found that `rd grant --claim <nonce>` bound an
+// arbitrary caller-supplied nonce string to a grantee with NO check that this
+// owner ever minted that nonce via `rd invite` (which records it in
+// unclaimed-invites, cmd/rd/nostr_invite.go:445). Before the fix, an owner
+// SOCIAL-ENGINEERED into running `rd grant --claim <attacker-chosen-string>
+// <attacker-pubkey>` would confer write access on a nonce that was never issued
+// at all. The fix requires a matching unclaimed-invites record before a --claim
+// grant is honored.
+func TestPublishRoleGrant_RejectsUnmintedClaim(t *testing.T) {
+	dir, owner := setupNostrNativeProject(t)
+	boardD := projectPrefix(dir)
+	const neverMinted = "this-nonce-was-never-issued-by-rd-invite"
+
+	grantee, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "attacker-induced", 0, neverMinted)
+	if err == nil {
+		t.Fatal("grant with an unminted claim-nonce succeeded; want rejection")
+	}
+	if !strings.Contains(err.Error(), "no matching mint record") && !strings.Contains(err.Error(), "never minted") {
+		t.Errorf("rejection reason = %q, want it to name the missing mint record", err.Error())
+	}
+	grantNeverAdmitted(t, dir, owner, boardD, grantee.PubKeyHex())
+	assertNoDotCf(t)
+}
+
+// TestPublishRoleGrant_RejectsExpiredClaim is the ready-c40 reproduction (half
+// b): the claim token's TTL is enforced ONLY on the join side
+// (decodeNostrClaimToken, cmd/rd/nostr_invite.go:133 and redeemNostrClaimToken,
+// :218) — the grant side never checked the mint record's expiry at all. A claim
+// nonce minted (and expired) hours ago must be rejected here too, the step that
+// actually confers write authority.
+func TestPublishRoleGrant_RejectsExpiredClaim(t *testing.T) {
+	dir, owner := setupNostrNativeProject(t)
+	boardD := projectPrefix(dir)
+	const claim = "expired-invite-nonce"
+
+	if err := appendLocalClaim(unclaimedInvitesPath(RDHome()), localClaim{
+		Claim: claim, Board: rdSync.BoardCoord(owner, boardD), ExpiresAt: time.Now().Add(-time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("appendLocalClaim: %v", err)
+	}
+
+	grantee, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "late-grant", 0, claim)
+	if err == nil {
+		t.Fatal("grant with an expired claim-nonce mint record succeeded; want rejection")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("rejection reason = %q, want it to say the nonce expired", err.Error())
+	}
+	grantNeverAdmitted(t, dir, owner, boardD, grantee.PubKeyHex())
 	assertNoDotCf(t)
 }
 

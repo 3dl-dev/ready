@@ -117,6 +117,12 @@ export type ParsedFragment =
        * non-confidential board (nothing to decrypt) and for every default/share
        * link. */
       keys?: FragmentKeys;
+      /** ready-280: relay=candidates dropped by parseRelays because a browser
+       * on THIS page's origin cannot open them (see parseRelays). Present only
+       * when at least one entry was dropped, so the common case (every relay
+       * usable) adds no field. main.ts surfaces this to the user instead of
+       * silently trying (and failing) the dropped entries. */
+      droppedRelays?: string[];
     }
   | {
       /**
@@ -133,6 +139,8 @@ export type ParsedFragment =
       /** Per-board secret key material from `keys=`, keyed by board coordinate.
        * Absent for `rd board --portfolio` without --with-key. */
       keys?: PortfolioKeys;
+      /** ready-280, see the "board" variant's field of the same name. */
+      droppedRelays?: string[];
     }
   | { kind: "none" };
 
@@ -160,8 +168,18 @@ function decodeClaimToken(token: string): NostrClaimPayload {
   return payload;
 }
 
-/** parseFragment reads (but does not strip) the given location.hash value. */
-export function parseFragment(hash: string): ParsedFragment {
+/**
+ * parseFragment reads (but does not strip) the given location.hash value.
+ *
+ * `secure` says whether THIS page's own origin is one a browser treats as a
+ * secure context (i.e. NOT plain http://). It defaults to `true` — the
+ * production shape (an https:// page) and the fail-closed choice for any
+ * caller (tests included) that does not pass one explicitly. Only
+ * parseAndStripFragment, which has a real `Location` to read, ever passes
+ * `false` — and only when `loc.protocol === "http:"` (web/board's own dev
+ * loop). See parseRelays for what this gates.
+ */
+export function parseFragment(hash: string, secure = true): ParsedFragment {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
   if (raw === "") return { kind: "none" };
 
@@ -182,8 +200,9 @@ export function parseFragment(hash: string): ParsedFragment {
     if (portfolioParam !== null) {
       throw new Error("fragment: board= and keys= cannot both be present — a link is either one board or the whole portfolio");
     }
-    const relays = parseRelays(params);
-    const out: ParsedFragment = { kind: "board", board, relays };
+    const { kept, dropped } = parseRelays(params, secure);
+    const out: ParsedFragment = { kind: "board", board, relays: kept };
+    if (dropped.length > 0) out.droppedRelays = dropped;
     if (pk !== null) out.viewer = decodeHexKeyParam("pk", pk);
     const keys = decodeKeyParams(params.get("cek"), params.get("ltk"));
     if (keys) out.keys = keys;
@@ -192,11 +211,13 @@ export function parseFragment(hash: string): ParsedFragment {
 
   // PORTFOLIO: pk= with no board=. See the ParsedFragment "portfolio" variant.
   if (pk !== null) {
+    const { kept, dropped } = parseRelays(params, secure);
     const out: ParsedFragment = {
       kind: "portfolio",
-      relays: parseRelays(params),
+      relays: kept,
       viewer: decodeHexKeyParam("pk", pk),
     };
+    if (dropped.length > 0) out.droppedRelays = dropped;
     if (portfolioParam !== null) out.keys = decodePortfolioKeys(portfolioParam);
     return out;
   }
@@ -212,12 +233,58 @@ export function parseFragment(hash: string): ParsedFragment {
   return { kind: "none" };
 }
 
-/** parseRelays reads the shared `relays=<comma-list>` parameter. */
-function parseRelays(params: URLSearchParams): string[] {
-  return (params.get("relays") ?? "")
+/**
+ * parseRelays reads the shared `relays=<comma-list>` parameter and rejects
+ * every entry a browser on THIS page's origin cannot open, rather than
+ * handing it to the connector to fail on (ready-280).
+ *
+ * WHY THIS EXISTS. cmd/rd/board.go's boardLinkRelays/browserOpenableRelays
+ * already narrow the relay set at MINT time, so a link minted today never
+ * carries a ws:// entry. But the relay list rides in the URL FRAGMENT, which
+ * is exactly the part of a link that is not versioned: a bookmark or a pasted
+ * link minted by a build from BEFORE that mint-side fix carries whatever
+ * scheme was current then, forever. ready-634's fix could not retroactively
+ * repair a link already in someone's browser history. This function is the
+ * reader-side backstop for that link, checked independently of what the
+ * sender's rd build happened to filter.
+ *
+ * THE RULE MIRRORS cmd/rd/board.go's browserOpenableRelays, evaluated
+ * against the READER's real origin instead of a `--host` guess, with one
+ * addition that host-side function does not need: this reader also rejects
+ * any scheme that is not ws:// or wss:// outright, secure or not — the link
+ * is untrusted input (a bookmark, a forwarded URL, a hand-edited fragment),
+ * and a garbage scheme is not a "reachability" question the connector should
+ * ever be asked to resolve by trying it. Given that ws/wss floor:
+ *   - a secure (https, or any non-"http:") page origin keeps only wss://
+ *     entries — mixed content blocks ws:// with no click-through.
+ *   - an insecure (http://, e.g. web/board's own `vite dev` loop) page origin
+ *     may keep ws:// too — there is no mixed content to block there.
+ * `secure` defaults to `true` in parseFragment, so an unspecified or
+ * misdetected context fails CLOSED (ws:// dropped), never open.
+ *
+ * Dropped entries are reported, not silently discarded: the caller (see
+ * ParsedFragment's `droppedRelays`) surfaces them so a link whose relay list
+ * is quietly thinner than what it claimed is a visible fact, not a mystery
+ * the connector's retry loop swallows.
+ */
+function parseRelays(params: URLSearchParams, secure: boolean): { kept: string[]; dropped: string[] } {
+  const raw = (params.get("relays") ?? "")
     .split(",")
     .map((r) => r.trim())
     .filter((r) => r !== "");
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const r of raw) {
+    const lower = r.toLowerCase();
+    const isWss = lower.startsWith("wss://");
+    const isWs = lower.startsWith("ws://");
+    if (isWss || (isWs && !secure)) {
+      kept.push(r);
+    } else {
+      dropped.push(r);
+    }
+  }
+  return { kept, dropped };
 }
 
 /** decodeHexKeyParam validates one 64-lowercase-hex fragment parameter. The
@@ -278,8 +345,14 @@ export function parseAndStripFragment(loc: Location = window.location): ParsedFr
   // the address bar and history even though parsing it throws. Stripping used
   // to run only after a successful parse, which meant a corrupted claim-nonce
   // -- the exact case where a token most wants removing -- stayed in the URL.
+  //
+  // ready-280: `secure` mirrors cmd/rd/board.go's browserOpenableRelays host
+  // check — anything that is not explicitly "http:" is treated as a secure
+  // context, so a scheme this code does not recognize fails CLOSED (relays
+  // filtered to wss:// only) rather than open.
+  const secure = loc.protocol !== "http:";
   try {
-    return parseFragment(loc.hash);
+    return parseFragment(loc.hash, secure);
   } finally {
     if (loc.hash !== "") {
       const url = loc.pathname + loc.search;

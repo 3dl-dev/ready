@@ -43,9 +43,18 @@ type storeRelay struct {
 	// dropNth, when > 0, makes every Nth EVENT fail with the SAME transient
 	// store error the production relay returns under throttling. It stores
 	// nothing for those writes, so only a retry can close the gap.
-	dropNth  int
-	writeSeq int
-	url      string
+	dropNth int
+	// underReturnAuthors, when set, models the deployed relay's author-index
+	// defect (ready-d84): ANY REQ carrying an "authors" filter is answered with
+	// NOTHING, no matter what the relay actually holds, while a kind/tag-only
+	// REQ for the exact same events answers correctly. This is the measured
+	// shape from ready-5c5 (galtrader: 108/371 by authors vs 371/371 by #a) and
+	// ready-0ab (a grants query returning 8 of 11) — a real query against the
+	// live relay under-returns, it does not error, so a fixture that errored on
+	// "authors" would not model the actual failure a client must tolerate.
+	underReturnAuthors bool
+	writeSeq           int
+	url                string
 }
 
 func newStoreRelay(t *testing.T) *storeRelay {
@@ -197,6 +206,14 @@ func (s *storeRelay) match(filter map[string]any) []*nostr.Event {
 				wantAuthors[s] = true
 			}
 		}
+	}
+	if len(wantAuthors) > 0 && s.underReturnAuthors {
+		// The deployed relay's author-index defect: an authors-filtered REQ
+		// gets nothing, deterministically, regardless of what is actually
+		// stored. Any caller still shaping a query around `authors` must see
+		// this as a silent empty answer, not an error — that is what makes it
+		// dangerous.
+		return nil
 	}
 	tagFilter := func(name string) map[string]bool {
 		out := map[string]bool{}
@@ -892,6 +909,55 @@ func TestAuditBoardOnRelay_ErrorsRatherThanTruncateOnATimestampPlateau(t *testin
 		t.Fatal("audit returned a clean result although pagination could not read the whole board — a truncated read-back must be an error, never a silent short answer")
 	} else if !strings.Contains(err.Error(), "stalled") {
 		t.Fatalf("audit error = %v, want the pagination-stall error", err)
+	}
+}
+
+// TestAuditBoardOnRelay_DefinitionSurvivesAuthorIndexUnderReturn is the
+// ready-d84 proof. boardaudit.go used to fetch the board's own kind-30301
+// DEFINITION with an authors-filtered REQ — the one filter shape ready-5c5 and
+// ready-0ab measured the deployed relay to silently under-return on (galtrader:
+// 108/371 by authors vs 371/371 by #a; a grants query returning 8 of 11 by
+// authors). Simulating that exact defect here (storeRelay.underReturnAuthors)
+// is deliberate: ready-0ab records the relay-side fix as merged but NOT
+// deployed, so a test run against the live relay today would not exercise the
+// under-return at all and would prove nothing about the client-side query
+// shape — the very trap this item's done condition calls out ("a test that
+// passes against the live relay is not proof the filter is safe").
+//
+// Against the PRE-FIX query ({kinds:[30301],"authors":[owner],"#d":[boardD]}),
+// this fixture answers with nothing (authors is set), so
+// BoardDefinitionOnRelay would be false and Match would be false for a board
+// that is fully present. Against the fix (kind + "#d" only, no authors), the
+// fixture answers normally and the audit reports Match.
+func TestAuditBoardOnRelay_DefinitionSurvivesAuthorIndexUnderReturn(t *testing.T) {
+	f := newBackfillFixture(t, 5)
+	sr := newStoreRelay(t)
+	pub := f.publisher(sr.url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := pub.PublishBoard(ctx, f.coord); err != nil {
+		t.Fatalf("PublishBoard: %v", err)
+	}
+
+	// The board is fully and correctly published. NOW break the relay's author
+	// index for every REQ that carries `authors` — the definition fetch is the
+	// only one in this package that would, pre-fix, shape a query that way.
+	sr.underReturnAuthors = true
+
+	local, err := f.log.ReadAll()
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	a, err := AuditBoardOnRelay(ctx, sr.url, local, f.coord)
+	if err != nil {
+		t.Fatalf("AuditBoardOnRelay: %v", err)
+	}
+	if !a.BoardDefinitionOnRelay {
+		t.Fatalf("BoardDefinitionOnRelay=false for a board definition that is provably on the relay — the audit is still querying it in a way the author-index under-return defeats: %+v", a)
+	}
+	if !a.Match {
+		t.Fatalf("Match=false although every event is present and verified: %+v", a)
 	}
 }
 

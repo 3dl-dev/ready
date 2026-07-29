@@ -1,13 +1,25 @@
 package main
 
-// Local invite-claim bookkeeping (ready-ce0).
+// Local invite-claim bookkeeping (ready-ce0; mint verification ready-c40).
 //
-// These records are HONEST LOCAL IDEMPOTENCY / UX only — NEVER a security boundary.
-// The real single-use guarantee is owner-enforced at grant DERIVATION: one
-// claim-nonce binds to exactly one self-minted pubkey (pkg/sync deriveGrants). These
-// files just let `rd join` refuse an accidental second redemption of the same token
-// on the SAME machine without --force, and let the owner see which claim-nonces are
-// still outstanding.
+// consumedInvitesPath (the JOINER-side record) is HONEST LOCAL IDEMPOTENCY / UX
+// only — it just lets `rd join` refuse an accidental second redemption of the same
+// token on the SAME machine without --force. It is NOT a security boundary: a
+// hostile joiner can trivially delete or never write it.
+//
+// unclaimedInvitesPath (the OWNER-side record) is DIFFERENT: since ready-c40 it IS
+// part of the security boundary for `rd grant --claim`. Single-use reuse-by-a-
+// different-pubkey is still owner-enforced at grant DERIVATION (one claim-nonce
+// binds to exactly one self-minted pubkey, pkg/sync deriveGrants/ClaimGrantee) —
+// that half was already correct. What was MISSING is that `rd grant --claim
+// <nonce>` accepted ANY caller-supplied nonce string with no check that this
+// owner ever minted it via `rd invite`/`rd board share`, and no check that a
+// minted nonce's TTL had not already elapsed (the TTL was previously enforced
+// ONLY on the join side: decodeNostrClaimToken / redeemNostrClaimToken). An owner
+// induced to run `rd grant --claim <attacker-string> <attacker-pubkey>` would
+// confer write access on a nonce nobody ever issued. publishRoleGrant
+// (cmd/rd/nostr_grant.go) now requires a matching, unexpired record in THIS
+// file before honoring --claim.
 //
 // Format: newline-delimited JSON (one localClaim per line), append-only. A missing
 // file reads as empty. We never treat a corrupt line as fatal — bookkeeping must not
@@ -103,4 +115,21 @@ func localClaimPresent(path, claim string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// findLocalClaim returns the recorded claim entry for the given nonce at path, and
+// whether one was found (ready-c40). `rd invite`/`rd board share` mint a
+// crypto-random 128-bit nonce (randomNonce), so a collision between two distinct
+// mints is not a real-world concern; the first match is authoritative.
+func findLocalClaim(path, claim string) (localClaim, bool, error) {
+	claims, err := readLocalClaims(path)
+	if err != nil {
+		return localClaim{}, false, err
+	}
+	for _, c := range claims {
+		if c.Claim == claim {
+			return c, true, nil
+		}
+	}
+	return localClaim{}, false, nil
 }
