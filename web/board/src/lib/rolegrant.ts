@@ -3,14 +3,27 @@
 // operator levels, and status-authority (via the fold's boardMaintainers
 // union in fold.ts) but produce no item of their own.
 //
-// KNOWN GAP (ready-35b): disabling the escalation cap entirely leaves every
-// committed vector green (ready-ce8) — the cap logic below is implemented
-// per spec but is NOT exercised by the committed vector suite. Treat
-// signerMayGrant as spec-faithful-but-vector-unverified until ready-ce8 adds
-// coverage.
+// GAP CLOSED (ready-ce8; the gap was recorded here by ready-35b). The
+// escalation cap below IS now exercised by the committed corpus, in THIS
+// implementation and not only in Go's: fold.vectors.test.ts replays
+// testdata/fold.vectors.json through projectItems, and ready-ce8's six
+// grant_cap_* / revoke_boundary_* / grant_level_two_* vectors were each proven
+// to turn THIS file (and fold.ts) red under the mutation they exist to catch.
+// Measured against this port, not asserted:
+//
+//	signerMayGrant -> `return true`                  -> 4 vectors fail
+//	roleToLevel: contributor -> LEVEL_MAINTAINER     -> 4 vectors fail
+//	fold.ts §3.5 `>=` -> `>`                         -> 1 vector fails
+//	fold.ts: delete the §6.2 grant-maintainer fold    -> 1 vector fails
+//
+// So a divergence between this port and pkg/sync/rolegrant.go in the escalation
+// cap, the role->level table, the revocation boundary or the grant-derived
+// maintainer fold is now a CI failure rather than a silent difference. Do not
+// weaken any of the four without expecting those vectors to go red — that is
+// exactly their job.
 
-import type { NostrEvent } from "./nostrevent";
-import { tagValue } from "./nostrevent";
+import type { NostrEvent, VerifiedEvent } from "./nostrevent";
+import { tagValue, verifyEvent } from "./nostrevent";
 
 export const KIND_ROLE_GRANT = 39301;
 
@@ -161,10 +174,27 @@ export interface DerivedGrants {
 /** DeriveLevels mirrors pkg/sync/rolegrant.go's DeriveLevels: replays the
  * verified 39301 events bound to 30301:<boardAuthor>:<boardD> and returns the
  * {pubkey -> level} and {pubkey -> authoritative-until} maps (spec §12).
- * `events` are assumed already schnorr-verified (the same events passed to
- * projectItems — see fold.ts, which verifies once and reuses the result). */
+ *
+ * SECURITY (ready-75a — this comment describes what the code DOES, it is not
+ * an assumption about the caller). Read-trust levels and the prospective
+ * revocation bound are derived here, so an unverified grant reaching this
+ * replay lets an untrusted relay undo a board owner's revocation with an event
+ * carrying no valid signature. Two independent defences, both live:
+ *
+ *   1. `events` is VerifiedEvent[] — a branded type only nostrevent.ts's
+ *      verifiedEvents() can mint, and it mints it by RUNNING verifyEvent.
+ *      Passing the raw relay array is a compile error.
+ *   2. The replay loop below ALSO calls verifyEvent per grant, exactly as
+ *      Go's deriveGrants does ("a forged/tampered grant cannot influence
+ *      levels", pkg/sync/rolegrant.go). The brand is erased at runtime; this
+ *      is not, so a caller that casts around (1) still cannot poison levels.
+ *
+ * The original defect was this port dropping Go's in-loop e.Verify() while its
+ * doc comment claimed the caller had already verified — the caller (fold.ts)
+ * verified in a DIFFERENT loop whose result never reached here. Do not remove
+ * either defence. */
 export function deriveLevels(
-  events: (NostrEvent | null)[],
+  events: readonly (VerifiedEvent | null)[],
   boardAuthor: string,
   boardD: string,
 ): DerivedGrants {
@@ -179,6 +209,11 @@ export function deriveLevels(
   const grants: RoleGrant[] = [];
   for (const e of events) {
     if (!e || e.kind !== KIND_ROLE_GRANT) continue;
+    // Only signed, internally-consistent events count (schnorr) — mirrors the
+    // read-side gate and pkg/sync/rolegrant.go's deriveGrants: a forged or
+    // tampered grant cannot influence levels. Defence (2) above; the
+    // VerifiedEvent parameter type is defence (1).
+    if (!verifyEvent(e)) continue;
     const g = parseRoleGrant(e);
     if (!g) continue;
     if (boardAuthor === "" || boardD === "" || g.boardOwner !== boardAuthor || g.boardD !== boardD) continue;
