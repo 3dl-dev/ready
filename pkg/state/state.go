@@ -153,6 +153,22 @@ type Item struct {
 	// that could not be resolved (e.g., not a member of the target campfire, network
 	// error). Cross-campfire deps are always NON-BLOCKING — the item stays actionable.
 	CrossCampfireWarnings []string `json:"cross_campfire_warnings,omitempty"`
+
+	// Redacted marks an item whose confidential free text COULD NOT be decrypted, so
+	// Title/Context/Description hold the "[encrypted]" placeholder rather than the
+	// item's real content (set by the nostr projection, pkg/sync/nostrproject.go).
+	//
+	// It exists because the write path rebuilds the WHOLE latest-wins card from a
+	// projected Item (CardSpecFromItem): without this flag a mutation on an item the
+	// reader cannot read re-seals the PLACEHOLDER as the item's content and destroys
+	// the original irreversibly. That is not hypothetical — it destroyed four items on
+	// the ready board before it was caught (ready-76b). Every card-publishing path
+	// MUST refuse to republish a Redacted item; see cmd/rd RefuseRedactedRepublish.
+	//
+	// It is deliberately NOT serialized: it describes THIS reader's decrypt outcome,
+	// not a property of the item, and must be re-derived every projection rather than
+	// carried across a boundary as a frozen fact.
+	Redacted bool `json:"-"`
 }
 
 // HistoryEntry is a single audit trail entry for a work item.

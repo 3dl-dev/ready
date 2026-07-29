@@ -610,6 +610,11 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 				item.Labels = pl.Labels
 			}
 		} else {
+			// FAIL-CLOSED, AND MARKED. Redacted is what stops the write path from
+			// re-sealing this placeholder as the item's real content on the next
+			// mutation (ready-76b) — the read substitution alone is safe, the
+			// read-then-republish round-trip is what destroys data.
+			item.Redacted = true
 			item.Title = placeholderText
 			item.Context = placeholderText
 			item.Description = placeholderText

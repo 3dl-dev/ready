@@ -662,16 +662,33 @@ func funcSpans(path string) (map[string]funcSpan, error) {
 // unused-entry check at the end of that test) if a listed exception stops
 // being hit, so this list cannot silently accumulate stale entries.
 var citationExceptions = map[string]string{
+	"refuseRedactedRepublish|cmd/rd/confidential_guard.go|28@decl26": "§16.9: cites the " +
+		"guard's own doc comment block; refuseRedactedRepublish is declared at :26",
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|156@decl155": "§16.9: the " +
+		"refuseRedactedRepublish CALL site, the first statement of the body (:156); " +
+		"publishItemFullCreateNostr is declared at :155",
+	"publishItemStatusChangeNostr|cmd/rd/nostr.go|356@decl353": "§16.9: the " +
+		"refuseRedactedRepublish CALL site inside the body (:356); " +
+		"publishItemStatusChangeNostr is declared at :353",
+	"publishItemCardEditNostr|cmd/rd/nostr.go|405@decl392": "§16.9: the " +
+		"refuseRedactedRepublish CALL site inside the body (:405); " +
+		"publishItemCardEditNostr is declared at :392",
+	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
+		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
+		"the relay's addressable replacement contradicts; the func is declared at :178",
+	"deriveGrants|pkg/sync/rolegrant.go|485@decl447": "§16.10: cites the ascending " +
+		"latest-per-grantee replay inside deriveGrants (:485-495), the evidence that " +
+		"authz never reads the d tag; deriveGrants itself is declared at :447",
 	"newerThan|pkg/sync/nostrproject.go|256@decl552": "§4.5: newerThan is USED for board " +
 		"latest-wins ordering at nostrproject.go:256-258; it's declared at :552",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
-	"parseTimestampValue|pkg/state/state.go|324@decl339": "§14.6: cites the enumeration " +
+	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
 		"`parseTimestamp` / `parseTimestampValue` (:324-354) spanning BOTH funcs' " +
 		"declarations; parseTimestampValue itself is declared at :339",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|547@decl155": "§20.6: CALL site inside " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|550@decl155": "§20.6: CALL site inside " +
 		"runCreateNostr; publishItemFullCreateNostr is declared at :155",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|622@decl155": "§21.x: second CALL site, " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|625@decl155": "§21.x: second CALL site, " +
 		"inside runEngageNostr; publishItemFullCreateNostr is declared at :155",
 	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435@decl452": "§9.9: CALL site inside " +
 		"ProjectItems; applyDepAndGateStatus is declared at :452",
@@ -692,11 +709,11 @@ var citationExceptions = map[string]string{
 		"closer to the citation (`pkg/views/views.go:185-196`) than `FocusFilter` " +
 		"itself; the citation is FocusFilter's own declaration+body, FocusFilter is " +
 		"declared at :185, ReadyFilter at :60",
-	"clearOrSet|pkg/state/state.go|1014@decl1018": "§14.6: cites the enumeration " +
+	"clearOrSet|pkg/state/state.go|1030@decl1034": "§14.6: cites the enumeration " +
 		"`clearOrSet` / `ClearSentinel` (:1014-1023) spanning both the ClearSentinel " +
 		"const's declaration (:1014) and clearOrSet's own body; clearOrSet itself is " +
 		"declared at :1018",
-	"ParseCrossCampfireRef|pkg/state/state.go|1061@decl1063": "§14.8: cites the enumeration " +
+	"ParseCrossCampfireRef|pkg/state/state.go|1077@decl1079": "§14.8: cites the enumeration " +
 		"`ParseCrossCampfireRef` / `CrossCampfireRef` (:1061-1083) spanning both the " +
 		"CrossCampfireRef type's declaration and ParseCrossCampfireRef's own body; " +
 		"ParseCrossCampfireRef itself is declared at :1063",
@@ -780,7 +797,7 @@ var citationExceptions = map[string]string{
 	"encWellFormed|pkg/sync/envelope.go|74@decl73": "§25.2: the `enc != \"1\"` " +
 		"check one line into encWellFormed's body (:74); encWellFormed's own " +
 		"declaration+body is cited exactly at :73 (§11.2, `:73-85`)",
-	"handleWorkCreate|pkg/state/state.go|565@decl556": "§15.x: a detail range " +
+	"handleWorkCreate|pkg/state/state.go|581@decl572": "§15.x: a detail range " +
 		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
 		"declaration is cited exactly at :556",
 	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
@@ -790,37 +807,37 @@ var citationExceptions = map[string]string{
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
 		"(`:593-610`)",
-	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|615@decl602": "§27.x: the " +
+	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|618@decl605": "§27.x: the " +
 		"project-prefix assignment (:615) inside publishEngagedItemsNostr's body; " +
 		"its declaration is cited exactly at :602 (§26.3)",
 	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
 		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
 		"publishEvents itself is declared at :581",
-	"publishItemCardEditNostr|cmd/rd/nostr.go|406@decl389": "§18.10: the " +
+	"publishItemCardEditNostr|cmd/rd/nostr.go|412@decl392": "§18.10: the " +
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:406); " +
 		"its declaration+body is cited exactly at :389 (`:389-419`)",
-	"runApproveNostr|cmd/rd/nostrwrite.go|304@decl299": "§22.2 recap: a detail " +
+	"runApproveNostr|cmd/rd/nostrwrite.go|307@decl302": "§22.2 recap: a detail " +
 		"range (:304-309) inside runApproveNostr's body; its declaration+body is " +
 		"cited exactly at :299 (`:299-321`, and by §26.2's bare `:299`)",
-	"runCloseNostr|cmd/rd/nostrwrite.go|247@decl234": "§20.5 recap: the implicit " +
+	"runCloseNostr|cmd/rd/nostrwrite.go|250@decl237": "§20.5 recap: the implicit " +
 		"unblock call site (:247) inside runCloseNostr's body; its declaration is " +
 		"cited exactly by §26.2's bare `:234`",
-	"runCreateNostr|cmd/rd/nostrwrite.go|537@decl504": "§27.x: the `item.Project` " +
+	"runCreateNostr|cmd/rd/nostrwrite.go|540@decl507": "§27.x: the `item.Project` " +
 		"assignment (:537) inside runCreateNostr's body; its declaration+body is " +
 		"cited exactly at :504 (§18.8, `:504-551`)",
-	"runDepAddNostr|cmd/rd/nostrwrite.go|351@decl350": "§21.1/§21.3 recap: the " +
+	"runDepAddNostr|cmd/rd/nostrwrite.go|354@decl353": "§21.1/§21.3 recap: the " +
 		"cross-board/read-trust guard (:351-353) one line into runDepAddNostr's " +
 		"body; its declaration is cited exactly by §26.2's bare `:350`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|439@decl430": "§20.4/§24.7 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|442@decl433": "§20.4/§24.7 recap: the " +
 		"status-only-update detail range (:439-441); runUpdateNostr's declaration " +
 		"is cited exactly by §26.2's bare `:430`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|443@decl430": "§24.1 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|446@decl433": "§24.1 recap: the " +
 		"field-rewrite block (:443-465); runUpdateNostr's declaration is cited " +
 		"exactly by §26.2's bare `:430`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|462@decl430": "§16.x/§24.1 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|465@decl433": "§16.x/§24.1 recap: the " +
 		"card-edit-publish detail line (:462); runUpdateNostr's declaration is " +
 		"cited exactly by §26.2's bare `:430`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|467@decl430": "§20.4/§24.7 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|470@decl433": "§20.4/§24.7 recap: the " +
 		"`Status=<statusTo>` assignment block (:467-478); runUpdateNostr's " +
 		"declaration is cited exactly by §26.2's bare `:430`",
 }
