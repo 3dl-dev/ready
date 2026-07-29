@@ -1,0 +1,303 @@
+{
+  "version": 1,
+  "spec": "docs/design/board-fold-spec.md",
+  "note": "ready-bc5: the WRITE-side counterpart to testdata/fold.vectors.json. Each vector is an intent (an rd command + a pre-existing item/board projection state) replayed through rd's REAL writer (cmd/rd's run*Nostr command bodies, which call pkg/sync's BuildCardEvent/BuildStatusEvent -- never a reimplementation), asserting the EXACT signed event(s) it appends to the local authoritative log. The harness lives in cmd/rd/writevectors_test.go because that is where the un-exported run*Nostr functions live -- the same reason fold.vectors.json's harness lives next to the real fold in internal/foldvectors.",
+  "compared": "Compared: event kind, the FULL tag array (every tag, in the exact order the writer emits it -- order is normative per board-fold-spec.md SS19.5), and event Content (an exact literal string, or must-be-empty). NOT compared: event id and signature (both re-derived on every replay from a per-run signing key) and created_at (wall-clock-dependent). A tag value that depends on the run's signing key is the placeholder token \"{{owner}}\" (substituted with that run's actual owner pubkey hex before comparison); a tag value that is another event's id within the SAME replay (a status event's card-anchor \"e\" tag, or its NIP-34 issue-root \"e\" tag) is the placeholder \"{{card:<item-id>}}\" / \"{{issue:<item-id>}}\" (substituted with the actual id the harness observed for that item in this replay). Every vector runs on a PUBLIC (plaintext, non-confidential) board -- see known_gaps for why.",
+  "known_gaps": [
+    "CONFIDENTIAL BOARDS ARE NOT COVERED. setupNostrNativeProject (the existing cmd/rd nostr test harness) and this suite's own harness both force Public:true so title/label/context tags project in the clear and are assertable as exact tag arrays. A real `rd init` defaults to a CONFIDENTIAL board (ready-216): free text is AEAD-sealed, content is nondeterministic ciphertext (fresh nonce per seal), and labels are HMAC-tokenized under a board LTK. None of that is byte-comparable the way plaintext tags are, so the DEFAULT write path a fresh `rd init --local` actually takes is structurally uncovered by this vector file -- exactly as the item that requested this suite (ready-bc5) warned. Confidential card/status shape IS already covered, but only informally, by cmd/rd's confidential_*_test.go suite (real writer, real seal, asserts sealed-blob decryptability and marker tags rather than literal ciphertext) -- it is not vector-pinned DATA an independent client can replay byte-for-byte the way this file's plaintext vectors are.",
+    "WRITE-SIDE BOARD-GRANT ENFORCEMENT DOES NOT EXIST (board-fold-spec.md SS25.4). The spec (ready-1bf, resolved and merged) already records that rd's writer performs NO self-authorization check before publishing a card: an author with no grant on a board coordinate signs and publishes successfully, and the event simply never folds for anyone else (enforcement is entirely read-side, pkg/sync/nostrproject.go:271-273/:235-248). A vector asserting the write REFUSES for lack of a grant would be false; this suite therefore does not assert one, per this item's own constraint against inventing writer behaviour to make a vector pass.",
+    "LABEL REGISTRY ENFORCEMENT DOES NOT EXIST AT WRITE TIME (board-fold-spec.md SS27.5, SS23.2). ready-1bf's own done condition forbids a conformance vector from asserting label rejection until that open question is ruled. See unregistered_label_atom_written_verbatim below, which pins the CURRENT (unenforced) behaviour instead."
+  ],
+  "vectors": [
+    {
+      "name": "card_create_full",
+      "spec_clauses": ["18.1", "18.2", "18.3", "18.8", "19.3", "19.6", "16.6"],
+      "note": "runCreateNostr's full create publishes FOUR events: the owner's 30301 board (re-published every create when signer==boardAuthor, SS16.6), the 30302 card materializing the whole item, the NIP-34 kind:1621 issue-root (SS19.6, minted once per item), and a kind:1630 status(inbox) event anchored to both the card and the issue root (SS19.4). No `by` tag anywhere (SS19.7/SS25.5).",
+      "op": "create",
+      "args": {"id": "wv-cr01", "title": "Write vector create", "type": "task", "priority": "p2"},
+      "events": [
+        {"kind": 30301, "tags": [["d", "project"], ["title", "project"], ["p", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-cr01"], ["title", "Write vector create"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1621, "tags": [["d", "wv-cr01"], ["subject", "Write vector create"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-cr01"], ["d", "wv-cr01"], ["status", "inbox"], ["e", "{{card:wv-cr01}}"], ["e", "{{issue:wv-cr01}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-cr01", "title": "Write vector create", "status": "inbox", "priority": "p2"}
+    },
+    {
+      "name": "status_move_active_claim",
+      "spec_clauses": ["20.1", "19.3", "19.9", "18.3"],
+      "note": "runClaimNostr sets Status=active and By=signer, then publishes a refreshed card PLUS a kind-1630 status event carrying --reason as Content. Wire result: card gains s=active and a p=signer tag; status event's status tag is active.",
+      "op": "claim",
+      "seed": {"id": "wv-cl01", "title": "Claimable", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"reason": "picking this up"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-cl01"], ["title", "Claimable"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["p", "{{owner}}"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-cl01"], ["d", "wv-cl01"], ["status", "active"], ["e", "{{card:wv-cl01}}"], ["e", "{{issue:wv-cl01}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "picking this up"}}
+      ],
+      "post_fold": {"id": "wv-cl01", "status": "active", "by": "{{owner}}"}
+    },
+    {
+      "name": "status_move_blocked_is_never_authored_by_dep_add",
+      "spec_clauses": ["21.1", "21.2", "21.5", "25.6", "8.4", "7.6"],
+      "note": "rd dep add is a CARD-ONLY edit (no status event, SS21.5): the card it publishes carries the item's PRE-dep status verbatim (s=inbox here) -- 'blocked' is never an authored write target, it is derived by applyDepAndGateStatus on the NEXT fold from a live non-terminal blocker (SS8.4/SS7.6). post_fold proves the round-trip: folding this exact event back through pkg/sync.ProjectItems DOES yield status=blocked, even though no write path ever emitted that string -- this is 'status move to blocked' done the only way the write side can do it.",
+      "op": "dep_add",
+      "seed": {"id": "wv-dep-blocked", "title": "Blocked target", "type": "task", "priority": "p1", "status": "inbox"},
+      "extra_seeds": [
+        {"id": "wv-dep-blocker", "title": "Blocker", "type": "task", "priority": "p1", "status": "inbox"}
+      ],
+      "args": {"blocker_id": "wv-dep-blocker"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-dep-blocked"], ["title", "Blocked target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-dep-blocker"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-dep-blocked", "status": "blocked", "blocked_by": ["wv-dep-blocker"]}
+    },
+    {
+      "name": "known_gap_dep_remove_persists_derived_blocked_status",
+      "spec_clauses": ["21.1", "21.5", "27.7", "25.6"],
+      "note": "rd dep remove strips the blocker id and republishes the same single card -- no status event, matching dep add's SS21.5 shape. ANOTHER INSTANCE of the SS27.7 known gap (see known_gap_card_edit_persists_derived_blocked_status for the full citation): at the moment dep_remove resolves the item, it is STILL derived-blocked (the removal has not published yet), so the card this very op emits carries s=blocked verbatim -- a stale snapshot of the status the write is in the middle of retiring. post_fold proves it is harmless HERE: the item's authoritative status-event chain never carried 'blocked' (SS6.10 overrides the stale card tag), so the fold correctly lands back on the pre-block status once the edge is gone.",
+      "op": "dep_remove",
+      "seed": {"id": "wv-dep-rm-target", "title": "Was blocked", "type": "task", "priority": "p2", "status": "inbox", "blocked_by": ["wv-dep-rm-blocker"]},
+      "extra_seeds": [
+        {"id": "wv-dep-rm-blocker", "title": "Blocker", "type": "task", "priority": "p1", "status": "inbox"}
+      ],
+      "args": {"blocker_id": "wv-dep-rm-blocker"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-dep-rm-target"], ["title", "Was blocked"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-dep-rm-target", "status": "inbox", "blocked_by": []}
+    },
+    {
+      "name": "close_done",
+      "spec_clauses": ["20.3", "19.1", "19.3"],
+      "note": "runCloseNostr maps a bare/'done' resolution to StatusDone (closeResolutionToStatus), publishing a refreshed card (s=done) plus a kind-1631 (NIP-34 resolved) status event carrying the close reason.",
+      "op": "close",
+      "seed": {"id": "wv-close-done", "title": "Finish me", "type": "task", "priority": "p2", "status": "active"},
+      "args": {"resolution": "done", "reason": "finished", "human_verb": "closed"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-close-done"], ["title", "Finish me"], ["a", "30301:{{owner}}:project"], ["s", "done"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1631, "tags": [["a", "30302:{{owner}}:wv-close-done"], ["d", "wv-close-done"], ["status", "done"], ["e", "{{card:wv-close-done}}"], ["e", "{{issue:wv-close-done}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "finished"}}
+      ],
+      "post_fold": {"id": "wv-close-done", "status": "done"}
+    },
+    {
+      "name": "close_cancelled",
+      "spec_clauses": ["20.3", "19.1", "19.3"],
+      "note": "runCloseNostr maps resolution 'cancelled' to StatusCancelled and kind-1632 (NIP-34 closed) -- distinct from 'done's kind-1631, both from the SAME closeResolutionToStatus/statusKindFor pair.",
+      "op": "close",
+      "seed": {"id": "wv-close-cxl", "title": "Cancel me", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"resolution": "cancelled", "reason": "not needed", "human_verb": "cancelled"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-close-cxl"], ["title", "Cancel me"], ["a", "30301:{{owner}}:project"], ["s", "cancelled"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1632, "tags": [["a", "30302:{{owner}}:wv-close-cxl"], ["d", "wv-close-cxl"], ["status", "cancelled"], ["e", "{{card:wv-close-cxl}}"], ["e", "{{issue:wv-close-cxl}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not needed"}}
+      ],
+      "post_fold": {"id": "wv-close-cxl", "status": "cancelled"}
+    },
+    {
+      "name": "delegate_reassign",
+      "spec_clauses": ["20.2", "19.3"],
+      "note": "runDelegateNostr changes ONLY By (a new p tag) and re-affirms the item's UNCHANGED status in a fresh kind-1630 status event, so the reassignment survives in history (closing the delegate publisher gap, ready-500).",
+      "op": "delegate",
+      "seed": {"id": "wv-delegate", "title": "Reassign me", "type": "task", "priority": "p1", "status": "active"},
+      "args": {"to": "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300", "reason": "reassigning"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-delegate"], ["title", "Reassign me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["p", "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-delegate"], ["d", "wv-delegate"], ["status", "active"], ["e", "{{card:wv-delegate}}"], ["e", "{{issue:wv-delegate}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "reassigning"}}
+      ],
+      "post_fold": {"id": "wv-delegate", "status": "active", "by": "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300"}
+    },
+    {
+      "name": "gate_open",
+      "spec_clauses": ["22.1", "9.1", "19.3"],
+      "note": "runGateNostr sets Status=waiting, Gate=<type>, WaitingType=gate, WaitingOn=<description> and publishes with description as the status reason.",
+      "op": "gate_open",
+      "seed": {"id": "wv-gate-open", "title": "Needs a ruling", "type": "task", "priority": "p1", "status": "active"},
+      "args": {"gate_type": "design", "description": "need a design ruling"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-gate-open"], ["title", "Needs a ruling"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a design ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-open"], ["d", "wv-gate-open"], ["status", "waiting"], ["e", "{{card:wv-gate-open}}"], ["e", "{{issue:wv-gate-open}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "need a design ruling"}}
+      ],
+      "post_fold": {"id": "wv-gate-open", "status": "waiting", "gate": "design", "waiting_type": "gate"}
+    },
+    {
+      "name": "gate_approve",
+      "spec_clauses": ["22.2", "22.5", "9.4"],
+      "note": "runApproveNostr sets Status=active and CLEARS Gate/WaitingType/WaitingOn (WaitingSince/GateMsgID are cleared only in-memory, SS22.5 -- neither was ever a card field) -- the republished card carries none of the three gate tags at all.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-gate-approve", "title": "Approve me", "type": "task", "priority": "p1", "status": "waiting", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "looks good"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-gate-approve"], ["title", "Approve me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-approve"], ["d", "wv-gate-approve"], ["status", "active"], ["e", "{{card:wv-gate-approve}}"], ["e", "{{issue:wv-gate-approve}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "looks good"}}
+      ],
+      "post_fold": {"id": "wv-gate-approve", "status": "active"}
+    },
+    {
+      "name": "gate_reject_keeps_gate_open",
+      "spec_clauses": ["22.3", "22.4", "9.1"],
+      "note": "runRejectNostr changes NO field: it republishes the card UNCHANGED and emits a kind-1630 status event re-affirming the item's CURRENT status, with the rejection reason as Content. Approve and reject are indistinguishable on the wire except by the status transition and the reason (SS22.4) -- there is no resolution tag.",
+      "op": "gate_reject",
+      "seed": {"id": "wv-gate-reject", "title": "Reject me", "type": "task", "priority": "p1", "status": "waiting", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "not yet"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-gate-reject"], ["title", "Reject me"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-reject"], ["d", "wv-gate-reject"], ["status", "waiting"], ["e", "{{card:wv-gate-reject}}"], ["e", "{{issue:wv-gate-reject}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not yet"}}
+      ],
+      "post_fold": {"id": "wv-gate-reject", "status": "waiting", "gate": "design"}
+    },
+    {
+      "name": "gate_reject_on_blocked_and_gated_item_never_authors_blocked",
+      "spec_clauses": ["22.3", "25.6", "8.4"],
+      "note": "READY-E0E, THE MOTIVATING DEFECT: runRejectNostr forces Status=waiting REGARDLESS of what nostrResolveItem returned, precisely so a reject on an item that is BOTH gated AND currently blocked (a live non-terminal blocker) cannot burn the fold-derived 'blocked' into the status-authority winner. This item's projection (via nostrResolveItem, called right before reject publishes) already reads Status=blocked -- the edge derivation always runs before the gate check -- yet the WRITTEN event carries s=waiting on both the card and the status event. post_fold proves the fold still independently re-derives blocked=true from the live BlockedBy edge: the write never authored it, the fold recomputed it, exactly the SS25.6 invariant. THIS is the vector the anti-tautology mutation (ready-bc5 done condition 3) targets: commenting out nostrwrite.go's `item.Status = state.StatusWaiting` in runRejectNostr turns this vector red (the card and status event would instead carry s=blocked) -- see the ready-bc5 progress notes for the recorded run.",
+      "op": "gate_reject",
+      "seed": {"id": "wv-reject-both", "title": "Reject both", "type": "task", "priority": "p1", "status": "waiting", "blocked_by": ["wv-reject-blocker"], "gate": "design", "waiting_type": "gate", "waiting_on": "need ruling"},
+      "extra_seeds": [
+        {"id": "wv-reject-blocker", "title": "Blocker", "type": "task", "priority": "p1", "status": "inbox"}
+      ],
+      "args": {"reason": "not yet, still blocked"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-reject-both"], ["title", "Reject both"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-reject-blocker"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-reject-both"], ["d", "wv-reject-both"], ["status", "waiting"], ["e", "{{card:wv-reject-both}}"], ["e", "{{issue:wv-reject-both}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not yet, still blocked"}}
+      ],
+      "post_fold": {"id": "wv-reject-both", "status": "blocked", "blocked_by": ["wv-reject-blocker"]}
+    },
+    {
+      "name": "label_add",
+      "spec_clauses": ["23.1", "23.3", "18.9"],
+      "note": "runLabelAddNostr appends the atom and republishes a card-only edit (SS23.1) -- plaintext board, so BuildCardEvent's mode-1 label emission applies: [\"l\", \"<atom>\"] verbatim (SS23.3).",
+      "op": "label_add",
+      "seed": {"id": "wv-label-add", "title": "Label target", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"label": "bug"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-label-add"], ["title", "Label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-label-add", "labels": ["bug"]}
+    },
+    {
+      "name": "label_remove",
+      "spec_clauses": ["23.1"],
+      "note": "runLabelRemoveNostr removes every occurrence of the atom and republishes a card-only edit; no error on removing an absent label (idempotent).",
+      "op": "label_remove",
+      "seed": {"id": "wv-label-rm", "title": "Label leaving", "type": "task", "priority": "p2", "status": "inbox", "labels": ["urgent"]},
+      "args": {"label": "urgent"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-label-rm"], ["title", "Label leaving"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-label-rm", "labels": []}
+    },
+    {
+      "name": "unregistered_label_atom_written_verbatim",
+      "spec_clauses": ["27.5", "23.2"],
+      "note": "KNOWN GAP, NOT A REJECTION (board-fold-spec.md SS27.5, ready-1bf's own done condition: 'until ruled, a conformance vector MUST NOT assert that any label is rejected'). runLabelAddNostr validates nothing -- no atom pattern, no registry membership -- so an atom that is not in any project's label registry is written to the wire exactly like a registered one. This vector pins that CURRENT permissive behaviour; it does not bless it.",
+      "op": "label_add",
+      "seed": {"id": "wv-label-unreg", "title": "Unregistered label target", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"label": "totally-not-a-registered-atom"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-label-unreg"], ["title", "Unregistered label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "totally-not-a-registered-atom"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-label-unreg", "labels": ["totally-not-a-registered-atom"]}
+    },
+    {
+      "name": "title_edit",
+      "spec_clauses": ["24.1", "24.2"],
+      "note": "runUpdateNostr's field block assigns Title and publishes ONE card edit -- no title event exists.",
+      "op": "update_fields",
+      "seed": {"id": "wv-title-edit", "title": "Old title", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"title": "New title"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-title-edit"], ["title", "New title"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-title-edit", "title": "New title"}
+    },
+    {
+      "name": "priority_edit_emits_both_rank_and_priority_tags",
+      "spec_clauses": ["24.1", "24.3"],
+      "note": "Priority produces BOTH a rank tag (NIP-100 ordering interop) and an rd-extension priority tag, same value, in that order (SS24.3) -- an independent client that writes only one breaks interop with a rank-only NIP-100 client or with rd's own fold (which prefers priority, falls back to rank).",
+      "op": "update_fields",
+      "seed": {"id": "wv-prio-edit", "title": "Reprioritise me", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"priority": "p0"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-prio-edit"], ["title", "Reprioritise me"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p0"], ["priority", "p0"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-prio-edit", "priority": "p0"}
+    },
+    {
+      "name": "context_edit_content_shape",
+      "spec_clauses": ["24.1", "18.4"],
+      "note": "A pure context edit is still a card-only edit (SS24.1); on a plaintext board the new context lands verbatim in event.Content (SS18.4).",
+      "op": "update_fields",
+      "seed": {"id": "wv-ctx-edit", "title": "Context target", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"context": "some context text"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-ctx-edit"], ["title", "Context target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "literal", "value": "some context text"}}
+      ],
+      "post_fold": {"id": "wv-ctx-edit", "context": "some context text"}
+    },
+    {
+      "name": "explicit_status_set_waiting_via_update",
+      "spec_clauses": ["20.4"],
+      "note": "runUpdateNostr's status block assigns Status/WaitingOn/WaitingType and publishes with --note as the reason -- a card-carrying-gate-tags-plus-status-event shape, same family as gate_open but reachable through `rd update --status waiting --waiting-on <x>` instead of `rd gate`.",
+      "op": "update_status",
+      "seed": {"id": "wv-update-status", "title": "Vendor wait", "type": "task", "priority": "p2", "status": "active"},
+      "args": {"status_to": "waiting", "waiting_on": "vendor", "waiting_type": "vendor", "note": "waiting on vendor"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-update-status"], ["title", "Vendor wait"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["waiting_type", "vendor"], ["waiting_on", "vendor"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-update-status"], ["d", "wv-update-status"], ["status", "waiting"], ["e", "{{card:wv-update-status}}"], ["e", "{{issue:wv-update-status}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "waiting on vendor"}}
+      ],
+      "post_fold": {"id": "wv-update-status", "status": "waiting", "waiting_type": "vendor"}
+    },
+    {
+      "name": "known_gap_card_edit_persists_derived_blocked_status",
+      "spec_clauses": ["27.7", "25.6"],
+      "note": "KNOWN GAP, PINNED NOT BLESSED (board-fold-spec.md SS27.7, an UNRESOLVED open question -- ready-1bf's own DONE CONDITION 3 recorded rather than fixed this, and this item (ready-bc5) is FORBIDDEN from changing writer behaviour to close it). A card-only edit's CardSpec is built by CardSpecFromItem from whatever nostrResolveItem currently projects, and Status is copied verbatim -- with no special case for 'this value is fold-derived, not authored'. Once a live non-terminal blocker has made an item's projected Status=blocked, the NEXT card-only edit (label add, here) republishes the card with s=blocked, an AUTHORED-looking tag SS25.6 says no write path should ever emit. Per SS27.7 this is harmless to RD'S OWN projection while an authoritative status event still overrides it (SS6.10) and while the blocking derivation still holds -- post_fold proves exactly that half: rd's own fold still lands on the correct answer. What it is NOT harmless to is a generic NIP-100 client that reads the card's s tag directly, per SS27.7's own text. ready-bc5 files a new item citing this vector's discovery; see that item for the open question's disposition.",
+      "op": "label_add",
+      "seed": {"id": "wv-knowngap-target", "title": "Gap target", "type": "task", "priority": "p2", "status": "inbox", "blocked_by": ["wv-knowngap-blocker"]},
+      "extra_seeds": [
+        {"id": "wv-knowngap-blocker", "title": "Gap blocker", "type": "task", "priority": "p2", "status": "inbox"}
+      ],
+      "args": {"label": "bug"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-knowngap-target"], ["title", "Gap target"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["i", "wv-knowngap-blocker"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+      ],
+      "post_fold": {"id": "wv-knowngap-target", "status": "blocked", "labels": ["bug"], "blocked_by": ["wv-knowngap-blocker"]}
+    },
+    {
+      "name": "claim_refuses_a_terminal_item",
+      "spec_clauses": ["20.1"],
+      "note": "runClaimNostr refuses an item already at a terminal status: the call returns an error and appends NOTHING to the log.",
+      "op": "claim",
+      "seed": {"id": "wv-terminal-claim", "title": "Already done", "type": "task", "priority": "p2", "status": "done"},
+      "args": {"reason": "reclaim"},
+      "expect_error": true,
+      "error_contains": "already"
+    },
+    {
+      "name": "dep_add_refuses_an_unknown_blocker",
+      "spec_clauses": ["21.2"],
+      "note": "Both dep endpoints must already exist in the projection (SS21.2): a blocker id absent from the projection fails resolution at write time, before anything publishes.",
+      "op": "dep_add",
+      "seed": {"id": "wv-dep-unknown", "title": "Dep target", "type": "task", "priority": "p2", "status": "inbox"},
+      "args": {"blocker_id": "wv-does-not-exist"},
+      "expect_error": true,
+      "error_contains": "not found"
+    },
+    {
+      "name": "gate_approve_refuses_with_no_pending_gate",
+      "spec_clauses": ["22.2"],
+      "note": "runApproveNostr requires GateMsgID!=\"\" OR Gate!=\"\" OR WaitingType==\"gate\" (SS22.2): an item with no gate at all is refused.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-approve-nogate", "title": "No gate here", "type": "task", "priority": "p2", "status": "active"},
+      "args": {"reason": "ok"},
+      "expect_error": true,
+      "error_contains": "no pending gate"
+    },
+    {
+      "name": "label_add_refuses_an_unknown_item",
+      "spec_clauses": ["18.1"],
+      "note": "Every write reads-modify-writes from the projection (SS16.3): an item id the projection has never seen fails resolution before any publish.",
+      "op": "label_add",
+      "args": {"item_id": "wv-does-not-exist", "label": "x"},
+      "expect_error": true,
+      "error_contains": "not found"
+    }
+  ]
+}

@@ -95,14 +95,17 @@ read from the `status` tag, never from the kind (§6.5).
 `pkg/sync/nostrproject.go:261-264`.
 
 **§2.5 kind 39301 — rd role grant.** `KindRoleGrant = 39301`
-(`pkg/sync/rolegrant.go:50`). A grant carrying no key material is addressable per
-`(boardD, grantee)` slot via `d = "<boardD>:<grantee>"`; a CEK-BEARING grant takes
-a PER-EPOCH slot `d = "<boardD>:<grantee>:e<epoch>"` (`roleGrantD`,
-`pkg/sync/rolegrant.go:200`) so a rotation cannot replace — and thereby delete —
-the previous epoch's key on a relay (§16.10). Authz stays latest-wins per grantee
-across both slot shapes, because `deriveGrants` orders by `(created_at, id)` and
-never reads `d`. It produces no item; it feeds read-trust, status authority and
-confidential key material (§11, §12).
+(`pkg/sync/rolegrant.go:50`). A grant carrying no key material and no claim binding
+is addressable per `(boardD, grantee)` slot via `d = "<boardD>:<grantee>"`; a
+CEK-BEARING grant takes a PER-EPOCH slot `d = "<boardD>:<grantee>:e<epoch>"`; a
+CLAIM-BINDING grant takes its OWN slot `d = "<boardD>:<grantee>[:e<epoch>]:claim:<claim>"`
+(`roleGrantD`, `pkg/sync/rolegrant.go:223`) so a rotation, or an unrelated
+grant/revoke for the same grantee, cannot replace — and thereby delete — the
+previous epoch's key, or a single-use claim binding, on a relay (§12.10, §16.10).
+Authz stays latest-wins per grantee across all three slot shapes, because
+`deriveGrants` orders by `(created_at, id)` and never reads `d`. It produces no
+item; it feeds read-trust, status authority and confidential key material (§11,
+§12).
 
 **§2.6** No other kind participates. Any event whose kind is not 30301, 30302,
 1630–1633 or 39301 is dropped by the `itemIDForEvent == ""` guard
@@ -199,9 +202,9 @@ event set, which is what makes replay convergent across machines
 
 **§4.4 Grant ordering.** 39301 grants replay oldest-first under the same key:
 `newerGrant` is `newerThan` on `(created_at, id)`
-(`pkg/sync/rolegrant.go:643-648`), and the ascending sort is expressed as
-`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:525-527`). Last
-cap-valid grant applied per grantee wins (`:492-524`).
+(`pkg/sync/rolegrant.go:669-674`), and the ascending sort is expressed as
+`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:551-553`). Last
+cap-valid grant applied per grantee wins (`:518-550`).
 
 **§4.5 Board ordering.** Latest-wins per board coordinate under `newerThan`
 (`pkg/sync/nostrproject.go:256-258`). Only the WINNING board's `p` tags name
@@ -688,7 +691,7 @@ for exactly one revocation and then unwind.
 kind-39301 is addressable on `(boardD, grantee)` (§4.1), so the grant a rotation
 publishes REPLACES the member's existing one. `wrapEpochToMembers`
 (`cmd/rd/confidential.go:272-309`) therefore reads each member's winning role and
-label from the log (`DeriveGrantHolders`, `pkg/sync/rolegrant.go:464-478`) and
+label from the log (`DeriveGrantHolders`, `pkg/sync/rolegrant.go:490-504`) and
 re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
 hardcoded role would silently demote every maintainer on every rotation.
 
@@ -725,57 +728,89 @@ client MUST reproduce the *behaviour* (inert gate), not the Go-specific mechanis
 
 ## 12. Role grants (39301): read-trust, levels, until
 
-**§12.1 Parse.** `parseRoleGrant` (`pkg/sync/rolegrant.go:242-289`) requires kind
+**§12.1 Parse.** `parseRoleGrant` (`pkg/sync/rolegrant.go:268-315`) requires kind
 39301, a non-empty `p` (grantee), a `role` in
-`{owner, maintainer, contributor, revoked}` (`:251-255`), and a well-formed
-`a` = `30301:<owner>:<d>` (`:256-259`, `parseBoardCoord` at `:301-314`). A `from`
-tag must parse as a non-negative int or the whole grant is rejected (`:260-267`).
-An unparseable `cek_epoch` coerces to 0 (`:268-273`) — which §11.10 then rejects.
+`{owner, maintainer, contributor, revoked}` (`:277-281`), and a well-formed
+`a` = `30301:<owner>:<d>` (`:282-285`, `parseBoardCoord` at `:327-340`). A `from`
+tag must parse as a non-negative int or the whole grant is rejected (`:286-293`).
+An unparseable `cek_epoch` coerces to 0 (`:294-299`) — which §11.10 then rejects.
 
 **§12.2 Full-coordinate binding.** Only grants whose `a` names BOTH
 `owner == boardAuthor` AND `d == boardD` are replayed
-(`pkg/sync/rolegrant.go:479-481`). An empty `boardD` matches no grant
+(`pkg/sync/rolegrant.go:505-507`). An empty `boardD` matches no grant
 (fail-closed, never every board).
 
 **§12.3 Level mapping.** `owner`/`maintainer` → 2, `contributor` → 1, `revoked` →
-0, unknown → 1 (`roleToLevel`, `pkg/sync/rolegrant.go:345-357`). Keys ABSENT from
+0, unknown → 1 (`roleToLevel`, `pkg/sync/rolegrant.go:371-383`). Keys ABSENT from
 the map are level 1 by caller convention, NOT level 0
-(`pkg/sync/rolegrant.go:390-393`).
+(`pkg/sync/rolegrant.go:416-419`).
 
 **§12.4 Bootstrap.** The board author is seeded at level 2 with
-`until = authoritativeForever` (`pkg/sync/rolegrant.go:453-457`). This is what
+`until = authoritativeForever` (`pkg/sync/rolegrant.go:479-483`). This is what
 makes grant-derived trust non-circular: owner-signed grants are always admitted.
 
-**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:600-634`):
-only the board author may grant `maintainer`/`owner` (`:565-567`); the owner may
-grant `contributor`/`revoked` to anyone (`:569-571`); a non-owner signer must
-itself be level `>= 2` (`:572-574`), may never target the board author
-(**owner lockout**, `:575-578`), and may never target a current maintainer
-(**peer protection**, `:579-582`). Any other signer grants nothing (`:584-586`).
+**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:626-660`):
+only the board author may grant `maintainer`/`owner` (`:591-593`); the owner may
+grant `contributor`/`revoked` to anyone (`:595-597`); a non-owner signer must
+itself be level `>= 2` (`:598-600`), may never target the board author
+(**owner lockout**, `:601-604`), and may never target a current maintainer
+(**peer protection**, `:605-608`). Any other signer grants nothing (`:610-612`).
 A cap-violating grant is IGNORED, evaluated against state replayed so far
-(`:495-497`).
+(`:521-523`).
 
 **§12.6 Single-use claim binding.** A grant carrying a `claim` tag AND signed by
 the board author binds that nonce to exactly one grantee, first-cap-valid-wins;
 a later owner grant reusing the same claim for a DIFFERENT grantee is skipped
-(`pkg/sync/rolegrant.go:516-521`). A `claim` on a non-owner grant is inert — the
+(`pkg/sync/rolegrant.go:542-547`). A `claim` on a non-owner grant is inert — the
 grant still applies as an ordinary contributor grant.
 
 **§12.7 `until` derivation.** For each grantee's winning grant: if `role ==
 revoked`, `until = from` when `from > 0`, else the grant's `created_at`; otherwise
-`until = authoritativeForever` (`pkg/sync/rolegrant.go:527-537`). This is the
+`until = authoritativeForever` (`pkg/sync/rolegrant.go:553-563`). This is the
 value §3.5 gates on.
 
-**§12.8 Read-trust set.** `DeriveReadTrust` (`pkg/sync/rolegrant.go:432-439`) is
+**§12.8 Read-trust set.** `DeriveReadTrust` (`pkg/sync/rolegrant.go:458-465`) is
 the key set of the level map — board author plus every cap-valid grantee,
 **including revoked ones** (level 0), so their past events stay admissible. A key
 that never received an owner-rooted grant is absent (fail-closed).
 
 **§12.9 One replay, three consumers.** `deriveGrants`
-(`pkg/sync/rolegrant.go:485-599`) is the single replay behind `DeriveLevels`
-(`:394`), `DeriveReadTrust` (`:432`), `ClaimGrantee` (`:405`) and
+(`pkg/sync/rolegrant.go:511-625`) is the single replay behind `DeriveLevels`
+(`:420`), `DeriveReadTrust` (`:458`), `ClaimGrantee` (`:431`) and
 `DeriveAllowlist` (`pkg/sync/allowlist.go:44`) — so the graded read-trust set and
 the coarse relay allowlist cannot drift.
+
+**§12.10 Claim-binding gets its OWN addressable slot (ready-55f).** A
+claim-bearing grant is addressed at `d = "<boardD>:<grantee>[:e<epoch>]:claim:<claim>"`
+rather than the bare `(boardD, grantee)` slot (`roleGrantD`,
+`pkg/sync/rolegrant.go:223-232`). Without this, a claim-bearing grant and ANY
+later grant/revoke for the SAME grantee — `rd revoke` in particular, which always
+publishes `claim=""` — shared one addressable coordinate; a relay retains only the
+newest event per `(kind, pubkey, d)` (§16.10), so the later write deleted the
+relay's copy of the claim-bearing grant outright. `deriveGrants` itself never lost
+the binding when replaying one machine's own full append-only local log in a
+single call — §12.6's `claimedBy` is populated from every claim-bearing grant it
+processes, ascending, and a revoke carries no `claim` tag to clear it — the loss
+happened one layer up: a SECOND machine that only ever reconciles from a relay
+(`ReconcileBoard`, `pkg/sync/nostrinbound.go:73-88`) receives whatever that relay
+still retains per coordinate, and if the claim grant was overwritten there, that
+machine's local log never learns the claim was ever consumed — so the identical
+claim-nonce was then silently admitted for a DIFFERENT grantee (security sweep
+ready-348, HIGH, broken-access-control). Splitting the slot — the same technique
+already used for a CEK-bearing grant's per-epoch slot (§16.10, ready-889) — means
+the claim-bearing grant survives on the relay independent of any later role change
+for that grantee. Splitting is safe for the SAME reason the epoch split is safe:
+nothing reads `d` for meaning (§12.1's parse never inspects it; `deriveGrants`
+replays by `(created_at, id)` and reads single-use binding off the `claim` TAG
+directly), and causal ordering (`DriftScope`/`GrantDriftScope`,
+`pkg/sync/nostrwire.go:556-590,611-613`) is keyed on `(a, p)`, never on `d`, so a
+revoke still stamps strictly after the grant it supersedes regardless of which
+slot that grant occupied. An independent client that only ever READS grants (never
+builds/publishes a 39301 event) needs NO change at all: it fetches by kind + the
+`#a` board-coordinate tag, never `#d` (confirmed against `web/board/src/main.ts`
+and `web/board/src/lib/rolegrant.ts`, neither of which reads `d` for meaning
+either), so it already receives both the bare-slot and the claim-slot events from
+whatever a relay retains.
 
 ---
 
@@ -1216,11 +1251,13 @@ local append-only log, each epoch needs its own addressable slot — a relay kee
 only the newest event per `(kind, pubkey, d)`. So a grant carrying a wrapped CEK
 is addressed `d = "<boardD>:<grantee>:e<epoch>"`, while a grant with no key
 material — a plain role grant, and in particular a REVOKE — keeps the bare
-`"<boardD>:<grantee>"` slot (`roleGrantD`, `pkg/sync/rolegrant.go:200`).
+`"<boardD>:<grantee>"` slot (`roleGrantD`, `pkg/sync/rolegrant.go:223`). A
+claim-bearing grant gets the SAME treatment, its own `:claim:<claim>` slot, for
+the identical relay-retention reason — see §12.10 (ready-55f).
 
 Splitting the slot is safe because nothing reads this `d` for meaning: authz
 replay orders latest-per-GRANTEE by `(created_at, id)` and never inspects it
-(`deriveGrants`, `pkg/sync/rolegrant.go:485`), and `DeriveBoardKeyring`
+(`deriveGrants`, `pkg/sync/rolegrant.go:511`), and `DeriveBoardKeyring`
 (`pkg/sync/keydist.go:178`) selects on the `a` board coordinate plus the `p`
 grantee tag. The `d` is a relay retention key and nothing more — so a revoke still
 supersedes every earlier grant for that grantee regardless of which slot each one

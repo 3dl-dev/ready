@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
@@ -53,25 +54,39 @@ func resolveBoardAuthorD(dir, signerPubkey string) (boardAuthor, boardD string, 
 // DeriveLevels also ignores a cap-violating grant, but refusing to publish it keeps
 // the log clean), appends it to the local authoritative log, and best-effort
 // publishes it to the write relays.
-func publishRoleGrant(grantee, role, label string, from int64, claim string) error {
+//
+// Returns the rdSync.PublishResult from that publish attempt (ready-f7b) so the
+// caller — runNostrGrantRevoke, the shared body of `rd grant`/`rd revoke` AND
+// `rd board share` — can report the ACTUAL delivery outcome instead of a blanket
+// "granted" that would be true only some of the time. relayPublish's "never fails"
+// contract is unchanged: Buffered (reached no relay for a transient reason) is
+// NOT an error here either — the event is already durable in the local
+// authoritative log and nostr-pending.jsonl will flush it automatically, exactly
+// the deliberate offline-durability design. Rejected is different in kind: a
+// relay has permanently refused the event (malformed/disallowed), it is
+// dead-lettered to nostr-rejected.jsonl, and NOTHING will ever retry it — so
+// THIS function fails loudly on Rejected (matching runGateNostr's re-resolve-
+// and-verify shape from ready-e0e) instead of letting a grant that reached
+// nowhere print as a plain success.
+func publishRoleGrant(grantee, role, label string, from int64, claim string) (rdSync.PublishResult, error) {
 	if len(grantee) != 64 || !isHex(grantee) {
-		return fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
+		return rdSync.PublishResult{}, fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
 	if !nostrWriteActive() {
-		return fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
+		return rdSync.PublishResult{}, fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
 	}
 	pub, ok, err := nostrPublisher()
 	if err != nil {
-		return err
+		return rdSync.PublishResult{}, err
 	}
 	if !ok {
-		return fmt.Errorf("no .ready project directory found")
+		return rdSync.PublishResult{}, fmt.Errorf("no .ready project directory found")
 	}
 	dir, _ := readyProjectDir()
 	signer := pub.Key.PubKeyHex()
 	boardAuthor, boardD, err := resolveBoardAuthorD(dir, signer)
 	if err != nil {
-		return err
+		return rdSync.PublishResult{}, err
 	}
 	// Escalation cap (design §3), enforced client-side as a FAIL-FAST mirror of the
 	// read-side rule (MED-6): rd.MayGrant derives the operator levels from the local
@@ -83,12 +98,38 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	// the operator a clear error instead of a silently-dropped grant.
 	events, err := pub.Log.ReadAll()
 	if err != nil {
-		return fmt.Errorf("reading local log for escalation-cap check: %w", err)
+		return rdSync.PublishResult{}, fmt.Errorf("reading local log for escalation-cap check: %w", err)
 	}
 	if !rdSync.MayGrant(events, boardAuthor, boardD, signer, grantee, role) {
-		return fmt.Errorf("escalation cap: signer %s may not grant role %q to %s on board %s "+
+		return rdSync.PublishResult{}, fmt.Errorf("escalation cap: signer %s may not grant role %q to %s on board %s "+
 			"(only the owner may mint maintainer/owner or revoke the owner/a maintainer; "+
 			"a contributor may grant nothing)", signer, role, grantee, rdSync.BoardCoord(boardAuthor, boardD))
+	}
+	// MINT + EXPIRY VERIFICATION (ready-c40, security sweep ready-348): a --claim
+	// grant is honored ONLY for a nonce THIS OWNER actually minted via
+	// `rd invite`/`rd board share` (recorded in unclaimed-invites,
+	// cmd/rd/nostr_invite.go), and only while that nonce's TTL has not elapsed.
+	// Before this check, `rd grant --claim <nonce>` accepted an ARBITRARY caller-
+	// supplied nonce string — no verification it was ever issued, and no expiry
+	// check at all (the TTL was previously enforced ONLY on the join side:
+	// decodeNostrClaimToken / redeemNostrClaimToken). Since `rd grant --claim` is
+	// the step that actually confers write authority, an owner socially
+	// engineered into running it with an attacker-chosen or stale nonce would
+	// grant write access nobody ever issued a live invite for.
+	if claim != "" {
+		mint, found, merr := findLocalClaim(unclaimedInvitesPath(RDHome()), claim)
+		if merr != nil {
+			return rdSync.PublishResult{}, fmt.Errorf("reading local invite records for claim-nonce %s: %w", claim, merr)
+		}
+		if !found {
+			return rdSync.PublishResult{}, fmt.Errorf("invite claim-nonce %s has no matching mint record on this machine — "+
+				"only a nonce minted by this owner's own `rd invite` (or `rd board share` with no argument) may be bound "+
+				"via --claim; a nonce that was never minted here is never a valid claim", claim)
+		}
+		if mint.ExpiresAt > 0 && time.Now().Unix() > mint.ExpiresAt {
+			return rdSync.PublishResult{}, fmt.Errorf("invite claim-nonce %s expired at %s — mint a fresh `rd invite` token and use its nonce instead",
+				claim, time.Unix(mint.ExpiresAt, 0).UTC().Format(time.RFC3339))
+		}
 	}
 	// SINGLE-USE CLAIM (ready-ce0): when --claim binds this grant to an invite
 	// claim-nonce, refuse client-side (fail fast, clean log) if that nonce is already
@@ -97,7 +138,7 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	// grant reusing a leaked claim for another key never takes effect regardless.
 	if claim != "" {
 		if bound, ok := rdSync.ClaimGrantee(events, boardAuthor, boardD, claim); ok && bound != grantee {
-			return fmt.Errorf("invite claim-nonce %s is already consumed by pubkey %s — one claim-nonce admits exactly one key; "+
+			return rdSync.PublishResult{}, fmt.Errorf("invite claim-nonce %s is already consumed by pubkey %s — one claim-nonce admits exactly one key; "+
 				"the second joiner needs a fresh `rd invite` token", claim, bound)
 		}
 	}
@@ -126,18 +167,18 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	// board, for a revoke, or for a non-owner signer (only owner-signed CEK counts).
 	wCEK, cekEpoch, wLTK, kerr := confidentialGrantKeys(dir, pub, boardAuthor, boardD, grantee, role)
 	if kerr != nil {
-		return fmt.Errorf("wrapping board CEK for grant: %w", kerr)
+		return rdSync.PublishResult{}, fmt.Errorf("wrapping board CEK for grant: %w", kerr)
 	}
 	spec.WrappedCEK = wCEK
 	spec.CEKEpoch = cekEpoch
 	spec.WrappedLTK = wLTK
 	ev, err := rdSync.BuildRoleGrantEvent(pub.Key, spec, nostrNextCreatedAt(pub.Log, rdSync.GrantDriftScope(boardD, grantee)))
 	if err != nil {
-		return err
+		return rdSync.PublishResult{}, err
 	}
 	res, err := pub.PublishEvents(context.Background(), []*nostr.Event{ev})
 	if err != nil {
-		return err
+		return res, err
 	}
 	anyRelay := false
 	for _, a := range res.Events {
@@ -148,12 +189,20 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) err
 	fmt.Printf("published role-grant: grantee=%s role=%s board=%s\n", grantee, role, rdSync.BoardCoord(boardAuthor, boardD))
 	fmt.Printf("  event id=%s relay-accepted=%v\n", ev.ID, anyRelay)
 	if res.Buffered {
-		fmt.Println("  (reached no relay; buffered to nostr-pending.jsonl — durable in local log)")
+		fmt.Println("  (reached no relay; buffered to nostr-pending.jsonl — durable in local log, will publish automatically once a relay is reachable)")
 	}
 	if res.Rejected {
+		// GENUINE FAILURE (ready-f7b): distinct from Buffered. A relay has
+		// PERMANENTLY refused this event; it is dead-lettered to
+		// nostr-rejected.jsonl and nothing will ever retry it, so the grant/revoke
+		// is durable ONLY in the local authoritative log and has reached no relay
+		// anyone else reads from. Fail loudly here rather than let the caller
+		// (runNostrGrantRevoke, `rd board share`) print an unqualified success —
+		// the exact false-success shape ready-e0e fixed for gates.
 		fmt.Fprintln(os.Stderr, "  WARNING: the role-grant event was permanently rejected by a relay and dead-lettered to nostr-rejected.jsonl — NOT retried; inspect and fix.")
+		return res, fmt.Errorf("role-grant for %s permanently rejected by every relay it reached (dead-lettered, not retried) — %s has NOT been granted %s anywhere visible; inspect nostr-rejected.jsonl and re-issue the grant after fixing the cause", grantee, grantee, role)
 	}
-	return nil
+	return res, nil
 }
 
 // --- ready-58f: `rd grant --all-boards` (fan one grant across every local board) ---
