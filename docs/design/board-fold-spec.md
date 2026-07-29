@@ -1230,8 +1230,19 @@ orphaned every card sealed under the first — this is what permanently destroye
 three cards on the `ready` board), and rotation behaved as forward AMNESIA rather
 than forward secrecy, withholding the new key from the revoked member as designed
 while also withholding every old key from everyone not already holding the log.
-Diagnosed in `ready-76b`, fixed in `ready-889`; the surviving epoch-1 grant is
-republished into its new slot by `ready-12c`.
+Diagnosed in `ready-76b`, fixed in `ready-889`. The grants already stranded by the
+one rotation that happened under the old rule were recovered by `rd confidential
+republish-epochs` (`ready-12c`), which re-emits each stranded grant at the
+per-epoch coordinate it should have had, copying the ORIGINAL wrapped key bytes and
+the ORIGINAL `created_at`. It re-ADDRESSES; it never unwraps, re-wraps or mints, so
+a grantee receives exactly what the owner sealed to it and a machine that cannot
+open a wrap restores it just as faithfully. Preserving `created_at` is load-bearing:
+authz is latest-wins per grantee by `(created_at, id)` across every slot, so
+stamping the copy "now" would float an old grant to the top of that ordering and
+could resurrect authority a later revoke had removed. Measured on the `ready` board
+after the recovery: a reader holding only the owner identity and the public relay
+projects 327 items with ZERO `[encrypted]`, against 6 of 206 confidential cards
+readable before it.
 
 ---
 

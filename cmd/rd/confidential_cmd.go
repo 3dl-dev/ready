@@ -257,12 +257,11 @@ func printRotationEffect(plan *epochRotationPlan) {
 	fmt.Printf("    pre-rotation cards, permanently. They will not show anything written after it.\n")
 	fmt.Printf("    Mint a fresh link with `rd board --with-key` for a reader who needs both.\n")
 	fmt.Printf("  - it cannot recall what the leaked key could already read.\n")
-	fmt.Printf("  - it does NOT keep the old epoch's grants on relays. kind-39301 is addressable\n")
-	fmt.Printf("    on (board, grantee), so each member's new grant REPLACES its old one there.\n")
-	fmt.Printf("    Machines that already hold this board keep every epoch (the local log is\n")
-	fmt.Printf("    append-only), but one that re-syncs the board from scratch AFTER this point\n")
-	fmt.Printf("    gets only epoch %d and will show pre-rotation cards as [encrypted]. Tracked\n", plan.NewEpoch)
-	fmt.Printf("    as ready-44b; until it is fixed, seed a new machine from an existing log.\n")
+	fmt.Printf("  - it does NOT drop the old epoch's grants from relays. A CEK-bearing grant is\n")
+	fmt.Printf("    addressable on (board, grantee, EPOCH), so the epoch-%d grants keep their own\n", plan.NewEpoch)
+	fmt.Printf("    slots and the epoch-%d ones stay served alongside them. A machine that\n", plan.OldEpoch)
+	fmt.Printf("    re-syncs this board from scratch after this point still receives every epoch\n")
+	fmt.Printf("    and still reads pre-rotation cards (ready-889).\n")
 }
 
 // verifyRotationOnRelays reads the just-published grants back off each relay with
