@@ -103,7 +103,7 @@ func TestRepublishEpochsRestoresRelayOnlyReads(t *testing.T) {
 	}
 
 	member, _, _ := mintIdentity(t)
-	if err := publishRoleGrant(member.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
+	if _, err := publishRoleGrant(member.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
 		t.Fatalf("grant member: %v", err)
 	}
 	const preTitle = "sealed under epoch 1 and stranded by the rotation"
