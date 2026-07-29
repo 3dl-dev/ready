@@ -684,6 +684,52 @@ func TestNostrNative_GateOnBlockedItem_RaiseListResolve(t *testing.T) {
 		t.Fatalf("reject reason %q not preserved in history: %+v", rejectReason, it.History)
 	}
 
+	// --- RECOVERY: close the shared blocker and prove neither target is
+	// permanently stuck (ready-e0e rework). The predecessor's test stopped at
+	// the fold immediately after resolve and only proved a nil error; it never
+	// advanced past the blocker closing, which is the actual burn-in defect —
+	// a status=blocked event published by reject/approve becomes the
+	// status-authority winner forever, because the dep pass only ever ADDS
+	// blocked and nothing ever clears it. PROBE1 in the adversary review
+	// reproduced exactly this on the reject path.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+
+	it, _ = nostrResolveItem(approveTarget)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("approve target still blocked after its blocker closed — status burned in and never re-derived (status=%q)", it.Status)
+	}
+	if it.WaitingType != "" || it.GateMsgID != "" || it.Gate != "" {
+		t.Fatalf("approve target gate fields leaked after recovery: waitingType=%q gate=%q gateMsgID=%q", it.WaitingType, it.Gate, it.GateMsgID)
+	}
+
+	it, _ = nostrResolveItem(rejectTarget)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("reject target still blocked after its blocker closed — the dep pass only ever adds blocked and nothing clears a status burned in by reject (status=%q)", it.Status)
+	}
+	if it.WaitingType != "gate" || it.GateMsgID == "" {
+		t.Fatalf("reject target lost its still-open gate across recovery: waitingType=%q gateMsgID=%q", it.WaitingType, it.GateMsgID)
+	}
+
+	// rd gates must still list the reject target (gate genuinely still open)
+	// and must NOT flag it [BLOCKED] any more — the blocker is closed, so the
+	// label would otherwise assert a dependency that no longer exists.
+	jsonOutput = false
+	recoveredOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (post-recovery): %v", err)
+		}
+	})
+	if !strings.Contains(recoveredOut, rejectTarget) {
+		t.Fatalf("rd gates dropped %s after its blocker closed; still has an open gate; got:\n%s", rejectTarget, recoveredOut)
+	}
+	for _, line := range strings.Split(recoveredOut, "\n") {
+		if strings.Contains(line, rejectTarget) && strings.Contains(line, "[BLOCKED]") {
+			t.Fatalf("rd gates still flags %s as [BLOCKED] after its blocker closed; label is now untruthful; got:\n%s", rejectTarget, recoveredOut)
+		}
+	}
+
 	assertNoDotCf(t)
 }
 

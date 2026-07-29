@@ -323,10 +323,10 @@ func runApproveNostr(itemID, reason string) error {
 		map[string]any{"id": item.ID, "resolution": "approved"})
 }
 
-// runRejectNostr rejects a pending gate: the item stays in its current status
-// (waiting or blocked, ready-e0e), and the rejection reason is recorded in the
-// audit-history replay via a status event that re-affirms it. Closes the reject
-// publisher GAP (reject previously published NO nostr event).
+// runRejectNostr rejects a pending gate: the gate stays OPEN, and the rejection
+// reason is recorded in the audit-history replay via a status event. Never
+// publishes item.Status verbatim — see the burn-in comment below (ready-e0e).
+// Closes the reject publisher GAP (reject previously published NO event).
 func runRejectNostr(itemID, reason string) error {
 	item, err := nostrResolveItem(itemID)
 	if err != nil {
@@ -338,8 +338,8 @@ func runRejectNostr(itemID, reason string) error {
 	if item.Status != state.StatusWaiting && item.Status != state.StatusBlocked {
 		return fmt.Errorf("item %s is not waiting or blocked (status=%s)", item.ID, item.Status)
 	}
-	// Item stays in its current status (waiting or blocked); publish the rejection
-	// as a status event re-affirming it, without transitioning out of the gate.
+	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-e0e): force waiting, matching runGateNostr's own publish, so a blocked-and-gated reject cannot burn in status=blocked as the status-authority winner — only applyDepAndGateStatus's dep pass may set blocked, and nothing else ever clears it once persisted.
+	item.Status = state.StatusWaiting
 	if err := publishItemStatusChangeNostr(item, reason); err != nil {
 		return fmt.Errorf("nostr publish (reject): %w", err)
 	}
