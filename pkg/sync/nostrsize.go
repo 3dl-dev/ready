@@ -97,46 +97,33 @@ func eventSubjectLabel(e *nostr.Event) string {
 }
 
 // oversizedEvent measures e and reports whether it exceeds maxEventWireSize —
-// the SINGLE definition of "too big for this fleet's relays" shared by
-// guardEventSizes (the all-or-nothing batch check below, kept for the
-// externally-anchored boundary test) and Publisher.splitOversized
-// (nostroutbound.go — the production wiring, which partitions a batch
-// per-event instead of refusing it whole). A marshal error is reported as
-// NOT oversized (over=false) so a caller falls through to letting the relay
-// itself be the judge, rather than mis-reporting a phantom size.
+// the SINGLE definition of "too big for this fleet's relays", called directly
+// by Publisher.splitOversized (nostroutbound.go — the ONLY production caller,
+// which partitions a publish batch per-event: an oversized event skips the
+// relay dial and is dead-lettered directly, a deliverable one is handed to
+// relayPublish unchanged). The externally-anchored boundary test
+// (TestPublisher_CardAtRelayBoundary, nostrsize_test.go) drives this function
+// THROUGH splitOversized via a real Publisher.PublishCardEdit call — not by
+// calling oversizedEvent (or a standalone batch-refusal primitive) directly —
+// so a mutant that loosens splitOversized's own comparison, not just this
+// function's, is still caught (ready-c3e REWORK 2; an earlier version of this
+// file also had guardEventSizes, an all-or-nothing batch-refusal primitive
+// with NO production caller at all — nothing wired it into publishEvents or
+// splitOversized — so its own boundary test proved this function agreed with
+// the relay's expression but proved nothing about the code path a real write
+// actually takes. Deleted rather than wired in: Publisher.splitOversized
+// already IS the per-event batch handling this repo needs; a second,
+// unused, all-or-nothing entry point alongside it was dead code with no
+// caller who would ever notice it drifting from splitOversized's own
+// behavior).
+//
+// A marshal error is reported as NOT oversized (over=false) so a caller falls
+// through to letting the relay itself be the judge, rather than mis-reporting
+// a phantom size.
 func oversizedEvent(e *nostr.Event) (n int, over bool, err error) {
 	n, err = marshaledEventSize(e)
 	if err != nil {
 		return 0, false, err
 	}
 	return n, n > maxEventWireSize, nil
-}
-
-// guardEventSizes refuses the ENTIRE batch the instant any one event exceeds
-// maxEventWireSize. Retained as the all-or-nothing PRIMITIVE this package's
-// externally-anchored boundary test (TestGuardEventSizes_RealBoundary,
-// nostrsize_test.go) exercises directly against the relay's own limit
-// expression; production writes go through Publisher.splitOversized instead
-// (ready-c3e REWORK — see nostroutbound.go's publishEvents doc for why an
-// oversized event must NOT block the local log append, only the relay dial).
-// The error names the offending subject (item or board) and the measured byte
-// count against the fixed 64KiB ceiling.
-func guardEventSizes(events []*nostr.Event) error {
-	for _, e := range events {
-		if e == nil {
-			continue
-		}
-		n, over, err := oversizedEvent(e)
-		if err != nil {
-			return err
-		}
-		if !over {
-			continue
-		}
-		return fmt.Errorf(
-			"sync: refusing to publish %s: event is %d bytes, exceeds the 64KiB (%d byte) relay limit every relay in this fleet enforces (strfry default) — shrink its description/context/progress notes below the limit and retry; rd will not sign an event it knows will be silently dead-lettered (ready-c3e guard)",
-			eventSubjectLabel(e), n, maxEventWireSize,
-		)
-	}
-	return nil
 }

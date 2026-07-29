@@ -568,6 +568,24 @@ func TestRelayPublishBatch_PermanentReject_DeadLetterDoesNotGrowOnRepeat(t *test
 // disable dedup for every record scanned after it. This directly exercises
 // deadLetterHasEvent (not through a Publisher), so each shape of corruption is
 // isolated.
+//
+// TWO CORRUPTION SHAPES are covered, deliberately kept distinct (rework 2):
+//
+//  1. A cleanly newline-terminated malformed line (writeLines' `corrupt`
+//     constant, on its own line) — a plausible shape for a manually-edited or
+//     truncated-and-newline-patched file, still worth guarding.
+//
+//  2. THE SHAPE appendRejectedEvent's doc ACTUALLY ANTICIPATES: a crash
+//     mid-`f.Write(json+'\n')` leaves a TORN prefix with NO trailing
+//     newline, so the next call's record lands on the exact same physical
+//     line with no delimiter between them — mergedLine below builds this
+//     shape directly (torn bytes + a complete record's bytes + one '\n',
+//     never two). The first version of this fix (ready-c3e finding 4, before
+//     rework 2) only tested shape 1: every fixture here used writeLines,
+//     which always inserts a '\n' after each fragment, so no fixture ever
+//     produced a torn/merged single line — the exact shape this function's
+//     doc claims to tolerate was never exercised. Fixed by recordsInLine's
+//     embedded-'{' recovery scan (relayclass.go).
 func TestDeadLetterHasEvent_SkipsMalformedRecords(t *testing.T) {
 	k := testKey(t)
 	target := signedEvent(t, k, "target-event")
@@ -636,6 +654,53 @@ func TestDeadLetterHasEvent_SkipsMalformedRecords(t *testing.T) {
 		path := writeLines(t, corrupt, corrupt)
 		if deadLetterHasEvent(path, target.ID) {
 			t.Errorf("deadLetterHasEvent reported true when the file has no valid records")
+		}
+	})
+
+	// mergedLine builds the ACTUAL anticipated corruption: a torn (no
+	// trailing newline) fragment immediately followed by a complete record's
+	// bytes, with exactly ONE trailing '\n' for the whole merged line — never
+	// two. This is what a crash mid-f.Write leaves on disk (appendRejectedEvent's
+	// doc), as opposed to writeLines' fixtures above, which always terminate
+	// every fragment with its own '\n' and so can never produce this shape.
+	mergedLine := func(t *testing.T, torn string, complete string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "nostr-rejected.jsonl")
+		if err := os.WriteFile(path, []byte(torn+complete+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return path
+	}
+
+	// torn is a PREFIX of a real marshaled record with no closing braces —
+	// exactly what a write interrupted partway through would leave, not a
+	// hand-written corrupt string unrelated to the real record shape.
+	torn := string(otherLine[:len(otherLine)/2])
+
+	t.Run("torn prefix merged onto the SAME line as the complete target record (the real crash shape)", func(t *testing.T) {
+		path := mergedLine(t, torn, string(targetLine))
+		if !deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent missed a complete record merged onto the same physical line as a torn prior write — " +
+				"this is the exact shape appendRejectedEvent's at-least-once doc anticipates (crash mid-write leaves no " +
+				"trailing newline, so the next append lands on the same line); missing it means dedup fails open and " +
+				"a duplicate dead-letter record gets appended on every subsequent repair round")
+		}
+	})
+
+	t.Run("torn prefix merged onto a complete NON-matching record reports false, not true", func(t *testing.T) {
+		path := mergedLine(t, torn, string(otherLine))
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for an id whose only appearance is a torn, unrelated prefix on the same line as a different complete record")
+		}
+	})
+
+	t.Run("wholly torn line with no complete record at all", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "nostr-rejected.jsonl")
+		if err := os.WriteFile(path, []byte(torn), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for a file containing only a torn fragment with no complete record")
 		}
 	})
 }
