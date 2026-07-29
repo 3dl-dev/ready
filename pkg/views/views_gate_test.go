@@ -53,6 +53,34 @@ func TestGatesFilter_GateMsgIDEmptyExcludes(t *testing.T) {
 	}
 }
 
+// TestGatesFilter_BlockedItemAppears verifies that a gate raised on a BLOCKED item
+// (status=blocked, not waiting — the ordinary case for a design gate, since the
+// ruling is often exactly what unblocks the chain) still appears in the gates
+// view. Regression test for ready-e0e: a gate on a blocked item used to be
+// invisible because GatesFilter required status==waiting exactly.
+func TestGatesFilter_BlockedItemAppears(t *testing.T) {
+	f := views.GatesFilter()
+
+	item := makeItem("t1", state.StatusBlocked, "p1", "", "boss@test.com", "agent@test.com")
+	item.WaitingType = "gate"
+	item.WaitingOn = "budget approval"
+	item.GateMsgID = "msg-gate-123"
+	if !f(item) {
+		t.Error("expected a gate raised on a blocked item to appear in the gates view (ready-e0e)")
+	}
+}
+
+// TestGatesFilter_BlockedNoGateExcludes verifies a merely-blocked item (no gate
+// declared) still does not appear — blocking alone is not an escalation.
+func TestGatesFilter_BlockedNoGateExcludes(t *testing.T) {
+	f := views.GatesFilter()
+
+	item := makeItem("t1", state.StatusBlocked, "p1", "", "boss@test.com", "agent@test.com")
+	if f(item) {
+		t.Error("expected a plain blocked item with no gate to not appear in the gates view")
+	}
+}
+
 // TestGatesFilter_ActiveItemExcludes verifies that an active item does not appear.
 func TestGatesFilter_ActiveItemExcludes(t *testing.T) {
 	f := views.GatesFilter()
