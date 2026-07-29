@@ -204,7 +204,14 @@ describe("one portfolio link renders MULTIPLE boards' titles in plaintext", () =
 
     const text = pageText();
     expect(text).toContain("never-published");
-    expect(text).toContain("publishing gap, not a permission problem");
+    // ready-5c5: the old wording ("publishing gap, not a permission problem
+    // ... the boards are not on the relay") was measured FALSE — a relay's
+    // author-index REQ under-returns deterministically, so "this discovery
+    // pass found no definition" does not establish "no definition is
+    // published". The notice must not assert the stronger, unverifiable claim.
+    expect(text).toContain("NOT shown at all");
+    expect(text).toContain("not a permission problem");
+    expect(text).not.toContain("the boards are not on the relay");
     // And it does NOT claim the ghost board is sealed or unauthorized — the two
     // situations the notice exists to keep apart.
     expect(text).not.toMatch(/never-published[^.]*key you do not hold/);
@@ -213,7 +220,7 @@ describe("one portfolio link renders MULTIPLE boards' titles in plaintext", () =
   it("says nothing about unserved boards when every key matches a real board", async () => {
     // The notice must not grow a paragraph for the ordinary case.
     await afterLogin(root, linkIdentity(), portfolioFragment(portfolioKeys()), noExtensionDeps);
-    expect(pageText()).not.toContain("publishing gap");
+    expect(pageText()).not.toContain("NOT shown at all");
   });
 
   it("ANTI-TAUTOLOGY: the same fixture with NO keys renders no plaintext title at all", async () => {

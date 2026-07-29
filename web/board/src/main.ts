@@ -375,9 +375,15 @@ function confidentialNotice(items: Item[], boardCount: number): string {
  * --with-key` on the real portfolio emitted keys for 15 boards while
  * wss://relay.3dl.network served kind-30301 definitions for 10 of them, so five
  * boards silently did not appear. The keys are proof the reader is entitled to
- * those boards; their absence is a publishing gap on the relay, not an
- * authorization outcome, and conflating the two is exactly the confusion this
- * item's done condition 2 forbids.
+ * those boards, but their absence here is NOT proof of anything about the
+ * relay's contents — ready-5c5 found the earlier wording ("the boards are not
+ * on the relay") to be actively FALSE: the relay's author-index REQ under-
+ * returns deterministically (measured: 42 of 56 boards for a paged
+ * kind+authors query vs. 56 of 56 for a paged kind-only query, same relay,
+ * same run), so "this discovery pass did not surface a definition" and "no
+ * definition is published" are two different claims and this function can
+ * only ever establish the first one. Wording below must not assert the
+ * second.
  *
  * Returns "" when nothing is missing, so the notice does not grow a paragraph
  * for the ordinary case.
@@ -392,8 +398,8 @@ function unservedBoardsNotice(keys: PortfolioKeys | undefined, boards: Discovere
     .sort()
     .join(", ");
   return (
-    `This link also carries read keys for ${missing.length} board(s) that no relay it names has published a definition for, so they are NOT shown at all: ${names}. ` +
-    `That is a publishing gap, not a permission problem — the keys are here; the boards are not on the relay.`
+    `This link also carries read keys for ${missing.length} board(s) that this discovery pass did not find a definition for, so they are NOT shown at all: ${names}. ` +
+    `The keys are here, so this is not a permission problem — but it does not establish that these boards are unpublished. It may be a relay reachability or indexing gap; check the relay directly before assuming a republish is needed.`
   );
 }
 
@@ -433,9 +439,19 @@ export async function afterLogin(
       const parsedCoord = parseBoardCoord(fragment.board);
       if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(fragment.board)}`);
       relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
+      // ready-5c5: query by the board's own "a" coordinate, NOT authors. A
+      // nostr relay's `authors` index is allowed to under-return (measured on
+      // wss://relay.3dl.network: a paged kind+authors REQ served 42 of an
+      // owner's 56 boards while a paged kind-only REQ, same relay, same run,
+      // served all 56). The coordinate is a tag on the event itself, not a
+      // secondary index a relay can maintain out of step with the event
+      // store, so this cannot silently drop a board the author index does.
+      // discoverOwnerBoards still schnorr-verifies every event and re-checks
+      // the owner client-side, so no security property is lost by dropping
+      // `authors` from the wire filter.
       authorityEvents = await deps.fetchEvents(
         relays,
-        { kinds: AUTHORITY_KINDS, authors: [parsedCoord.owner] },
+        { kinds: AUTHORITY_KINDS, ["#a"]: [fragment.board] },
         { onStatus },
       );
       boards = discoverOwnerBoards(authorityEvents, [parsedCoord.owner], parsedCoord.boardD);
@@ -446,22 +462,26 @@ export async function afterLogin(
       // would miss a confidential board owned by someone else that this key was
       // granted read access to, and the link is carrying that board's key.
       //
-      // Owners are still only a QUERY hint. discoverOwnerBoards schnorr-verifies
-      // every kind-30301 and drops any whose author is not in this set, so a
-      // hostile relay cannot add a board here, and the keyring is still derived
-      // per board from owner-signed grants below.
+      // ready-5c5: no boardD is known ahead of time here, so an "#a" filter
+      // isn't available (unlike the single-board case above) — the query is
+      // kind-scoped only, NOT authors-scoped, because `authors` is exactly
+      // the filter measured to under-return on wss://relay.3dl.network.
+      // Owners are still enforced, just client-side: discoverOwnerBoards
+      // schnorr-verifies every kind-30301 and drops any whose author is not
+      // in this set, so a hostile or merely noisy relay cannot add a board
+      // here, and the keyring is still derived per board from owner-signed
+      // grants below.
       relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
       const owners = [...new Set([identity.pubkey, ...keyOwners(fragment.keys)])];
-      authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS, authors: owners }, { onStatus });
+      authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS }, { onStatus });
       boards = discoverOwnerBoards(authorityEvents, owners);
     } else {
       // fragment.kind === "none": own-boards discovery (ready-dbf done condition 3).
+      // ready-5c5: kind-scoped only, see the portfolio branch's comment above —
+      // this is the exact query the veracity finding measured under-returning
+      // 14 of 56 boards via `authors`.
       relays = await deps.loadRelays();
-      authorityEvents = await deps.fetchEvents(
-        relays,
-        { kinds: AUTHORITY_KINDS, authors: [identity.pubkey] },
-        { onStatus },
-      );
+      authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS }, { onStatus });
       boards = discoverOwnerBoards(authorityEvents, [identity.pubkey]);
     }
 

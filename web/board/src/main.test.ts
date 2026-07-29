@@ -183,6 +183,68 @@ class FakeRelayWebSocket {
   }
 }
 
+/**
+ * ready-5c5: the OPPOSITE fixture from FakeRelayWebSocket above. That one is
+ * "HOSTILE by construction" by OVER-returning to an `authors` filter — it
+ * proves client-side verification catches a relay that serves too much. It
+ * cannot catch the defect this item exists for, because production's real
+ * failure mode is a relay that UNDER-returns to an `authors` filter: measured
+ * on wss://relay.3dl.network, a paged `{kinds:[30301], authors:[owner]}` REQ
+ * served 42 of an owner's 56 boards while a paged `{kinds:[30301]}` REQ, same
+ * relay, same run, served all 56 — 14 boards deterministically missing
+ * whenever `authors` rode on the wire filter.
+ *
+ * This fixture models exactly that: it holds N genuine board events and, if
+ * the REQ it receives carries a non-empty `authors` array, answers with only
+ * a strict SUBSET of them; a REQ with no `authors` (or an empty one) gets all
+ * N. Before ready-5c5's fix (main.ts sending `authors: [identity.pubkey]` for
+ * own-boards / portfolio discovery), this fixture would make the board list
+ * render only the subset — the same shape of loss the real relay produces.
+ * After the fix (kind-scoped REQ, ownership enforced by discoverOwnerBoards
+ * client-side), the full N always renders, because the wire filter this
+ * fixture inspects never carries `authors` any more.
+ */
+class UnderReturningRelayWebSocket {
+  static all: NostrEvent[] = [];
+  static subsetWithAuthors: NostrEvent[] = [];
+  static urls: string[] = [];
+  static reset(all: NostrEvent[], subsetWithAuthors: NostrEvent[]): void {
+    UnderReturningRelayWebSocket.all = all;
+    UnderReturningRelayWebSocket.subsetWithAuthors = subsetWithAuthors;
+    UnderReturningRelayWebSocket.urls = [];
+  }
+
+  url: string;
+  onopen: (() => void) | null = null;
+  onerror: ((ev?: unknown) => void) | null = null;
+  onclose: ((ev?: unknown) => void) | null = null;
+  onmessage: ((ev: { data: string }) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    UnderReturningRelayWebSocket.urls.push(url);
+    queueMicrotask(() => this.onopen?.());
+  }
+
+  send(data: string): void {
+    const [, subId, filter] = JSON.parse(data) as [string, string, NostrFilter];
+    const hasAuthorsFilter = Array.isArray(filter.authors) && filter.authors.length > 0;
+    const served = hasAuthorsFilter
+      ? UnderReturningRelayWebSocket.subsetWithAuthors
+      : UnderReturningRelayWebSocket.all;
+    queueMicrotask(() => {
+      for (const e of served) {
+        this.onmessage?.({ data: JSON.stringify(["EVENT", subId, e]) });
+      }
+      this.onmessage?.({ data: JSON.stringify(["EOSE", subId]) });
+    });
+  }
+
+  close(): void {
+    /* nothing to tear down */
+  }
+}
+
 interface Capture {
   /** The unverified event snapshot main.ts received from the relay layer.
    * Asserting on this is what stops these tests from passing vacuously: it
@@ -218,6 +280,27 @@ function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
       // -- so every anti-vacuity assertion below keeps asserting about the
       // unverified board snapshot it was written against, rather than silently
       // re-pointing at the item fetch.
+      if (capture.snapshot.length === 0) capture.snapshot = events;
+      return events;
+    },
+  };
+}
+
+/** Same seam as injectedDeps, wired to UnderReturningRelayWebSocket instead —
+ * ready-5c5's under-return fixture (see that class's doc comment). */
+function injectedUnderReturningDeps(all: NostrEvent[], subsetWithAuthors: NostrEvent[], capture: Capture): BoardDeps {
+  UnderReturningRelayWebSocket.reset(all, subsetWithAuthors);
+  return {
+    keyUnwrapper: () => neverUnwraps,
+    loadRelays: async () => [CONFIG_RELAY],
+    fetchEvents: async (relays, filter, opts) => {
+      capture.filters.push(filter);
+      const events = await fetchEventsFromRelays(relays, filter, {
+        ...opts,
+        webSocketCtor: UnderReturningRelayWebSocket as unknown as typeof WebSocket,
+        retries: 0,
+        timeoutMs: 2000,
+      });
       if (capture.snapshot.length === 0) capture.snapshot = events;
       return events;
     },
@@ -363,7 +446,11 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // ready-c4b: the authority REQ carries the 39301 role grants alongside
       // the 30301 boards, because a confidential board's read key rides inside
       // an owner-signed grant and both must come from ONE snapshot.
-      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [identity.pubkey] });
+      // ready-5c5: kind-scoped only, no `authors` — a relay's author index is
+      // free to under-return (measured on wss://relay.3dl.network), so
+      // ownership is enforced client-side by discoverOwnerBoards instead of
+      // trusted to the wire filter.
+      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
       // ready-bad: every later query is a per-board item fetch, and each must be
       // #a-scoped to a board that SURVIVED verification. Stronger than the old
       // exact-match: it also forbids an item fetch leaking to a board the
@@ -423,6 +510,36 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         expectedIdentityLine(identity.pubkey, signing),
       );
     });
+
+    it("ready-5c5: renders ALL of the owner's boards even when the relay's `authors`-filtered answer is a strict subset of its kind-only answer", async () => {
+      // The defect this item exists for, in fixture form: a relay that holds
+      // three genuine OWNER boards (alpha, beta, gamma) but, when asked with
+      // `authors: [OWNER]`, serves only two of them (alpha, beta) — gamma is
+      // "in the author index" on no run of this fixture, mirroring the 14
+      // boards wss://relay.3dl.network's author index silently dropped in
+      // production. A kind-only REQ (no `authors`) gets all three.
+      //
+      // Before ready-5c5 (main.ts sent `authors: [identity.pubkey]` here),
+      // this fixture would make the board list render only alpha and beta —
+      // this test would have failed against the pre-fix code. After the fix
+      // (kind-scoped REQ; ownership enforced by discoverOwnerBoards
+      // client-side) it renders all three.
+      const deps = injectedUnderReturningDeps([alpha, beta, gamma], [alpha, beta], capture);
+
+      await afterLogin(root, identity, { kind: "none" }, deps);
+
+      // ANTI-VACUITY: pin that the wire filter main.ts actually sent carries
+      // no `authors` — if it did, this fixture's subset branch would fire and
+      // the test would be exercising the OLD, defective query shape instead
+      // of the fixed one.
+      expect(capture.filters[0]?.authors).toBeUndefined();
+
+      expect(renderedBoards(root)).toEqual([
+        { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
+        { title: "Beta Board", coord: boardCoord(OWNER, "beta") },
+        { title: "Gamma Board", coord: boardCoord(OWNER, "gamma") },
+      ]);
+    });
   });
 
   describe("single-board link (fragment.kind === 'board')", () => {
@@ -439,12 +556,16 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // LINK_RELAY and CONFIG_RELAY are different URLs, so this distinguishes
       // the two relay sources — the link's list wins when it is non-empty.
       expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
-      // The link's coordinate, not the viewer's key, names the author here.
       // ready-c4b added the 39301 role grants to the authority REQ (a
       // confidential board's read key rides inside an owner-signed grant);
       // ready-bad added the per-board item REQ, scoped by board coordinate.
+      // ready-5c5: the authority REQ is scoped by the link's own "#a"
+      // coordinate, not `authors` — the coordinate is a tag on the event
+      // itself, not a secondary index a relay's author filter can drop
+      // independently of the event (measured under-return on
+      // wss://relay.3dl.network).
       expect(capture.filters).toEqual([
-        { kinds: [30301, 39301], authors: [OWNER] },
+        { kinds: [30301, 39301], "#a": [boardCoord(OWNER, "alpha")] },
         { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [boardCoord(OWNER, "alpha")] },
       ]);
       expectItemFetchesScopedToRenderedBoards(capture, root);
@@ -590,8 +711,10 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
 
     await afterLogin(root, stranger, { kind: "none" }, deps);
 
-    // The REQ carried STRANGER's key — main.ts asked for its own boards.
-    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [STRANGER] });
+    // ready-5c5: the REQ is kind-scoped only (no `authors`) — STRANGER's key
+    // is enforced client-side, by discoverOwnerBoards' owner check below, not
+    // by the wire filter.
+    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
     expectItemFetchesScopedToRenderedBoards(capture, root);
     // ANTI-VACUITY: the relay ignored that filter and served everything, so
     // the genuine boards really were in front of main.ts when it rendered.
