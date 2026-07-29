@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/state"
+	"github.com/3dl-dev/ready/pkg/views"
 )
 
 // setForFilter sets the --for flag to an explicit value (Changed=true so
@@ -455,62 +456,91 @@ func TestReadyCmd_RunE_ScopeGateDenialNote_FiresInJSONMode(t *testing.T) {
 	}
 }
 
-// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenProjectHidesOwnItem covers
-// ready-497 rework problem 2: printIdentityScopeHint's recompute re-applies
-// filterByProject over `hidden` specifically so that a --project filter --
-// not identity -- hiding the caller's OWN item does not get misreported as
-// "items exist for other parties".
+// TestPrintIdentityScopeHint_ProjectReapplyDropsProjectlessHidden replaces
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenProjectHidesOwnItem, which
+// asserted a semantic the wire cannot carry.
 //
-// This is deliberately a SEPARATE test from
-// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenLabelHidesOwnItem, which only
-// drives --label. The prior mutation proof deleted the
-// `filterByProject(hidden, projectFilter)` line and the LabelFilter loop
-// TOGETHER, which only shows at least one of the two matters -- deleting
-// ONLY the filterByProject line left the whole cmd/rd suite green, since no
-// test exercised --project alone. --project is a real user-facing flag
-// (readyCmd's --project), so this closes that gap: mutation tested by
-// deleting ONLY `hidden = filterByProject(hidden, projectFilter)` from
-// printIdentityScopeHint (leaving the label loop intact) -- confirmed this
-// test alone turns red (the fixture's item, which IS for the caller, counts
-// as "hidden" simply because it doesn't carry the requested --project), then
-// restored.
-func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenProjectHidesOwnItem(t *testing.T) {
-	origTTY := isTTYStdout
-	defer func() { isTTYStdout = origTTY }()
-	isTTYStdout = func() bool { return true }
-	origJSON := jsonOutput
-	defer func() { jsonOutput = origJSON }()
-	jsonOutput = false
+// GROUND TRUTH (established while reworking this item, filed separately as
+// ready-762 p1 because it is a live user-facing defect, not just a test
+// gap): Item.Project has NO nostr wire carrier. There are zero references to
+// it in pkg/sync non-test code, and CardSpecFromItem -- the single
+// item->card field mapping every publish path routes through
+// (pkg/sync/nostrmigrate.go) -- never maps item.Project onto CardSpec, which
+// has no Project field at all. Publishing an item with Project set and
+// reading it back through ProjectItems/allProjectItems() yields Project ==
+// "". Every item leaving the fold is projectless, always, regardless of what
+// was set on the Go struct before publish.
+//
+// The removed test set `Project: "project-a"` on a fixture, published it via
+// publishItemFullCreateNostr, requested `--project project-b`, and asserted
+// the identity-scope hint stayed silent -- reading that as proof
+// printIdentityScopeHint's filterByProject reapply correctly recognizes a
+// --project filter (not identity) hiding the caller's OWN item. But the
+// round trip silently drops Project, so the fixture's "own, project-a" item
+// comes back from the fold with Project == "", identical to a foreign item
+// or no item at all -- the assertion held for a reason unrelated to the one
+// the test's comment claimed. That is the same test-trap this file's header
+// warns about (a fixture that cannot structurally exhibit what it claims),
+// one level deeper: not "returns before the branch under test" but "asserts
+// a semantic the wire cannot carry."
+//
+// What IS true and reachable, proved here directly against
+// printIdentityScopeHint (no publish, no projection -- fullItems is built by
+// hand to match the ACTUAL post-projection shape: every item's Project ==
+// ""): filterByProject with a non-empty filter drops a projectless item.
+// That is why, on the live path today, a non-empty --project always empties
+// filterByProject's output regardless of whose item it is -- so
+// printIdentityScopeHint's reapply of that same filter over `hidden` stays
+// silent for the SAME reason the real item set went empty, not because it
+// distinguished "mine" from "someone else's" project (it structurally
+// cannot; nothing carries one). See ready-762 for the fix and its own
+// caution: a regression test there must drive the real publish+fold path,
+// since that is exactly how this one went unnoticed.
+//
+// Mutation-tested: deleting `hidden = filterByProject(hidden, projectFilter)`
+// from printIdentityScopeHint turns this test red (the projectless item
+// leaks through the recompute and the hint fires), confirmed, then restored.
+//
+// NOTE for whoever works ready-762: once Item.Project round-trips for real,
+// re-check this interaction. printIdentityScopeHint's reapply was written
+// and tested only against the current (empty-always) reality; a real
+// wire-carried Project reopens the ORIGINAL false-positive concern this item
+// was filed for (an item hidden by --project misattributed to identity
+// scope) as a live, reachable case again, and this test's fixture (uniformly
+// projectless) will no longer be a faithful stand-in for production
+// fullItems.
+func TestPrintIdentityScopeHint_ProjectReapplyDropsProjectlessHidden(t *testing.T) {
+	// own has no Project set -- this is not a simplification, it is the ONLY
+	// shape an item can have coming out of ProjectItems today (ready-762).
+	own := &state.Item{ID: "own-1", Status: "inbox", Priority: "p2", For: "own@test", By: "own@test"}
+	fullItems := []*state.Item{own}
+	filter := views.ReadyFilter()
 
-	dir := setupNostrProjectWithItems(t, "hintproj-project-own", nil)
-	k, err := nostrKey()
-	if err != nil {
-		t.Fatalf("nostrKey: %v", err)
-	}
-	ownHex := k.PubKeyHex()
-	item := &state.Item{ID: "hintproj-project-own-1", Status: "inbox", Priority: "p2", Title: "Mine, other project", For: ownHex, By: ownHex, Project: "project-a"}
-	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
-		t.Fatalf("publish own item: %v", err)
-	}
+	stderr := captureStderrPipe(t, func() {
+		printIdentityScopeHint(views.ViewReady, "own@test", fullItems, filter, "project-b", nil, false)
+	})
 
-	defer resetReadyRunFlags(t)()
-	defer setForFilter(t, ownHex)()
-	if err := readyCmd.Flags().Set("project", "project-b"); err != nil {
-		t.Fatalf("setting --project=%q: %v", "project-b", err)
-	}
-	defer func() {
-		if err := readyCmd.Flags().Set("project", ""); err != nil {
-			t.Fatalf("resetting --project: %v", err)
-		}
-	}()
-
-	stdout, stderr := runReadyCapturingBoth(t)
-
-	if strings.TrimSpace(stdout) != "nothing ready" {
-		t.Errorf("expected stdout %q, got %q", "nothing ready", stdout)
-	}
 	if strings.Contains(stderr, "exist for other parties") {
-		t.Errorf("expected NO identity-scope hint when a --project filter (not identity) hid the caller's OWN item, got %q", stderr)
+		t.Errorf("expected NO identity-scope hint: filterByProject(\"project-b\") drops the projectless own item same as it would drop any item, so the recompute is empty for a reason unrelated to identity, got %q", stderr)
+	}
+}
+
+// TestFilterByProject_NonEmptyFilterDropsProjectlessItem pins the narrow,
+// currently-reachable claim directly: with a non-empty project filter,
+// filterByProject drops an item whose Project is "" -- which, per ready-762,
+// is every item that has ever round-tripped through the nostr fold. This is
+// the mechanism TestPrintIdentityScopeHint_ProjectReapplyDropsProjectlessHidden
+// relies on; this test isolates it from printIdentityScopeHint entirely.
+func TestFilterByProject_NonEmptyFilterDropsProjectlessItem(t *testing.T) {
+	projectless := &state.Item{ID: "x", Status: "inbox"}
+	got := filterByProject([]*state.Item{projectless}, "project-a")
+	if len(got) != 0 {
+		t.Errorf("expected a projectless item to be dropped by a non-empty project filter, got %d items", len(got))
+	}
+	// Empty filter is a no-op regardless of Project.
+	got = filterByProject([]*state.Item{projectless}, "")
+	if len(got) != 1 {
+		t.Errorf("expected an empty project filter to pass every item through, got %d items", len(got))
 	}
 }
 

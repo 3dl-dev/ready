@@ -326,6 +326,14 @@ func identityBlindViewFilter(viewName string, filter views.Filter) views.Filter 
 // gate to identity scope (ready-497 rework, live-run false positive: one
 // item For==By==self, --for self, --scope an ungranted key -- the hint fired
 // blaming identity when the scope gate was the actual and only cause).
+//
+// The project reapply's real-world reach is narrower than it looks: Item.Project
+// has no nostr wire carrier today (ready-762), so every item in fullItems has
+// Project == "" regardless of what was set before publish, and a non-empty
+// projectFilter drops all of them uniformly. Re-check this function once
+// ready-762 lands a real carrier -- a wire-carried Project reopens the
+// original false-positive concern (a --project filter hiding the caller's
+// OWN item, misattributed here to identity) as a live case again.
 func printIdentityScopeHint(viewName, forFilter string, fullItems []*state.Item, filter views.Filter, projectFilter string, labelFilters []string, scopeDenied bool) {
 	if forFilter == "" {
 		return
