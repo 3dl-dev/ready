@@ -150,6 +150,15 @@ jobs:
         with:
           body_path: /tmp/release_notes.md
           generate_release_notes: false
+          # ready-3bd: a tag carrying a semver prerelease suffix (a hyphen,
+          # e.g. v0.17.1-rc1) must NOT become the repo's "latest" release —
+          # softprops/action-gh-release defaults prerelease to false, and
+          # GitHub marks the newest non-prerelease/non-draft release as
+          # latest, which would hand a test tag straight to `rd upgrade`
+          # users. Deriving this from the tag itself (rather than a
+          # hand-maintained flag) means it can never drift from what the
+          # tag actually says.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/*.zip

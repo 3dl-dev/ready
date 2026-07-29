@@ -2,6 +2,9 @@ package scripts
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -125,6 +128,92 @@ func TestReleaseWorkflow_DoesNotPushToMain(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflow_MarksPrereleaseTagsAsPrerelease proves the "Create
+// GitHub Release" step (softprops/action-gh-release@v3) computes its
+// `prerelease` input from the tag itself, so a tag carrying a semver
+// prerelease suffix (a hyphen, e.g. v0.17.1-rc1) is never marked as the
+// repo's "latest" release.
+//
+// softprops/action-gh-release defaults `prerelease` to false when the
+// input is absent, and GitHub marks the newest published non-prerelease
+// release as "latest" — the release `rd upgrade` hands to real users. A
+// test tag cut to verify this item's done condition (or any rc/beta tag)
+// would silently become that latest release with no `prerelease` input at
+// all.
+//
+// This does not just check the `prerelease:` key exists — a key set to a
+// literal `true`, or to a condition on the wrong field, would pass a
+// presence check while still shipping every stable release as a
+// prerelease, or every prerelease as latest. Instead it extracts the
+// actual expression and evaluates it (via a tiny local re-implementation
+// of GitHub Actions' `contains()`) against a table of real and synthetic
+// tag names, so both directions of the classification are proven: stable
+// tags must NOT be prerelease, and suffixed tags MUST be.
+func TestReleaseWorkflow_MarksPrereleaseTagsAsPrerelease(t *testing.T) {
+	raw := readWorkflow(t, "release.yml")
+	wf := parseWorkflow(t, raw)
+
+	release, ok := wf.Jobs["release"]
+	if !ok {
+		t.Fatalf("release.yml has no `release` job")
+	}
+
+	var prereleaseExpr string
+	var sawRelease bool
+	for _, step := range release.Steps {
+		if step.Uses != "" && strings.HasPrefix(step.Uses, "softprops/action-gh-release") {
+			sawRelease = true
+			prereleaseExpr = step.With["prerelease"]
+		}
+	}
+	if !sawRelease {
+		t.Fatalf("release.yml has no softprops/action-gh-release step")
+	}
+	if prereleaseExpr == "" {
+		t.Fatalf("Create GitHub Release step has no `prerelease` input — softprops/action-gh-release defaults this to false, so a test tag like v0.17.1-rc1 would be marked the repo's latest release and handed to `rd upgrade` users (ready-3bd)")
+	}
+
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"v0.17.0", false},
+		{"v1.0.0", false},
+		{"v0.17.1-rc1", true},
+		{"v1.0.0-beta.2", true},
+		{"v2.3.4-test", true},
+	}
+	for _, c := range cases {
+		got, ok := evalContainsGithubRefName(prereleaseExpr, c.ref)
+		if !ok {
+			t.Fatalf("`prerelease` expression %q is not a recognizable `contains(github.ref_name, '<suffix>')` check this test knows how to evaluate", prereleaseExpr)
+		}
+		if got != c.want {
+			t.Fatalf("`prerelease` expression %q evaluated against tag %q = %v, want %v — a stable tag would ship as prerelease (never becoming `latest`) or a prerelease tag would ship as a normal release and become GitHub's `latest`, which is what `rd upgrade` installs (ready-3bd)", prereleaseExpr, c.ref, got, c.want)
+		}
+	}
+}
+
+// evalContainsGithubRefName evaluates a GitHub Actions expression of the
+// shape `contains(github.ref_name, '<substr>')` (optionally wrapped in
+// `${{ }}`) against a candidate ref name, using Go's strings.Contains —
+// which is exactly the semantics GitHub Actions' own `contains()` function
+// implements for two string arguments. ok is false if expr isn't in this
+// shape, so a caller can distinguish "evaluated to false" from "this test
+// doesn't understand the expression."
+func evalContainsGithubRefName(expr, refName string) (result bool, ok bool) {
+	e := strings.TrimSpace(expr)
+	e = strings.TrimPrefix(e, "${{")
+	e = strings.TrimSuffix(e, "}}")
+	e = strings.TrimSpace(e)
+
+	m := regexp.MustCompile(`^contains\(\s*github\.ref_name\s*,\s*'([^']*)'\s*\)$`).FindStringSubmatch(e)
+	if m == nil {
+		return false, false
+	}
+	return strings.Contains(refName, m[1]), true
+}
+
 // TestPagesWorkflow_StampsVersionFromLatestTag proves the Pages deploy
 // derives site/index.html's softwareVersion from the latest release tag at
 // BUILD time (ready-3bd fix (c)/(d)) rather than release.yml committing a
@@ -189,6 +278,120 @@ func TestPagesWorkflow_StampsVersionFromLatestTag(t *testing.T) {
 
 	if !strings.Contains(raw, "fetch-depth: 0") {
 		t.Fatalf("pages.yml checkout has no fetch-depth: 0 — `git describe --tags` needs full history and tags to find the latest release tag")
+	}
+}
+
+// TestPagesWorkflow_StampExcludesPrereleaseTags proves the version-stamp
+// step's `git describe` invocation resolves the latest STABLE tag only,
+// never a prerelease tag (ready-3bd).
+//
+// `git describe --tags --abbrev=0 --match 'v*'` alone matches ANY
+// reachable tag, including a prerelease like v0.17.1-rc1 — if such a tag
+// were ever cut (e.g. to verify this very item's done condition), it
+// would get stamped onto the live site's softwareVersion as though it
+// were the actual release.
+//
+// This test does not assert the presence of an `--exclude` flag as text —
+// that is exactly the trap that produced this item's earlier defect (a
+// YAML-key check that stayed green while the underlying event never
+// fired). Instead it extracts the literal `git describe ...` command from
+// the step, builds a real scratch git repository with a stable tag AND a
+// prerelease tag reachable from HEAD, and actually EXECUTES the extracted
+// command against it — proving the real behaviour, not the flag's
+// documented behaviour.
+func TestPagesWorkflow_StampExcludesPrereleaseTags(t *testing.T) {
+	raw := readWorkflow(t, "pages.yml")
+	wf := parseWorkflow(t, raw)
+
+	deploy, ok := wf.Jobs["deploy"]
+	if !ok {
+		t.Fatalf("pages.yml has no `deploy` job")
+	}
+
+	var stampRun string
+	for _, step := range deploy.Steps {
+		if strings.Contains(step.Run, "softwareVersion") {
+			stampRun = step.Run
+		}
+	}
+	if stampRun == "" {
+		t.Fatalf("deploy job has no version-stamping step (expected a step editing softwareVersion)")
+	}
+
+	idx := strings.Index(stampRun, "git describe")
+	if idx == -1 {
+		t.Fatalf("version-stamp step does not invoke `git describe` at all")
+	}
+	rest := stampRun[idx:]
+	end := strings.Index(rest, "2>/dev/null")
+	if end == -1 {
+		t.Fatalf("version-stamp step's `git describe` invocation %q has no `2>/dev/null` guard this test knows how to isolate the command from", rest)
+	}
+	describeCmd := strings.TrimSpace(rest[:end])
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available to execute the real command: %v", err)
+	}
+
+	dir := t.TempDir()
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	runShell := func(command string) string {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", command)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("running extracted command %q: %v\n%s", command, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	runGit("init", "-q")
+	runGit("config", "user.email", "t@example.com")
+	runGit("config", "user.name", "t")
+
+	writeAndCommit := func(msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(msg), 0o644); err != nil {
+			t.Fatalf("write f.txt: %v", err)
+		}
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", msg)
+	}
+
+	// Stable tag only: must resolve to itself.
+	writeAndCommit("one")
+	runGit("tag", "v0.17.0")
+	if got := runShell(describeCmd); got != "v0.17.0" {
+		t.Fatalf("extracted command %q returned %q with only a stable tag reachable, want %q", describeCmd, got, "v0.17.0")
+	}
+
+	// A prerelease tag lands ahead of the stable tag: must still resolve
+	// to the stable tag, not the prerelease.
+	writeAndCommit("two")
+	runGit("tag", "v0.17.1-rc1")
+	if got := runShell(describeCmd); got != "v0.17.0" {
+		t.Fatalf("extracted command %q returned %q with prerelease tag v0.17.1-rc1 reachable ahead of stable v0.17.0, want %q (the prerelease must never be stamped onto the live site as the release version)", describeCmd, got, "v0.17.0")
+	}
+
+	// A new stable tag then supersedes the prerelease: must track forward.
+	writeAndCommit("three")
+	runGit("tag", "v0.17.1")
+	if got := runShell(describeCmd); got != "v0.17.1" {
+		t.Fatalf("extracted command %q returned %q after a new stable tag v0.17.1 was cut past the prerelease, want %q — the exclusion must not get stuck on an old stable tag forever", describeCmd, got, "v0.17.1")
 	}
 }
 
