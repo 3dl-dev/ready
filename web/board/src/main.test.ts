@@ -151,6 +151,37 @@ const IDENTITIES: { name: string; signing: boolean; identity: Identity }[] = [
   },
 ];
 
+/**
+ * The same two identity shapes as IDENTITIES, but pubkey === STRANGER instead
+ * of OWNER — a logged-in identity that owns none of the boards a hostile
+ * relay serves. ready-4c98: the board-link follow-target cases were pinned
+ * with only the signing (NIP-07 extension) shape, mirroring exactly the blind
+ * spot this file's own "TWO AXES, NOT ONE" header (above) already names for
+ * the rest of the suite — a canSign-gated rewrite of this discovery path
+ * shipped green once before every other case here was parametrized over both
+ * shapes. Both entries here are distinct from OWNER, so the read-only case
+ * still exercises the three-different-keys collapse the item exists to
+ * catch, not a fourth spelling of the signing one.
+ */
+const STRANGER_IDENTITIES: { name: string; signing: boolean; identity: Identity }[] = [
+  {
+    name: "read-only npub",
+    signing: false,
+    identity: {
+      pubkey: STRANGER,
+      auth: authTransition({ type: "login", method: "readOnly" }),
+    },
+  },
+  {
+    name: "NIP-07 extension (signing)",
+    signing: true,
+    identity: {
+      pubkey: STRANGER,
+      auth: authTransition({ type: "login", method: "extension" }),
+    },
+  },
+];
+
 /** A WebSocket stand-in that replays a scripted event list then EOSEs. The
  * onopen/onmessage callbacks are deferred to a microtask because relay.ts
  * assigns its handlers immediately AFTER `new WS(url)` returns. */
@@ -661,107 +692,122 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
   });
 });
 
-describe("afterLogin — the follow target is the logged-in key, not the relay's choice", () => {
-  it("SECURITY: a signing identity that authored none of the served boards sees none of them, however valid their signatures", async () => {
-    // STRANGER logs in with a NIP-07 extension and owns nothing. The hostile
-    // relay answers with OWNER's three GENUINE, correctly-signed boards plus
-    // OTHER's genuine delta. Signature verification alone does not reject any
-    // of those four — only "author must equal the logged-in key" does. Every
-    // other case in this file uses identity.pubkey === OWNER, where that
-    // distinction is invisible: main.ts could take its follow target from the
-    // served events (e.g. events[0].pubkey) and still render the right rows.
-    const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
-    const stranger: Identity = {
-      pubkey: STRANGER,
-      auth: authTransition({ type: "login", method: "extension" }),
-    };
-    expect(canSign(stranger.auth)).toBe(true);
+// ready-4c98 REWORK: parametrized over STRANGER_IDENTITIES (read-only npub AND
+// NIP-07 extension), not just the signing shape. The file's own "TWO AXES,
+// NOT ONE" header records that a canSign-gated rewrite of this exact
+// discovery path already shipped green once, which is why every other case
+// in this file runs over both identity shapes — a stranger identity is no
+// exception, and pinning only the signing half would repeat precisely that
+// blind spot for the follow-target property this describe block exists to
+// cover.
+describe.each(STRANGER_IDENTITIES)(
+  "afterLogin — the follow target is the logged-in key, not the relay's choice ($name)",
+  ({ signing, identity }) => {
+    it("SECURITY: an identity that authored none of the served boards sees none of them, however valid their signatures", async () => {
+      // STRANGER logs in and owns nothing. The hostile relay answers with
+      // OWNER's three GENUINE, correctly-signed boards plus OTHER's genuine
+      // delta. Signature verification alone does not reject any of those
+      // four — only "author must equal the logged-in key" does. Every other
+      // case in the rest of this file uses identity.pubkey === OWNER, where
+      // that distinction is invisible: main.ts could take its follow target
+      // from the served events (e.g. events[0].pubkey) and still render the
+      // right rows.
+      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+      expect(canSign(identity.auth)).toBe(signing);
 
-    await afterLogin(root, stranger, { kind: "none" }, deps);
+      await afterLogin(root, identity, { kind: "none" }, deps);
 
-    // ready-5c5: the REQ is kind-scoped only (no `authors`) — STRANGER's key
-    // is enforced client-side, by discoverOwnerBoards' owner check below, not
-    // by the wire filter.
-    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
-    expectItemFetchesScopedToRenderedBoards(capture, root);
-    // ANTI-VACUITY: the relay ignored that filter and served everything, so
-    // the genuine boards really were in front of main.ts when it rendered.
-    expect(capture.snapshot.map((e) => e.id).sort()).toEqual(
-      [alpha.id, beta.id, gamma.id, alphaDup.id, delta.id, forgedSig.id, impersonator.id].sort(),
-    );
-
-    expect(renderedBoards(root)).toEqual([]);
-    expect(root.textContent).toContain("No boards found.");
-    expectNoneOfOwnersBoardsRendered(root);
-    expectNoForgedContent(root);
-    expect(root.querySelector("p.identity")?.textContent).toBe(
-      expectedIdentityLine(STRANGER, true),
-    );
-  });
-
-  // ready-4c98: the single-board-link path (fragment.kind === "board") had NO
-  // case where parsedCoord.owner, identity.pubkey and events[0].pubkey were
-  // three DIFFERENT keys — every existing board-link fixture collapses all
-  // three to OWNER, so `discoverOwnerBoards(events, [events[0]?.pubkey ??
-  // parsedCoord.owner], parsedCoord.boardD)` (follow whatever the relay
-  // served first, or the logged-in key, instead of the link's own
-  // coordinate) would still pass 100% of them.
-  it("SECURITY: a single-board link follows the LINK'S coordinate owner, not the relay's first event nor the logged-in identity", async () => {
-    // THREE DISTINCT keys: the link names OWNER; the logged-in identity is
-    // STRANGER, who owns nothing; the hostile relay's FIRST served event
-    // (events[0]) is attackerAlpha, authored by a third key, ATTACKER_OWNER —
-    // genuinely Go-signed, at the exact "alpha" coordinate
-    // the link asks OWNER for. Verification alone cannot reject it; only
-    // "author must equal the link's named owner" can.
-    const deps = injectedDeps(
-      [attackerAlpha, alpha, alphaDup, beta, gamma, forgedSig, impersonator, delta],
-      capture,
-    );
-    const stranger: Identity = {
-      pubkey: STRANGER,
-      auth: authTransition({ type: "login", method: "extension" }),
-    };
-    const discoverSpy = vi.spyOn(boarddiscoveryModule, "discoverOwnerBoards");
-
-    try {
-      await afterLogin(
-        root,
-        stranger,
-        { kind: "board", board: boardCoord(OWNER, "alpha"), relays: [LINK_RELAY] },
-        deps,
+      // ready-5c5: the REQ is kind-scoped only (no `authors`) — STRANGER's key
+      // is enforced client-side, by discoverOwnerBoards' owner check below, not
+      // by the wire filter.
+      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
+      expectItemFetchesScopedToRenderedBoards(capture, root);
+      // ANTI-VACUITY: the relay ignored that filter and served everything, so
+      // the genuine boards really were in front of main.ts when it rendered.
+      expect(capture.snapshot.map((e) => e.id).sort()).toEqual(
+        [alpha.id, beta.id, gamma.id, alphaDup.id, delta.id, forgedSig.id, impersonator.id].sort(),
       );
 
-      // ANTI-VACUITY: the hostile relay really did serve attackerAlpha FIRST —
-      // if the mutation reads events[0]?.pubkey, this is the pubkey it gets.
-      expect(capture.snapshot[0]?.id).toBe(attackerAlpha.id);
-      expect(capture.snapshot.map((e) => e.id)).toContain(attackerAlpha.id);
-
-      // DIRECTLY on the resolved follow target, not only the REQ filter (the
-      // single-board REQ carries no `authors` at all post-ready-5c5, so a
-      // filter-only assertion could never have distinguished this anyway).
-      // discoverOwnerBoards' owners argument must be exactly [OWNER] — never
-      // [attackerAlpha.pubkey] (events[0].pubkey) nor [stranger.pubkey]
-      // (identity.pubkey).
-      expect(discoverSpy).toHaveBeenCalled();
-      const owners = discoverSpy.mock.calls[0]?.[1];
-      expect(owners).toEqual([OWNER]);
-      expect(owners).not.toEqual([ATTACKER_OWNER]);
-      expect(owners).not.toEqual([STRANGER]);
-
-      // BEHAVIOURALLY too: OWNER's genuine "alpha" coordinate renders (latest-
-      // wins: alphaDup's title), attacker's namesake board does not, however
-      // validly it is signed, and it is not the logged-in identity's problem
-      // either (stranger owns nothing and sees no boards of their own).
-      expect(renderedBoards(root)).toEqual([
-        { title: "Alpha Board Dup", coord: boardCoord(OWNER, "alpha") },
-      ]);
-      expect(root.textContent).not.toContain("Attacker's Alpha Board");
+      expect(renderedBoards(root)).toEqual([]);
+      expect(root.textContent).toContain("No boards found.");
+      expectNoneOfOwnersBoardsRendered(root);
       expectNoForgedContent(root);
-    } finally {
-      discoverSpy.mockRestore();
-    }
-  });
-});
+      expect(root.querySelector("p.identity")?.textContent).toBe(
+        expectedIdentityLine(STRANGER, signing),
+      );
+    });
+
+    // ready-4c98: the single-board-link path (fragment.kind === "board") had NO
+    // case where parsedCoord.owner, identity.pubkey and events[0].pubkey were
+    // three DIFFERENT keys — every existing board-link fixture collapses all
+    // three to OWNER, so `discoverOwnerBoards(events, [events[0]?.pubkey ??
+    // parsedCoord.owner], parsedCoord.boardD)` (follow whatever the relay
+    // served first, or the logged-in key, instead of the link's own
+    // coordinate) would still pass 100% of them.
+    it("SECURITY: a single-board link follows the LINK'S coordinate owner, not the relay's first event nor the logged-in identity", async () => {
+      // THREE DISTINCT keys: the link names OWNER; the logged-in identity is
+      // STRANGER, who owns nothing; the hostile relay's FIRST served event
+      // (events[0]) is attackerAlpha, authored by a third key, ATTACKER_OWNER —
+      // genuinely Go-signed, at the exact "alpha" coordinate
+      // the link asks OWNER for. Verification alone cannot reject it; only
+      // "author must equal the link's named owner" can.
+      //
+      // injectedDeps (the filter-ignoring FakeRelayWebSocket), not
+      // injectedHonouringDeps, is the right seam here: nothing below asserts
+      // on the emitted REQ filter, and the behavioural assertions
+      // (renderedBoards, discoverOwnerBoards' owners argument) hold
+      // regardless of what was requested, because discoverOwnerBoards filters
+      // the FULL received snapshot by owner+coordinate client-side. A
+      // filter-ignoring stub cannot make this test pass vacuously — it can
+      // only make the anti-vacuity checks below (capture.snapshot really
+      // contained attackerAlpha) trivially true, which is exactly what they
+      // are for.
+      const deps = injectedDeps(
+        [attackerAlpha, alpha, alphaDup, beta, gamma, forgedSig, impersonator, delta],
+        capture,
+      );
+      const discoverSpy = vi.spyOn(boarddiscoveryModule, "discoverOwnerBoards");
+
+      try {
+        await afterLogin(
+          root,
+          identity,
+          { kind: "board", board: boardCoord(OWNER, "alpha"), relays: [LINK_RELAY] },
+          deps,
+        );
+
+        // ANTI-VACUITY: the hostile relay really did serve attackerAlpha FIRST —
+        // if the mutation reads events[0]?.pubkey, this is the pubkey it gets.
+        expect(capture.snapshot[0]?.id).toBe(attackerAlpha.id);
+        expect(capture.snapshot.map((e) => e.id)).toContain(attackerAlpha.id);
+
+        // DIRECTLY on the resolved follow target, not only the REQ filter (the
+        // single-board REQ carries no `authors` at all post-ready-5c5, so a
+        // filter-only assertion could never have distinguished this anyway).
+        // discoverOwnerBoards' owners argument must be exactly [OWNER] — never
+        // [attackerAlpha.pubkey] (events[0].pubkey) nor [identity.pubkey]
+        // (STRANGER, for either identity shape parametrized here).
+        expect(discoverSpy).toHaveBeenCalled();
+        const owners = discoverSpy.mock.calls[0]?.[1];
+        expect(owners).toEqual([OWNER]);
+        expect(owners).not.toEqual([ATTACKER_OWNER]);
+        expect(owners).not.toEqual([STRANGER]);
+
+        // BEHAVIOURALLY too: OWNER's genuine "alpha" coordinate renders (latest-
+        // wins: alphaDup's title), attacker's namesake board does not, however
+        // validly it is signed, and it is not the logged-in identity's problem
+        // either (stranger owns nothing and sees no boards of their own).
+        expect(renderedBoards(root)).toEqual([
+          { title: "Alpha Board Dup", coord: boardCoord(OWNER, "alpha") },
+        ]);
+        expect(root.textContent).not.toContain("Attacker's Alpha Board");
+        expectNoForgedContent(root);
+      } finally {
+        discoverSpy.mockRestore();
+      }
+    });
+  },
+);
 
 /**
  * ready-5c5 — EVERY discovery query, against a relay that HONOURS NIP-01.
