@@ -91,14 +91,18 @@ read from the `status` tag, never from the kind (§6.5).
 (`BuildIssueEvent`, `pkg/sync/nostrwire.go:485`; `FindIssueEventID`,
 `pkg/sync/nostrwire.go:510`). It exists purely for generic-client interop and
 **does not fold**: `itemIDForEvent` returns `""` for it
-(`pkg/sync/nostrwire.go:593-610`), so the loop skips it at
+(`pkg/sync/nostrwire.go:618-635`), so the loop skips it at
 `pkg/sync/nostrproject.go:261-264`.
 
 **§2.5 kind 39301 — rd role grant.** `KindRoleGrant = 39301`
-(`pkg/sync/rolegrant.go:45`), addressable per `(boardD, grantee)` slot via
-`d = "<boardD>:<grantee>"` (`roleGrantD`, `pkg/sync/rolegrant.go:166`). It
-produces no item; it feeds read-trust, status authority and confidential key
-material (§11, §12).
+(`pkg/sync/rolegrant.go:50`). A grant carrying no key material is addressable per
+`(boardD, grantee)` slot via `d = "<boardD>:<grantee>"`; a CEK-BEARING grant takes
+a PER-EPOCH slot `d = "<boardD>:<grantee>:e<epoch>"` (`roleGrantD`,
+`pkg/sync/rolegrant.go:200`) so a rotation cannot replace — and thereby delete —
+the previous epoch's key on a relay (§16.10). Authz stays latest-wins per grantee
+across both slot shapes, because `deriveGrants` orders by `(created_at, id)` and
+never reads `d`. It produces no item; it feeds read-trust, status authority and
+confidential key material (§11, §12).
 
 **§2.6** No other kind participates. Any event whose kind is not 30301, 30302,
 1630–1633 or 39301 is dropped by the `itemIDForEvent == ""` guard
@@ -141,7 +145,7 @@ bounded `until`, the event is dropped when `e.CreatedAt >= until[e.PubKey]`
 (`pkg/sync/nostrproject.go:246-248`). A revoked key's **past** events survive; its
 **future** events drop.
 Non-revoked keys map to `authoritativeForever = MaxInt64`
-(`pkg/sync/rolegrant.go:67`), so the comparison is inert for them.
+(`pkg/sync/rolegrant.go:72`), so the comparison is inert for them.
 
 **§3.6 Board branch.** A `KindBoard` event is recorded as the latest-wins board
 for its coordinate `BoardCoord(e.PubKey, tagValue(e,"d"))` and the loop
@@ -150,7 +154,7 @@ guard because a board's `d` tag is a boardD, not an item id.
 
 **§3.7 Item-id guard.** `itemIDForEvent(e)` must be non-empty
 (`pkg/sync/nostrproject.go:261-264`). For a card that is the `d` tag; for a status event it is `d`, else
-the third field of the first `a` coordinate (`pkg/sync/nostrwire.go:593-610`).
+the third field of the first `a` coordinate (`pkg/sync/nostrwire.go:618-635`).
 
 **§3.8 Board pinning (cards only).** When `opts.PinnedBoard != ""`, a `KindCard`
 whose FIRST `a` tag is not exactly `PinnedBoard` is rejected
@@ -195,9 +199,9 @@ event set, which is what makes replay convergent across machines
 
 **§4.4 Grant ordering.** 39301 grants replay oldest-first under the same key:
 `newerGrant` is `newerThan` on `(created_at, id)`
-(`pkg/sync/rolegrant.go:605-610`), and the ascending sort is expressed as
-`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:487-489`). Last
-cap-valid grant applied per grantee wins (`:454-486`).
+(`pkg/sync/rolegrant.go:643-648`), and the ascending sort is expressed as
+`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:525-527`). Last
+cap-valid grant applied per grantee wins (`:492-524`).
 
 **§4.5 Board ordering.** Latest-wins per board coordinate under `newerThan`
 (`pkg/sync/nostrproject.go:256-258`). Only the WINNING board's `p` tags name
@@ -213,7 +217,7 @@ second granularity (`:418`).
 **§4.7 Write-side monotonic stamping (per causal chain).** A new event's
 `created_at` is `max(now, newestInScope+1)` where scope is the event's causal
 chain (`nostrNextCreatedAt`, `cmd/rd/nostr.go:222-241`). Scope keys come from
-`DriftScope` (`pkg/sync/nostrwire.go:557-577`): `item:<id>` for a card / status /
+`DriftScope` (`pkg/sync/nostrwire.go:557-597`): `item:<id>` for a card / status /
 issue, `grant:<boardD>:<grantee>` for a 39301, `board:<d>` for a 30301. Scoping the
 bump to one chain bounds future-drift so an unrelated write burst cannot inflate a
 card's `created_at` past a genuinely-later cross-machine edit. This is a **write**
@@ -539,7 +543,7 @@ drop-with-warning behaviour is campfire-only (`pkg/state/state.go:610-628`,
 
 **§10.3 Confidential labels.** On a confidential board with an LTK, the clear `l`
 tag value is `hex(HMAC-SHA256(LTK, label))`
-(`labelToken`, `pkg/sync/envelope.go:284-288`; emitted at
+(`labelToken`, `pkg/sync/envelope.go:307-311`; emitted at
 `pkg/sync/nostrwire.go:304-309`). With NO LTK, a confidential card emits **no** `l`
 tag at all rather than leaking a plaintext label
 (`pkg/sync/nostrwire.go:310-314`). A granted reader replaces `Item.Labels` with
@@ -565,9 +569,9 @@ which is why tokenization needs no relay-side cooperation (frozen envelope §7).
 
 **§11.1 Marker tags.** A confidential card or status event carries exactly two new
 clear tags: `["enc","1"]` and `["cek_epoch","<int>"]`
-(`encMarkerTags`, `pkg/sync/envelope.go:318-323`; constants at `:191-200`).
+(`encMarkerTags`, `pkg/sync/envelope.go:341-346`; constants at `:214-223`).
 `isConfidential(e)` is `tagValue(e,"enc") != ""` — ANY version
-(`pkg/sync/envelope.go:136-138`).
+(`pkg/sync/envelope.go:159-161`).
 
 **§11.2 Well-formedness (structural, key-free).** `encWellFormed`
 (`pkg/sync/envelope.go:73-85`) requires ALL of: `enc` tag exactly `"1"` (absent or
@@ -590,13 +594,13 @@ path. The accepted limit (an admitted member can backdate below the cutover) is
 frozen-spec §8 and is unchanged.
 
 **§11.5 Board coordinate of an event.** `boardCoordOf` scans for the `a` tag whose
-value starts with `"30301:"` (`pkg/sync/envelope.go:123-131`). This works for both
+value starts with `"30301:"` (`pkg/sync/envelope.go:146-154`). This works for both
 shapes: a card's sole `a` tag IS the board coordinate
 (`cardBoardCoord`, `pkg/sync/nostrwire.go:240-249`), while a status event carries
 the board coordinate as a SECOND `a` tag after the card coordinate
 (`BuildStatusEventWithIssueRoot`, `pkg/sync/nostrwire.go:451-454`).
 
-**§11.6 CEK resolution.** `cekFor` (`pkg/sync/envelope.go:144-153`) returns
+**§11.6 CEK resolution.** `cekFor` (`pkg/sync/envelope.go:167-176`) returns
 `ok=false` unless a decryptor is present, `enc` is exactly `"1"`, `cek_epoch`
 parses, AND the decryptor holds a key for `(boardCoord, epoch)`. Every negative
 path is a silent fail-closed, never an error surfaced to the user.
@@ -604,7 +608,7 @@ path is a silent fail-closed, never an error surfaced to the user.
 **§11.7 Card placeholder rule.** When `isConfidential(card)`
 (`pkg/sync/nostrproject.go:603`): on successful decrypt, `Title`, `Context`,
 `Description`, `WaitingOn` come from the sealed `cardPayload`
-(`pkg/sync/envelope.go:223-228`), and `Labels` are replaced only if the sealed
+(`pkg/sync/envelope.go:246-251`), and `Labels` are replaced only if the sealed
 list is non-empty (`pkg/sync/nostrproject.go:604-611`). On failure: `Title`,
 `Context`, `Description` become `placeholderText` = `"[encrypted]"`
 (`pkg/sync/envelope.go:39`) and `WaitingOn` becomes `""` — hidden rather than
@@ -616,38 +620,38 @@ never exits non-zero.
 **§11.8 Status placeholder rule.** A confidential status event's `Note` is the
 decrypted `{"reason": ...}` on success, else `placeholderText`
 (`pkg/sync/nostrproject.go:409-416`; `decryptStatusReason`,
-`pkg/sync/envelope.go:175-189`). The rest of the history entry (who / when /
+`pkg/sync/envelope.go:198-212`). The rest of the history entry (who / when /
 from→to) renders regardless.
 
 **§11.9 Content wire format.** `base64Std(nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce,
 plaintext))`, fresh `crypto/rand` nonce per event
-(`sealContent`, `pkg/sync/envelope.go:239-253`; `openContent`, `:259-278`). This
+(`sealContent`, `pkg/sync/envelope.go:262-276`; `openContent`, `:282-301`). This
 restates frozen §3 and MUST NOT drift from it.
 
 **§11.10 Epoch model.** Epochs are integers `>= 1`. Bootstrap mints epoch 1
-(`boardConfidentialEnvelope`, `cmd/rd/confidential.go:139-159`) via an
+(`boardConfidentialEnvelope`, `cmd/rd/confidential.go:156-176`) via an
 owner-signed self-grant (`publishOwnerCEKSelfGrant`,
-`cmd/rd/confidential.go:305-335`) and wraps it to existing members
-(`wrapEpochToMembers`, `:253`). A grant whose `cek_epoch < 1` is rejected outright
+`cmd/rd/confidential.go:324-354`) and wraps it to existing members
+(`wrapEpochToMembers`, `:272`). A grant whose `cek_epoch < 1` is rejected outright
 by keyring derivation (`pkg/sync/keydist.go:164-170`) — it contributes neither a
 key nor a cutover.
 
 **§11.11 Rotation.** A rotation mints a FRESH random CEK at `OldEpoch + 1`
-(`rotateBoardEpoch`, `cmd/rd/confidential.go:459-477`), publishes the owner
+(`rotateBoardEpoch`, `cmd/rd/confidential.go:478-496`), publishes the owner
 self-grant for it, and re-wraps it — with the **stable LTK** — to the membership
-computed by the plan. The new key is never derived from the old one (`:460`,
+computed by the plan. The new key is never derived from the old one (`:481`,
 `MintKey`), so a compromised epoch confers nothing about its successor. Two entry
 points share that one implementation:
 
 - `rd revoke` / `rd kill` rotate automatically (`rekeyBoardOnRevoke`,
-  `cmd/rd/confidential.go:486-505`), excluding the just-revoked key. It is a
+  `cmd/rd/confidential.go:505-524`), excluding the just-revoked key. It is a
   no-op — not an error — on a plaintext board, a non-owner signer, or a board
-  whose CEK was never bootstrapped (`:487-498`), because a revoke must still
+  whose CEK was never bootstrapped (`:508-519`), because a revoke must still
   succeed on those.
 - `rd confidential rotate` (`cmd/rd/confidential_cmd.go`) rotates on demand, for
   a key that leaked with no member to revoke. It REFUSES, with a stated reason
   and no write, in each of those same states (`planBoardRotation`,
-  `cmd/rd/confidential.go:410-457`).
+  `cmd/rd/confidential.go:429-476`).
 
 **§11.11a Rotation does not touch history.** A rotation publishes kind-39301
 grants and NOTHING else. No card is re-sealed, re-signed or invalidated: every
@@ -660,7 +664,7 @@ the leak (it would fork thousands of signed events and lock out every member tha
 missed the rotation), so it is forbidden, not merely unimplemented.
 
 **§11.11b The withheld set is EVERY revoked key, not the last one.**
-`rotationMembership` (`cmd/rd/confidential.go:209-225`) wraps the new epoch to
+`rotationMembership` (`cmd/rd/confidential.go:228-244`) wraps the new epoch to
 each grant-holder whose winning cap-valid grant is non-revoked, minus the board
 owner (self-granted separately) and minus an explicitly excluded pubkey. The
 revoked filter is load-bearing and distinct from that exclusion: `DeriveLevels` /
@@ -673,8 +677,8 @@ for exactly one revocation and then unwind.
 **§11.11c A re-issued grant carries the member's CURRENT role and label.**
 kind-39301 is addressable on `(boardD, grantee)` (§4.1), so the grant a rotation
 publishes REPLACES the member's existing one. `wrapEpochToMembers`
-(`cmd/rd/confidential.go:253-290`) therefore reads each member's winning role and
-label from the log (`DeriveGrantHolders`, `pkg/sync/rolegrant.go:426-440`) and
+(`cmd/rd/confidential.go:272-309`) therefore reads each member's winning role and
+label from the log (`DeriveGrantHolders`, `pkg/sync/rolegrant.go:464-478`) and
 re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
 hardcoded role would silently demote every maintainer on every rotation.
 
@@ -700,7 +704,7 @@ returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
 **§11.15 Nil-keyring safety.** `boardReadKeyring` may return a nil
-`*BoardKeyring` (`cmd/rd/confidential.go:336-351`), which becomes a NON-nil
+`*BoardKeyring` (`cmd/rd/confidential.go:355-370`), which becomes a NON-nil
 interface value in `ProjectOptions.{Decryptor,EncryptedBoards}`. Every
 `BoardKeyring` method therefore nil-checks its receiver
 (`pkg/sync/keydist.go:72-74`, `:87-89`, `:98-100`, `:111-113`), so a nil keyring
@@ -711,55 +715,55 @@ client MUST reproduce the *behaviour* (inert gate), not the Go-specific mechanis
 
 ## 12. Role grants (39301): read-trust, levels, until
 
-**§12.1 Parse.** `parseRoleGrant` (`pkg/sync/rolegrant.go:204-251`) requires kind
+**§12.1 Parse.** `parseRoleGrant` (`pkg/sync/rolegrant.go:242-289`) requires kind
 39301, a non-empty `p` (grantee), a `role` in
-`{owner, maintainer, contributor, revoked}` (`:213-217`), and a well-formed
-`a` = `30301:<owner>:<d>` (`:218-221`, `parseBoardCoord` at `:263-276`). A `from`
-tag must parse as a non-negative int or the whole grant is rejected (`:222-229`).
-An unparseable `cek_epoch` coerces to 0 (`:230-235`) — which §11.10 then rejects.
+`{owner, maintainer, contributor, revoked}` (`:251-255`), and a well-formed
+`a` = `30301:<owner>:<d>` (`:256-259`, `parseBoardCoord` at `:301-314`). A `from`
+tag must parse as a non-negative int or the whole grant is rejected (`:260-267`).
+An unparseable `cek_epoch` coerces to 0 (`:268-273`) — which §11.10 then rejects.
 
 **§12.2 Full-coordinate binding.** Only grants whose `a` names BOTH
 `owner == boardAuthor` AND `d == boardD` are replayed
-(`pkg/sync/rolegrant.go:441-443`). An empty `boardD` matches no grant
+(`pkg/sync/rolegrant.go:479-481`). An empty `boardD` matches no grant
 (fail-closed, never every board).
 
 **§12.3 Level mapping.** `owner`/`maintainer` → 2, `contributor` → 1, `revoked` →
-0, unknown → 1 (`roleToLevel`, `pkg/sync/rolegrant.go:307-319`). Keys ABSENT from
+0, unknown → 1 (`roleToLevel`, `pkg/sync/rolegrant.go:345-357`). Keys ABSENT from
 the map are level 1 by caller convention, NOT level 0
-(`pkg/sync/rolegrant.go:352-355`).
+(`pkg/sync/rolegrant.go:390-393`).
 
 **§12.4 Bootstrap.** The board author is seeded at level 2 with
-`until = authoritativeForever` (`pkg/sync/rolegrant.go:415-419`). This is what
+`until = authoritativeForever` (`pkg/sync/rolegrant.go:453-457`). This is what
 makes grant-derived trust non-circular: owner-signed grants are always admitted.
 
-**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:562-596`):
-only the board author may grant `maintainer`/`owner` (`:527-529`); the owner may
-grant `contributor`/`revoked` to anyone (`:531-533`); a non-owner signer must
-itself be level `>= 2` (`:534-536`), may never target the board author
-(**owner lockout**, `:537-540`), and may never target a current maintainer
-(**peer protection**, `:541-544`). Any other signer grants nothing (`:546-548`).
+**§12.5 Escalation cap.** `signerMayGrant` (`pkg/sync/rolegrant.go:600-634`):
+only the board author may grant `maintainer`/`owner` (`:565-567`); the owner may
+grant `contributor`/`revoked` to anyone (`:569-571`); a non-owner signer must
+itself be level `>= 2` (`:572-574`), may never target the board author
+(**owner lockout**, `:575-578`), and may never target a current maintainer
+(**peer protection**, `:579-582`). Any other signer grants nothing (`:584-586`).
 A cap-violating grant is IGNORED, evaluated against state replayed so far
-(`:457-459`).
+(`:495-497`).
 
 **§12.6 Single-use claim binding.** A grant carrying a `claim` tag AND signed by
 the board author binds that nonce to exactly one grantee, first-cap-valid-wins;
 a later owner grant reusing the same claim for a DIFFERENT grantee is skipped
-(`pkg/sync/rolegrant.go:478-483`). A `claim` on a non-owner grant is inert — the
+(`pkg/sync/rolegrant.go:516-521`). A `claim` on a non-owner grant is inert — the
 grant still applies as an ordinary contributor grant.
 
 **§12.7 `until` derivation.** For each grantee's winning grant: if `role ==
 revoked`, `until = from` when `from > 0`, else the grant's `created_at`; otherwise
-`until = authoritativeForever` (`pkg/sync/rolegrant.go:489-499`). This is the
+`until = authoritativeForever` (`pkg/sync/rolegrant.go:527-537`). This is the
 value §3.5 gates on.
 
-**§12.8 Read-trust set.** `DeriveReadTrust` (`pkg/sync/rolegrant.go:394-401`) is
+**§12.8 Read-trust set.** `DeriveReadTrust` (`pkg/sync/rolegrant.go:432-439`) is
 the key set of the level map — board author plus every cap-valid grantee,
 **including revoked ones** (level 0), so their past events stay admissible. A key
 that never received an owner-rooted grant is absent (fail-closed).
 
 **§12.9 One replay, three consumers.** `deriveGrants`
-(`pkg/sync/rolegrant.go:447-561`) is the single replay behind `DeriveLevels`
-(`:356`), `DeriveReadTrust` (`:394`), `ClaimGrantee` (`:367`) and
+(`pkg/sync/rolegrant.go:485-599`) is the single replay behind `DeriveLevels`
+(`:394`), `DeriveReadTrust` (`:432`), `ClaimGrantee` (`:405`) and
 `DeriveAllowlist` (`pkg/sync/allowlist.go:44`) — so the graded read-trust set and
 the coarse relay allowlist cannot drift.
 
@@ -909,7 +913,7 @@ types `replayState` (`:373-388`), `blockEdge` (`:391-395`) and `blockEdgeKey`
 (`:274-278`), `gateResolvePayload` (`:281-285`), `labelDefinePayload`
 (`:472-475`), `labelMutPayload` (`:641-644`). **Reason:** all decode `work:*`
 campfire messages. The nostr fold resolves items by the `d` tag / `a` coordinate
-instead (`itemIDForEvent`, `pkg/sync/nostrwire.go:593-610`) and its dedup helper
+instead (`itemIDForEvent`, `pkg/sync/nostrwire.go:618-635`) and its dedup helper
 is `appendUniqueStr` (§8.5). Note `state.statusPayload` is unrelated to
 `sync.statusPayload` (§11.8), which is the sealed `{"reason": ...}` blob.
 
@@ -1122,15 +1126,15 @@ author.
 
 **§16.7 Confidential sealing is decided per write, from the log.** Immediately
 before building the card, every live write calls `setCardEnvelope`
-(`cmd/rd/confidential.go:292-304`) → `boardConfidentialEnvelope` (`:85-160`),
+(`cmd/rd/confidential.go:311-323`) → `boardConfidentialEnvelope` (`:85-177`),
 which returns: `nil` (plaintext) when the project config opts out
 (`boardIsConfidential`, `:56-62`, default **confidential**) or no board is pinned
 (`:93-95`); the current-epoch `Envelope` when the writer's keyring yields one
 (`envelopeFromKeyring`, `:66-84`); a freshly minted epoch-1 CEK+LTK plus an
-owner self-grant when the owner writes first (`:139-159`,
-`publishOwnerCEKSelfGrant`, `:305-335`); or a hard error when the board is
-confidential and the writer holds no key (`:127-133`). A non-owner writing to a
-not-yet-bootstrapped board writes plaintext (`:134-138`). Consequence for an
+owner self-grant when the owner writes first (`:156-176`,
+`publishOwnerCEKSelfGrant`, `:324-354`); or a hard error when the board is
+confidential and the writer holds no key (`:133-139`). A non-owner writing to a
+not-yet-bootstrapped board writes plaintext (`:140-144`). Consequence for an
 independent client: **you cannot write to a confidential board without a
 grant-borne CEK.** Publishing a plaintext card there is not a degraded write, it
 is a quarantined one (§3, `pkg/sync/envelope.go:100-116`).
@@ -1168,43 +1172,66 @@ The refusal is total rather than partial. There is no safe subset of a card to
 rewrite when its free text is unreadable, and degrading silently would hide the
 usual cause — a CEK epoch whose grant no longer exists (§16.10).
 
-**§16.10 KNOWN DEFECT — a rotation destroys the old epoch's key on the relay.**
-`DeriveBoardKeyring` scans ALL historical grants rather than latest-wins, and
-says so explicitly: "a member keeps the old-epoch CEKs it was given, so
-historical reads survive" (`pkg/sync/keydist.go:174-177`). That holds only
-against a local append-only log. A grant is ADDRESSABLE with
-`d = "<boardD>:<grantee>"` (`roleGrantD`, `pkg/sync/rolegrant.go:166`), one slot
-per grantee for every epoch — so on any NIP-01-conformant relay a new-epoch grant
-REPLACES its predecessor and the old epoch's wrapped CEK is gone. The two clauses
-contradict each other, and the relay wins.
+**§16.10 A CEK-bearing grant occupies a slot per epoch.** `DeriveBoardKeyring`
+scans ALL historical grants rather than latest-wins, so "a member keeps the
+old-epoch CEKs it was given, so historical reads survive"
+(`pkg/sync/keydist.go:174-177`). For that to hold on a RELAY and not merely in a
+local append-only log, each epoch needs its own addressable slot — a relay keeps
+only the newest event per `(kind, pubkey, d)`. So a grant carrying a wrapped CEK
+is addressed `d = "<boardD>:<grantee>:e<epoch>"`, while a grant with no key
+material — a plain role grant, and in particular a REVOKE — keeps the bare
+`"<boardD>:<grantee>"` slot (`roleGrantD`, `pkg/sync/rolegrant.go:200`).
 
-Measured on the live public relay 2026-07-28, after one rotation of the `ready`
-board: `wss://relay.3dl.network` returned four kind-39301 grants, all epoch 2,
-zero epoch 1 — while 200 of that board's 344 cards were still sealed at epoch 1.
-A reader who bootstraps from the relay (a second machine, `rd join`, a fresh
-clone, the browser board) can therefore decrypt 6 of 206 confidential cards. The
-only surviving copy of that board's epoch-1 CEK is one workstation's
-`.ready/nostr-log.jsonl`.
+Splitting the slot is safe because nothing reads this `d` for meaning: authz
+replay orders latest-per-GRANTEE by `(created_at, id)` and never inspects it
+(`deriveGrants`, `pkg/sync/rolegrant.go:485`), and `DeriveBoardKeyring`
+(`pkg/sync/keydist.go:178`) selects on the `a` board coordinate plus the `p`
+grantee tag. The `d` is a relay retention key and nothing more — so a revoke still
+supersedes every earlier grant for that grantee regardless of which slot each one
+occupies.
 
-Two consequences follow, and both are real rather than theoretical. The epoch tag
-does not identify the key: a card tagged `cek_epoch=1` may have been sealed under
-a *different* epoch-1 CEK than the one a reader holds, which is exactly how the
-three `enc-live` fixtures became permanently unreadable (an earlier
-`confidential enable` minted an epoch-1 key that a later one replaced in the same
-slot). And rotation as implemented is not forward secrecy but forward amnesia —
-it withholds the new key from a revoked member as designed, while also
-withholding every old key from everyone who was not already holding the log.
+Causal ORDERING deliberately does NOT follow the split. `DriftScope`
+(`pkg/sync/nostrwire.go:557`) keys a 39301's chain off `(a, p)` rather than `d`, so
+a CEK grant in a per-epoch slot and the revoke that supersedes it share one
+monotonic scope and the revoke still stamps strictly after it. Keying on `d` would
+put them in different scopes and let a same-second revoke lose to the grant it was
+meant to supersede — the §17.4 lost-revoke, reintroduced through the back door. For
+every grant written before per-epoch slots the `(a, p)` derivation yields the
+identical string `d` did, so existing logs are unaffected.
 
-The fix direction, verified against both consumers but NOT yet implemented: give
-a CEK-bearing grant its own addressable slot per epoch
-(`d = "<boardD>:<grantee>:e<epoch>"`), keeping the bare `<boardD>:<grantee>` slot
-for CEK-less authz/revocation grants. `deriveGrants`
-(`pkg/sync/rolegrant.go:485-495`) replays latest-per-GRANTEE by `(created_at, id)`
-and never reads the `d` tag, and `DeriveBoardKeyring` filters on the `a`
-coordinate plus the `p` tag and also never reads `d` — so per-epoch slots change
-neither authz nor revocation semantics, and old-epoch grants would survive on the
-relay. Tracked as `ready-76b`'s follow-up; until it ships, treat a rotation on a
-board whose history matters as a one-way operation.
+**A lost key is not an absent key.** Per-epoch slots stop a ROTATION from
+destroying a key; a lost log could still destroy one by minting over it. Before
+bootstrapping a fresh epoch-1 CEK the owner path therefore checks whether the board
+already has SEALED cards (`HasConfidentialCard`, `pkg/sync/envelope.go:129`) and
+refuses if it does: sealed cards plus no readable CEK grant means the grant did not
+survive into this log, not that the board is plaintext and about to become
+confidential. Minting there installs a SECOND key at epoch 1 and orphans every card
+sealed under the first — the mechanism that permanently destroyed three cards on
+the `ready` board. The owner also now runs the same targeted self-grant reconcile a
+non-owner does (`reconcileSelfGrantEnvelope`, `cmd/rd/confidential.go:192`), so a
+fresh clone RECOVERS the board key instead of replacing it.
+
+The refusal is keyed on local evidence, deliberately. Refusing whenever the relays
+are unreachable would have been the obvious guard and is the wrong one: it breaks
+rd's offline-first write path for the common case (a genuinely new board) in order
+to catch the rare one, and `reconcile` reports relay failures in `RelayErrors`
+rather than as an error, so "the fetch returned" is not evidence anyone answered.
+
+**What the shared slot cost before this.** A rotation's new-epoch grant REPLACED
+the old-epoch grant, deleting the old CEK from the relay outright, while the code
+above still promised historical reads. Measured on the live public relay after one
+rotation of the `ready` board: four grants returned, ALL epoch 2, ZERO epoch 1 —
+against 200 of that board's 344 cards still sealed at `cek_epoch=1`. A relay-only
+reader decrypted 6 of 206 confidential cards, and the sole surviving copy of that
+key was one workstation's `.ready/nostr-log.jsonl`. Two consequences followed, both
+observed rather than predicted: the epoch tag did not identify the key (running
+`confidential enable` twice minted a second epoch-1 CEK into the same slot and
+orphaned every card sealed under the first — this is what permanently destroyed
+three cards on the `ready` board), and rotation behaved as forward AMNESIA rather
+than forward secrecy, withholding the new key from the revoked member as designed
+while also withholding every old key from everyone not already holding the log.
+Diagnosed in `ready-76b`, fixed in `ready-889`; the surviving epoch-1 grant is
+republished into its new slot by `ready-12c`.
 
 ---
 
@@ -1213,7 +1240,7 @@ board whose history matters as a one-way operation.
 **§17.1 Unit.** `created_at` is unix **seconds** (NIP-01). Every builder takes it
 as an explicit argument so ids are deterministic and testable
 (`BuildCardEvent`, `pkg/sync/nostrwire.go:254`; `BuildStatusEvent`, `:370`;
-`BuildBoardEvent`, `:206`; `BuildRoleGrantEvent`, `pkg/sync/rolegrant.go:112`).
+`BuildBoardEvent`, `:206`; `BuildRoleGrantEvent`, `pkg/sync/rolegrant.go:117`).
 No builder calls `time.Now()`.
 
 **§17.2 The rule.** A live mutation stamps
@@ -1222,15 +1249,15 @@ No builder calls `time.Now()`.
 `newestInScope` is the greatest `created_at` among events in the local log whose
 `DriftScope` equals the target scope (`:230-232`).
 
-**§17.3 Scope.** `DriftScope` (`pkg/sync/nostrwire.go:557-577`) is the event's
-**causal chain**: `item:<itemID>` for a card, status or issue event (`:573-576`,
-via `itemIDForEvent` `:593-610`), `grant:<boardD>:<grantee>` for a 39301
-(`:561-566`), `board:<d>` for a 30301 (`:567-572`), `""` for anything else (which
+**§17.3 Scope.** `DriftScope` (`pkg/sync/nostrwire.go:557-597`) is the event's
+**causal chain**: `item:<itemID>` for a card, status or issue event (`:593-596`,
+via `itemIDForEvent` `:618-635`), `grant:<boardD>:<grantee>` for a 39301
+(`:561-586`), `board:<d>` for a 30301 (`:587-592`), `""` for anything else (which
 therefore matches no scope). Callers name the scope explicitly:
 `ItemDriftScope(item.ID)` for every item mutation
-(`pkg/sync/nostrwire.go:582`; used at `cmd/rd/nostrwrite.go:184`,
+(`pkg/sync/nostrwire.go:602`; used at `cmd/rd/nostrwrite.go:184`,
 `cmd/rd/nostr.go:376`, `:415`) and `GrantDriftScope(boardD, grantee)` for grants
-(`pkg/sync/nostrwire.go:588`; used at `cmd/rd/confidential.go:216`).
+(`pkg/sync/nostrwire.go:611`; used at `cmd/rd/confidential.go:235`).
 
 **§17.4 Why scoped and not log-wide.** A log-wide max let an unrelated burst
 (`rd engage` over N items) inflate the NEXT write to ANY item by one second per
@@ -1327,8 +1354,8 @@ each only when its source field is non-empty:
 | 16 | `for` | assignment scope | `For != ""` | `:330-332` | `For` (§5.1) |
 | 17 | `parent` | parent item id | `ParentID != ""` | `:333-335` | `ParentID` (§5.1) |
 | 18 | `due` | RFC3339 | `Due != ""` | `:336-338` | `Due` (§5.1) |
-| 19 | `enc` | `"1"` | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:318-323` | §11.1 |
-| 20 | `cek_epoch` | epoch integer | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:318-323` | §11.1 |
+| 19 | `enc` | `"1"` | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:341-346` | §11.1 |
+| 20 | `cek_epoch` | epoch integer | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:341-346` | §11.1 |
 
 Tag ORDER is load-bearing in exactly one place: the fold reads the FIRST `a` tag
 (`tagValue`, `pkg/sync/nostrwire.go:520-527`) to resolve the item's
@@ -1343,7 +1370,7 @@ assigns to BOTH `Context` and `Description` (§5.1, §15.9).
 **§18.5 Content — confidential mode: what is sealed.** When `CardSpec.Enc` is
 non-nil, Content is replaced by the sealed blob (`pkg/sync/nostrwire.go:344-348`) and the
 two marker tags are appended (`:349`). The sealed plaintext is the JSON object
-`cardPayload` (`pkg/sync/envelope.go:221-228`) with exactly four members:
+`cardPayload` (`pkg/sync/envelope.go:244-251`) with exactly four members:
 
 | JSON key | Source | omitempty |
 |---|---|---|
@@ -1352,20 +1379,20 @@ two marker tags are appended (`:349`). The sealed plaintext is the JSON object
 | `waiting_on` | `spec.WaitingOn` | yes |
 | `labels` | `spec.Labels` | yes |
 
-built by `sealCardPayload` (`pkg/sync/envelope.go:293-305`). Write and read MUST
+built by `sealCardPayload` (`pkg/sync/envelope.go:316-328`). Write and read MUST
 agree byte-for-byte on this struct — the read side unmarshals the same type
-(`decryptCardPayload`, `:157-171`). Everything NOT in this table stays a clear
+(`decryptCardPayload`, `:180-194`). Everything NOT in this table stays a clear
 tag (§18.3): status, priority, type, assignee, deps, gate category, waiting type,
 eta, level, for, parent, due. **Sealing is free-text-only; routing is public.**
 
 **§18.6 Content wire format.** `event.Content =
 base64Std( nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce, plaintext) )` with a fresh
-`crypto/rand` nonce per call (`sealContent`, `pkg/sync/envelope.go:239-253`).
+`crypto/rand` nonce per call (`sealContent`, `pkg/sync/envelope.go:262-276`).
 This is the FROZEN envelope §3; this clause restates it, it does not amend it.
 
 **§18.7 Marker tags.** Exactly two, both always clear: `["enc","1"]` and
-`["cek_epoch","<int>"]` (`encMarkerTags`, `pkg/sync/envelope.go:318-323`;
-constants `:191-200`). `enc` MUST be the literal `"1"` — the read-side
+`["cek_epoch","<int>"]` (`encMarkerTags`, `pkg/sync/envelope.go:341-346`;
+constants `:214-223`). `enc` MUST be the literal `"1"` — the read-side
 well-formedness gate rejects any other version, absent value, unparseable epoch,
 or a body shorter than nonce+tag, and quarantines the event
 (`encWellFormed`, `pkg/sync/envelope.go:73-85`; `shouldQuarantine`, `:100-116`).
@@ -1434,7 +1461,7 @@ an empty item id (`:371-373`) and an empty status (`:374-376`) are hard errors.
 - the sealed Content + `enc`/`cek_epoch` markers when an envelope is supplied,
   REPLACING the plaintext reason before signing so the cleartext reason is never
   signed or published (`:435-443`; `sealStatusPayload` seals the JSON object
-  `{"reason": "<text>"}`, `pkg/sync/envelope.go:230-234`, `:308-314`);
+  `{"reason": "<text>"}`, `pkg/sync/envelope.go:253-257`, `:331-337`);
 - `["e", <issueEventID>, "", "root"]` — the NIP-10 marked anchor to the item's
   kind-1621 issue event, when one exists (`pkg/sync/nostrwire.go:445-450`);
 - a SECOND `a` tag carrying the BOARD coordinate `30301:<owner>:<boardD>`
@@ -1446,7 +1473,7 @@ Any of these changes the tag set, so the event is re-signed (`pkg/sync/nostrwire
 FIRST `a` (the card coordinate) and the FIRST `e`
 (`tagValue`, `pkg/sync/nostrwire.go:520-527`), while the board-scoped sync filter
 and the confidential fold gate scan ALL `a` tags for the one with the `30301:`
-prefix (`boardCoordOf`, `pkg/sync/envelope.go:123-131`; rationale at
+prefix (`boardCoordOf`, `pkg/sync/envelope.go:146-154`; rationale at
 `pkg/sync/nostrwire.go:410-423`). A client that puts the board coordinate FIRST
 therefore still syncs and still passes the fold gate, but presents the board
 coordinate where rd expects a card coordinate. **Emit card-coordinate `a` first,
@@ -1647,7 +1674,7 @@ which also validates nothing (§10.1). Filed as §27.5.
 1. **Plaintext board** (`Enc == nil`): `["l", "<atom>"]` verbatim (`pkg/sync/nostrwire.go:315-317`).
 2. **Confidential board WITH an LTK** (`Enc.LTK != nil`):
    `["l", hex(HMAC-SHA256(LTK, atom))]` — lowercase hex, no prefix
-   (`labelToken`, `pkg/sync/envelope.go:284-288`; emitted `pkg/sync/nostrwire.go:304-309`). The
+   (`labelToken`, `pkg/sync/envelope.go:307-311`; emitted `pkg/sync/nostrwire.go:304-309`). The
    plaintext atom ALSO rides inside the sealed `cardPayload.labels` for
    member-side rendering (§18.5).
 3. **Confidential board with NO LTK**: **no `l` tag at all** (`pkg/sync/nostrwire.go:310-314`). Not a
@@ -1660,11 +1687,11 @@ An empty atom is skipped in every mode (`pkg/sync/nostrwire.go:300-302`).
 **§23.4 Tokenization is equality-preserving and board-scoped.** Same atom + same
 LTK ⇒ same token, so a relay can exact-match `#l` without seeing plaintext; a
 different board's LTK yields a different token
-(`pkg/sync/envelope.go:280-283`). The LTK is stable ACROSS CEK epochs
-(`pkg/sync/envelope.go:216-218`), so a CEK rotation does not invalidate previously
+(`pkg/sync/envelope.go:303-306`). The LTK is stable ACROSS CEK epochs
+(`pkg/sync/envelope.go:239-241`), so a CEK rotation does not invalidate previously
 written label tokens. It is distributed in the same owner-signed grant as the CEK
 (`RoleGrantSpec.WrappedLTK`, `pkg/sync/rolegrant.go`; wrapped at
-`cmd/rd/confidential.go:207`, `:249`).
+`cmd/rd/confidential.go:226`, `:270`).
 
 **§23.5 A member who cannot decrypt MUST NOT write.** On the read side an
 undecryptable confidential card projects `Labels` as the opaque tokens
@@ -1672,7 +1699,7 @@ undecryptable confidential card projects `Labels` as the opaque tokens
 `placeholderText` (`:612-625`). Round-tripping that item through any card edit
 would re-seal the placeholder over the real title and re-tokenize already-tokenized
 labels. The write path guards the no-key case by erroring
-(`cmd/rd/confidential.go:126-132`), but NOT the holds-a-newer-epoch-only case —
+(`cmd/rd/confidential.go:132-138`), but NOT the holds-a-newer-epoch-only case —
 see §27.1.
 
 ---
@@ -1701,7 +1728,7 @@ NIP-100 clients that order by `rank` breaks.
 
 **§24.4 Title on a confidential board is not a tag.** In confidential mode the
 clear `title` tag is DROPPED and the title moves into the sealed blob
-(`pkg/sync/nostrwire.go:263-265`, `pkg/sync/envelope.go:294`). So on a
+(`pkg/sync/nostrwire.go:263-265`, `pkg/sync/envelope.go:317`). So on a
 confidential board a retitle changes no visible tag at all — only `Content` and
 therefore the event id.
 
@@ -1819,7 +1846,7 @@ file, and every publish helper it uses:
 `publishEngagedItemsNostr` (`:605`) §26.3; `publishImplicitUnblockNostrNative`
 (`:638`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
 `publishItemCardEditNostr` (`cmd/rd/nostr.go:392`) §18.9; `setCardEnvelope`
-(`cmd/rd/confidential.go:292`) §16.7. The remaining non-mutating helpers in the
+(`cmd/rd/confidential.go:311`) §16.7. The remaining non-mutating helpers in the
 same file are dispositioned too, so nothing in it is an orphan:
 `errNotNostrProject` (`:47`), `nostrNativeProject` (`:63`) and `nostrWriteActive`
 (`:77`) → §16.4; `nostrResolveItem` (`:110`) → §16.3; `nostrSelfPubkey` (`:98`) →
@@ -1855,26 +1882,26 @@ Recorded, not resolved. No writer code was changed for any of these. Each needs 
 ruling before the conformance vector suite can assert on the affected behaviour.
 (§15 holds the read-side open questions.)
 
-**§27.1 A member holding only a NEWER CEK epoch can silently overwrite free text
-with the placeholder.** The read path renders `Title`/`Context` as
-`placeholderText` when a confidential card cannot be decrypted
-(`pkg/sync/nostrproject.go:612-625`), and `Labels` stay opaque tokens. The write
-path builds its envelope from `CurrentEpoch` only
-(`envelopeFromKeyring`, `cmd/rd/confidential.go:66-84`) and errors ONLY when the
-writer holds no key at all (`:127-133`) — it never checks that the card it is
-about to re-seal was actually decryptable. `DeriveBoardKeyring` accumulates epochs
-from the grants present in the LOCAL LOG (`pkg/sync/keydist.go:182-223`), and
-39301 grants are addressable per `(boardD, grantee)` slot
-(`roleGrantD`), so a machine that populated its log from a relay after an epoch
-rotation may hold only the newest grant. Such a member reads a pre-rotation card
-as `[encrypted]` and, on ANY card edit (label add, dep add, retitle, close),
-re-seals `title: "[encrypted]"` over the real title — signed, permanent,
-latest-wins. **Question:** should the write path refuse a card edit whose current
-projection contains `placeholderText`, or should grants carry every historical
-epoch, or should `boardConfidentialEnvelope` verify decryptability of the card
-being replaced? The comment at `cmd/rd/confidential.go:83-84` asserts "a
-placeholder is never re-sealed over real content", which holds only for the
-no-key-at-all case.
+**§27.1 RESOLVED — a member holding only a newer CEK epoch could silently
+overwrite free text with the placeholder.** This was recorded here as an open
+question and then happened: it destroyed four items on the live `ready` board
+before anyone noticed (`ready-2b25` and three `enc-live` fixtures each ended up
+with the literal string `"[encrypted]"` sealed as their real title and context).
+The question offered three candidate answers. TWO were right, and both shipped.
+
+The write path now refuses a card edit whose projection could not be decrypted
+(§16.9): the projection sets `Item.Redacted`, and every publish path calls
+`refuseRedactedRepublish` first and aborts the whole mutation. AND grants now carry
+every historical epoch in the only sense that matters on a relay — a CEK-bearing
+grant occupies a slot per epoch, so a rotation no longer deletes the old key
+(§16.10). The third candidate, having `boardConfidentialEnvelope` verify
+decryptability of the card being replaced, was NOT taken: the projection already
+computed that answer, so re-deriving it at the envelope layer would duplicate the
+check further from the evidence.
+
+The comment at `cmd/rd/confidential.go:83-84` asserting "a placeholder is never
+re-sealed over real content" is now true rather than aspirational, and holds in
+general rather than only for the no-key-at-all case.
 
 **§27.2 `rd update` has two status anomalies.** (a) A bare `rd update --claim`
 publishes TWO status changes: the CLI sets `statusTo=active`
@@ -1948,7 +1975,7 @@ authored by a maintainer about another author's item (§19.8), where the
 coordinate points at a 30302 event that does not exist. The fold does not
 currently follow that coordinate for authority (it uses the winning CARD's first
 `a`, `pkg/sync/nostrproject.go:337`) and falls back to the `d` tag for item
-resolution (`itemIDForEvent`, `pkg/sync/nostrwire.go:597-608`), so nothing breaks
+resolution (`itemIDForEvent`, `pkg/sync/nostrwire.go:622-633`), so nothing breaks
 today. **Question:** should the card coordinate be built from the winning card's
 author, or should the clause simply forbid publishing a status event without its
 card (§19.9)?

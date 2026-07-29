@@ -559,6 +559,26 @@ func DriftScope(e *nostr.Event) string {
 		return ""
 	}
 	if e.Kind == KindRoleGrant {
+		// Key the chain off (board coordinate, grantee), NOT off "d" (ready-889). A
+		// CEK-bearing grant lives in a PER-EPOCH addressable slot while a revoke lives
+		// in the bare (board, grantee) slot, so keying on "d" would put a grant and the
+		// revoke that supersedes it in DIFFERENT scopes — and the monotonic bump would
+		// no longer guarantee the revoke stamps strictly after the grant. Since
+		// deriveGrants replays latest-per-GRANTEE across ALL slots by (created_at, id),
+		// a same-second revoke could then lose to the grant it was meant to supersede:
+		// exactly the ready-be1 lost-revoke this scoping exists to prevent. The authz
+		// causal chain is per (board, grantee) regardless of which slot an event
+		// occupies, and the "a" + "p" tags name it exactly.
+		//
+		// For every grant written before per-epoch slots this yields the identical
+		// string it did when derived from "d" (d WAS boardD + ":" + grantee), so
+		// existing logs are unaffected. The "d" fallback covers a malformed grant
+		// missing those tags.
+		if _, boardD, ok := ParseBoardCoord(tagValue(e, "a")); ok {
+			if p := tagValue(e, "p"); p != "" {
+				return "grant:" + roleGrantD(boardD, p, 0)
+			}
+		}
 		if d := tagValue(e, "d"); d != "" {
 			return "grant:" + d
 		}
@@ -581,11 +601,16 @@ func DriftScope(e *nostr.Event) string {
 // the monotonic bump considers only THIS item's prior events.
 func ItemDriftScope(itemID string) string { return "item:" + itemID }
 
-// GrantDriftScope is the DriftScope key for a role-grant's addressable (board,
-// grantee) slot — matching DriftScope of a 39301 event whose "d" is roleGrantD(
-// boardD, grantee). A grant and its later revoke share this scope, so a revoke
-// stamps strictly after the grant it supersedes without log-wide drift.
-func GrantDriftScope(boardD, grantee string) string { return "grant:" + roleGrantD(boardD, grantee) }
+// GrantDriftScope is the DriftScope key for a role-grant's (board, grantee) authz
+// chain — matching DriftScope's KindRoleGrant branch. A grant and its later revoke
+// share this scope, so a revoke stamps strictly after the grant it supersedes
+// without log-wide drift. This is deliberately per (board, grantee) and NOT per
+// addressable slot: a CEK-bearing grant occupies a per-epoch slot (roleGrantD,
+// ready-889) yet still belongs to the same causal chain as the revoke that will
+// supersede it.
+func GrantDriftScope(boardD, grantee string) string {
+	return "grant:" + roleGrantD(boardD, grantee, 0)
+}
 
 // itemIDForEvent extracts the rd item ID an event pertains to. Cards carry it in
 // "d"; status events carry it in "d" and/or the "a" coordinate. Returns "" when

@@ -104,25 +104,31 @@ func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, b
 	}
 
 	signer := pub.Key.PubKeyHex()
-	// Edge #5 self-heal (ready-bd0): I (a non-owner) hold no readable CEK, yet a valid
-	// owner-signed grant carrying my read key may already exist on a relay and simply
-	// not have reached the local log. Before erroring "ask the owner to grant your
-	// pubkey" — which tells me to do what the owner already did — do ONE targeted
-	// reconcile of owner-signed 39301 grants addressed to me, re-read the log, and
-	// retry the key derivation. Bounded to a single fetch (no loop): if no valid grant
-	// exists, the original error below still fires. Only for a non-owner: the owner
-	// bootstraps its own key and never needs to fetch a grant for itself.
-	if signer != boardAuthor {
-		if env, healed := reconcileSelfGrantEnvelope(dir, pub, boardAuthor, boardD, coord); healed {
-			return env, nil
-		}
-		// The reconcile may have merged the owner self-grant (which establishes the
-		// board cutover) even when no key-bearing grant for me arrived; re-read so the
-		// cutover/error decision below reflects anything the fetch pulled in.
-		if evs, rerr := pub.Log.ReadAll(); rerr == nil {
-			events = evs
-			kr = rdSync.DeriveBoardKeyring(events, pub.Key, boardAuthor, boardD)
-		}
+	// Edge #5 self-heal (ready-bd0): I hold no readable CEK, yet a valid owner-signed
+	// grant carrying my read key may already exist on a relay and simply not have
+	// reached the local log. Before erroring "ask the owner to grant your pubkey" —
+	// which tells me to do what the owner already did — do ONE targeted reconcile of
+	// owner-signed 39301 grants addressed to me, re-read the log, and retry the key
+	// derivation. Bounded to a single fetch (no loop): if no valid grant exists, the
+	// original error below still fires.
+	//
+	// This runs for the OWNER TOO (ready-889). The owner reaching this point on a
+	// board that is already confidential means its local log lost the self-grant — a
+	// fresh clone, a rebuilt log — and the branch below would otherwise mint a SECOND
+	// key at epoch 1, silently orphaning every card sealed under the first. That is
+	// not hypothetical: it is what permanently destroyed three cards on the ready
+	// board. Asking the relay first is what makes the difference between recovering
+	// the board key and replacing it.
+	env, healed := reconcileSelfGrantEnvelope(dir, pub, boardAuthor, boardD, coord)
+	if healed {
+		return env, nil
+	}
+	// The reconcile may have merged the owner self-grant (which establishes the
+	// board cutover) even when no key-bearing grant for me arrived; re-read so the
+	// cutover/error decision below reflects anything the fetch pulled in.
+	if evs, rerr := pub.Log.ReadAll(); rerr == nil {
+		events = evs
+		kr = rdSync.DeriveBoardKeyring(events, pub.Key, boardAuthor, boardD)
 	}
 	if _, alreadyConfidential := kr.Cutover(coord); alreadyConfidential {
 		// Board is confidential but I have no readable CEK.
@@ -135,6 +141,19 @@ func boardConfidentialEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, b
 	// the owner's first write stays plaintext (the board is not confidential yet).
 	if signer != boardAuthor {
 		return nil, nil
+	}
+	// FAIL CLOSED ON A LOST KEY (ready-889). "No cutover in the local log" is only
+	// evidence that the board is NEW if the log is complete. If this board already
+	// has SEALED CARDS, it is not a plaintext board about to become confidential —
+	// it is a confidential board whose grant did not survive into this log, and
+	// minting here would install a second epoch-1 key, orphaning every card sealed
+	// under the first. That is precisely how three cards on the ready board were
+	// destroyed. The check is local, so it holds offline too — refusing purely on
+	// relay unreachability would break rd's offline-first write path for the common
+	// case (a genuinely new board) to guard the rare one.
+	if rdSync.HasConfidentialCard(events, coord) {
+		return nil, fmt.Errorf("refusing to bootstrap a confidential key for board %s: the board already has sealed cards but no readable CEK grant in this log, so its key was LOST, not absent. "+
+			"Minting a new epoch-1 key here would permanently orphan every card sealed under the old one. Recover the grant from a relay (rd relay repair) or from a machine that still holds it", coord)
 	}
 	cek, err := rdSync.MintKey()
 	if err != nil {
@@ -184,8 +203,8 @@ func reconcileSelfGrantEnvelope(dir string, pub *rdSync.Publisher, boardAuthor, 
 		return nil, false
 	}
 	kr := rdSync.DeriveBoardKeyring(events, pub.Key, boardAuthor, boardD)
-	if env := envelopeFromKeyring(kr, coord); env != nil {
-		return env, true
+	if e := envelopeFromKeyring(kr, coord); e != nil {
+		return e, true
 	}
 	return nil, false
 }
