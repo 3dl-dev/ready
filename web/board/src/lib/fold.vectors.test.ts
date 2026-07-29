@@ -161,8 +161,39 @@ describe("fold.vectors.json negative-vector sanity", () => {
     "confidential_wrong_cek_placeholder",
     "confidential_no_decryptor_placeholder",
     "fold_gate_quarantines_plaintext_and_malformed",
+    // ready-ce8's grant-authority vectors. Present here as well as in the Go
+    // suite because THIS implementation has its own copy of the escalation cap,
+    // the role->level table, the revocation boundary and the §6.2 maintainer
+    // fold (rolegrant.ts, fold.ts) — the Go list alone would not notice if the
+    // TS test stopped seeing these cases.
+    "grant_cap_only_owner_grants_maintainer",
+    "grant_cap_contributor_may_not_delegate",
+    "grant_cap_owner_is_irrevocable",
+    "grant_cap_peer_maintainer_protected",
+    "revoke_boundary_excludes_the_revoke_instant",
+    "grant_level_two_confers_status_authority",
   ];
   it.each(negativeNames)("%s vector is present in the committed file", (name) => {
     expect(file.vectors.some((v) => v.name === name)).toBe(true);
+  });
+
+  // The TS counterpart of TestGrantAuthorityVectorsRunWithTheGatesEnabled: a
+  // grant-authority vector folded with trusted:null or an empty pinned_board
+  // asserts its expectation with the gate it exists to pin switched OFF (§3.4
+  // disabled; §12/§3.5/§6.2 never derived) — green, and proving nothing. That is
+  // the general form of the four holes ready-ce8 closes, so it is a contract.
+  const grantAuthorityNames = [
+    "grant_cap_only_owner_grants_maintainer",
+    "grant_cap_contributor_may_not_delegate",
+    "grant_cap_owner_is_irrevocable",
+    "grant_cap_peer_maintainer_protected",
+    "revoke_boundary_excludes_the_revoke_instant",
+    "grant_level_two_confers_status_authority",
+  ];
+  it.each(grantAuthorityNames)("%s folds with the grant-authority gates ENABLED", (name) => {
+    const v = file.vectors.find((x) => x.name === name);
+    expect(v).toBeTruthy();
+    expect(v!.options.trusted).not.toBeNull();
+    expect(v!.options.pinned_board).not.toBe("");
   });
 });
