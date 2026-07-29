@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/rdconfig"
@@ -103,6 +104,32 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) (rd
 		return rdSync.PublishResult{}, fmt.Errorf("escalation cap: signer %s may not grant role %q to %s on board %s "+
 			"(only the owner may mint maintainer/owner or revoke the owner/a maintainer; "+
 			"a contributor may grant nothing)", signer, role, grantee, rdSync.BoardCoord(boardAuthor, boardD))
+	}
+	// MINT + EXPIRY VERIFICATION (ready-c40, security sweep ready-348): a --claim
+	// grant is honored ONLY for a nonce THIS OWNER actually minted via
+	// `rd invite`/`rd board share` (recorded in unclaimed-invites,
+	// cmd/rd/nostr_invite.go), and only while that nonce's TTL has not elapsed.
+	// Before this check, `rd grant --claim <nonce>` accepted an ARBITRARY caller-
+	// supplied nonce string — no verification it was ever issued, and no expiry
+	// check at all (the TTL was previously enforced ONLY on the join side:
+	// decodeNostrClaimToken / redeemNostrClaimToken). Since `rd grant --claim` is
+	// the step that actually confers write authority, an owner socially
+	// engineered into running it with an attacker-chosen or stale nonce would
+	// grant write access nobody ever issued a live invite for.
+	if claim != "" {
+		mint, found, merr := findLocalClaim(unclaimedInvitesPath(RDHome()), claim)
+		if merr != nil {
+			return rdSync.PublishResult{}, fmt.Errorf("reading local invite records for claim-nonce %s: %w", claim, merr)
+		}
+		if !found {
+			return rdSync.PublishResult{}, fmt.Errorf("invite claim-nonce %s has no matching mint record on this machine — "+
+				"only a nonce minted by this owner's own `rd invite` (or `rd board share` with no argument) may be bound "+
+				"via --claim; a nonce that was never minted here is never a valid claim", claim)
+		}
+		if mint.ExpiresAt > 0 && time.Now().Unix() > mint.ExpiresAt {
+			return rdSync.PublishResult{}, fmt.Errorf("invite claim-nonce %s expired at %s — mint a fresh `rd invite` token and use its nonce instead",
+				claim, time.Unix(mint.ExpiresAt, 0).UTC().Format(time.RFC3339))
+		}
 	}
 	// SINGLE-USE CLAIM (ready-ce0): when --claim binds this grant to an invite
 	// claim-nonce, refuse client-side (fail fast, clean log) if that nonce is already
