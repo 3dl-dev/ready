@@ -192,28 +192,77 @@ func TestPagesWorkflow_StampsVersionFromLatestTag(t *testing.T) {
 	}
 }
 
-// TestPagesWorkflow_TriggersOnReleasePublished proves pages.yml redeploys
-// when a release is published (ready-3bd). Since release.yml no longer
-// pushes a version-bump commit to main, a release would otherwise never
-// retrigger this path-filtered (site/**, web/**) workflow, and the
-// deployed site's stamped version would go stale until an unrelated
-// site/web change happened to redeploy it.
-func TestPagesWorkflow_TriggersOnReleasePublished(t *testing.T) {
+// TestPagesWorkflow_RedeploysAfterReleaseCompletes proves pages.yml
+// retriggers when the Release workflow finishes, using a trigger that
+// ACTUALLY fires under GITHUB_TOKEN semantics (ready-3bd WAVE 1 fix).
+//
+// A prior version of this fix used `on.release: types: [published]`, and a
+// prior version of THIS test only asserted that YAML key existed — which
+// stayed green even though the trigger can never fire in this repo.
+// release.yml's "Create GitHub Release" step (softprops/action-gh-release@v3)
+// runs with no token override, so the release is authored by the default
+// GITHUB_TOKEN, and GitHub does not start new workflow runs from events
+// authored by GITHUB_TOKEN — this is a hard platform restriction, not
+// something any YAML key on the `release` trigger can override. Proof (no
+// tag needed): `gh api repos/3dl-dev/ready/releases` shows v0.17.0/v0.16.2/
+// v0.16.1 all authored by github-actions[bot], and
+// `gh api repos/3dl-dev/ready/actions/runs` has never recorded a
+// release-triggered run in this repo (only push/pull_request/dynamic
+// events appear).
+//
+// `workflow_run` has no such restriction: it fires from the Release
+// workflow's own run completing, regardless of what token the *steps
+// inside that run* used to create the GitHub Release. So this test:
+//  1. asserts pages.yml is NOT relying on the `release` trigger anymore
+//     (closing off a regression back to the trap), and
+//  2. asserts it uses `workflow_run` scoped to the exact workflow name
+//     `Release` (must match release.yml's `name:` field, or the platform
+//     silently never fires it) with `types: [completed]` (the only type
+//     workflow_run supports — there is no "published" analog), and
+//  3. asserts the deploy job gates on `conclusion == 'success'` so a
+//     FAILED release build doesn't redeploy the site with a stale stamp
+//     over a false-green appearance.
+func TestPagesWorkflow_RedeploysAfterReleaseCompletes(t *testing.T) {
 	raw := readWorkflow(t, "pages.yml")
 	wf := parseWorkflow(t, raw)
 
-	if wf.On.Release == nil {
-		t.Fatalf("pages.yml does not trigger on `release` events at all")
+	if wf.On.Release != nil {
+		t.Fatalf("pages.yml still declares an `on.release` trigger (%+v) — this event is never delivered because release.yml creates releases with the default GITHUB_TOKEN, which cannot start new workflow runs (ready-3bd)", wf.On.Release)
 	}
-	found := false
-	for _, typ := range wf.On.Release.Types {
-		if typ == "published" {
-			found = true
-		}
+
+	if wf.On.WorkflowRun == nil {
+		t.Fatalf("pages.yml has no `on.workflow_run` trigger — nothing retriggers a Pages deploy after a release, so the stamped version goes stale until an unrelated site/web change lands (ready-3bd)")
 	}
-	if !found {
-		t.Fatalf("pages.yml `release` trigger does not include `published`, got types=%v", wf.On.Release.Types)
+	releaseWorkflowName := readWorkflowName(t, "release.yml")
+	if !containsPath(wf.On.WorkflowRun.Workflows, releaseWorkflowName) {
+		t.Fatalf("pages.yml's workflow_run.workflows %v does not include %q (release.yml's actual `name:`) — a mismatched name means the trigger silently never fires", wf.On.WorkflowRun.Workflows, releaseWorkflowName)
 	}
+	if !containsPath(wf.On.WorkflowRun.Types, "completed") {
+		t.Fatalf("pages.yml's workflow_run trigger does not include types: [completed], got %v", wf.On.WorkflowRun.Types)
+	}
+
+	deploy, ok := wf.Jobs["deploy"]
+	if !ok {
+		t.Fatalf("pages.yml has no `deploy` job")
+	}
+	if !strings.Contains(deploy.If, "workflow_run") || !strings.Contains(deploy.If, "conclusion") || !strings.Contains(deploy.If, "success") {
+		t.Fatalf("deploy job's `if:` (%q) does not gate workflow_run redeploys on conclusion == 'success' — a failed Release run would still redeploy the site", deploy.If)
+	}
+}
+
+func readWorkflowName(t *testing.T, file string) string {
+	t.Helper()
+	raw := readWorkflow(t, file)
+	var meta struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("parse %s name: %v", file, err)
+	}
+	if meta.Name == "" {
+		t.Fatalf("%s has no top-level `name:`", file)
+	}
+	return meta.Name
 }
 
 func containsPath(paths []string, want string) bool {
@@ -235,10 +284,16 @@ type workflowFile struct {
 type workflowOn struct {
 	PullRequest *pullRequestTrigger `yaml:"pull_request"`
 	Release     *releaseTrigger     `yaml:"release"`
+	WorkflowRun *workflowRunTrigger `yaml:"workflow_run"`
 }
 
 type releaseTrigger struct {
 	Types []string `yaml:"types"`
+}
+
+type workflowRunTrigger struct {
+	Workflows []string `yaml:"workflows"`
+	Types     []string `yaml:"types"`
 }
 
 type pullRequestTrigger struct {
@@ -247,6 +302,7 @@ type pullRequestTrigger struct {
 }
 
 type workflowJob struct {
+	If    string         `yaml:"if"`
 	Steps []workflowStep `yaml:"steps"`
 }
 

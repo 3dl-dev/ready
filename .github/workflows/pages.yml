@@ -8,12 +8,24 @@ on:
       - 'site/**'
       - 'web/**'
       - '.github/workflows/pages.yml'
-  release:
-    # ready-3bd: a release no longer pushes a version-bump commit to main
-    # (branch protection rejects direct pushes), so it wouldn't otherwise
-    # retrigger this path-filtered workflow. Deploy on every published
-    # release so site/index.html's stamped version (below) stays current.
-    types: [published]
+  workflow_run:
+    # ready-3bd (WAVE 1 fix): `release: types: [published]` never fires.
+    # release.yml's "Create GitHub Release" step uses softprops/action-gh-release@v3
+    # with no token override, so the release is authored by the default
+    # GITHUB_TOKEN — and GitHub does not start new workflow runs from events
+    # authored by GITHUB_TOKEN (this is a hard platform rule, not a config
+    # knob). Verified empirically: `gh api repos/3dl-dev/ready/releases` shows
+    # v0.17.0/v0.16.2/v0.16.1 all authored by github-actions[bot], and
+    # `gh api repos/3dl-dev/ready/actions/runs` has never recorded a
+    # release-triggered run (only push/pull_request/dynamic). workflow_run
+    # has no such restriction — it fires from the *Release* workflow run's
+    # completion regardless of what token created the artifacts inside it,
+    # and needs no new secret/PAT. A repository_dispatch/workflow_dispatch
+    # call from inside release.yml would also work but needs release.yml to
+    # carry a token with workflow-trigger rights (a PAT, since GITHUB_TOKEN
+    # can't self-trigger either) — workflow_run avoids that entirely.
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +39,12 @@ concurrency:
 
 jobs:
   deploy:
+    # ready-3bd: workflow_run fires on EVERY completion of the Release
+    # workflow, including failed ones (e.g. a build/sign step blew up before
+    # any release was created). Only redeploy when it actually succeeded;
+    # push/workflow_dispatch triggers carry no workflow_run event at all, so
+    # they're unaffected by this guard.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
