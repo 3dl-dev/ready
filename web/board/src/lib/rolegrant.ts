@@ -3,11 +3,24 @@
 // operator levels, and status-authority (via the fold's boardMaintainers
 // union in fold.ts) but produce no item of their own.
 //
-// KNOWN GAP (ready-35b): disabling the escalation cap entirely leaves every
-// committed vector green (ready-ce8) — the cap logic below is implemented
-// per spec but is NOT exercised by the committed vector suite. Treat
-// signerMayGrant as spec-faithful-but-vector-unverified until ready-ce8 adds
-// coverage.
+// GAP CLOSED (ready-ce8; the gap was recorded here by ready-35b). The
+// escalation cap below IS now exercised by the committed corpus, in THIS
+// implementation and not only in Go's: fold.vectors.test.ts replays
+// testdata/fold.vectors.json through projectItems, and ready-ce8's six
+// grant_cap_* / revoke_boundary_* / grant_level_two_* vectors were each proven
+// to turn THIS file (and fold.ts) red under the mutation they exist to catch.
+// Measured against this port, not asserted:
+//
+//	signerMayGrant -> `return true`                  -> 4 vectors fail
+//	roleToLevel: contributor -> LEVEL_MAINTAINER     -> 4 vectors fail
+//	fold.ts §3.5 `>=` -> `>`                         -> 1 vector fails
+//	fold.ts: delete the §6.2 grant-maintainer fold    -> 1 vector fails
+//
+// So a divergence between this port and pkg/sync/rolegrant.go in the escalation
+// cap, the role->level table, the revocation boundary or the grant-derived
+// maintainer fold is now a CI failure rather than a silent difference. Do not
+// weaken any of the four without expecting those vectors to go red — that is
+// exactly their job.
 
 import type { NostrEvent } from "./nostrevent";
 import { tagValue } from "./nostrevent";
