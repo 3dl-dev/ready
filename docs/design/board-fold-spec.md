@@ -42,7 +42,7 @@ write command read through — is `ProjectItems`, which replays the local
 append-only signed-event log into `map[itemID]*state.Item`
 (`pkg/sync/nostrproject.go:146`). An independent client MUST implement §2–§12
 against this function. It is reached from the CLI via `nostrProjectAllItems`
-(`cmd/rd/nostr.go:944`), which is the sole read spine on a nostr-native project.
+(`cmd/rd/nostr.go:950`), which is the sole read spine on a nostr-native project.
 
 **§1.2** `pkg/state.DeriveAll` (`pkg/state/state.go:421`) is the **campfire-era
 fold**: it replays `work:*` convention messages from `[]msgrec.MessageRecord`. On
@@ -1372,10 +1372,11 @@ in the log, not merely its own scope (`cutoverCreatedAt`,
 pre-cutover and is grandfathered by the fold gate (§11,
 `pkg/sync/envelope.go:111-114`).
 
-**§17.9 Two republish paths do NOT follow §17.2.** `rd log publish <item>`
-(`cmd/rd/nostr.go:579`) and `rd log put` (`:735`, `:737`) stamp
-`time.Now().Unix()`. Neither is reachable from a board UI; both are recorded in
-§27.3.
+**§17.9 RESOLVED for `rd log publish`; `rd log put` still does NOT follow
+§17.2.** `rd log publish <item>` used to stamp `time.Now().Unix()` directly;
+ready-500 fixed it to go through the same scoped clock every other write hook
+uses. `rd log put` still stamps `time.Now().Unix()` twice, unfixed. Neither is
+reachable from a board UI; both are recorded in §27.3.
 
 ---
 
@@ -1923,8 +1924,8 @@ is the reserved-board guard (§16.8).
 
 **§25.6 No authored `blocked` status, no authored `WaitingSince`/`GateMsgID`,
 no authored `Blocks`.** All are derived (§7.6, §8.4, §8.5, §9.6). Writing them is
-at best ignored and at worst persists a stale derived value into the card's `s`
-tag (§27.7).
+at best ignored; a REPUBLISH hook that skipped the ready-500 guard would at
+worst persist a stale derived value into the card's `s` tag (§27.7, RESOLVED).
 
 **§25.7 No second `a` tag ahead of the primary one.** §18.3, §19.5.
 
@@ -1993,11 +1994,11 @@ resolves `i` tags after all items are known (§8.2). Nothing here is a new event
 shape — §18.8 covers it entirely.
 
 **§26.4 Not browser-reachable, dispositioned here so no writer is an orphan.**
-`rd log publish` (`cmd/rd/nostr.go:510-610`) and `rd log publish --board`
-(`runPublishBoard`, `:647-683`) are operator republish tools — the first
+`rd log publish` (`cmd/rd/nostr.go:510-616`) and `rd log publish --board`
+(`runPublishBoard`, `:653-689`) are operator republish tools — the first
 re-materializes one item's current state (re-deriving its reason from history,
-`lastStatusReason`, `:619-626`), the second re-sends already-durable log events
-verbatim without re-signing. `rd log put` (`:718-778`) is a demo/diagnostic
+`lastStatusReason`, `:625-632`), the second re-sends already-durable log events
+verbatim without re-signing. `rd log put` (`:740-805`) is a demo/diagnostic
 primitive that builds a `CardSpec` by hand. `rd grant`/`rd revoke`/`rd kill`
 publish kind-39301 role grants (`cmd/rd/authz_nostr.go:45-76`) — authorization,
 not item state, and specified as a READ input in §12. `rd sync` / `rd relay
@@ -2045,17 +2046,26 @@ and `rd progress` (`cmd/rd/aliases.go:192-194`) all refuse terminal items.
 **Question:** is reopening via `--status` intended (an escape hatch), and should
 `--claim` short-circuit the status block?
 
-**§27.3 Two republish paths bypass the monotonic stamp.** `rd log publish
-<item>` stamps `time.Now().Unix()` (`cmd/rd/nostr.go:579`) and `rd log put`
-stamps it twice (`:735`, `:737`), instead of `nostrNextCreatedAt` (§17.2). A
-republish issued in the same second as the live write it follows collides on
-`created_at`, and §4.1's lowest-event-id tiebreak decides — so a manual republish
-can silently LOSE to the state it was meant to refresh. `rd log put` additionally
-builds its `CardSpec` with no `BoardAuthor` (`:723-731`, so the `a` tag is the
-SIGNER's board, failing the pin gate for an agent key) and no envelope (so it
-writes plaintext to a confidential board, which §25.3 quarantines). **Question:**
-route both through `nostrNextCreatedAt` + `CardSpecFromItem` + `setCardEnvelope`,
-or mark `rd log put` explicitly as an unsafe diagnostic?
+**§27.3 RESOLVED for `rd log publish`, still open for `rd log put`.** Both
+used to stamp a bare `time.Now().Unix()` where every other write hook calls
+`nostrNextCreatedAt` (§17.2): a republish issued in the same second as the live
+write it follows collided on `created_at`, and §4.1's lowest-event-id tiebreak
+could decide — so a manual republish could silently LOSE to the state it meant
+to refresh, INCLUDING silently failing to clear a burned-in `blocked` (ready-500:
+the probe that found this reproduced it directly — a same-second `rd log publish`
+on a derived-blocked item was a no-op with the ready-500 guard fully disabled,
+purely from losing the tiebreak, not from the guard). `rd log publish` is fixed
+(routed through the scoped item clock, mirroring the other REPUBLISH hooks).
+`rd log put` (`cmd/rd/nostr.go:745-805`) still stamps `time.Now().Unix()`
+twice and was NOT in ready-500's scope: it builds its `CardSpec` from raw CLI
+flags and never reads an existing item's projected/derived status, so it
+cannot itself burn in a derived `blocked` the way a REPUBLISH of an existing
+item can. It additionally builds that `CardSpec` with no `BoardAuthor` (so the
+`a` tag is the SIGNER's board, failing the pin gate for an agent key) and no
+envelope (so it writes plaintext to a confidential board, which §25.3
+quarantines). **Question:** route `rd log put` through the scoped clock +
+`CardSpecFromItem` + `setCardEnvelope` too, or mark it explicitly as an unsafe
+diagnostic?
 
 **§27.4 The cross-board dep guard checks only one endpoint.**
 `runDepAddNostr` tests `IsCrossCampfireRef` on the BLOCKED argument
@@ -2084,16 +2094,25 @@ publish and the fold always projects `Project=""`. The `--project` filter
 nostr surface? (This is distinct from §5.3's `CampfireID`, which is deliberately
 never set.)
 
-**§27.7 Card edits persist DERIVED status back into the `s` tag.** `blocked`
-(§8.4) and the promoted `waiting` (§9.4) are computed by the fold and written
-into `item.Status`; the next card-only edit copies that value verbatim into the
-card's `s` tag via `CardSpecFromItem` (`pkg/sync/nostrmigrate.go:120`). It is
-harmless while the item has an authoritative status event (§6.10 overrides it) and
-while the derivation still holds — but it means the wire carries a value no
-writer intended, and a client reading the card alone (a generic NIP-100 kanban
-client, which knows nothing of §8) sees a status rd would recompute differently.
-**Question:** should `CardSpecFromItem` write the last AUTHORED status instead of
-the derived one? §7.6 already records the read-side half of this.
+**§27.7 RESOLVED (ready-500).** `blocked` (§8.4) and the promoted `waiting`
+(§9.4) are computed by the fold and written into `item.Status`; a REPUBLISH hook
+that copied that value verbatim into the outbound card's `s` tag would burn the
+derived value in as a permanent status-authority floor (a card-only edit is
+harmless only while §6.10's authoritative-status-event override still applies —
+once a blocker closes and the dep pass stops overriding, that floor becomes the
+item's status forever). Every REPUBLISH hook (`publishItemStatusChangeNostr`,
+`publishItemCardEditNostr`, and the manual `rd log publish`) now calls
+`rdSync.NonDerivedStatus(item)` (`pkg/sync/nostrmigrate.go:183`) to override
+`card.Status` right after building the `CardSpec`, walking `item.History`
+backwards past any number of burned-in `blocked` entries to recover the real
+prior status (falling back to `state.StatusInbox`, never the derived value,
+when no non-blocked entry exists). `CardSpecFromItem` itself
+(`pkg/sync/nostrmigrate.go:116-137`) is deliberately left an UNGUARDED
+passthrough — it also builds the `CardSpec` for brand-new items
+(`publishItemFullCreateNostr`), and a freshly-constructed item legitimately has
+no history to derive anything from yet (a fixture or future template may want a
+new item to start out blocked). The guard therefore lives at the REPUBLISH call
+sites, not inside the shared mapper. §7.6 records the read-side half of this.
 
 **§27.8 The status event's first `a` tag names the SIGNER's card coordinate.**
 `BuildStatusEvent` builds `CardCoord(k.PubKeyHex(), itemID)`

@@ -587,7 +587,13 @@ var nostrPublishCmd = &cobra.Command{
 		// published its status event with an empty reason, dropping close-with-reason
 		// on ANY re-publish after the initial live write.
 		reason := lastStatusReason(item)
-		res, err := pub.PublishItemWithReason(context.Background(), boardArg, card, reason, time.Now().Unix())
+		// ready-500: stamp with the SAME scoped monotonic clock every other write
+		// hook uses (nostrNextCreatedAt), not a bare time.Now().Unix(). A same-second
+		// manual republish previously tie-broke by event id against the events it
+		// means to supersede — a coin flip that could silently no-op the republish
+		// (verified: a probe within one wall-clock second showed no burn-in with the
+		// guard disabled, purely because ordering happened to favor the OLD chain).
+		res, err := pub.PublishItemWithReason(context.Background(), boardArg, card, reason, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
 		if err != nil {
 			return err
 		}

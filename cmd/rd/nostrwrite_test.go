@@ -1320,3 +1320,67 @@ func TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf(t *testing.T) {
 
 	assertNoDotCf(t)
 }
+
+// TestNostrNative_PublishCmdOnBlockedItem_Recovers is ready-500's done-condition
+// test for the THIRD instance of the same defect class, in the manual
+// `rd nostr publish` handler (nostrPublishCmd.RunE, cmd/rd/nostr.go): unlike
+// runDelegateNostr/runUpdateNostr this call site had ZERO behavioural coverage —
+// a line-count-neutral `_ = rdSync.NonDerivedStatus(item)` here left the whole
+// repo suite green. This test advances PAST the write and PAST the blocker
+// closing on purpose, exactly like TestNostrNative_DelegateOnBlockedItem_Recovers
+// above: stopping at the fold immediately after the publish cannot distinguish a
+// burned-in "blocked" from a live derived one.
+//
+// ORDERING NOTE (load-bearing, do not remove): nostrPublishCmd used to stamp its
+// PublishItemWithReason call with a bare time.Now().Unix() instead of the scoped
+// nostrNextCreatedAt every other write hook uses. Within one wall-clock second,
+// the nostr projection's (created_at, event-id) tie-break could sort the
+// republished status event BEFORE the create/dep-add events already in this
+// item's chain — a silent no-op republish that would make this test pass
+// regardless of whether NonDerivedStatus is even called. That ordering bug is
+// fixed alongside this test (nostrPublishCmd now calls nostrNextCreatedAt), so
+// this test needs no sleep to be a real assertion of the guard.
+func TestNostrNative_PublishCmdOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before publish; want blocked", it.Status)
+	}
+
+	if err := nostrPublishCmd.RunE(nostrPublishCmd, []string{target}); err != nil {
+		t.Fatalf("nostrPublishCmd.RunE on a blocked item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after publish, status = %q; want STILL blocked (publish does not itself unblock, and the blocker has not closed yet)", it.Status)
+	}
+
+	// --- RECOVERY: close the shared blocker and prove the target is not
+	// permanently stuck. If the manual publish path burned "blocked" in as an
+	// authoritative status event, the dep pass no longer overrides once the
+	// blocker closes, and the item is stuck at blocked forever.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — status burned in by `rd nostr publish` and never re-derived (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
+	assertNoDotCf(t)
+}
