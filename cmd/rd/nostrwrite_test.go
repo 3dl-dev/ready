@@ -285,6 +285,78 @@ func TestNostrNative_DelegateGateApprove(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_DelegateOnBlockedItem_Recovers is ready-500's done-condition
+// test for the runDelegateNostr instance of the SAME defect class ready-e0e
+// fixed for reject (merged e9e8647): 'blocked' is a DERIVED status —
+// applyDepAndGateStatus's dep pass only ever ADDS it, never clears one that was
+// published verbatim. PROBE reproduced on origin/main before this fix: create
+// blocker + target, `rd dep add`, `rd delegate` the blocked target, close the
+// blocker => target stayed status=blocked PERMANENTLY (a control with no
+// intervening delegate recovered to inbox fine). runDelegateNostr used to
+// publish item.Status verbatim (whatever nostrResolveItem projected, including
+// the derived "blocked" overlay) via publishItemStatusChangeNostr — that event's
+// "status" tag becomes the new prevStatus floor on every future replay, and once
+// the blocker closes and the dep pass stops overriding, the floor IS "blocked"
+// forever. The fix substitutes the item's own last authoritative status (read
+// from item.History, which applyDepAndGateStatus never mutates) before
+// publishing whenever the resolved item is currently derived-blocked.
+//
+// This test advances PAST the write and PAST the blocker closing on purpose:
+// ready-e0e's own note records that the predecessor test for reject shipped
+// green over the live defect specifically because it stopped at the fold
+// immediately after the write, where a burned-in "blocked" and a live derived
+// "blocked" are indistinguishable — only closing the blocker exposes the
+// difference.
+func TestNostrNative_DelegateOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before delegate; want blocked", it.Status)
+	}
+
+	if err := runDelegateNostr(target, "atlas/worker-9", "routing"); err != nil {
+		t.Fatalf("delegate on a blocked item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("after delegate, By = %q; want atlas/worker-9", it.By)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after delegate, status = %q; want STILL blocked (delegate does not itself unblock)", it.Status)
+	}
+
+	// --- RECOVERY: close the shared blocker and prove the target is not
+	// permanently stuck. Stopping before this step is exactly how the
+	// predecessor bug class shipped green over a live defect.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — status burned in by delegate and never re-derived (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("recovery lost the delegate assignment: By = %q; want atlas/worker-9 still", it.By)
+	}
+	assertNoDotCf(t)
+}
+
 // TestNostrNative_ImplicitUnblock_UnresolvableIDWarnsInsteadOfSwallowing proves
 // publishImplicitUnblockNostrNative surfaces a resolve failure via
 // warnNostrPublishFailure instead of a bare `continue` (ready-c00 fix): a
@@ -372,6 +444,108 @@ func TestNostrNative_UpdateFieldsAndStatus(t *testing.T) {
 	it, _ := nostrResolveItem(id)
 	if it.Title != "New title" || it.Priority != "p0" || it.Status != state.StatusActive {
 		t.Fatalf("after update: title=%q priority=%q status=%q; want New title/p0/active", it.Title, it.Priority, it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_UpdateStatusBlocked_Refused is ready-500's done-condition test
+// for the runUpdateNostr instance of the blocked-is-derived-never-persisted
+// class: unlike delegate, an explicit `--status blocked` has no legitimate
+// resolved value to coerce to — it is the caller directly asking for the one
+// status this write path must never mint — so the guard refuses the call
+// outright instead of silently substituting something the caller didn't ask
+// for. Without the guard this write would burn status=blocked in as the
+// permanent status-authority winner exactly like the delegate/reject instances
+// (applyDepAndGateStatus's dep pass only ever ADDS blocked, never clears a
+// written one). This test advances past the (refused) write and past the
+// blocker closing, proving nothing was persisted to burn in.
+func TestNostrNative_UpdateStatusBlocked_Refused(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before update; want blocked", it.Status)
+	}
+
+	if err := runUpdateNostr(target, nostrUpdateSpec{statusTo: state.StatusBlocked, hasStatusUpdate: true}); err == nil {
+		t.Fatalf("update --status blocked must be refused, got nil error")
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after the refused update, status = %q; want unaffected (still blocked)", it.Status)
+	}
+
+	// --- RECOVERY: close the blocker and prove the refused call left nothing
+	// behind to burn in — the target must clear exactly like a control with no
+	// intervening write.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — the refused update must not have written anything (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_UpdateFieldEditOnBlockedItem_Recovers proves the common,
+// legitimate case — a plain field edit (`rd update --title`, no status change)
+// on a currently-blocked item — never risks the derived-status-burn-in class
+// either: runUpdateNostr's field block republishes ONLY a card
+// (publishItemCardEditNostr, no accompanying NIP-34 status event), so the fold's
+// dep pass keeps sole ownership of the blocked/unblocked transition regardless
+// of what item.Status happened to read as at call time.
+func TestNostrNative_UpdateFieldEditOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+
+	if err := runUpdateNostr(target, nostrUpdateSpec{title: "Retitled", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("field edit on a blocked item must succeed, got: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Title != "Retitled" {
+		t.Fatalf("Title = %q; want Retitled", it.Title)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after field edit, status = %q; want STILL blocked", it.Status)
+	}
+
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox", it.Status)
 	}
 	assertNoDotCf(t)
 }
@@ -751,6 +925,228 @@ func sliceContains(s []string, v string) bool {
 	return false
 }
 
+// appendCardOnlyBlockedFixture appends a LONE 30302 card event — status=blocked,
+// no accompanying NIP-34 status event, no dep edges — to dir's authoritative log
+// under itemID, signed by the project owner. This reproduces, WITHOUT going
+// through any (fixed) write path, the exact projection shape ready-500's
+// adversary review flagged as understated: an item whose current status reads
+// "blocked" with ZERO authoritative status events in its History, so
+// nostrResolveItem's card-tag fallback (pkg/sync/nostrproject.go: item.Status
+// stays exactly the card's "s" tag whenever len(authoritative) == 0) is the
+// only thing keeping it blocked — not a live dependency edge. This is the real
+// shape produced either by a non-maintainer's card-only republish on a
+// multi-agent board (which strips every non-authoritative status event) or by
+// a partial relay reconcile that lands the card without its status chain.
+func appendCardOnlyBlockedFixture(t *testing.T, dir, itemID string) {
+	t.Helper()
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	boardD := projectPrefix(dir)
+	spec := rdSync.CardSpec{
+		ItemID: itemID, Title: "Pre-burned-in", Status: state.StatusBlocked,
+		Priority: "p1", Type: "task", BoardD: boardD,
+	}
+	ce, err := rdSync.BuildCardEvent(k, spec, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildCardEvent: %v", err)
+	}
+	if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{ce}); err != nil {
+		t.Fatalf("append card-only fixture: %v", err)
+	}
+}
+
+// TestNostrNative_DelegateOnCardOnlyBlockedItem_EmptyHistory_Heals is ready-500's
+// probe for the HOLE in the prior fix: runDelegateNostr's guard used to be `if
+// item.Status == StatusBlocked && len(item.History) > 0`, which fell straight
+// through — publishing item.Status ("blocked") VERBATIM via
+// publishItemStatusChangeNostr — whenever History was empty. This is exactly
+// appendCardOnlyBlockedFixture's shape: no dep edge, no status event, current
+// status blocked purely via the card's own "s" tag. Before this fix: delegate
+// on such an item burned status=blocked in as the permanent status-authority
+// winner (nothing — no blocker to close — could ever have cleared it). The
+// fix moves the substitution into CardSpecFromItem/nonDerivedCardStatus
+// (pkg/sync/nostrmigrate.go), unconditional on History depth, so delegate here
+// must publish the explicit inbox default instead.
+func TestNostrNative_DelegateOnCardOnlyBlockedItem_EmptyHistory_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+	id := "ready-cardonly1"
+	appendCardOnlyBlockedFixture(t, dir, id)
+
+	it, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve fixture: %v", err)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("fixture status = %q before delegate; want blocked (card-tag only, no history)", it.Status)
+	}
+	if len(it.History) != 0 {
+		t.Fatalf("fixture History = %v; want empty (this test proves the empty-history branch)", it.History)
+	}
+
+	if err := runDelegateNostr(id, "atlas/worker-9", "routing"); err != nil {
+		t.Fatalf("delegate on a card-only blocked item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve after delegate: %v", err)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("delegate republished status=blocked verbatim on an empty-history item — the exact hole ready-500's adversary review found (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("after delegate, status = %q; want the explicit inbox default (no authoritative history to recover)", it.Status)
+	}
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("delegate assignment lost: By = %q; want atlas/worker-9", it.By)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_FieldEditOnCardOnlyBlockedItem_EmptyHistory_Heals is
+// ready-500's probe for the adversary's second finding: a field-only `rd
+// update` (publishItemCardEditNostr — no status event at all) on the SAME
+// empty-history card-only-blocked shape used to write item.Status ("blocked")
+// straight into the refreshed card's "s" tag, which IS the projected status
+// verbatim whenever there is no authoritative history chain to override it —
+// burning status=blocked in with no status event ever published. The fix
+// (nonDerivedCardStatus, routed through by CardSpecFromItem) applies here too,
+// since it lives in the one function both publishItemStatusChangeNostr and
+// publishItemCardEditNostr route their outbound CardSpec through.
+func TestNostrNative_FieldEditOnCardOnlyBlockedItem_EmptyHistory_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+	id := "ready-cardonly2"
+	appendCardOnlyBlockedFixture(t, dir, id)
+
+	it, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve fixture: %v", err)
+	}
+	if it.Status != state.StatusBlocked || len(it.History) != 0 {
+		t.Fatalf("fixture status=%q history=%v; want blocked/empty", it.Status, it.History)
+	}
+
+	if err := runUpdateNostr(id, nostrUpdateSpec{title: "Retitled", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("field edit on a card-only blocked item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve after field edit: %v", err)
+	}
+	if it.Title != "Retitled" {
+		t.Fatalf("Title = %q; want Retitled", it.Title)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("field edit republished status=blocked verbatim (into the card's own s tag) on an empty-history item — status=%q", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("after field edit, status = %q; want the explicit inbox default", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_DelegateOnPreBurnedInItem_Heals is ready-500's residual fix
+// (finding 4 on the prior attempt): an item ALREADY burned in by the pre-fix
+// bug has its own last authoritative HISTORY entry recorded as ToStatus
+// "blocked" (a real status event was published carrying status=blocked,
+// unlike the two tests above where only the card's "s" tag was ever touched).
+// A fallback that reads only item.History[len-1].ToStatus finds "blocked"
+// again and republishes it, PERPETUATING the burn-in. This test builds exactly
+// that shape — a blocker + dep edge (so the item is legitimately blocked at
+// the time of the bad write), a status event that WRONGLY published
+// status=blocked while blocked (the pre-fix bug's own output), then closes the
+// blocker — and proves delegate on the already-burned-in item still heals to
+// the item's real pre-block status instead of re-publishing the burned-in
+// "blocked" forever.
+func TestNostrNative_DelegateOnPreBurnedInItem_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+
+	// Simulate the PRE-FIX bug's own output DIRECTLY (raw card + status events,
+	// bypassing the now-fixed publishItemStatusChangeNostr/CardSpecFromItem
+	// choke point entirely) — the fixed code would itself heal this before
+	// publishing, so it cannot be used to construct the fixture it is meant to
+	// heal. This is exactly what the pre-fix runDelegateNostr produced: a real
+	// status event carrying status=blocked verbatim while the item was
+	// derived-blocked, landing a HistoryEntry whose ToStatus is itself
+	// "blocked" — the shape a naive last-entry-only fallback cannot distinguish
+	// from a legitimate one.
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	boardD := projectPrefix(dir)
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	// Strictly-monotonic-per-item timestamp (same helper the live write hooks
+	// use) so the burn-in status event sorts AFTER the create-time inbox status
+	// event despite same-wall-clock-second timestamps — otherwise the
+	// (created_at, event-id) deterministic tie-break can place it FIRST, which
+	// would misconstruct the fixture this test means to build.
+	burnCreatedAt := nostrNextCreatedAt(log, rdSync.ItemDriftScope(target))
+	burnCard, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{
+		ItemID: target, Title: "Target", Status: state.StatusBlocked, Priority: "p1", Type: "task",
+		BoardD: boardD, Deps: []string{blocker},
+	}, burnCreatedAt)
+	if err != nil {
+		t.Fatalf("BuildCardEvent (burn-in fixture): %v", err)
+	}
+	burnStatus, err := rdSync.BuildStatusEvent(k, target, state.StatusBlocked, burnCard.ID, "burned in by the pre-fix bug", burnCreatedAt)
+	if err != nil {
+		t.Fatalf("BuildStatusEvent (burn-in fixture): %v", err)
+	}
+	if _, err := log.AppendUnique([]*nostr.Event{burnCard, burnStatus}); err != nil {
+		t.Fatalf("append burn-in fixture: %v", err)
+	}
+	it, err := nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after simulated burn-in: %v", err)
+	}
+	if len(it.History) == 0 || it.History[len(it.History)-1].ToStatus != state.StatusBlocked {
+		t.Fatalf("fixture setup failed: last history entry ToStatus = %+v; want the simulated burn-in to have landed as blocked", it.History)
+	}
+
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, err = nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after blocker close: %v", err)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("sanity: target status = %q immediately after blocker close and before delegate; want still blocked (dep pass still derives it live)", it.Status)
+	}
+
+	if err := runDelegateNostr(target, "atlas/worker-7", "routing"); err != nil {
+		t.Fatalf("delegate on a pre-burned-in item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after delegate: %v", err)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("delegate republished the pre-burned-in 'blocked' history entry verbatim instead of healing past it — status=%q", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its real pre-block status, recovered by walking PAST the burned-in history entry)", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
 // TestNostrNative_ReadActive_DefaultReadsProjection is the S-read proof: on a
 // nostr-native project with NO RD_NOSTR_READ env set, the dual-read surface
 // resolves items from the nostr projection by DEFAULT. A create publishes to the
@@ -922,5 +1318,69 @@ func TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf(t *testing.T) {
 		t.Fatalf("lastStatusReason(item) = %q; want %q", got, "shipped it")
 	}
 
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_PublishCmdOnBlockedItem_Recovers is ready-500's done-condition
+// test for the THIRD instance of the same defect class, in the manual
+// `rd nostr publish` handler (nostrPublishCmd.RunE, cmd/rd/nostr.go): unlike
+// runDelegateNostr/runUpdateNostr this call site had ZERO behavioural coverage —
+// a line-count-neutral `_ = rdSync.NonDerivedStatus(item)` here left the whole
+// repo suite green. This test advances PAST the write and PAST the blocker
+// closing on purpose, exactly like TestNostrNative_DelegateOnBlockedItem_Recovers
+// above: stopping at the fold immediately after the publish cannot distinguish a
+// burned-in "blocked" from a live derived one.
+//
+// ORDERING NOTE (load-bearing, do not remove): nostrPublishCmd used to stamp its
+// PublishItemWithReason call with a bare time.Now().Unix() instead of the scoped
+// nostrNextCreatedAt every other write hook uses. Within one wall-clock second,
+// the nostr projection's (created_at, event-id) tie-break could sort the
+// republished status event BEFORE the create/dep-add events already in this
+// item's chain — a silent no-op republish that would make this test pass
+// regardless of whether NonDerivedStatus is even called. That ordering bug is
+// fixed alongside this test (nostrPublishCmd now calls nostrNextCreatedAt), so
+// this test needs no sleep to be a real assertion of the guard.
+func TestNostrNative_PublishCmdOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before publish; want blocked", it.Status)
+	}
+
+	if err := nostrPublishCmd.RunE(nostrPublishCmd, []string{target}); err != nil {
+		t.Fatalf("nostrPublishCmd.RunE on a blocked item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after publish, status = %q; want STILL blocked (publish does not itself unblock, and the blocker has not closed yet)", it.Status)
+	}
+
+	// --- RECOVERY: close the shared blocker and prove the target is not
+	// permanently stuck. If the manual publish path burned "blocked" in as an
+	// authoritative status event, the dep pass no longer overrides once the
+	// blocker closes, and the item is stuck at blocked forever.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — status burned in by `rd nostr publish` and never re-derived (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
 	assertNoDotCf(t)
 }
