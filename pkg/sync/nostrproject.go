@@ -21,6 +21,7 @@ package sync
 
 import (
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -163,21 +164,22 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	// Winning card per item, and the ordered list of authoritative status events.
 	winningCard := map[string]*nostr.Event{}
 	statusEvents := map[string][]*nostr.Event{}
-	// firstSeen tracks the EARLIEST created_at (seconds) across every card/status
-	// event admitted for an item id (ready-4ec). itemFromCard derives item.CreatedAt
-	// from the WINNING card's OWN created_at, but every mutation path (update,
-	// close, cancel, delegate, gate, approve, dep add) republishes the 30302 card
-	// with a FRESH created_at — required so nostrNextCreatedAt's monotonic bump lets
-	// the replacement win the latest-wins fold — which resets that reading to
-	// publish time on every touch. The log is append-only (nostrlog.go: "the local
-	// log is the source of truth... fully rebuildable by replaying this log"), so
-	// every past revision of the card, plus every status event, is STILL present in
-	// `events` even though only the newest card counts for CURRENT state. The
-	// minimum created_at over that admitted set is the item's TRUE creation time —
-	// distinct from UpdatedAt (already correctly the MAX over status events, set
-	// below) — recovered without a new persisted field or any change to what gets
-	// signed/published.
-	firstSeen := map[string]int64{}
+	// NOTE (ready-4ec rework): an earlier version of this function tracked
+	// firstSeen — the MINIMUM created_at across every admitted card/status event
+	// for an item id — and used it as Item.CreatedAt. That was SUBSET-sensitive: a
+	// relay retains only the latest addressable 30302 per item (NIP-33), so a
+	// machine bootstrapped via `rd join` holds the newest card + status events ONLY,
+	// never historical card revisions. min() over "whatever happens to be present"
+	// then disagreed with min() over the full local log for the identical item —
+	// two machines could project different creation times from the identical
+	// current state. It also let a non-authoritative status event (one from
+	// neither the item author nor a board maintainer) lower CreatedAt merely by
+	// existing with an early created_at, contradicting §6.4/§19.8's "contributes
+	// neither state nor history" rule — this fold pass ran BEFORE the
+	// status-authority filter below, so it couldn't tell authoritative from not.
+	// CreatedAt is now read from a CARRIED "created" tag on the winning card itself
+	// (CardSpec.CreatedAt / itemFromCard) — see itemFromCard, and its Item.CreatedAt
+	// assignment in the loop below, which needs no override here.
 	// STATUS-AUTHORITY source (ready-b57): board maintainers keyed by board
 	// coordinate "30301:<boardAuthor>:<boardD>". Populated from the 30301 board
 	// events in this SAME event set (trusted + verified). The board AUTHOR is an
@@ -299,9 +301,6 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			continue
 		}
 		seen[e.ID] = true
-		if cur, ok := firstSeen[itemID]; !ok || e.CreatedAt < cur {
-			firstSeen[itemID] = e.CreatedAt
-		}
 		switch {
 		case e.Kind == KindCard:
 			cur, ok := winningCard[itemID]
@@ -343,14 +342,11 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	for itemID, card := range winningCard {
 		author := card.PubKey
 		item := itemFromCard(card, opts.Decryptor)
-		// TRUE CREATION TIME (ready-4ec): itemFromCard set item.CreatedAt from the
-		// WINNING card's own created_at (publish time of the LATEST revision).
-		// Overwrite it with the earliest created_at seen anywhere in this item's
-		// admitted card/status chain, so a mutation that republishes the card no
-		// longer resets how old the item looks. firstSeen[itemID] is always present
-		// here: the winning card itself was folded into firstSeen in the same loop
-		// pass that populated winningCard.
-		item.CreatedAt = firstSeen[itemID] * int64(time.Second)
+		// TRUE CREATION TIME (ready-4ec rework): itemFromCard already set
+		// item.CreatedAt from the winning card's CARRIED "created" tag (falling back
+		// to the card's own created_at only when that tag is absent) — no override
+		// needed here. See CardSpec.CreatedAt's doc for why a carried value, not a
+		// scan over the admitted event set, is the subset-safe mechanism.
 
 		// STATUS-AUTHORITY SET (ready-b57): who — besides the item author — may author
 		// an authoritative status transition on THIS item. It is the maintainers of the
@@ -589,6 +585,19 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 	itemID := tagValue(e, "d")
 	// created_at is seconds; state.Item timestamps are unix nanos.
 	tsNano := e.CreatedAt * int64(time.Second)
+	// TRUE CREATION TIME (ready-4ec rework): read the CARRIED "created" tag when
+	// present — see CardSpec.CreatedAt's doc for why a carried value, not a scan
+	// over admitted events, is the only subset-safe mechanism. Falls back to this
+	// card's OWN created_at when the tag is absent (a genesis card that has never
+	// been republished since this field existed, or a pre-fix card from before it
+	// did) — correct for that one bootstrap case, and the value CardSpecFromItem
+	// then carries forward unchanged on every subsequent republish.
+	createdAtNano := tsNano
+	if raw := tagValue(e, "created"); raw != "" {
+		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			createdAtNano = secs * int64(time.Second)
+		}
+	}
 	item := &state.Item{
 		ID:          itemID,
 		MsgID:       e.ID,
@@ -598,7 +607,7 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 		Type:        tagValue(e, "itype"),
 		Context:     e.Content,
 		Description: e.Content,
-		CreatedAt:   tsNano,
+		CreatedAt:   createdAtNano,
 		UpdatedAt:   tsNano,
 		// Raw declared deps ("i" tags) -- resolved into validated BlockedBy/Blocks
 		// (and blocked-status) by applyDepAndGateStatus once all items are known.

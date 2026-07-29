@@ -123,11 +123,31 @@ func CardSpecFromItem(item *state.Item, boardD string) CardSpec {
 		For:         item.For,
 		ParentID:    item.ParentID,
 		Due:         item.Due,
+		// CREATION TIME CARRY-FORWARD (ready-4ec rework): every live republish
+		// (update/claim/close/cancel/delegate/gate/approve/dep add) funnels through
+		// this function, so re-emitting the item's CURRENT CreatedAt as the card's
+		// "created" tag on EVERY call is what makes the value immutable once set —
+		// see CardSpec.CreatedAt's doc. itemCreatedAtSecs returns 0 (emit NO tag)
+		// when the item's true creation time is genuinely unknown yet: a brand-new
+		// live-created item (Item.CreatedAt unset, no history) must NOT freeze on a
+		// fabricated value — it inherits its own genesis card's real event
+		// created_at via itemFromCard's fallback, exactly once, then this function
+		// carries THAT value forward on every subsequent call once the projection
+		// reads it back into Item.CreatedAt.
+		CreatedAt: itemCreatedAtSecs(item),
 	}
 }
 
-// itemCreatedAtSecs returns the item's create timestamp in unix seconds, falling
-// back to the earliest history entry (then to 1) when CreatedAt is unset.
+// itemCreatedAtSecs returns the item's create timestamp in unix seconds: the
+// item's own CreatedAt when set, else the earliest parseable history entry (a
+// pre-nostr/migrated item whose true creation time survives only in its history),
+// else 0 — meaning genuinely unknown, NOT a fabricated sentinel. 0 is
+// deliberately NOT coerced to any nonzero placeholder: CardSpecFromItem treats 0
+// as "carry no created tag yet", and BuildCardEvent/itemFromCard's fallback (the
+// card event's OWN created_at) supplies a correct value for exactly the one case
+// this arises — a fresh item's first-ever card, before it has anything to carry.
+// A fabricated nonzero default here would instead freeze that card's "created"
+// tag at the fabricated value forever, which is worse than emitting no tag.
 func itemCreatedAtSecs(item *state.Item) int64 {
 	if item.CreatedAt > 0 {
 		return item.CreatedAt / int64(time.Second)
@@ -137,7 +157,7 @@ func itemCreatedAtSecs(item *state.Item) int64 {
 			return s
 		}
 	}
-	return 1
+	return 0
 }
 
 // historyEntrySecs parses a history entry timestamp to unix seconds. Campfire

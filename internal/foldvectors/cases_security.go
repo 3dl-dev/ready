@@ -184,7 +184,7 @@ func (b *builder) vTrustGateDisabledAdmitsAnyone() error {
 	}
 	items, err := itemsJSON(&state.Item{
 		ID: "ready-v25", MsgID: hostileCard.ID, Title: "hostile takeover", Type: "bug", Priority: "p3",
-		Status: state.StatusDone, CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 200),
+		Status: state.StatusDone, CreatedAt: nanos(t0 + 100), UpdatedAt: nanos(t0 + 200),
 		History: []state.HistoryEntry{
 			{Timestamp: rfc(t0 + 200), FromStatus: "", ToStatus: state.StatusDone, ChangedBy: b.outsiderPub, Note: "closing your item"},
 		},
@@ -199,10 +199,13 @@ func (b *builder) vTrustGateDisabledAdmitsAnyone() error {
 			"pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card " +
 			"now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status " +
 			"event authoritative: full state takeover. This is what the enforced gate prevents. " +
-			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). Even so, " +
-			"CreatedAt (ready-4ec) still reads the genuine card's original t0 — it is the MINIMUM created_at " +
-			"over every admitted event for the item, so the takeover changes who currently authors the " +
-			"content but not when the item's chain began.",
+			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). " +
+			"CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag; " +
+			"neither card here carries one (raw wire events, no CardSpecFromItem carry-forward), so it " +
+			"falls back to the winning (hostile) card's OWN t0+100 -- the takeover changes who currently " +
+			"authors the content AND, in this no-tag fixture, what the item's recorded creation time is, " +
+			"which is exactly why a real CLI republish must always carry the tag forward (see " +
+			"TestProjection_CreatedAtSurvivesMutation) rather than leave CreatedAt to a derived fallback.",
 		Options: Options{Trusted: nil},
 		Events:  []*nostr.Event{genuine, hostileCard, hostileStatus},
 		Expect:  Expect{Items: items, Views: vw(nil)},

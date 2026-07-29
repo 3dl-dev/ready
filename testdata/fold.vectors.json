@@ -279,7 +279,7 @@
         "4.1",
         "4.3"
       ],
-      "note": "Two cards for one item; the greater created_at wins the CONTENT contest even though it appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec) is the MINIMUM created_at over every admitted card/status event for the item, not the winning card's own timestamp, so it tracks the first-ever card and does not reset when a later republish wins content (§5.1). UpdatedAt still tracks the winning card/latest status event.",
+      "note": "Two cards for one item; the greater created_at wins the CONTENT contest even though it appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag, not derived by scanning every admitted event -- a derived min() is subset-sensitive (a relay retains only the latest addressable card, so a relay-bootstrapped machine never sees the older card at all, and would disagree with a full-log machine about the minimum). Neither card here carries a \"created\" tag (this vector builds raw wire events directly, bypassing CardSpecFromItem's carry-forward), so CreatedAt falls back to the winning card's OWN created_at -- the same value UpdatedAt reports. A real CLI republish always forwards the prior CreatedAt via CardSpecFromItem, so in production this reset does not occur; see TestProjection_CreatedAtSurvivesMutation (pkg/sync/nostrreplay_test.go) for the carried-tag proof.",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -372,7 +372,7 @@
         "items": [
           {
             "context": "second write",
-            "created_at": "1700000000000000000",
+            "created_at": "1700000100000000000",
             "description": "second write",
             "for": "",
             "id": "ready-v03",
@@ -3819,7 +3819,7 @@
         "4.1",
         "6.4"
       ],
-      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). Even so, CreatedAt (ready-4ec) still reads the genuine card's original t0 — it is the MINIMUM created_at over every admitted event for the item, so the takeover changes who currently authors the content but not when the item's chain began.",
+      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag; neither card here carries one (raw wire events, no CardSpecFromItem carry-forward), so it falls back to the winning (hostile) card's OWN t0+100 -- the takeover changes who currently authors the content AND, in this no-tag fixture, what the item's recorded creation time is, which is exactly why a real CLI republish must always carry the tag forward (see TestProjection_CreatedAtSurvivesMutation) rather than leave CreatedAt to a derived fallback.",
       "options": {
         "trusted": null,
         "maintainers": null,
@@ -3935,7 +3935,7 @@
       "expect": {
         "items": [
           {
-            "created_at": "1700000000000000000",
+            "created_at": "1700000100000000000",
             "for": "",
             "history": [
               {
@@ -4379,7 +4379,7 @@
       "identity": "",
       "events": [
         {
-          "id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
+          "id": "44dcbacdd7c0ab27b9b8feeb3a83aedcf444b83a4b617b22f2507182d627b41f",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4429,11 +4429,11 @@
               "1"
             ]
           ],
-          "content": "tDxoqB3ImM5JvOb3etBkZ/hBVm7+9gexAs+LsV/49dNPTRPk8TIWvx7OYaZgREnhP3d14d8d/BtyaZRSV75oFTw6QXzdJU6YE3xzM8faPMQM86/1iQvhTix3CIEd2hiw2xne7HfH/063bad5kVBzRRa4GNSCa/Z7G20ga+jq39lD",
-          "sig": "41040ca5e4744ea8731202b7035a1abd23aa71953970ddc328858f50d464bd07d2ea32000d6dcff9e50fe9905af95bc45d67543396faf0694a822b4641608dcf"
+          "content": "JJMiacnSWxt0wNj/KBuqbJrBc9lYieAnizxAM5NOp2+4lP2RElUX0FW1McWc5xG8HIXSWcPc1sSH1+NyF+9DifPKZSWDbhv5M5kZa78ilwt1nZm0oJ+aZCtd1fNoS6S7E52ANmGIhQz/FwGPtVHErdzswSdCfAYPjNgmeZCBeBGU",
+          "sig": "3bcde1ca01d0fe6ff36bd704a4c6d9777350b311be4bed975b9037246d542664442d1fc390816131fa2d08b46f506328dabddc192f12c59cc418eda6e980b493"
         },
         {
-          "id": "68e8fdf117de3bad83d9409a186f9a203a14b10a404a7a8eb68975d40347d63c",
+          "id": "65de009771bae8273a6d45474802e42881b494e61d605f8ca7fdb4f180c7d57d",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4463,8 +4463,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "xlhAw10Kt+yrWCmAFH+Xp+vEVg7cl23rWoWIZIrp+5SOV4bhB6DoOOy2Jgg9NLPO2INKKs4a",
-          "sig": "127fa2d38720cafad253d866d6115c8e994319e0eb20a078b257e10ef0f569f08cb4def7251c1b5ac083832bc53d4744791a4a9eaac724dd2f51acdfcc4002e6"
+          "content": "2cpbA5Y9bz6lz1NSyCjgAYvvEr3NheKsRbjeQ6hLPCJh/okntNRfuLUQLfJ8pENwMMMS++sX",
+          "sig": "98cb46c6bbabd15f511f8d9b654a88a66d15716464fc9c6cee796e6f22cbd5dc970efda88577f8dec43dac8fb5211a0576371f473b0984390d8021c16f764180"
         }
       ],
       "expect": {
@@ -4475,7 +4475,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
+            "gate_msg_id": "44dcbacdd7c0ab27b9b8feeb3a83aedcf444b83a4b617b22f2507182d627b41f",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4489,7 +4489,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
+            "msg_id": "44dcbacdd7c0ab27b9b8feeb3a83aedcf444b83a4b617b22f2507182d627b41f",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -4557,7 +4557,7 @@
       "identity": "",
       "events": [
         {
-          "id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
+          "id": "8912b28edb610e9e1ad2aca51c0cd6a0505a295a4955f14e9f957aae97909eeb",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4607,11 +4607,11 @@
               "1"
             ]
           ],
-          "content": "SQ5L3ErhjqBh2NTRiB1oNNw/Dr6030+ArWXB+tx6FIGs2DuBBb6J7BMwyTtCWNZdYhntrtQ309NxFP79Et/scDEHvCpiDFp7TjAceIO5d7c1OX3pW7OyuPTVRTCuHnZGRkTiVcxb4zaWoo3WiXBl2Py0yquDQ8RRxVYgaYZSvcQg",
-          "sig": "e4e9cdcdab4af72e79b541c7f201239da40ca8a23912f4ceeca69cf97d4a86c2c2d2a16992bb75fa323fcd4248481b9483912e9d39f814aae4a66ea6cb0ece36"
+          "content": "5TOqrh/bWlctvxVam4TznK1gC7P+MGIJLhY7Aa27yYi2ODvQYNAMoq30QcfQs9N0Pm+duYlFutKoMniL2KoyRCVyIGYB7qs9YN3kjQeiSTeyYWWqgop4hhvPqxTaS6om6ArvlabUakZ2WQ9kMo5lnWR5MaKma0FjBTKw0gDqfqkL",
+          "sig": "c58f3fd3e240a55a4f00182999e1ae44e091ed45c29c303512ce8985a54097b846ec716b450666b7d729ce5d41e1b0ba455f4fe1554d7846daa0a5bba1c96789"
         },
         {
-          "id": "e49611f853fb93dd7ef518e54b5a7f0e93e47000652cbce1731748b485930a63",
+          "id": "e949b301794a6bba302472a76871d6208c875c9fbc6339bd112747c7a8d9614c",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4641,8 +4641,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "XexgHQzs2HYK7vMCpmj/4UB1hbW834vxWiQnAVBfa9PdmJlY73lFGtSPYwI6TQHLTiMeFz5F",
-          "sig": "0a0e04410aced1e7105909ac89f35b330be95badae21730d3c71b7e6bd3a90f5a9566428c4a5a2c21951b4dd604989faa55ea8f05cfddcb1765a7cb497c8b71f"
+          "content": "DZAv8pKUnkZh6GhMjX4rkypZbC4rZwIYUorpRCcrvB3sAxrHV2e3GsKXME3LQEg8zJN9WYOa",
+          "sig": "6324f1eb98e8d817765219bfa82159273b9d5d8c6df7bd94904e30af6ac50efbb9e2465119cdc7c5d34c2cea34310eafafd10f53fd5c30d01a2f591830d8ff8a"
         }
       ],
       "expect": {
@@ -4653,7 +4653,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
+            "gate_msg_id": "8912b28edb610e9e1ad2aca51c0cd6a0505a295a4955f14e9f957aae97909eeb",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4667,7 +4667,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
+            "msg_id": "8912b28edb610e9e1ad2aca51c0cd6a0505a295a4955f14e9f957aae97909eeb",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -4725,7 +4725,7 @@
       "identity": "",
       "events": [
         {
-          "id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
+          "id": "9cc5d9bffa91788078030f0570f5b9b29de84192a7d85f35789670466008547e",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4775,11 +4775,11 @@
               "1"
             ]
           ],
-          "content": "5RAQO87fKPYnzb0YyIE7sW+ZGcDo/dBy45mPCX26Pfdr/6JfaYEM/kjyKSo9X6FDbjILZAd9VwCyz+cCdA0Nb+gWVsdjliCYMpwbBfQa6cVkZXt9OTgS6Uv2g6GQhzXzMebUfM4dbEkizPIXXd8lABH0crc1LoiAnuA4XWoLqvnz",
-          "sig": "569320f4fc8d034773a2d2c9a42a0d09845878a25a46ab185c9e9fdfafadaaf002432a6bdae573175450d4181a5e8f20024b854394f18eef28293423bda095d8"
+          "content": "thMs9RzM1893kU1fhGUz020VySDTZBfdYtuAkBIkJwxNIHyd/0IJr6ApTZKq5ZLmiXQ7/Muz2yS/1eHFf2iaKpqzWJ8iqREap/1wu59vbs31Mns/djfOVOvQBl8m+5xii9+xlFesZa5HVOTvxiuNA30INpej/WJNH4Y3loC3LYYu",
+          "sig": "82a183e0f475d9c370d0dbccd480f1ef84b69fed5ba954eb5cac7cdd2998f0034633cc171aa4cd23b3e1d766269c70160891d7e7548a0075b2866f3e2a739c46"
         },
         {
-          "id": "5bd42e780fdc9361913a7e52da7e941d33d296826a2df612b14c886ccb6a1a8e",
+          "id": "a54e28f2a6ee14fac2249dabaec23a9dd080e87fd174cf052b39eccd651c964b",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4809,8 +4809,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "SHOVc1ucFUsnxIqyKGFy2keb43TijPvVH+WOVnxskVxK9SOxc8R9p64bhRUr3Hu3mxgDQwPI",
-          "sig": "2a0de49004dd3aa9a17e50883dc2064e7cdc4b1d7402172fbf45b3e5b20511056755accedef9ee28f3cdd4048d11652b5cd3a3814e61927e89254371c6ced0c9"
+          "content": "NzkhaqIRWaZR9hew6zmCcoKb7wGakFPxdt0TvzDIg0+QKk2MIEVBfAT1rcig9LcpfM/SIJUn",
+          "sig": "17892736fdf45b31165beee8c3ffa602308864a409476b9bb0fc02bfda7c91ae7211f03ac7f34f04708f11db8befd425badc59c02de9da5eb2b45aeefa30cf08"
         }
       ],
       "expect": {
@@ -4821,7 +4821,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
+            "gate_msg_id": "9cc5d9bffa91788078030f0570f5b9b29de84192a7d85f35789670466008547e",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4835,7 +4835,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
+            "msg_id": "9cc5d9bffa91788078030f0570f5b9b29de84192a7d85f35789670466008547e",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",

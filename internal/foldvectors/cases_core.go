@@ -140,7 +140,7 @@ func (b *builder) vCardLatestWins() error {
 		ID: "ready-v03", MsgID: newer.ID, Title: "newer",
 		Context: "second write", Description: "second write",
 		Type: "task", Priority: "p1", Status: state.StatusActive,
-		CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 100),
+		CreatedAt: nanos(t0 + 100), UpdatedAt: nanos(t0 + 100),
 	})
 	if err != nil {
 		return err
@@ -149,10 +149,16 @@ func (b *builder) vCardLatestWins() error {
 		Name:        "card_latest_wins_created_at",
 		SpecClauses: []string{"4.1", "4.3"},
 		Note: "Two cards for one item; the greater created_at wins the CONTENT contest even though it " +
-			"appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec) is the MINIMUM created_at over " +
-			"every admitted card/status event for the item, not the winning card's own timestamp, so it " +
-			"tracks the first-ever card and does not reset when a later republish wins content (§5.1). " +
-			"UpdatedAt still tracks the winning card/latest status event.",
+			"appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec REWORK) is read from the winning " +
+			"card's CARRIED \"created\" tag, not derived by scanning every admitted event -- a derived " +
+			"min() is subset-sensitive (a relay retains only the latest addressable card, so a " +
+			"relay-bootstrapped machine never sees the older card at all, and would disagree with a " +
+			"full-log machine about the minimum). Neither card here carries a \"created\" tag (this " +
+			"vector builds raw wire events directly, bypassing CardSpecFromItem's carry-forward), so " +
+			"CreatedAt falls back to the winning card's OWN created_at -- the same value UpdatedAt " +
+			"reports. A real CLI republish always forwards the prior CreatedAt via CardSpecFromItem, so " +
+			"in production this reset does not occur; see TestProjection_CreatedAtSurvivesMutation " +
+			"(pkg/sync/nostrreplay_test.go) for the carried-tag proof.",
 		Options: Options{Trusted: trust(b.ownerPub)},
 		Events:  []*nostr.Event{newer, older},
 		Expect: Expect{

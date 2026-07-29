@@ -26,6 +26,7 @@ package sync
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -162,6 +163,16 @@ type CardSpec struct {
 	// tag ("due") (ready-187). DISTINCT from ETA. Old cards default to empty Due.
 	Due string
 
+	// CreatedAt is the item's TRUE creation time (unix seconds), CARRIED as its own
+	// "created" tag rather than derived from any event's own created_at (ready-4ec
+	// rework — see nostrproject.go's itemFromCard for the subset-safety rationale).
+	// Zero means "unknown/genesis": no tag is emitted and itemFromCard falls back
+	// to the card's own created_at, correct exactly once (a fresh item's first
+	// card). CardSpecFromItem (nostrmigrate.go) is the one place that populates
+	// this on every live republish, re-emitting the item's current CreatedAt
+	// verbatim so a value, once set, propagates unchanged forever after.
+	CreatedAt int64
+
 	// Enc, when non-nil, puts this card in CONFIDENTIAL mode (epic ready-216): the
 	// free-text fields (Title, Context, WaitingOn) are AEAD-sealed into
 	// event.Content and the clear title/waiting_on tags are dropped; when Enc.LTK
@@ -257,6 +268,13 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	}
 	tags := [][]string{
 		{"d", spec.ItemID},
+	}
+	// TRUE CREATION TIME (ready-4ec rework): a carried value, not a derived one —
+	// see the CreatedAt field doc. Zero (genesis / unknown) emits no tag; the
+	// projection then falls back to this event's own created_at, which is correct
+	// for exactly the one card a fresh item has never republished yet.
+	if spec.CreatedAt > 0 {
+		tags = append(tags, []string{"created", strconv.FormatInt(spec.CreatedAt, 10)})
 	}
 	// CONFIDENTIAL mode drops the clear title tag (its value moves into the sealed
 	// Content); plaintext mode emits it exactly where it always was (right after d).

@@ -174,17 +174,23 @@ func TestProjection_StaleReplayDoesNotResurrect(t *testing.T) {
 // creation time must survive EVERY republish of its 30302 card (update, close,
 // cancel, delegate, gate, approve, dep add all funnel through the same
 // card-republish + status-event mechanics this test exercises), while its
-// last-modified time (UpdatedAt) keeps advancing. Before the fix, itemFromCard
-// read CreatedAt straight off the WINNING card's own created_at — which a
-// republish resets to publish time by design (nostrNextCreatedAt's monotonic
-// bump requires a fresh created_at so the replacement wins latest-wins) — so
-// every mutation made the item look brand new.
+// last-modified time (UpdatedAt) keeps advancing.
+//
+// This exercises the CARRIED-TAG mechanism (ready-4ec rework), not a derived
+// min(): each republish explicitly sets CardSpec.CreatedAt to the genesis value,
+// exactly as the real write path does — CardSpecFromItem reads the item's
+// CURRENT (already-projected) CreatedAt and re-emits it verbatim on every
+// mutation (see nostrmigrate.go). The genesis card alone carries NO "created" tag
+// (CreatedAt: 0 is the zero value / unknown), so itemFromCard falls back to ITS
+// OWN event created_at — correct for exactly that one bootstrap card.
 func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 	k := testKey(t)
 	itemID := "ready-created-1"
 	opts := ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}}
+	wantCreated := int64(1000) * int64(time.Second)
 
-	// t=1000: genesis create (inbox).
+	// t=1000: genesis create (inbox). No "created" tag yet (CreatedAt unset) --
+	// the fallback to this card's own created_at is what seeds the true value.
 	c0, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 1000)
 	s0, _ := BuildStatusEvent(k, itemID, state.StatusInbox, c0.ID, "", 1000)
 
@@ -193,7 +199,6 @@ func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 	if !ok {
 		t.Fatalf("item %s not projected after genesis", itemID)
 	}
-	wantCreated := int64(1000) * int64(time.Second)
 	if it.CreatedAt != wantCreated {
 		t.Fatalf("genesis CreatedAt = %d, want %d", it.CreatedAt, wantCreated)
 	}
@@ -202,17 +207,18 @@ func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 	}
 
 	// t=2000: a card edit republishes the card (e.g. `rd update`, `rd dep add`, a
-	// re-parent) — a plain card-only mutation, no new status event.
-	c1, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 2000)
+	// re-parent) — a plain card-only mutation, no new status event. Carries the
+	// genesis CreatedAt forward explicitly, as CardSpecFromItem does in production.
+	c1, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusInbox, Priority: "p1", BoardD: "ready", CreatedAt: 1000}, 2000)
 
 	// t=3000: claim (active) — card republish + authoritative status event, the
-	// same mechanics `rd claim`/`rd delegate` use.
-	c2, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready"}, 3000)
+	// same mechanics `rd claim`/`rd delegate` use. Still carries CreatedAt: 1000.
+	c2, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 3000)
 	s1, _ := BuildStatusEvent(k, itemID, state.StatusActive, c2.ID, "claimed", 3000)
 
 	// t=4000: close (done) — the same mechanics `rd done`/`rd cancel`/`rd fail`
-	// use: republish the card AND emit a terminal status event.
-	c3, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusDone, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready"}, 4000)
+	// use: republish the card AND emit a terminal status event. Still CreatedAt: 1000.
+	c3, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusDone, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 4000)
 	s2, _ := BuildStatusEvent(k, itemID, state.StatusDone, c3.ID, "shipped", 4000)
 
 	all := []*nostr.Event{c0, s0, c1, c2, s1, c3, s2}
@@ -248,6 +254,96 @@ func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 		if got.UpdatedAt != wantUpdated {
 			t.Fatalf("seed=%d: UpdatedAt = %d, want %d", seed, got.UpdatedAt, wantUpdated)
 		}
+	}
+}
+
+// TestProjection_CreatedAtSubsetSafe is the adversary's fatal probe (ready-4ec
+// rework): a machine bootstrapped via `rd join` pulls from relays, which retain
+// ONLY the latest addressable 30302 card per item (NIP-33) — never historical
+// card revisions. A DERIVED min()-over-admitted-events CreatedAt disagreed
+// between the full local log (which still has every past card) and that
+// relay-bootstrapped subset (newest card + status events only), because the
+// subset's minimum created_at was necessarily later than the full set's. The
+// CARRIED "created" tag on the winning card has no such dependency: whatever
+// subset holds the item's current card holds the identical tag value.
+func TestProjection_CreatedAtSubsetSafe(t *testing.T) {
+	k := testKey(t)
+	itemID := "ready-subset-1"
+	opts := ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}}
+
+	// Full history: genesis @1000, claim @2000, a later card-only edit @3000 that
+	// (like production) carries the genesis CreatedAt forward explicitly.
+	c0, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 1000)
+	s0, _ := BuildStatusEvent(k, itemID, state.StatusInbox, c0.ID, "", 1000)
+	c1, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 2000)
+	s1, _ := BuildStatusEvent(k, itemID, state.StatusActive, c1.ID, "claimed", 2000)
+	c2, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v2 latest", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 3000)
+
+	fullSet := []*nostr.Event{c0, s0, c1, s1, c2}
+	// Relay-bootstrapped SUBSET: only the newest card (c2) + status events (s0,
+	// s1) — the historical cards c0/c1 are ABSENT, matching what a relay actually
+	// retains (latest-wins addressable event only) and what `rd join` pulls down.
+	subset := []*nostr.Event{c2, s0, s1}
+
+	full := summarize(t, fullSet, opts, itemID)
+	if full.title != "v2 latest" {
+		t.Fatalf("full-set winning title = %q, want v2 latest (sanity check)", full.title)
+	}
+
+	fullItem := ProjectItems(fullSet, opts)[itemID]
+	subItem := ProjectItems(subset, opts)[itemID]
+	if fullItem == nil || subItem == nil {
+		t.Fatalf("item missing: full=%v subset=%v", fullItem, subItem)
+	}
+	wantCreated := int64(1000) * int64(time.Second)
+	if fullItem.CreatedAt != wantCreated {
+		t.Fatalf("full-set CreatedAt = %d, want %d", fullItem.CreatedAt, wantCreated)
+	}
+	if subItem.CreatedAt != fullItem.CreatedAt {
+		t.Errorf("SUBSET-SENSITIVITY: relay-subset CreatedAt = %d, full-set CreatedAt = %d — two machines holding different subsets of the same board disagree about this item's creation time", subItem.CreatedAt, fullItem.CreatedAt)
+	}
+}
+
+// TestProjection_BackdatedNonAuthorityStatusIgnored is the adversary's spec
+// probe (ready-4ec rework, §6.4/§19.8): a status event from neither the item
+// author nor a board maintainer is NON-authoritative and must contribute
+// NEITHER state NOR history — including, specifically, CreatedAt. Under the old
+// firstSeen/min() mechanism this event's early created_at (BACKDATED before the
+// card's own genesis) would still lower CreatedAt, because firstSeen folded
+// every admitted event (status-authority-blind) before the authority filter ran.
+// Under the carried-tag mechanism no status event is ever consulted for
+// CreatedAt at all, so this is structurally impossible — this test pins that.
+func TestProjection_BackdatedNonAuthorityStatusIgnored(t *testing.T) {
+	author := testKey(t)
+	stranger := testKey(t) // NOT a maintainer, NOT the card author
+	itemID := "ready-backdated-1"
+	opts := ProjectOptions{Maintainers: map[string]bool{author.PubKeyHex(): true}}
+
+	// Card created @2000.
+	c0, _ := BuildCardEvent(author, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusActive, Priority: "p1", BoardD: "ready"}, 2000)
+	sAuthor, _ := BuildStatusEvent(author, itemID, state.StatusActive, c0.ID, "claimed", 2000)
+
+	// A NON-authoritative status event, BACKDATED to @500 — well before the
+	// card's own created_at (2000) — signed by a stranger who is neither the
+	// author nor a maintainer.
+	sBackdated, _ := BuildStatusEvent(stranger, itemID, state.StatusActive, c0.ID, "spoofed", 500)
+
+	withoutStranger := ProjectItems([]*nostr.Event{c0, sAuthor}, opts)[itemID]
+	withStranger := ProjectItems([]*nostr.Event{c0, sAuthor, sBackdated}, opts)[itemID]
+	if withoutStranger == nil || withStranger == nil {
+		t.Fatalf("item missing: without=%v with=%v", withoutStranger, withStranger)
+	}
+	wantCreated := int64(2000) * int64(time.Second)
+	if withoutStranger.CreatedAt != wantCreated {
+		t.Fatalf("baseline CreatedAt = %d, want %d", withoutStranger.CreatedAt, wantCreated)
+	}
+	if withStranger.CreatedAt != wantCreated {
+		t.Errorf("SPEC VIOLATION: a backdated NON-authoritative status event changed CreatedAt from %d to %d — a non-authority must contribute neither state nor history (§6.4/§19.8)", wantCreated, withStranger.CreatedAt)
+	}
+	// The stranger's event must also be entirely absent from history (already
+	// covered elsewhere, re-asserted here for locality with the CreatedAt claim).
+	if len(withStranger.History) != len(withoutStranger.History) {
+		t.Errorf("non-authoritative status event leaked into history: len=%d, want %d", len(withStranger.History), len(withoutStranger.History))
 	}
 }
 
