@@ -244,57 +244,34 @@ func TestOutputItemsJSON_UnchangedByParentGrouping(t *testing.T) {
 	}
 }
 
-// TestPrintReadyTree_ReadyRootNotDoublePrinted covers ready-e88 rework
-// challenge 3: an epic ROOT can itself be ready (unblocked, not just a
-// closed/blocked aggregator) -- nothing about parent_id grouping depends on
-// dep-block status, and the whole premise of this feature is that grouping
-// is independent of readiness. Before the fix, printReadyTree printed such a
-// root once as the header row (via g.root) and AGAIN as one of its own
-// children rows (since findReadyRoot(root)==root put it in g.children too),
-// and the "(N ready)" count included it. This asserts: the root's ID appears
-// in the output EXACTLY ONCE, the header count reflects only the OTHER ready
-// children (not the root itself), and none of the root's sibling children go
-// missing.
-func TestPrintReadyTree_ReadyRootNotDoublePrinted(t *testing.T) {
-	root := mkItem("epic-live-root", "", "inbox", "Unblocked epic, itself ready")
-	child1 := mkItem("epic-live-child-1", "epic-live-root", "inbox", "Child 1")
-	child2 := mkItem("epic-live-child-2", "epic-live-root", "inbox", "Child 2")
-	child3 := mkItem("epic-live-child-3", "epic-live-root", "inbox", "Child 3")
-
-	// root is READY (status inbox, in the items slice passed to printReadyTree),
-	// exactly the case the guard "len(g.children)==1 && children[0]==root"
-	// alone cannot catch once other ready children exist alongside it.
-	items := []*state.Item{root, child1, child2, child3}
-	allItems := items
-
-	groups := buildReadyGroups(items, byIDFrom(allItems))
-	if len(groups) != 1 || groups[0].root.ID != "epic-live-root" {
-		t.Fatalf("expected a single group rooted at epic-live-root, got %+v", groups)
-	}
-	if len(groups[0].children) != 4 {
-		t.Fatalf("expected root+3 children (4 total) grouped together, got %d", len(groups[0].children))
-	}
-
-	output := captureStdoutPipe(t, func() { printReadyTree(items, allItems) })
-
-	count := strings.Count(output, "epic-live-root")
-	if count != 1 {
-		t.Fatalf("expected root ID 'epic-live-root' to appear EXACTLY ONCE (header only, not also as a child row), appeared %d times:\n%s", count, output)
-	}
-	// 3 non-root children, under headerThreshold (7) -- this group inlines
-	// (no header at all, per challenge 4's rule), so all 4 items (root +
-	// 3 children) print as plain rows, one line each. The root is NOT
-	// duplicated: it appears once, as its own row, same as any other item.
-	lines := countNonEmptyLines(output)
-	if lines != 4 {
-		t.Fatalf("expected exactly 4 lines (root + 3 children, each once, no header since under headerThreshold), got %d:\n%s", lines, output)
-	}
-	for _, id := range []string{"epic-live-child-1", "epic-live-child-2", "epic-live-child-3"} {
-		if strings.Count(output, id) != 1 {
-			t.Errorf("expected child %q to appear exactly once, output:\n%s", id, output)
-		}
-	}
-}
+// TestPrintReadyTree_ReadyRootNotDoublePrinted (ready-e88 rework challenge 3)
+// was RETRACTED here (pass 2 rework): proven VACUOUS by mutation. Its
+// fixture was root+3 children -- a group with 3 non-root displayChildren,
+// which is under headerThreshold (7) and so takes printReadyTree's inline
+// branch (`for _, c := range g.children { ... }`), which prints g.children
+// directly and never reads displayChildren at all. Deleting the
+// root-exclusion line (`if c.ID == g.root.ID { continue }`) therefore leaves
+// this fixture's output byte-for-byte identical -- the test's own count==1
+// and lines==4 assertions are trivially true whether or not the fix exists.
+// VERIFIED: with the exclusion line removed, `go test -run
+// TestPrintReadyTree_ReadyRootNotDoublePrinted ./cmd/rd/...` still PASSED.
+//
+// The property this test claimed to gate IS genuinely covered by the sibling
+// below, TestPrintReadyTree_ReadyRootWithManyChildren_HeaderCountExcludesRoot,
+// whose fixture (1 root + 8 children) exceeds headerThreshold and so takes
+// the header branch, where displayChildren is what's actually rendered:
+// removing the exclusion line there re-includes the root in displayChildren,
+// making it the first of the 5 shown rows, which fails that test's
+// "root must not be printed as one of its own indented child rows" check.
+// VERIFIED: with the same exclusion line removed, `go test -run
+// TestPrintReadyTree_ReadyRootWithManyChildren_HeaderCountExcludesRoot
+// ./cmd/rd/...` FAILED red with exactly that assertion.
+//
+// No replacement fixture is added here because building one that actually
+// exercises the header branch would duplicate the sibling's fixture and
+// assertions rather than add new coverage -- per ready-e88's rework
+// instructions, deleting the vacuous test and letting the sibling gate the
+// property alone is the sanctioned fix.
 
 // TestPrintReadyTree_ReadyRootWithManyChildren_HeaderCountExcludesRoot covers
 // the same challenge-3 defect but past headerThreshold, where the header IS
@@ -420,5 +397,59 @@ func TestPrintReadyTree_ManySmallEpics_NeverLongerThanFlat(t *testing.T) {
 	}
 	if strings.Contains(treeOutput, " ready)") {
 		t.Errorf("no group in this fixture should reach headerThreshold -- output must contain no '(N ready)' header at all:\n%s", treeOutput)
+	}
+}
+
+// TestPrintReadyTree_NeverLongerThanFlat_SingleGroupSweep pins the VALUE of
+// headerThreshold, not just its existence (ready-e88 rework pass 2). Every
+// existing fixture in this file exercises headerThreshold at a fixed group
+// size (2, 3, 8, 21/22 children) and none straddles the boundary itself:
+// mutating headerThreshold from maxChildrenPerEpic+2 to maxChildrenPerEpic+1
+// left the entire suite green, because n=6 (the one group size the mutant
+// actually breaks at -- see maxChildrenPerEpic's doc comment for the
+// arithmetic: header form costs maxChildrenPerEpic+2 lines, which only
+// breaks even with flat's N lines once N>=maxChildrenPerEpic+2) is never
+// used by any fixture.
+//
+// This sweeps every single-epic group size from 1 to maxChildrenPerEpic+4
+// and asserts the INVARIANT the constant exists to satisfy -- rendered tree
+// lines never exceed flat's line count for that many ready children under
+// one epic -- rather than pinning the constant's numeral. That makes the
+// test immune to a future fixture-driven dodge: whatever headerThreshold's
+// value is, this fails the moment it stops holding the invariant, at
+// whichever n first breaks it.
+//
+// VERIFIED the acceptance bar by hand: changed headerThreshold's definition
+// to `maxChildrenPerEpic + 1` (was `+ 2`), ran `go test -run
+// TestPrintReadyTree_NeverLongerThanFlat_SingleGroupSweep ./cmd/rd/...`,
+// saw subtest n=6 FAIL red ("tree output (7 lines) longer than flat (6
+// lines)"), then restored `+ 2` and reconfirmed the whole sweep green.
+func TestPrintReadyTree_NeverLongerThanFlat_SingleGroupSweep(t *testing.T) {
+	for n := 1; n <= maxChildrenPerEpic+4; n++ {
+		n := n
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			epicID := "sweep-epic"
+			epic := mkItem(epicID, "", "blocked", "Sweep Epic")
+			var items []*state.Item
+			allItems := []*state.Item{epic}
+			for i := 0; i < n; i++ {
+				it := mkItem(fmt.Sprintf("%s-child-%d", epicID, i), epicID, "inbox", "Sweep child")
+				items = append(items, it)
+				allItems = append(allItems, it)
+			}
+
+			flatOutput := captureStdoutPipe(t, func() { printItemTable(items) })
+			treeOutput := captureStdoutPipe(t, func() { printReadyTree(items, allItems) })
+
+			flatLines := countNonEmptyLines(flatOutput)
+			treeLines := countNonEmptyLines(treeOutput)
+
+			if flatLines != n {
+				t.Fatalf("flat baseline: expected %d lines, got %d", n, flatLines)
+			}
+			if treeLines > flatLines {
+				t.Fatalf("tree output (%d lines) longer than flat (%d lines) for a single epic with %d ready children -- headerThreshold must guarantee the header form never costs more than flat", treeLines, flatLines, n)
+			}
+		})
 	}
 }
