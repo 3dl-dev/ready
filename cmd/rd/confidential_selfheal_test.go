@@ -33,14 +33,22 @@ import (
 
 // storingRelay is a minimal in-process NIP-01 relay that stores every EVENT it is
 // sent and serves ALL stored events back on any REQ (then EOSE). Filters are
-// ignored on purpose: the relay is an UNTRUSTED cache — correctness (owner
-// signature, grantee binding, ECDH wrap opening) is enforced client-side by
-// Verify + the reconcile trust gate + DeriveBoardKeyring, exactly as in prod.
+// ignored on purpose for SERVING: the relay is an UNTRUSTED cache — correctness
+// (owner signature, grantee binding, ECDH wrap opening) is enforced client-side by
+// Verify + the reconcile trust gate + DeriveBoardKeyring, exactly as in prod. That
+// deliberately makes the relay blind to a caller that sends a malformed or
+// over-broad filter (wrong kind, missing "#p"/"#a", too many boards): serving
+// everything regardless would make a broken query look exactly like a correct
+// one to any assertion keyed on WHAT CAME BACK. So the relay separately RECORDS
+// every filter it was actually asked with (reqFilters), and callers that need to
+// prove the query itself was correctly scoped — not just that the derivation
+// tolerated whatever arrived — assert against lastFilter()/reqFilters directly.
 type storingRelay struct {
-	srv      *httptest.Server
-	mu       sync.Mutex
-	events   []*nostr.Event
-	reqCount int
+	srv        *httptest.Server
+	mu         sync.Mutex
+	events     []*nostr.Event
+	reqCount   int
+	reqFilters []map[string]any
 }
 
 func newStoringRelay(t *testing.T) *storingRelay {
@@ -77,8 +85,18 @@ func newStoringRelay(t *testing.T) *storingRelay {
 			case "REQ":
 				var sub string
 				_ = json.Unmarshal(frame[1], &sub)
+				// Record the actual filter the caller sent, RAW — this is the
+				// evidence a filter-ignoring relay cannot otherwise produce.
+				// NIP-01 allows multiple filter objects per REQ; every relayFetchMany
+				// call in this codebase sends exactly one (pkg/nostr/client.go's
+				// FetchMany builds `["REQ", sub, filter]`), so frame[2] is it.
+				var f map[string]any
+				if len(frame) >= 3 {
+					_ = json.Unmarshal(frame[2], &f)
+				}
 				r.mu.Lock()
 				r.reqCount++
+				r.reqFilters = append(r.reqFilters, f)
 				snap := append([]*nostr.Event(nil), r.events...)
 				r.mu.Unlock()
 				for _, e := range snap {
@@ -99,6 +117,76 @@ func (r *storingRelay) reqs() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.reqCount
+}
+
+// lastFilter returns the filter object sent with the most recent REQ this relay
+// received (nil if none yet), so a test can assert the QUERY was correctly
+// scoped — kind, "#a", "#p" — independent of what this filter-ignoring relay
+// chose to serve back.
+func (r *storingRelay) lastFilter() map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.reqFilters) == 0 {
+		return nil
+	}
+	return r.reqFilters[len(r.reqFilters)-1]
+}
+
+// filterForKind returns the first recorded REQ filter whose "kinds" contains
+// wantKind (nil if none). A single command can fan out MULTIPLE distinct
+// gathers against the same relay (e.g. `rd board --portfolio` also runs a
+// separate archived-boards check over KindBoard) — this finds the specific
+// gather a test cares about, rather than assuming it was the last REQ sent.
+func (r *storingRelay) filterForKind(wantKind int) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range r.reqFilters {
+		for _, k := range filterKinds(f) {
+			if k == wantKind {
+				return f
+			}
+		}
+	}
+	return nil
+}
+
+// filterStrings pulls a string-tag array (e.g. "#a", "#p") out of a raw
+// unmarshaled filter for a plain equality assertion.
+func filterStrings(f map[string]any, key string) []string {
+	raw, ok := f[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// filterKinds pulls the numeric "kinds" array out of a raw unmarshaled filter.
+func filterKinds(f map[string]any) []int {
+	raw, ok := f["kinds"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(arr))
+	for _, v := range arr {
+		if n, ok := v.(float64); ok { // encoding/json numbers decode as float64
+			out = append(out, int(n))
+		}
+	}
+	return out
 }
 
 // selfHealFixture stands up an owner machine on a live in-process relay: a
@@ -291,6 +379,28 @@ func TestConfidentialWriteSelfHealsMissingGrant(t *testing.T) {
 		t.Fatal("self-healed CEK does not match the owner's minted CEK — wrong/forged key ingested")
 	}
 
+	// THE QUERY ITSELF, asserted directly — not inferred from what came back.
+	// storingRelay ignores filters when SERVING (see its doc comment), so a
+	// self-heal fetch that sent kinds=[] (everything) or dropped "#a"/"#p" would
+	// still land the same grant and this test would pass for the wrong reason.
+	// The recorded REQ closes that gap: it proves ReconcileSelfGrants asked for
+	// exactly kind-39301 role grants, scoped to THIS board and THIS member —
+	// not an over-broad "give me everything" query a permissive relay would
+	// happily also have satisfied.
+	got := f.relay.lastFilter()
+	if got == nil {
+		t.Fatal("self-heal never sent a REQ to the relay — nothing to assert the filter shape of")
+	}
+	if kinds := filterKinds(got); len(kinds) != 1 || kinds[0] != rdSync.KindRoleGrant {
+		t.Errorf("self-heal filter kinds = %v, want exactly [%d] (KindRoleGrant) — not an over-broad kind set", kinds, rdSync.KindRoleGrant)
+	}
+	if a := filterStrings(got, "#a"); len(a) != 1 || a[0] != f.coord {
+		t.Errorf("self-heal filter #a = %v, want exactly [%q] — an unscoped or wrong-board query", a, f.coord)
+	}
+	if p := filterStrings(got, "#p"); len(p) != 1 || p[0] != member.PubKeyHex() {
+		t.Errorf("self-heal filter #p = %v, want exactly [%q] — an unscoped or wrong-member query", p, member.PubKeyHex())
+	}
+
 	// The grant is now durable in the member's local log (ingested, not just used).
 	afterEvents, _ := memberPub.Log.ReadAll()
 	afterKR := rdSync.DeriveBoardKeyring(afterEvents, member, f.owner.PubKeyHex(), f.boardD)
@@ -324,6 +434,15 @@ func TestConfidentialWriteStillErrorsWhenNoGrantExists(t *testing.T) {
 	// Guard against an infinite retry loop: the self-heal is a SINGLE fetch.
 	if got := f.relay.reqs() - reqsBefore; got != 1 {
 		t.Fatalf("self-heal must issue exactly one reconcile fetch, relay saw %d REQs", got)
+	}
+	// And that single fetch was correctly scoped to THIS stranger, not a
+	// broad query that happened to still come back empty in this fixture.
+	filt := f.relay.lastFilter()
+	if p := filterStrings(filt, "#p"); len(p) != 1 || p[0] != stranger.PubKeyHex() {
+		t.Errorf("self-heal filter #p = %v, want exactly [%q]", p, stranger.PubKeyHex())
+	}
+	if a := filterStrings(filt, "#a"); len(a) != 1 || a[0] != f.coord {
+		t.Errorf("self-heal filter #a = %v, want exactly [%q]", a, f.coord)
 	}
 }
 

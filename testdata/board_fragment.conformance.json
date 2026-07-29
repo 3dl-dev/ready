@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "note": "Cross-implementation conformance vectors for the `rd board`/`rd board --with-key` single-board URL fragment (ready-b78, follow-up to ready-df0/ready-df6). Each vector's `fragment` is the exact string cmd/rd/board.go's ownBoardURL/boardKeyFragment.cekParam produce for the given (coord, relays, viewer, ceks) inputs. cmd/rd/board_fragment_conformance_test.go replays this file through the REAL ownBoardURL against the SAME fixed inputs and asserts byte equality; web/board/src/lib/fragment.conformance.test.ts imports this SAME committed file and asserts the REAL parseFragment (fragment.ts) decodes `fragment` back into `expect`. Neither side re-derives the other's grammar from a hand-typed regex -- a change to either implementation that breaks the other fails here, not silently.",
+  "vectors": [
+    {
+      "name": "with_key_single_epoch",
+      "note": "The ready-df0 shape: board coordinate, one relay, a public viewer pubkey, one held CEK epoch.",
+      "coord": "30301:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:board-fragment-conformance",
+      "relays": [
+        "wss://relay.example.test"
+      ],
+      "viewer": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ceks": [
+        {
+          "epoch": 1,
+          "hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "fragment": "board=30301%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%3Aboard-fragment-conformance&cek=1%3Acccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&pk=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&relays=wss%3A%2F%2Frelay.example.test"
+    },
+    {
+      "name": "with_key_multi_epoch_ascending",
+      "note": "A rotated board: TWO held CEK epochs. cekParam sorts ascending by epoch regardless of map iteration order, and every held epoch travels (not just the newest) so older-sealed cards still open.",
+      "coord": "30301:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:board-fragment-conformance",
+      "relays": [
+        "wss://relay.example.test"
+      ],
+      "viewer": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ceks": [
+        {
+          "epoch": 5,
+          "hex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        {
+          "epoch": 1,
+          "hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "fragment": "board=30301%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%3Aboard-fragment-conformance&cek=1%3Acccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc%2C5%3Adddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd&pk=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&relays=wss%3A%2F%2Frelay.example.test"
+    },
+    {
+      "name": "no_key_relays_only",
+      "note": "`rd board --no-key` / `rd board share`: a nil boardKeyFragment must emit the pre-ready-df0 bytes exactly -- no pk=, no cek=.",
+      "coord": "30301:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:board-fragment-conformance",
+      "relays": [
+        "wss://relay.example.test"
+      ],
+      "viewer": null,
+      "ceks": [],
+      "fragment": "board=30301%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%3Aboard-fragment-conformance&relays=wss%3A%2F%2Frelay.example.test"
+    },
+    {
+      "name": "with_key_two_relays",
+      "note": "Multiple relays, comma-joined before percent-encoding -- parseRelays on the TS side must split on the LITERAL comma inside the decoded relays= value, not on an encoded one.",
+      "coord": "30301:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:board-fragment-conformance",
+      "relays": [
+        "wss://relay-one.example.test",
+        "wss://relay-two.example.test"
+      ],
+      "viewer": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ceks": [
+        {
+          "epoch": 1,
+          "hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "fragment": "board=30301%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%3Aboard-fragment-conformance&cek=1%3Acccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&pk=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&relays=wss%3A%2F%2Frelay-one.example.test%2Cwss%3A%2F%2Frelay-two.example.test"
+    }
+  ]
+}

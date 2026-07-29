@@ -414,11 +414,25 @@ func TestBoardCmd_ThisBoard_NonConfidentialBoard_EmbedsNoKey(t *testing.T) {
 	}
 }
 
-// TestBoardCmd_ThisBoard_FragmentShapeMatchesBrowserParser pins the wire format
-// the browser parses (web/board/src/lib/fragment.ts decodeKeyParams). The two
-// implementations live in different languages and different test suites, so this
-// asserts the exact grammar the TypeScript side accepts against bytes the REAL
-// command printed — the same drift-proofing ready-df6 applied to the host.
+// TestBoardCmd_ThisBoard_FragmentShapeMatchesBrowserParser pins the GO SIDE's
+// belief about the wire format ONLY: the two regexes below are typed into this
+// file, not read from web/board/src/lib/fragment.ts, so a real grammar
+// divergence between the two implementations does NOT fail here — it can only
+// fail if this file's own hand-typed regex happens to also be wrong in the same
+// way fragment.ts is. That gap is real and was hit: a Go/TS divergence in this
+// exact wire format went undetected for seven merges in one session before
+// being caught by hand (fixed in b372bc7), with this test green throughout.
+//
+// The GENUINE cross-implementation proof is
+// TestBoardFragmentConformanceVectors_MatchOwnBoardURL (board_fragment_conformance_test.go)
+// paired with web/board/src/lib/fragment.conformance.test.ts: both read the
+// SAME committed testdata/board_fragment.conformance.json, one driving the real
+// ownBoardURL and the other the real parseFragment, so a drift in either
+// implementation fails a test that reads the other's actual source — not a
+// approximation of it. This test still earns its keep for what it drives that
+// the vector file does not: the REAL end-to-end command (confidentialBoardEnv +
+// runBoardCmd), proving the shape survives real key derivation, not just the
+// pure string formatter.
 func TestBoardCmd_ThisBoard_FragmentShapeMatchesBrowserParser(t *testing.T) {
 	_, _, _, _, _, _ = confidentialBoardEnv(t)
 
