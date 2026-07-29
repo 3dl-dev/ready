@@ -42,7 +42,7 @@ write command read through — is `ProjectItems`, which replays the local
 append-only signed-event log into `map[itemID]*state.Item`
 (`pkg/sync/nostrproject.go:146`). An independent client MUST implement §2–§12
 against this function. It is reached from the CLI via `nostrProjectAllItems`
-(`cmd/rd/nostr.go:923`), which is the sole read spine on a nostr-native project.
+(`cmd/rd/nostr.go:950`), which is the sole read spine on a nostr-native project.
 
 **§1.2** `pkg/state.DeriveAll` (`pkg/state/state.go:421`) is the **campfire-era
 fold**: it replays `work:*` convention messages from `[]msgrec.MessageRecord`. On
@@ -138,8 +138,8 @@ it re-runs the same gates and is dropped again, identically.
 **§3.4 Read-trust.** The author must satisfy `opts.trusts(e.PubKey)` OR
 `grantTrusts(levels, e.PubKey)` (`:235-237`; `trusts` at `:121-126`, `grantTrusts`
 at `:135-138`). `opts.Trusted == nil` disables the allowlist entirely (`:122-124`)
-— production always passes a non-nil set (`cmd/rd/nostr.go:907` and
-`cmd/rd/nostr.go:915-920`). `levels` is the grant-derived membership for the
+— production always passes a non-nil set (`cmd/rd/nostr.go:928` and
+`cmd/rd/nostr.go:936-941`). `levels` is the grant-derived membership for the
 pinned board (§12.8) and is empty when no board is pinned
 (`pkg/sync/nostrproject.go:153-160`).
 
@@ -309,10 +309,10 @@ projection with no history of its own; the append-only status chain IS the audit
 trail (§6.5, `pkg/sync/nostrproject.go:346-354`).
 
 **§5.6** The inverse mapping (item → card) is `CardSpecFromItem`
-(`pkg/sync/nostrmigrate.go:106-127`) → `BuildCardEvent`
+(`pkg/sync/nostrmigrate.go:116-137`) → `BuildCardEvent`
 (`pkg/sync/nostrwire.go:254-361`). It is the single item→card source of truth, so
 every republish carries the WHOLE item and cannot clobber a field by omission.
-Note `CardSpec.Assignee` ← `item.By` (`pkg/sync/nostrmigrate.go:112`) and emits the
+Note `CardSpec.Assignee` ← `item.By` (`pkg/sync/nostrmigrate.go:122`) and emits the
 `p` tag (`pkg/sync/nostrwire.go:280-282`) — `p` is the **actor** (`By`), distinct from the `for`
 tag (**scope**, `For`).
 
@@ -335,7 +335,7 @@ erase past authority and reopen completed items (`:308-315`).
 
 **§6.3 Explicit maintainers.** `opts.Maintainers` is unioned in per item
 (`pkg/sync/nostrproject.go:342-344`). Production passes `nil`
-(`cmd/rd/nostr.go:915-920`); it exists for tests and for event sets constructed
+(`cmd/rd/nostr.go:936-941`); it exists for tests and for event sets constructed
 without a 30301 board (`pkg/sync/nostrproject.go:32-34`).
 
 **§6.4 Authoritative filter.** A status event counts only if its author is the
@@ -394,10 +394,10 @@ else (including any unknown string) `→ 1630`
 the exact status rides the `status` tag (§2.3).
 
 **§7.4 Initial status.** A newly created item is built with
-`Status: state.StatusInbox` (`cmd/rd/nostrwrite.go:560`, and `:637` on the
+`Status: state.StatusInbox` (`cmd/rd/nostrwrite.go:586`, and `:663` on the
 playbook-engage path) and published as card + a 1630 status event by
-`publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:155`, called at `:566` and
-`:641`).
+`publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:155`, called at `:592` and
+`:667`).
 
 **§7.5 Close resolutions.** `rd done/fail/cancel` map through
 `closeResolutionToStatus` (`cmd/rd/nostrwrite.go:246`); a close is refused when the
@@ -405,13 +405,13 @@ item is already terminal (`:242-244`).
 
 **§7.6 `blocked` is DERIVED, not authored.** The fold recomputes it in §8.4 on
 every replay. A card MAY carry `s=blocked` (because `CardSpecFromItem` copies
-`item.Status` verbatim, `pkg/sync/nostrmigrate.go:110`), and such a value is
+`item.Status` verbatim, `pkg/sync/nostrmigrate.go:120`), and such a value is
 accepted at §5.1 — but it is then overwritten by §8 for items whose blockers are
 terminal, and there is no path that *keeps* an item blocked without a live
 non-terminal blocker edge.
 
 **§7.7 `waiting` is partly derived.** It is authored by `rd gate`
-(`cmd/rd/nostrwrite.go:284-287`) and also PROMOTED at fold time from card-declared
+(`cmd/rd/nostrwrite.go:300-303`) and also PROMOTED at fold time from card-declared
 gate tags (§9.4).
 
 **§7.8 `scheduled` is defined but never authored.** No write path in `cmd/rd`
@@ -454,17 +454,17 @@ reported at fold time. Each member of a cycle simply blocks the others
 
 **§8.7 Implicit unblock is a WRITE rule, not a fold rule.** On close, rd
 re-publishes the cards of every item this item was blocking
-(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:654`, called from
+(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:680`, called from
 `runCloseNostr`, `:250`). The fold itself needs no such step: §8.4 already ignores
 terminal blockers on the next replay.
 
 **§8.8 Dep writes.** `rd dep add` appends the blocker id to the blocked item's dep
 set and re-publishes the card only (`runDepAddNostr`,
-`cmd/rd/nostrwrite.go:353-371`); `rd dep remove` strips it
-(`:376`). Blocked status is never written directly.
+`cmd/rd/nostrwrite.go:369-387`); `rd dep remove` strips it
+(`:387`). Blocked status is never written directly.
 
 **§8.9 Cross-board deps.** On the nostr path a cross-board reference is REFUSED at
-write time with an error (`runDepAddNostr`, `cmd/rd/nostrwrite.go:354-356`, using
+write time with an error (`runDepAddNostr`, `cmd/rd/nostrwrite.go:370-372`, using
 `state.IsCrossCampfireRef`, `pkg/state/state.go:1066-1075`). Should one reach the
 fold anyway (a hand-written `i` tag), §8.2 drops it silently: it is non-blocking,
 but **no warning is produced** — `Item.CrossCampfireWarnings`
@@ -479,21 +479,21 @@ but **no warning is produced** — `Item.CrossCampfireWarnings`
 **§9.1 Open.** `rd gate` sets `Status=waiting`, `Gate=<type>`,
 `WaitingType="gate"`, `WaitingOn=<description>` and publishes a status change; the
 description doubles as the status-event reason
-(`runGateNostr`, `cmd/rd/nostrwrite.go:276-299`). Terminal items are refused
-(`:281-283`). It then re-resolves the item and VERIFIES the gate landed in a
+(`runGateNostr`, `cmd/rd/nostrwrite.go:292-315`). Terminal items are refused
+(`:292-294`). It then re-resolves the item and VERIFIES the gate landed in a
 state `rd gates`/`rd approve`/`rd reject` can see — `GateMsgID != ""` and
-`Status` is `waiting` or `blocked` (`:291-297`) — failing loudly instead of
+`Status` is `waiting` or `blocked` (`:302-308`) — failing loudly instead of
 reporting "gate sent" for an escalation that would never surface (ready-e0e).
 Only then does it report the projection-derived `GateMsgID`: even the writer
 learns the gate id from the fold.
 
 **§9.2 Approve.** `rd approve` requires a pending gate (`GateMsgID != ""` OR
 `Gate != ""` OR `WaitingType == "gate"`) and `Status ∈ {waiting, blocked}`
-(`runApproveNostr`, `cmd/rd/nostrwrite.go:307-312`; widened from `waiting`-only
+(`runApproveNostr`, `cmd/rd/nostrwrite.go:323-328`; widened from `waiting`-only
 by ready-e0e — a blocked item's gate is resolvable WITHOUT unblocking it first,
 since the ruling is often exactly what unblocks it). It sets `Status=active` and
 CLEARS `Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`, `GateMsgID`
-(`:313-318`), then publishes. If the item is still blocked, §8.4 recomputes
+(`:324-329`), then publishes. If the item is still blocked, §8.4 recomputes
 `Status=blocked` on the next fold regardless of the published `active` — the
 gate clears, the block does not, until the blocker itself closes. Because the
 republished card omits the gate tags, §9.4's promotion cannot re-gate the item.
@@ -502,7 +502,7 @@ republished card omits the gate tags, §9.4's promotion cannot re-gate the item.
 precondition as §9.2 (ready-e0e) and publishes a status event that RE-AFFIRMS
 the item's current status (`waiting` or `blocked`) with the rejection reason,
 changing no field
-(`runRejectNostr`, `cmd/rd/nostrwrite.go:330-348`). The gate stays open and the
+(`runRejectNostr`, `cmd/rd/nostrwrite.go:346-364`). The gate stays open and the
 ruling is preserved in history.
 
 **§9.4 Card-declared gate promotion.** Define
@@ -895,7 +895,7 @@ non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
 
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
-(`cmd/rd/nostr.go:921-925`) and then sorts — by priority, then ETA, then ID for
+(`cmd/rd/nostr.go:942-946`) and then sorts — by priority, then ETA, then ID for
 ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:276-288`),
 by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
 total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
@@ -1025,7 +1025,7 @@ nostr fold gives non-blocking WITHOUT warnings — the edge is dropped at
 (`pkg/state/state.go:880-897`). **Question:** should `applyDepAndGateStatus`
 populate `CrossCampfireWarnings` for an unresolvable `i` tag that
 `IsCrossCampfireRef` matches, restoring parity? Note the write path already
-refuses to CREATE such a dep (`cmd/rd/nostrwrite.go:354-356`), so today the case
+refuses to CREATE such a dep (`cmd/rd/nostrwrite.go:370-372`), so today the case
 arises only from a foreign client or a migrated card.
 
 **§15.3 Read-side label validation does not exist on the nostr fold.** §10.1–§10.2.
@@ -1066,7 +1066,7 @@ construct-per-use contract as normative?
 §13.14. The comparator used to tie on equal `(priority, ETA)`, so two items
 sharing both (the common case for un-triaged items, both empty) rendered in
 either order across runs — the input slice comes from nondeterministic map
-iteration (`cmd/rd/nostr.go:921-925`), and this was observed directly: an
+iteration (`cmd/rd/nostr.go:942-946`), and this was observed directly: an
 adversary ran the same locally-built binary twice against the same live
 board and got differing piped bare-ID order and 6 differing `--json` fields
 (nested `blocks` array order). Fixed by adding an ID tie-break — mirroring
@@ -1175,7 +1175,7 @@ the owner's board and therefore survives the read-side pin gate
 **§16.6 The board event (30301) is written only by its owner.** `PublishItem` is
 passed a non-nil `*BoardSpec` only when `signer == boardAuthor`
 (`cmd/rd/nostrwrite.go:181-183`; same test on the manual republish path,
-`cmd/rd/nostr.go:548-551`). The spec is `{BoardD: <project prefix>, Title:
+`cmd/rd/nostr.go:564-567`). The spec is `{BoardD: <project prefix>, Title:
 <project prefix>, Maintainers: [boardAuthor]}` (`boardSpecForProject`,
 `cmd/rd/nostr.go:294-297`) and it emits tags `d`, `title`, one `p` per maintainer
 (`BuildBoardEvent`, `pkg/sync/nostrwire.go:206-229`). Because board maintainers
@@ -1217,8 +1217,8 @@ card-publishing path calls `refuseRedactedRepublish`
 (`cmd/rd/confidential_guard.go:28`) FIRST and aborts the whole mutation when that
 flag is set — `publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:156`),
 `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:356`),
-`publishItemCardEditNostr` (`cmd/rd/nostr.go:405`) and `rd nostr publish`
-(`cmd/rd/nostr.go:532`).
+`publishItemCardEditNostr` (`cmd/rd/nostr.go:412`) and `rd nostr publish`
+(`cmd/rd/nostr.go:548`).
 
 Without this the read placeholder is laundered into a write: the republish seals
 the string `"[encrypted]"` as the item's real title and context, and because the
@@ -1329,7 +1329,7 @@ via `itemIDForEvent` `:618-635`), `grant:<boardD>:<grantee>` for a 39301
 therefore matches no scope). Callers name the scope explicitly:
 `ItemDriftScope(item.ID)` for every item mutation
 (`pkg/sync/nostrwire.go:602`; used at `cmd/rd/nostrwrite.go:184`,
-`cmd/rd/nostr.go:376`, `:415`) and `GrantDriftScope(boardD, grantee)` for grants
+`cmd/rd/nostr.go:383`, `:415`) and `GrantDriftScope(boardD, grantee)` for grants
 (`pkg/sync/nostrwire.go:611`; used at `cmd/rd/confidential.go:235`).
 
 **§17.4 Why scoped and not log-wide.** A log-wide max let an unrelated burst
@@ -1360,8 +1360,8 @@ stamped strictly later (§17.2).
 
 **§17.7 Multi-publish commands stamp per publish, not per command.**
 `runUpdateNostr` can issue up to three separate publishes in one invocation — a
-card edit (`cmd/rd/nostrwrite.go:476`), a status change (`:489`), a claim status
-change (`:494`) — and each calls `nostrNextCreatedAt` independently after the
+card edit (`cmd/rd/nostrwrite.go:502`), a status change (`:510`), a claim status
+change (`:515`) — and each calls `nostrNextCreatedAt` independently after the
 previous publish has already appended. So a single `rd update --title X --status
 active` produces events at `T` and `T+1`, in that order, deterministically.
 
@@ -1372,10 +1372,11 @@ in the log, not merely its own scope (`cutoverCreatedAt`,
 pre-cutover and is grandfathered by the fold gate (§11,
 `pkg/sync/envelope.go:111-114`).
 
-**§17.9 Two republish paths do NOT follow §17.2.** `rd log publish <item>`
-(`cmd/rd/nostr.go:558`) and `rd log put` (`:735`, `:737`) stamp
-`time.Now().Unix()`. Neither is reachable from a board UI; both are recorded in
-§27.3.
+**§17.9 RESOLVED for `rd log publish`; `rd log put` still does NOT follow
+§17.2.** `rd log publish <item>` used to stamp `time.Now().Unix()` directly;
+ready-500 fixed it to go through the same scoped clock every other write hook
+uses. `rd log put` still stamps `time.Now().Unix()` twice, unfixed. Neither is
+reachable from a board UI; both are recorded in §27.3.
 
 ---
 
@@ -1394,11 +1395,11 @@ board coordinate, byte-for-byte.
 
 **§18.2 A card carries the WHOLE item.** Every live write builds its `CardSpec`
 through the single helper `CardSpecFromItem`
-(`pkg/sync/nostrmigrate.go:106-127`) and then sets `BoardAuthor`
-(`cmd/rd/nostrwrite.go:171-172`, `cmd/rd/nostr.go:370-371`, `:409-410`). Because
+(`pkg/sync/nostrmigrate.go:116-137`) and then sets `BoardAuthor`
+(`cmd/rd/nostrwrite.go:171-172`, `cmd/rd/nostr.go:370-378`, `:416-426`). Because
 the card is a latest-wins projection (§4.1) with no merge, **an omitted field is
 a deleted field**. Note `CardSpec.Assignee ← item.By`
-(`pkg/sync/nostrmigrate.go:112`) → the `p` tag; `For` is a separate tag (§18.3).
+(`pkg/sync/nostrmigrate.go:122`) → the `p` tag; `For` is a separate tag (§18.3).
 `CardSpecFromItem` does NOT carry `WaitingSince`, `GateMsgID`, `Blocks`,
 `History`, `MsgID` or `Project` — all four of the first are re-derived by the
 fold (§9.6, §8.5), and `Project` has no card tag at all (§27.6).
@@ -1472,15 +1473,15 @@ or a body shorter than nonce+tag, and quarantines the event
 There is NEVER a content-hash tag (frozen envelope §6, restated at
 `pkg/sync/nostrwire.go:341`).
 
-**§18.8 Card create.** `runCreateNostr` (`cmd/rd/nostrwrite.go:518-570`) derives
+**§18.8 Card create.** `runCreateNostr` (`cmd/rd/nostrwrite.go:544-596`) derives
 the id (generated from the project prefix, collision-checked against the whole
-projection, `:530-543`), defaults `For` to the signer unless `--for` was given
-(`:523-528`), validates and resolves `--parent-id` against the same
+projection, `:551-564`), defaults `For` to the signer unless `--for` was given
+(`:544-549`), validates and resolves `--parent-id` against the same
 collision-check id set (`resolveParentIDField`, `cmd/rd/parentid.go:50`, called
-at `cmd/rd/nostrwrite.go:545`; ready-ca3 — an unknown parent id is rejected here
+at `cmd/rd/nostrwrite.go:571`; ready-ca3 — an unknown parent id is rejected here
 rather than stored, and the `none` sentinel resolves to no parent), builds the item with
-`Status: state.StatusInbox` (`:560`), and calls
-`publishItemFullCreateNostr` (`:566`). That publishes, in ONE call at ONE
+`Status: state.StatusInbox` (`:586`), and calls
+`publishItemFullCreateNostr` (`:592`). That publishes, in ONE call at ONE
 `created_at` (§17.6): the board event **iff** the signer is the board author
 (§16.6), the card, the kind-1621 issue event iff none exists yet and the board is
 plaintext (§19.6), and a kind-1630 status event carrying `status=inbox`
@@ -1490,7 +1491,7 @@ therefore ALWAYS created with at least one authoritative status event, so §6.11
 
 **§18.9 Card edit.** A pure field edit publishes ONLY a refreshed card, with no
 status event (`PublishCardEdit`, `pkg/sync/nostroutbound.go:287-295`, via
-`publishItemCardEditNostr`, `cmd/rd/nostr.go:392-425`). This is the hybrid
+`publishItemCardEditNostr`, `cmd/rd/nostr.go:399-441`). This is the hybrid
 model's invariant: **a card edit can neither add to nor erase history** (§5.5,
 §6.5) — history lives only in the status chain. An independent client that wants
 a transition recorded MUST publish a status event; rewriting the card's `s` tag
@@ -1498,7 +1499,7 @@ alone is invisible to history and, for any item that has an authoritative status
 event, is overwritten on read by §6.10.
 
 **§18.10 Card edits re-seal.** `publishItemCardEditNostr` calls `setCardEnvelope`
-(`cmd/rd/nostr.go:412`) exactly as the create path does, so an edit on a
+(`cmd/rd/nostr.go:428`) exactly as the create path does, so an edit on a
 confidential board re-seals under the CURRENT epoch with a FRESH nonce. Two
 byte-identical logical cards therefore have different `Content` and different
 event ids; there is no content-based dedup, only id dedup (§3.2).
@@ -1599,7 +1600,7 @@ exist.
 ## 20. Status-carrying mutations
 
 All four commands below funnel into `publishItemStatusChangeNostr`
-(`cmd/rd/nostr.go:353-386`) → `PublishStatusChange` (§19.9), so they share §18's
+(`cmd/rd/nostr.go:353-393`) → `PublishStatusChange` (§19.9), so they share §18's
 card shape, §19's status shape, and §17's stamping. They differ only in the
 precondition, the in-memory field edits, and the reason string.
 
@@ -1609,12 +1610,17 @@ terminal item (`:224-226`), sets `Status=active` and `By=<signer pubkey>`
 optional `--reason` as the status-event reason (`:229`). Wire result: a card with
 `s=active` + `p=<signer>`, and a kind-1630 status event with `status=active`.
 
-**§20.2 Delegate.** `runDelegateNostr` (`cmd/rd/nostrwrite.go:258-272`): refuses a
-terminal item (`:263-265`), sets `By=<to>` and changes NOTHING else — including
-not changing the status (`:266`) — then publishes a status event that re-affirms
-the current status so the reassignment lands in history (`:267`). Wire result: a
-card with a new `p` tag, and a status event whose `status` equals the item's
-UNCHANGED status.
+**§20.2 Delegate.** `runDelegateNostr` (`cmd/rd/nostrwrite.go:258-288`): refuses a
+terminal item (`:263-265`), sets `By=<to>` and changes no other field, EXCEPT when
+the item is currently fold-derived `blocked`: `:275-277` (ready-500, generalizing
+ready-e0e's reject fix) then substitutes the item's own last authoritative status
+— read from `item.History`, which `applyDepAndGateStatus` never touches — before
+publishing, so the event's `status` tag is the pre-overlay value, never the
+literal `blocked` overlay itself. It then publishes a status event that
+re-affirms that resolved status so the reassignment lands in history (`:278`).
+Wire result: a card with a new `p` tag, and a status event whose `status` equals
+the item's own UNCHANGED status — `blocked`, when live, is still visible on the
+NEXT fold (§8.4 recomputes it), it is simply never the value THIS event asserts.
 
 **§20.3 Close / fail / cancel.** `runCloseNostr`
 (`cmd/rd/nostrwrite.go:237-253`): refuses an already-terminal item (`:242-244`),
@@ -1630,13 +1636,17 @@ was blocking. `rd done` and `rd complete` route here with resolution `"done"`
 `done`/`fail`/`cancel` (`cmd/rd/aliases.go:222`).
 
 **§20.4 Explicit status set.** `runUpdateNostr`'s status block
-(`cmd/rd/nostrwrite.go:481-492`) assigns `Status=<statusTo>` and, when supplied,
-`WaitingOn` / `WaitingType` (`:482-488`), then publishes with `--note` as the
-reason (`:489`). The CLI auto-sets `statusTo=waiting` when `--waiting-on` is given
+(`cmd/rd/nostrwrite.go:507-518`) assigns `Status=<statusTo>` and, when supplied,
+`WaitingOn` / `WaitingType` (`:503-509`), then publishes with `--note` as the
+reason (`:510`). An explicit `--status blocked` is refused before any of this
+runs (`:463-465`, ready-500) — unlike delegate, a direct request for the one
+status this write path must never mint has no legitimate value to silently
+substitute, so the command errors instead of minting `status=blocked` as a new
+status-authority floor. The CLI auto-sets `statusTo=waiting` when `--waiting-on` is given
 without `--status` (`cmd/rd/update.go:54-57`) and resolves bd-style status
 aliases before dispatch (`:73-79`). Note the terminal guard here is
 **field-conditional**: `runUpdateNostr` refuses a terminal item only when a FIELD
-update is also present (`cmd/rd/nostrwrite.go:442-444`) — a status-only update
+update is also present (`cmd/rd/nostrwrite.go:458-460`) — a status-only update
 can reopen a terminal item. See §27.2.
 
 **§20.5 A close does NOT clear the gate category.** `runCloseNostr` sets only
@@ -1653,27 +1663,27 @@ retained `Gate` is already filed as §15.5.
 **§21.1 An edge is a card tag, never its own event.** There is no dep event kind.
 `rd dep add` appends the blocker id to the BLOCKED item's `BlockedBy` and
 republishes THAT item's card only (`runDepAddNostr`,
-`cmd/rd/nostrwrite.go:353-371`; append via `strSliceAppendUnique`,
-`cmd/rd/nostr.go:428-435`; publish `cmd/rd/nostrwrite.go:366`). `rd dep remove` strips it and
-republishes the same single card (`runDepRemoveNostr`, `:376-391`; removal via
-`strSliceRemove`, `cmd/rd/nostr.go:438-450`; publish `cmd/rd/nostrwrite.go:386`). The BLOCKER's card is
+`cmd/rd/nostrwrite.go:369-387`; append via `strSliceAppendUnique`,
+`cmd/rd/nostr.go:444-451`; publish `cmd/rd/nostrwrite.go:382`). `rd dep remove` strips it and
+republishes the same single card (`runDepRemoveNostr`, `:392-407`; removal via
+`strSliceRemove`, `cmd/rd/nostr.go:454-466`; publish `cmd/rd/nostrwrite.go:402`). The BLOCKER's card is
 never touched — `Item.Blocks` is derived by the fold (§8.5), never written.
 
 **§21.2 Both endpoints must already exist.** Both ids are resolved through the
-projection before anything is published (`cmd/rd/nostrwrite.go:357-364`, `:377-384`), so a dep to an
+projection before anything is published (`cmd/rd/nostrwrite.go:373-380`, `:388-395`), so a dep to an
 unknown item fails at write time rather than producing an `i` tag the fold would
 silently drop (§8.2).
 
 **§21.3 Cross-board deps are refused at write time.** `runDepAddNostr` rejects a
 blocked-item argument that looks like a cross-campfire reference
-(`cmd/rd/nostrwrite.go:354-356`, via `state.IsCrossCampfireRef`). Note the guard
+(`cmd/rd/nostrwrite.go:370-372`, via `state.IsCrossCampfireRef`). Note the guard
 tests only the BLOCKED argument, not the BLOCKER (§27.4).
 
 **§21.4 Implicit unblock is a write-side courtesy, not a fold rule.** On close,
 rd republishes the card of every item the closing item was blocking
-(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:654-668`), each as a
-plain card edit (`:664`), each failure warned and skipped rather than fatal
-(`:661`, `:665`). The fold does not need this — §8.4 already ignores terminal
+(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:680-694`), each as a
+plain card edit (`:685`), each failure warned and skipped rather than fatal
+(`:682`, `:686`). The fold does not need this — §8.4 already ignores terminal
 blockers on the next replay — so an independent client MAY omit it. What it MUST
 NOT do is write `s=blocked` to express a dependency: `blocked` is derived (§7.6,
 §8.4) and any authored value is overwritten on the next replay.
@@ -1687,28 +1697,28 @@ one today.
 
 ## 22. Gate open → resolve (write side)
 
-**§22.1 Open.** `runGateNostr` (`cmd/rd/nostrwrite.go:276-299`) refuses a terminal
-item (`:281-283`), then sets FOUR fields — `Status=waiting`, `Gate=<type>`,
-`WaitingType="gate"`, `WaitingOn=<description>` (`:284-287`) — and publishes a
-status change whose reason IS the description (`:288`). Wire result: a card
+**§22.1 Open.** `runGateNostr` (`cmd/rd/nostrwrite.go:292-315`) refuses a terminal
+item (`:292-294`), then sets FOUR fields — `Status=waiting`, `Gate=<type>`,
+`WaitingType="gate"`, `WaitingOn=<description>` (`:295-298`) — and publishes a
+status change whose reason IS the description (`:299`). Wire result: a card
 carrying `s=waiting` + `gate=<type>` + `waiting_type=gate` + `waiting_on=<desc>`
 (the last omitted and sealed in confidential mode, §18.3 row 12) and a kind-1630
 status event with `status=waiting`. It then RE-RESOLVES the item and VERIFIES the
 gate landed in a state the gates view and approve/reject can see —
-`GateMsgID != ""` and `Status ∈ {waiting, blocked}` (`:291-297`, ready-e0e) —
+`GateMsgID != ""` and `Status ∈ {waiting, blocked}` (`:302-308`, ready-e0e) —
 returning a loud error instead of a false "gate sent" if it did not (e.g. §8.4
 having reprojected the item to some other status this build does not anticipate).
-Only then does it report the projection-derived `GateMsgID` (`:298`) — there is
+Only then does it report the projection-derived `GateMsgID` (`:309`) — there is
 no gate event, and even the writer learns the gate id from the fold (§9.6:
 `GateMsgID` IS the winning card's event id).
 
-**§22.2 Approve.** `runApproveNostr` (`cmd/rd/nostrwrite.go:302-324`) requires a
+**§22.2 Approve.** `runApproveNostr` (`cmd/rd/nostrwrite.go:318-340`) requires a
 pending gate — `GateMsgID != "" OR Gate != "" OR WaitingType == "gate"`
-(`:307-309`) — AND `Status ∈ {waiting, blocked}` (`:310-312`; widened from
+(`:318-320`) — AND `Status ∈ {waiting, blocked}` (`:321-323`; widened from
 `waiting`-only by ready-e0e, so a blocked item's gate can be resolved WITHOUT
 unblocking it first). It sets `Status=active` and CLEARS all five gate fields:
-`Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`, `GateMsgID` (`:313-318`), then
-publishes (`:319`). If the item is still blocked, §8.4 overrides the published
+`Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`, `GateMsgID` (`:324-329`), then
+publishes (`:330`). If the item is still blocked, §8.4 overrides the published
 `active` back to `blocked` on the next fold — approving the gate does not itself
 unblock the dependency. Because the republished card omits `gate` /
 `waiting_type` / `waiting_on`, the fold's card-declared gate promotion (§9.4)
@@ -1717,11 +1727,11 @@ finds nothing to promote and the item stays `active` (or reverts to `blocked` pe
 gate tags on the card will see the item snap back to `waiting` (or `blocked`) on
 the next read.
 
-**§22.3 Reject.** `runRejectNostr` (`cmd/rd/nostrwrite.go:330-348`) applies the
-SAME two preconditions as §22.2 (`:335-340`, including the `Status ∈ {waiting,
+**§22.3 Reject.** `runRejectNostr` (`cmd/rd/nostrwrite.go:346-364`) applies the
+SAME two preconditions as §22.2 (`:346-351`, including the `Status ∈ {waiting,
 blocked}` widening) and then changes NO field: it republishes the card unchanged
 and emits a kind-1630 status event that re-affirms the item's CURRENT status —
-`waiting` or `blocked` — with the rejection reason as Content (`:343`). The gate
+`waiting` or `blocked` — with the rejection reason as Content (`:354`). The gate
 stays open; the ruling survives as a history entry (§6.5). Rejecting is therefore
 not a state transition at all — it is a durable note attached to the still-open
 gate.
@@ -1731,23 +1741,23 @@ reason.** Both are kind-1630 status events on a `waiting` OR `blocked` item
 (ready-e0e); approve differs only in that its status tag is `active` and its
 card drops the gate tags. There is no `resolution` tag — the JSON
 `{"resolution":"approved"|"rejected"}` is CLI output only
-(`cmd/rd/nostrwrite.go:322-323`, `:346-347`), never an event field. An
+(`cmd/rd/nostrwrite.go:338-339`, `:357-358`), never an event field. An
 independent client MUST NOT invent one; a reviewer reading history distinguishes
 them by the `waiting|blocked → active` transition versus a self-transition that
 re-affirms the same status.
 
 **§22.5 `WaitingSince` and `GateMsgID` are never written.** Neither is in
 `CardSpec` (§18.2); both are derived at fold time (§9.6). Clearing them in memory
-(`cmd/rd/nostrwrite.go:317-318`) affects only the in-process value.
+(`cmd/rd/nostrwrite.go:333-334`) affects only the in-process value.
 
 ---
 
 ## 23. Labels
 
 **§23.1 Add / remove are card-only edits.** `runLabelAddNostr`
-(`cmd/rd/nostrwrite.go:394-405`) appends the atom if absent (`:399`) and
-republishes the card (`:400`); `runLabelRemoveNostr` (`:409-420`) removes every
-occurrence (`:414`) and republishes (`:415`). Removing an absent label is
+(`cmd/rd/nostrwrite.go:410-421`) appends the atom if absent (`:415`) and
+republishes the card (`:416`); `runLabelRemoveNostr` (`:425-436`) removes every
+occurrence (`:430`) and republishes (`:431`). Removing an absent label is
 idempotent — no error. Neither publishes a status event, so a label change leaves
 no history entry (§18.9). Both are reachable only on a nostr-native project
 (`cmd/rd/label.go:314-315`, `:339-340`).
@@ -1797,9 +1807,9 @@ see §27.1.
 ## 24. Field edits: title, priority, context, ETA, due, level, parent
 
 **§24.1 All seven are card rewrites, not separate events.** `runUpdateNostr`'s field
-block (`cmd/rd/nostrwrite.go:446-479`) assigns `Title`, `Context`, `Priority`,
+block (`cmd/rd/nostrwrite.go:472-505`) assigns `Title`, `Context`, `Priority`,
 `ETA`, `Due`, `Level`, `ParentID` — each only when the corresponding flag was
-non-empty (`:447-465`) — and publishes ONE card edit (`:476`). There is no title
+non-empty (`:468-486`) — and publishes ONE card edit (`:497`). There is no title
 event, no priority event, no `rank`-only event, no reparent event. A retitle, a
 re-prioritise, and a reparent (`rd update --parent-id`, ready-b878) are the same
 kind of act: republish the whole card (§18.2) with one tag different. Because
@@ -1810,13 +1820,13 @@ recomputed at fold time, so a reparent is a pure field change with none of
 
 **§24.2 Empty string means "unchanged"; `ParentID` alone can be CLEARED, and an
 unknown parent is REJECTED (ready-ca3).** Six of the seven assignments are still
-guarded by a bare `!= ""` (`cmd/rd/nostrwrite.go:447`, `:450`, `:453`, `:456`,
-`:459`, `:462`) with no clear path — `--title ''`, `--context ''`, etc. are
+guarded by a bare `!= ""` (`cmd/rd/nostrwrite.go:473`, `:471`, `:474`, `:477`,
+`:480`, `:483`) with no clear path — `--title ''`, `--context ''`, etc. are
 indistinguishable from the flag not being passed at all, so none of those six can
 be emptied via `rd update`. `ParentID` is the exception: its guard
-(`:465`) still gates on non-empty, but the value inside is resolved by
+(`:486`) still gates on non-empty, but the value inside is resolved by
 `resolveParentIDField` (`cmd/rd/parentid.go:50`, called at
-`cmd/rd/nostrwrite.go:470`) against the ids returned by a fresh call to
+`cmd/rd/nostrwrite.go:496`) against the ids returned by a fresh call to
 `nostrExistingIDs` (§18.8) fetched immediately before it — re-reading the whole
 log every time, never a cached snapshot, so an id created earlier in the SAME
 process is still seen. Three outcomes: (1) the literal
@@ -1855,8 +1865,8 @@ therefore the event id.
 
 **§24.5 Field edit + status change in one command = two publishes.** When both
 `hasFieldUpdate` and `hasStatusUpdate` are set, the card edit is published FIRST
-(`cmd/rd/nostrwrite.go:476`), then the status change publishes ANOTHER card plus
-the status event (`:489`) at `created_at + 1` (§17.7). The intermediate card is a
+(`cmd/rd/nostrwrite.go:502`), then the status change publishes ANOTHER card plus
+the status event (`:510`) at `created_at + 1` (§17.7). The intermediate card is a
 real, permanent event; there is no transactional batching.
 
 **§24.6 `rd defer` and `rd progress` are field edits.** `rd defer` normalises the
@@ -1869,7 +1879,7 @@ it refuses a terminal item first (`:192-194`). Progress notes are therefore
 
 **§24.7 `--claim` inside `rd update`.** The claim block sets `Status=active` and
 `By=<signer>` and publishes a status change with an EMPTY reason
-(`cmd/rd/nostrwrite.go:494-500`). Because the CLI also sets `statusTo=active`
+(`cmd/rd/nostrwrite.go:520-526`). Because the CLI also sets `statusTo=active`
 when `--claim` is passed without `--status` (`cmd/rd/update.go:49-52`), a bare
 `rd update --claim` satisfies BOTH the status block and the claim block and
 publishes TWO status changes. See §27.2.
@@ -1914,8 +1924,8 @@ is the reserved-board guard (§16.8).
 
 **§25.6 No authored `blocked` status, no authored `WaitingSince`/`GateMsgID`,
 no authored `Blocks`.** All are derived (§7.6, §8.4, §8.5, §9.6). Writing them is
-at best ignored and at worst persists a stale derived value into the card's `s`
-tag (§27.7).
+at best ignored; a REPUBLISH hook that skipped the ready-500 guard would at
+worst persist a stale derived value into the card's `s` tag (§27.7, RESOLVED).
 
 **§25.7 No second `a` tag ahead of the primary one.** §18.3, §19.5.
 
@@ -1959,14 +1969,14 @@ only: a bare `:N` means `cmd/rd/nostrwrite.go:N`. Every mutation body in that
 file, and every publish helper it uses:
 `publishItemFullCreateNostr` (`:155`) §18.8; `runClaimNostr` (`:215`) §20.1;
 `runCloseNostr` (`:237`) §20.3; `runDelegateNostr` (`:258`) §20.2;
-`runGateNostr` (`:276`) §22.1; `runApproveNostr` (`:302`) §22.2;
-`runRejectNostr` (`:330`) §22.3; `runDepAddNostr` (`:353`) §21.1;
-`runDepRemoveNostr` (`:376`) §21.1; `runLabelAddNostr` (`:394`) §23.1;
-`runLabelRemoveNostr` (`:409`) §23.1; `runUpdateNostr` (`:433`) §20.4 + §24.1 +
-§24.7; `runCreateNostr` (`:518`) §18.8; `runEngageNostr` (`:579`) /
-`publishEngagedItemsNostr` (`:621`) §26.3; `publishImplicitUnblockNostrNative`
-(`:654`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
-`publishItemCardEditNostr` (`cmd/rd/nostr.go:392`) §18.9; `setCardEnvelope`
+`runGateNostr` (`:292`) §22.1; `runApproveNostr` (`:318`) §22.2;
+`runRejectNostr` (`:346`) §22.3; `runDepAddNostr` (`:369`) §21.1;
+`runDepRemoveNostr` (`:392`) §21.1; `runLabelAddNostr` (`:410`) §23.1;
+`runLabelRemoveNostr` (`:425`) §23.1; `runUpdateNostr` (`:449`) §20.4 + §24.1 +
+§24.7; `runCreateNostr` (`:544`) §18.8; `runEngageNostr` (`:605`) /
+`publishEngagedItemsNostr` (`:647`) §26.3; `publishImplicitUnblockNostrNative`
+(`:680`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
+`publishItemCardEditNostr` (`cmd/rd/nostr.go:399`) §18.9; `setCardEnvelope`
 (`cmd/rd/confidential.go:311`) §16.7. The remaining non-mutating helpers in the
 same file are dispositioned too, so nothing in it is an orphan:
 `errNotNostrProject` (`:47`), `nostrNativeProject` (`:63`) and `nostrWriteActive`
@@ -1976,19 +1986,19 @@ gate (Part I, §1.1); `emitMutationResult` (`:200`) formats CLI output only and
 writes no event (§22.4).
 
 **§26.3 `rd engage` is N creates.** `publishEngagedItemsNostr`
-(`cmd/rd/nostrwrite.go:621-647`) loops the expanded playbook items, building each
-with `Status: state.StatusInbox` (`:637`) and `BlockedBy: ei.Deps` (`:639`), and
-calls `publishItemFullCreateNostr` per item (`:641`). Deps between siblings work
+(`cmd/rd/nostrwrite.go:647-673`) loops the expanded playbook items, building each
+with `Status: state.StatusInbox` (`:663`) and `BlockedBy: ei.Deps` (`:665`), and
+calls `publishItemFullCreateNostr` per item (`:667`). Deps between siblings work
 regardless of publish order because the ids are pre-generated and the fold
 resolves `i` tags after all items are known (§8.2). Nothing here is a new event
 shape — §18.8 covers it entirely.
 
 **§26.4 Not browser-reachable, dispositioned here so no writer is an orphan.**
-`rd log publish` (`cmd/rd/nostr.go:494-589`) and `rd log publish --board`
-(`runPublishBoard`, `:626-662`) are operator republish tools — the first
+`rd log publish` (`cmd/rd/nostr.go:510-616`) and `rd log publish --board`
+(`runPublishBoard`, `:653-689`) are operator republish tools — the first
 re-materializes one item's current state (re-deriving its reason from history,
-`lastStatusReason`, `:598-605`), the second re-sends already-durable log events
-verbatim without re-signing. `rd log put` (`:718-778`) is a demo/diagnostic
+`lastStatusReason`, `:625-632`), the second re-sends already-durable log events
+verbatim without re-signing. `rd log put` (`:740-805`) is a demo/diagnostic
 primitive that builds a `CardSpec` by hand. `rd grant`/`rd revoke`/`rd kill`
 publish kind-39301 role grants (`cmd/rd/authz_nostr.go:45-76`) — authorization,
 not item state, and specified as a READ input in §12. `rd sync` / `rd relay
@@ -2027,30 +2037,39 @@ general rather than only for the no-key-at-all case.
 **§27.2 `rd update` has two status anomalies.** (a) A bare `rd update --claim`
 publishes TWO status changes: the CLI sets `statusTo=active`
 (`cmd/rd/update.go:49-52`), satisfying the status block
-(`cmd/rd/nostrwrite.go:481-492`), and the claim block then publishes again
-(`:494-500`) — two cards, two 1630 events, one at `T` and one at `T+1` (§17.7),
+(`cmd/rd/nostrwrite.go:507-518`), and the claim block then publishes again
+(`:515-521`) — two cards, two 1630 events, one at `T` and one at `T+1` (§17.7),
 the second with an empty reason. (b) The terminal guard is field-conditional
-(`:442-444`): `rd update --status active` on a `done` item is ACCEPTED and reopens
-it, while `rd claim` (`:224-226`), `rd done` (`:242-244`), `rd gate` (`:281-283`)
+(`:453-455`): `rd update --status active` on a `done` item is ACCEPTED and reopens
+it, while `rd claim` (`:224-226`), `rd done` (`:242-244`), `rd gate` (`:292-294`)
 and `rd progress` (`cmd/rd/aliases.go:192-194`) all refuse terminal items.
 **Question:** is reopening via `--status` intended (an escape hatch), and should
 `--claim` short-circuit the status block?
 
-**§27.3 Two republish paths bypass the monotonic stamp.** `rd log publish
-<item>` stamps `time.Now().Unix()` (`cmd/rd/nostr.go:558`) and `rd log put`
-stamps it twice (`:735`, `:737`), instead of `nostrNextCreatedAt` (§17.2). A
-republish issued in the same second as the live write it follows collides on
-`created_at`, and §4.1's lowest-event-id tiebreak decides — so a manual republish
-can silently LOSE to the state it was meant to refresh. `rd log put` additionally
-builds its `CardSpec` with no `BoardAuthor` (`:723-731`, so the `a` tag is the
-SIGNER's board, failing the pin gate for an agent key) and no envelope (so it
-writes plaintext to a confidential board, which §25.3 quarantines). **Question:**
-route both through `nostrNextCreatedAt` + `CardSpecFromItem` + `setCardEnvelope`,
-or mark `rd log put` explicitly as an unsafe diagnostic?
+**§27.3 RESOLVED for `rd log publish`, still open for `rd log put`.** Both
+used to stamp a bare `time.Now().Unix()` where every other write hook calls
+`nostrNextCreatedAt` (§17.2): a republish issued in the same second as the live
+write it follows collided on `created_at`, and §4.1's lowest-event-id tiebreak
+could decide — so a manual republish could silently LOSE to the state it meant
+to refresh, INCLUDING silently failing to clear a burned-in `blocked` (ready-500:
+the probe that found this reproduced it directly — a same-second `rd log publish`
+on a derived-blocked item was a no-op with the ready-500 guard fully disabled,
+purely from losing the tiebreak, not from the guard). `rd log publish` is fixed
+(routed through the scoped item clock, mirroring the other REPUBLISH hooks).
+`rd log put` (`cmd/rd/nostr.go:745-805`) still stamps `time.Now().Unix()`
+twice and was NOT in ready-500's scope: it builds its `CardSpec` from raw CLI
+flags and never reads an existing item's projected/derived status, so it
+cannot itself burn in a derived `blocked` the way a REPUBLISH of an existing
+item can. It additionally builds that `CardSpec` with no `BoardAuthor` (so the
+`a` tag is the SIGNER's board, failing the pin gate for an agent key) and no
+envelope (so it writes plaintext to a confidential board, which §25.3
+quarantines). **Question:** route `rd log put` through the scoped clock +
+`CardSpecFromItem` + `setCardEnvelope` too, or mark it explicitly as an unsafe
+diagnostic?
 
 **§27.4 The cross-board dep guard checks only one endpoint.**
 `runDepAddNostr` tests `IsCrossCampfireRef` on the BLOCKED argument
-(`cmd/rd/nostrwrite.go:354-356`) but never on the BLOCKER, and `runDepRemoveNostr`
+(`cmd/rd/nostrwrite.go:370-372`) but never on the BLOCKER, and `runDepRemoveNostr`
 tests neither. In practice `nostrResolveItem` fails first for an id not in this
 projection, so the hole is not reachable today — but the guard does not say what
 it appears to say. **Question:** extend the check to both arguments, or delete it
@@ -2058,16 +2077,16 @@ as redundant with resolution?
 
 **§27.5 `rd label add` claims a registry it does not enforce.** The command help
 says "The label must be registered in the project label registry"
-(`cmd/rd/label.go:301`) but `runLabelAddNostr` (`cmd/rd/nostrwrite.go:394-405`)
+(`cmd/rd/label.go:301`) but `runLabelAddNostr` (`cmd/rd/nostrwrite.go:410-421`)
 validates nothing — no atom pattern, no registry membership — matching the read
 side, which also validates nothing (§10.1, §15.3). **Question:** this is the
 write-side half of §15.3; a ruling there must also fix or delete this help text.
 Until ruled, a conformance vector MUST NOT assert that any label is rejected.
 
 **§27.6 `Item.Project` is set at create time and never written to the wire.**
-`runCreateNostr` populates `item.Project` (`cmd/rd/nostrwrite.go:556`) and
-`publishEngagedItemsNostr` sets it from the project prefix (`:634`), but
-`CardSpecFromItem` (`pkg/sync/nostrmigrate.go:106-127`) has no `Project` field and
+`runCreateNostr` populates `item.Project` (`cmd/rd/nostrwrite.go:582`) and
+`publishEngagedItemsNostr` sets it from the project prefix (`:660`), but
+`CardSpecFromItem` (`pkg/sync/nostrmigrate.go:116-137`) has no `Project` field and
 `BuildCardEvent` emits no such tag — so the value is dropped on the first
 publish and the fold always projects `Project=""`. The `--project` filter
 (`cmd/rd/ready.go:146`) therefore matches nothing on a nostr project.
@@ -2075,16 +2094,25 @@ publish and the fold always projects `Project=""`. The `--project` filter
 nostr surface? (This is distinct from §5.3's `CampfireID`, which is deliberately
 never set.)
 
-**§27.7 Card edits persist DERIVED status back into the `s` tag.** `blocked`
-(§8.4) and the promoted `waiting` (§9.4) are computed by the fold and written
-into `item.Status`; the next card-only edit copies that value verbatim into the
-card's `s` tag via `CardSpecFromItem` (`pkg/sync/nostrmigrate.go:110`). It is
-harmless while the item has an authoritative status event (§6.10 overrides it) and
-while the derivation still holds — but it means the wire carries a value no
-writer intended, and a client reading the card alone (a generic NIP-100 kanban
-client, which knows nothing of §8) sees a status rd would recompute differently.
-**Question:** should `CardSpecFromItem` write the last AUTHORED status instead of
-the derived one? §7.6 already records the read-side half of this.
+**§27.7 RESOLVED (ready-500).** `blocked` (§8.4) and the promoted `waiting`
+(§9.4) are computed by the fold and written into `item.Status`; a REPUBLISH hook
+that copied that value verbatim into the outbound card's `s` tag would burn the
+derived value in as a permanent status-authority floor (a card-only edit is
+harmless only while §6.10's authoritative-status-event override still applies —
+once a blocker closes and the dep pass stops overriding, that floor becomes the
+item's status forever). Every REPUBLISH hook (`publishItemStatusChangeNostr`,
+`publishItemCardEditNostr`, and the manual `rd log publish`) now calls
+`rdSync.NonDerivedStatus(item)` (`pkg/sync/nostrmigrate.go:183`) to override
+`card.Status` right after building the `CardSpec`, walking `item.History`
+backwards past any number of burned-in `blocked` entries to recover the real
+prior status (falling back to `state.StatusInbox`, never the derived value,
+when no non-blocked entry exists). `CardSpecFromItem` itself
+(`pkg/sync/nostrmigrate.go:116-137`) is deliberately left an UNGUARDED
+passthrough — it also builds the `CardSpec` for brand-new items
+(`publishItemFullCreateNostr`), and a freshly-constructed item legitimately has
+no history to derive anything from yet (a fixture or future template may want a
+new item to start out blocked). The guard therefore lives at the REPUBLISH call
+sites, not inside the shared mapper. §7.6 records the read-side half of this.
 
 **§27.8 The status event's first `a` tag names the SIGNER's card coordinate.**
 `BuildStatusEvent` builds `CardCoord(k.PubKeyHex(), itemID)`
