@@ -115,6 +115,29 @@ func shouldQuarantine(e *nostr.Event, ebs EncryptedBoardSet) bool {
 	return true // quarantine (fail-closed)
 }
 
+// HasConfidentialCard reports whether the log holds any card for boardCoord that
+// carries an enc envelope marker — i.e. whether this board has EVER been written
+// confidentially, judged from cards alone and independently of any grant.
+//
+// It is the offline evidence that a missing CEK grant was LOST rather than never
+// minted (ready-889). A board with sealed cards but no CEK-bearing grant in the
+// local log is not a plaintext board about to become confidential; it is a
+// confidential board whose key did not survive into this log, and bootstrapping a
+// "fresh" epoch-1 key there would replace the key those cards were sealed under
+// and orphan every one of them. There are no false positives: a card only carries
+// the marker if some writer sealed it under a real CEK.
+func HasConfidentialCard(events []*nostr.Event, boardCoord string) bool {
+	for _, e := range events {
+		if e == nil || e.Kind != KindCard {
+			continue
+		}
+		if boardCoordOf(e) == boardCoord && isConfidential(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // boardCoordOf returns the event's 30301 board-membership coordinate. A card
 // carries it as its (only) "a" tag; a NIP-34 status event carries the board
 // coordinate as one of several "a" tags (the first "a" is the 30302 card

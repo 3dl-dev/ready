@@ -8,8 +8,13 @@
 // replaceable, deliberately away from NIP-100's 30301/30302 to avoid collision):
 //
 //	kind    39301
-//	d       "<boardD>:<granteePubkeyHex>"  -> one addressable slot per (board,
-//	                                          grantee) => latest-wins per grantee
+//	d       "<boardD>:<granteePubkeyHex>"  -> addressable slot for a grant with NO
+//	                                          key material; latest-wins per grantee
+//	        + ":e<epoch>" when the grant     -> a CEK-BEARING grant gets its OWN slot
+//	          carries a wrapped CEK             per epoch, so a rotation cannot
+//	                                            replace (and thereby DELETE) the
+//	                                            previous epoch's key on a relay
+//	                                            (ready-889, roleGrantD below)
 //	p       <granteePubkeyHex>             -> the subject of the grant
 //	a       "30301:<ownerPubkey>:<boardD>" -> binds the grant into the pinned
 //	                                          board's authority chain
@@ -124,8 +129,16 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 	default:
 		return nil, fmt.Errorf("sync: role-grant: invalid role %q", spec.Role)
 	}
+	// A grant takes the per-epoch slot ONLY when it actually carries a wrapped CEK;
+	// a CEKEpoch set without a wrap is not key material and must not fragment the
+	// authz slot (a revoke, in particular, always lands in the bare slot so it
+	// replaces the grant it revokes).
+	slotEpoch := 0
+	if spec.WrappedCEK != "" {
+		slotEpoch = spec.CEKEpoch
+	}
 	tags := [][]string{
-		{"d", roleGrantD(spec.BoardD, spec.Grantee)},
+		{"d", roleGrantD(spec.BoardD, spec.Grantee, slotEpoch)},
 		{"p", spec.Grantee},
 		{"a", BoardCoord(spec.BoardAuthor, spec.BoardD)},
 		{"role", spec.Role},
@@ -160,11 +173,36 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 	return e, nil
 }
 
-// roleGrantD returns the addressable "d" identifier for a (board, grantee) grant
-// slot: "<boardD>:<granteePubkeyHex>". One slot per (board, grantee) gives
-// latest-wins per grantee for free (via the addressable-event replaceable rule).
-func roleGrantD(boardD, grantee string) string {
-	return boardD + ":" + grantee
+// roleGrantD returns the addressable "d" identifier for a grant slot.
+//
+// A grant carrying NO key material occupies the (board, grantee) slot
+// "<boardD>:<granteePubkeyHex>", so authz — including a revoke — is latest-wins
+// per grantee for free, via the addressable-event replaceable rule.
+//
+// A CEK-BEARING grant occupies a PER-EPOCH slot "<boardD>:<grantee>:e<epoch>"
+// (ready-889). It has to, because a relay keeps only the newest event per
+// (kind, pubkey, d): with one shared slot, a rotation's new-epoch grant REPLACED
+// the old-epoch grant and the old CEK was deleted from the relay outright — while
+// DeriveBoardKeyring scans all historical grants precisely so a member keeps the
+// old-epoch keys it was given and historical reads survive. Those two rules
+// contradicted each other and the relay won. Measured on the live public relay
+// after one rotation of the ready board: four grants returned, all epoch 2, zero
+// epoch 1, against 200 cards still sealed at epoch 1 — a relay-only reader could
+// decrypt 6 of 206 confidential cards, and the sole surviving copy of that key was
+// one workstation's log.
+//
+// Splitting the slot is safe because NOTHING reads this "d" for meaning: authz
+// replay (deriveGrants) orders latest-per-GRANTEE by (created_at, id), and
+// DeriveBoardKeyring selects on the "a" board coordinate plus the "p" grantee tag.
+// The "d" is a relay retention key, nothing more. Causal ORDERING deliberately does
+// not follow this split — see DriftScope, which keys a grant's chain off (a, p) so a
+// revoke still stamps strictly after the CEK grant it supersedes.
+func roleGrantD(boardD, grantee string, cekEpoch int) string {
+	slot := boardD + ":" + grantee
+	if cekEpoch > 0 {
+		slot += ":e" + strconv.Itoa(cekEpoch)
+	}
+	return slot
 }
 
 // roleGrant is the parsed, semantically-meaningful view of a verified 39301 event.

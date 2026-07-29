@@ -676,9 +676,6 @@ var citationExceptions = map[string]string{
 	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
 		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
 		"the relay's addressable replacement contradicts; the func is declared at :178",
-	"deriveGrants|pkg/sync/rolegrant.go|485@decl447": "§16.10: cites the ascending " +
-		"latest-per-grantee replay inside deriveGrants (:485-495), the evidence that " +
-		"authz never reads the d tag; deriveGrants itself is declared at :447",
 	"newerThan|pkg/sync/nostrproject.go|256@decl552": "§4.5: newerThan is USED for board " +
 		"latest-wins ordering at nostrproject.go:256-258; it's declared at :552",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
@@ -698,7 +695,7 @@ var citationExceptions = map[string]string{
 	"grantTrusts|pkg/sync/nostrproject.go|235@decl135": "§3.4/§25.4: CALL site inside " +
 		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:235-237) and " +
 		"§25.4's restatement); grantTrusts itself is declared at :135",
-	"newerGrant|pkg/sync/rolegrant.go|487@decl605": "§4.4: CALL site — the ascending sort " +
+	"newerGrant|pkg/sync/rolegrant.go|525@decl643": "§4.4: CALL site — the ascending sort " +
 		"is expressed as `newerGrant(grants[j], grants[i])` (:487-489); newerGrant itself " +
 		"is declared at :605",
 	"FocusFilter|pkg/views/views.go|47@decl185": "§13.2: CALL site inside Named's " +
@@ -725,7 +722,7 @@ var citationExceptions = map[string]string{
 		"confidential-boards-envelope.md's now-stale citation for BuildStatusEvent " +
 		"(claimed :319-344 when frozen); BuildStatusEvent's CURRENT declaration is " +
 		":370 (moved from :362, ready-a9b) — this entry records drift, not a live citation of :319",
-	"sealStatusPayload|pkg/sync/envelope.go|230@decl308": "§18.5-area: names " +
+	"sealStatusPayload|pkg/sync/envelope.go|253@decl331": "§18.5-area: names " +
 		"sealStatusPayload but cites the `statusPayload` struct (:230-234) that " +
 		"documents the JSON shape it marshals, not the func's own body; " +
 		"sealStatusPayload itself is declared at :308",
@@ -761,10 +758,6 @@ var citationExceptions = map[string]string{
 	"CardSpecFromItem|pkg/sync/nostrmigrate.go|110@decl106": "§27.x: the `s` tag " +
 		"write inside CardSpecFromItem's body (:110); CardSpecFromItem's own " +
 		"declaration+body is cited exactly at :106 (§5.6, `:106-127`)",
-	"DeriveBoardKeyring|pkg/sync/keydist.go|182@decl178": "§11.12 recap: " +
-		"\"accumulates epochs from the grants present in the LOCAL LOG\" " +
-		"(:182-223) inside DeriveBoardKeyring's body; DeriveBoardKeyring's own " +
-		"declaration+body is cited exactly at :178 (`:178-231`)",
 	"OverdueFilter|pkg/views/views.go|95@decl94": "§15.6: the `now := time.Now()` " +
 		"construction-time capture (:95) inside OverdueFilter's body; OverdueFilter's " +
 		"own declaration+body is cited exactly at :94 (§13.6, `:94-109`)",
@@ -791,7 +784,7 @@ var citationExceptions = map[string]string{
 		"BlockedBy drain-and-rebuild step (:453-460) inside applyDepAndGateStatus's " +
 		"body; its declaration is at :452 (a separate call-site exception already " +
 		"covers :435, a doc-comment exception already covers :439)",
-	"boardConfidentialEnvelope|cmd/rd/confidential.go|139@decl85": "§11.10: the " +
+	"boardConfidentialEnvelope|cmd/rd/confidential.go|156@decl85": "§11.10: the " +
 		"epoch-1 bootstrap step (:139-159) inside boardConfidentialEnvelope's body; " +
 		"its declaration is at :85 (a separate doc-comment exception already covers :83)",
 	"encWellFormed|pkg/sync/envelope.go|74@decl73": "§25.2: the `enc != \"1\"` " +
@@ -803,7 +796,7 @@ var citationExceptions = map[string]string{
 	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
 		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
 		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
-	"itemIDForEvent|pkg/sync/nostrwire.go|597@decl593": "§9.x: a detail range " +
+	"itemIDForEvent|pkg/sync/nostrwire.go|622@decl618": "§9.x: a detail range " +
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
 		"(`:593-610`)",
