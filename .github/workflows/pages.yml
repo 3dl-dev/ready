@@ -8,6 +8,12 @@ on:
       - 'site/**'
       - 'web/**'
       - '.github/workflows/pages.yml'
+  release:
+    # ready-3bd: a release no longer pushes a version-bump commit to main
+    # (branch protection rejects direct pushes), so it wouldn't otherwise
+    # retrigger this path-filtered workflow. Deploy on every published
+    # release so site/index.html's stamped version (below) stays current.
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -28,6 +34,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # fetch-depth: 0 (full history + tags) so "Stamp site version"
+          # below can resolve the latest v* tag with `git describe`.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -54,6 +64,22 @@ jobs:
         # scripts/assemble-pages.sh so it is exercised by
         # scripts/assemble_pages_test.go, not just this YAML comment.
         run: scripts/assemble-pages.sh site web/board/dist _site
+
+      - name: Stamp site version from latest release tag
+        # ready-3bd: derives the version at deploy time instead of a
+        # release-workflow commit to main (which branch protection
+        # rejects). Writes only into the built _site/ artifact — never
+        # back into the repo — so the softwareVersion shown on the live
+        # site can never drift from the actual latest release tag.
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          if [ -z "${VERSION}" ]; then
+            echo "no v* tag reachable from HEAD; leaving _site/index.html softwareVersion as committed" >&2
+          else
+            VERSION_BARE="${VERSION#v}"
+            sed -i "s/\"softwareVersion\": \"[^\"]*\"/\"softwareVersion\": \"${VERSION_BARE}\"/" _site/index.html
+            echo "stamped softwareVersion=${VERSION_BARE} (from tag ${VERSION})"
+          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

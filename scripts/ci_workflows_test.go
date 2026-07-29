@@ -104,6 +104,118 @@ func TestBoardCIWorkflow_GatesPullRequests(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflow_DoesNotPushToMain proves release.yml never commits or
+// pushes back into the repo (ready-3bd). It used to have an `update-site`
+// job that pushed a version-bump commit straight to main; branch
+// protection (ready-fe2: required 'test' check, no direct pushes)
+// correctly rejected that push, so every release run reported FAILURE
+// even when the actual release (binaries, checksums, signatures) was
+// fine. The fix removes the write entirely rather than authorizing it, so
+// this test guards against that job (or an equivalent `git push`) coming
+// back.
+func TestReleaseWorkflow_DoesNotPushToMain(t *testing.T) {
+	raw := readWorkflow(t, "release.yml")
+
+	if strings.Contains(raw, "git push") {
+		t.Fatalf("release.yml runs `git push` — this is what branch protection (ready-fe2) rejects and caused every release run to report FAILURE (ready-3bd)")
+	}
+	wf := parseWorkflow(t, raw)
+	if _, ok := wf.Jobs["update-site"]; ok {
+		t.Fatalf("release.yml still has an update-site job that writes the version bump back to main")
+	}
+}
+
+// TestPagesWorkflow_StampsVersionFromLatestTag proves the Pages deploy
+// derives site/index.html's softwareVersion from the latest release tag at
+// BUILD time (ready-3bd fix (c)/(d)) rather than release.yml committing a
+// version string to main. The stamp must:
+//   - run AFTER assemble-pages.sh (so it edits the assembled _site/ output,
+//     not the pre-assembly site/ source — editing the source would be
+//     silently discarded by the next assemble run and never verified here)
+//   - run BEFORE upload-pages-artifact (so the stamped value actually ships)
+//   - derive the version via `git describe --tags`, not a hardcoded/copied
+//     string (a derived version cannot drift from the actual latest
+//     release; a hardcoded one reintroduces the drift risk the fix exists
+//     to remove)
+//   - never commit or push (the whole point is to stop writing to the repo)
+func TestPagesWorkflow_StampsVersionFromLatestTag(t *testing.T) {
+	raw := readWorkflow(t, "pages.yml")
+	wf := parseWorkflow(t, raw)
+
+	deploy, ok := wf.Jobs["deploy"]
+	if !ok {
+		t.Fatalf("pages.yml has no `deploy` job")
+	}
+
+	assembleIdx, stampIdx, uploadIdx := -1, -1, -1
+	for i, step := range deploy.Steps {
+		switch {
+		case strings.Contains(step.Run, "scripts/assemble-pages.sh"):
+			assembleIdx = i
+		case strings.Contains(step.Run, "softwareVersion"):
+			stampIdx = i
+		}
+		if step.Uses != "" && strings.HasPrefix(step.Uses, "actions/upload-pages-artifact") {
+			uploadIdx = i
+		}
+	}
+
+	if stampIdx == -1 {
+		t.Fatalf("deploy job has no version-stamping step (expected a step editing softwareVersion)")
+	}
+	stampRun := deploy.Steps[stampIdx].Run
+	if strings.Contains(stampRun, "git commit") || strings.Contains(stampRun, "git push") {
+		t.Fatalf("pages.yml version-stamp step commits/pushes — it must only edit the built _site/ artifact, never write back to the repo (ready-3bd)")
+	}
+	if !strings.Contains(stampRun, "git describe") {
+		t.Fatalf("pages.yml version-stamp step does not derive the version via `git describe` — a non-derived version can drift from the actual latest release")
+	}
+	if !strings.Contains(stampRun, "_site/index.html") {
+		t.Fatalf("pages.yml version-stamp step does not target the assembled _site/index.html")
+	}
+
+	if assembleIdx == -1 {
+		t.Fatalf("deploy job has no assemble-pages.sh step")
+	}
+	if stampIdx < assembleIdx {
+		t.Fatalf("version-stamp step (index %d) runs before assemble-pages.sh (index %d) — it would edit the pre-assembly site/ source, which the next assemble step overwrites unstamped", stampIdx, assembleIdx)
+	}
+	if uploadIdx == -1 {
+		t.Fatalf("deploy job has no upload-pages-artifact step")
+	}
+	if stampIdx > uploadIdx {
+		t.Fatalf("version-stamp step (index %d) runs after upload-pages-artifact (index %d) — the stamped version never reaches the deployed site", stampIdx, uploadIdx)
+	}
+
+	if !strings.Contains(raw, "fetch-depth: 0") {
+		t.Fatalf("pages.yml checkout has no fetch-depth: 0 — `git describe --tags` needs full history and tags to find the latest release tag")
+	}
+}
+
+// TestPagesWorkflow_TriggersOnReleasePublished proves pages.yml redeploys
+// when a release is published (ready-3bd). Since release.yml no longer
+// pushes a version-bump commit to main, a release would otherwise never
+// retrigger this path-filtered (site/**, web/**) workflow, and the
+// deployed site's stamped version would go stale until an unrelated
+// site/web change happened to redeploy it.
+func TestPagesWorkflow_TriggersOnReleasePublished(t *testing.T) {
+	raw := readWorkflow(t, "pages.yml")
+	wf := parseWorkflow(t, raw)
+
+	if wf.On.Release == nil {
+		t.Fatalf("pages.yml does not trigger on `release` events at all")
+	}
+	found := false
+	for _, typ := range wf.On.Release.Types {
+		if typ == "published" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pages.yml `release` trigger does not include `published`, got types=%v", wf.On.Release.Types)
+	}
+}
+
 func containsPath(paths []string, want string) bool {
 	for _, p := range paths {
 		if p == want {
@@ -122,6 +234,11 @@ type workflowFile struct {
 
 type workflowOn struct {
 	PullRequest *pullRequestTrigger `yaml:"pull_request"`
+	Release     *releaseTrigger     `yaml:"release"`
+}
+
+type releaseTrigger struct {
+	Types []string `yaml:"types"`
 }
 
 type pullRequestTrigger struct {
