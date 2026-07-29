@@ -2,7 +2,7 @@
   "version": 1,
   "spec": "docs/design/board-fold-spec.md",
   "note": "ready-bc5: the WRITE-side counterpart to testdata/fold.vectors.json. Each vector is an intent (an rd command + a pre-existing item/board projection state) replayed through rd's REAL writer (cmd/rd's run*Nostr command bodies, which call pkg/sync's BuildCardEvent/BuildStatusEvent -- never a reimplementation), asserting the EXACT signed event(s) it appends to the local authoritative log. The harness lives in cmd/rd/writevectors_test.go because that is where the un-exported run*Nostr functions live -- the same reason fold.vectors.json's harness lives next to the real fold in internal/foldvectors.",
-  "compared": "Compared: event kind, the FULL tag array (every tag, in the exact order the writer emits it -- order is normative per board-fold-spec.md SS19.5), and event Content (an exact literal string, or must-be-empty). NOT compared: event id and signature (both re-derived on every replay from a per-run signing key) and created_at (wall-clock-dependent). A tag value that depends on the run's signing key is the placeholder token \"{{owner}}\" (substituted with that run's actual owner pubkey hex before comparison); a tag value that is another event's id within the SAME replay (a status event's card-anchor \"e\" tag, or its NIP-34 issue-root \"e\" tag) is the placeholder \"{{card:<item-id>}}\" / \"{{issue:<item-id>}}\" (substituted with the actual id the harness observed for that item in this replay). Every vector runs on a PUBLIC (plaintext, non-confidential) board -- see known_gaps for why.",
+  "compared": "Compared: event kind, the FULL tag array (every tag, in the exact order the writer emits it -- order is normative per board-fold-spec.md SS19.5), and event Content (an exact literal string, or must-be-empty). NOT compared: event id and signature (both re-derived on every replay from a per-run signing key) and the event's OWN top-level created_at (wall-clock-dependent). A tag value that depends on the run's signing key is the placeholder token \"{{owner}}\" (substituted with that run's actual owner pubkey hex before comparison); a tag value that is another event's id within the SAME replay (a status event's card-anchor \"e\" tag, or its NIP-34 issue-root \"e\" tag) is the placeholder \"{{card:<item-id>}}\" / \"{{issue:<item-id>}}\" (substituted with the actual id the harness observed for that item in this replay). \"{{created:<item-id>}}\" (ready-4ec) is the CARRIED \"created\" tag CardSpecFromItem now emits on every republish of an already-seeded item: its value is that item's GENESIS card's own wall-clock created_at (unix seconds), observed by the harness from the log BEFORE this vector's op ran -- also wall-clock-dependent, so it is a placeholder rather than a literal, exactly like {{card:<item-id>}}. Every vector runs on a PUBLIC (plaintext, non-confidential) board -- see known_gaps for why.",
   "known_gaps": [
     "CONFIDENTIAL BOARDS ARE NOT COVERED. setupNostrNativeProject (the existing cmd/rd nostr test harness) and this suite's own harness both force Public:true so title/label/context tags project in the clear and are assertable as exact tag arrays. A real `rd init` defaults to a CONFIDENTIAL board (ready-216): free text is AEAD-sealed, content is nondeterministic ciphertext (fresh nonce per seal), and labels are HMAC-tokenized under a board LTK. None of that is byte-comparable the way plaintext tags are, so the DEFAULT write path a fresh `rd init --local` actually takes is structurally uncovered by this vector file -- exactly as the item that requested this suite (ready-bc5) warned. Confidential card/status shape IS already covered, but only informally, by cmd/rd's confidential_*_test.go suite (real writer, real seal, asserts sealed-blob decryptability and marker tags rather than literal ciphertext) -- it is not vector-pinned DATA an independent client can replay byte-for-byte the way this file's plaintext vectors are.",
     "WRITE-SIDE BOARD-GRANT ENFORCEMENT DOES NOT EXIST (board-fold-spec.md SS25.4). The spec (ready-1bf, resolved and merged) already records that rd's writer performs NO self-authorization check before publishing a card: an author with no grant on a board coordinate signs and publishes successfully, and the event simply never folds for anyone else (enforcement is entirely read-side, pkg/sync/nostrproject.go:271-273/:235-248). A vector asserting the write REFUSES for lack of a grant would be false; this suite therefore does not assert one, per this item's own constraint against inventing writer behaviour to make a vector pass.",
@@ -31,7 +31,7 @@
       "seed": {"id": "wv-cl01", "title": "Claimable", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"reason": "picking this up"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-cl01"], ["title", "Claimable"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["p", "{{owner}}"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-cl01"], ["created", "{{created:wv-cl01}}"], ["title", "Claimable"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["p", "{{owner}}"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-cl01"], ["d", "wv-cl01"], ["status", "active"], ["e", "{{card:wv-cl01}}"], ["e", "{{issue:wv-cl01}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "picking this up"}}
       ],
       "post_fold": {"id": "wv-cl01", "status": "active", "by": "{{owner}}"}
@@ -47,7 +47,7 @@
       ],
       "args": {"blocker_id": "wv-dep-blocker"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-dep-blocked"], ["title", "Blocked target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-dep-blocker"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-dep-blocked"], ["created", "{{created:wv-dep-blocked}}"], ["title", "Blocked target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-dep-blocker"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-dep-blocked", "status": "blocked", "blocked_by": ["wv-dep-blocker"]}
     },
@@ -62,7 +62,7 @@
       ],
       "args": {"blocker_id": "wv-dep-rm-blocker"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-dep-rm-target"], ["title", "Was blocked"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-dep-rm-target"], ["created", "{{created:wv-dep-rm-target}}"], ["title", "Was blocked"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-dep-rm-target", "status": "inbox", "blocked_by": []}
     },
@@ -74,7 +74,7 @@
       "seed": {"id": "wv-close-done", "title": "Finish me", "type": "task", "priority": "p2", "status": "active"},
       "args": {"resolution": "done", "reason": "finished", "human_verb": "closed"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-close-done"], ["title", "Finish me"], ["a", "30301:{{owner}}:project"], ["s", "done"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-close-done"], ["created", "{{created:wv-close-done}}"], ["title", "Finish me"], ["a", "30301:{{owner}}:project"], ["s", "done"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1631, "tags": [["a", "30302:{{owner}}:wv-close-done"], ["d", "wv-close-done"], ["status", "done"], ["e", "{{card:wv-close-done}}"], ["e", "{{issue:wv-close-done}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "finished"}}
       ],
       "post_fold": {"id": "wv-close-done", "status": "done"}
@@ -87,7 +87,7 @@
       "seed": {"id": "wv-close-cxl", "title": "Cancel me", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"resolution": "cancelled", "reason": "not needed", "human_verb": "cancelled"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-close-cxl"], ["title", "Cancel me"], ["a", "30301:{{owner}}:project"], ["s", "cancelled"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-close-cxl"], ["created", "{{created:wv-close-cxl}}"], ["title", "Cancel me"], ["a", "30301:{{owner}}:project"], ["s", "cancelled"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1632, "tags": [["a", "30302:{{owner}}:wv-close-cxl"], ["d", "wv-close-cxl"], ["status", "cancelled"], ["e", "{{card:wv-close-cxl}}"], ["e", "{{issue:wv-close-cxl}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not needed"}}
       ],
       "post_fold": {"id": "wv-close-cxl", "status": "cancelled"}
@@ -100,7 +100,7 @@
       "seed": {"id": "wv-delegate", "title": "Reassign me", "type": "task", "priority": "p1", "status": "active"},
       "args": {"to": "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300", "reason": "reassigning"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-delegate"], ["title", "Reassign me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["p", "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-delegate"], ["created", "{{created:wv-delegate}}"], ["title", "Reassign me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["p", "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-delegate"], ["d", "wv-delegate"], ["status", "active"], ["e", "{{card:wv-delegate}}"], ["e", "{{issue:wv-delegate}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "reassigning"}}
       ],
       "post_fold": {"id": "wv-delegate", "status": "active", "by": "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300"}
@@ -113,7 +113,7 @@
       "seed": {"id": "wv-gate-open", "title": "Needs a ruling", "type": "task", "priority": "p1", "status": "active"},
       "args": {"gate_type": "design", "description": "need a design ruling"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-gate-open"], ["title", "Needs a ruling"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a design ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-gate-open"], ["created", "{{created:wv-gate-open}}"], ["title", "Needs a ruling"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a design ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-open"], ["d", "wv-gate-open"], ["status", "waiting"], ["e", "{{card:wv-gate-open}}"], ["e", "{{issue:wv-gate-open}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "need a design ruling"}}
       ],
       "post_fold": {"id": "wv-gate-open", "status": "waiting", "gate": "design", "waiting_type": "gate"}
@@ -126,7 +126,7 @@
       "seed": {"id": "wv-gate-approve", "title": "Approve me", "type": "task", "priority": "p1", "status": "waiting", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
       "args": {"reason": "looks good"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-gate-approve"], ["title", "Approve me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-gate-approve"], ["created", "{{created:wv-gate-approve}}"], ["title", "Approve me"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-approve"], ["d", "wv-gate-approve"], ["status", "active"], ["e", "{{card:wv-gate-approve}}"], ["e", "{{issue:wv-gate-approve}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "looks good"}}
       ],
       "post_fold": {"id": "wv-gate-approve", "status": "active"}
@@ -139,7 +139,7 @@
       "seed": {"id": "wv-gate-reject", "title": "Reject me", "type": "task", "priority": "p1", "status": "waiting", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
       "args": {"reason": "not yet"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-gate-reject"], ["title", "Reject me"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-gate-reject"], ["created", "{{created:wv-gate-reject}}"], ["title", "Reject me"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need a ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-gate-reject"], ["d", "wv-gate-reject"], ["status", "waiting"], ["e", "{{card:wv-gate-reject}}"], ["e", "{{issue:wv-gate-reject}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not yet"}}
       ],
       "post_fold": {"id": "wv-gate-reject", "status": "waiting", "gate": "design"}
@@ -155,7 +155,7 @@
       ],
       "args": {"reason": "not yet, still blocked"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-reject-both"], ["title", "Reject both"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-reject-blocker"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-reject-both"], ["created", "{{created:wv-reject-both}}"], ["title", "Reject both"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-reject-blocker"], ["gate", "design"], ["waiting_type", "gate"], ["waiting_on", "need ruling"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-reject-both"], ["d", "wv-reject-both"], ["status", "waiting"], ["e", "{{card:wv-reject-both}}"], ["e", "{{issue:wv-reject-both}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "not yet, still blocked"}}
       ],
       "post_fold": {"id": "wv-reject-both", "status": "blocked", "blocked_by": ["wv-reject-blocker"]}
@@ -168,7 +168,7 @@
       "seed": {"id": "wv-label-add", "title": "Label target", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"label": "bug"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-label-add"], ["title", "Label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-label-add"], ["created", "{{created:wv-label-add}}"], ["title", "Label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-label-add", "labels": ["bug"]}
     },
@@ -180,7 +180,7 @@
       "seed": {"id": "wv-label-rm", "title": "Label leaving", "type": "task", "priority": "p2", "status": "inbox", "labels": ["urgent"]},
       "args": {"label": "urgent"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-label-rm"], ["title", "Label leaving"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-label-rm"], ["created", "{{created:wv-label-rm}}"], ["title", "Label leaving"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-label-rm", "labels": []}
     },
@@ -192,7 +192,7 @@
       "seed": {"id": "wv-label-unreg", "title": "Unregistered label target", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"label": "totally-not-a-registered-atom"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-label-unreg"], ["title", "Unregistered label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "totally-not-a-registered-atom"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-label-unreg"], ["created", "{{created:wv-label-unreg}}"], ["title", "Unregistered label target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["l", "totally-not-a-registered-atom"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-label-unreg", "labels": ["totally-not-a-registered-atom"]}
     },
@@ -204,7 +204,7 @@
       "seed": {"id": "wv-title-edit", "title": "Old title", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"title": "New title"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-title-edit"], ["title", "New title"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-title-edit"], ["created", "{{created:wv-title-edit}}"], ["title", "New title"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-title-edit", "title": "New title"}
     },
@@ -216,7 +216,7 @@
       "seed": {"id": "wv-prio-edit", "title": "Reprioritise me", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"priority": "p0"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-prio-edit"], ["title", "Reprioritise me"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p0"], ["priority", "p0"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-prio-edit"], ["created", "{{created:wv-prio-edit}}"], ["title", "Reprioritise me"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p0"], ["priority", "p0"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-prio-edit", "priority": "p0"}
     },
@@ -228,7 +228,7 @@
       "seed": {"id": "wv-ctx-edit", "title": "Context target", "type": "task", "priority": "p2", "status": "inbox"},
       "args": {"context": "some context text"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-ctx-edit"], ["title", "Context target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "literal", "value": "some context text"}}
+        {"kind": 30302, "tags": [["d", "wv-ctx-edit"], ["created", "{{created:wv-ctx-edit}}"], ["title", "Context target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "literal", "value": "some context text"}}
       ],
       "post_fold": {"id": "wv-ctx-edit", "context": "some context text"}
     },
@@ -240,7 +240,7 @@
       "seed": {"id": "wv-update-status", "title": "Vendor wait", "type": "task", "priority": "p2", "status": "active"},
       "args": {"status_to": "waiting", "waiting_on": "vendor", "waiting_type": "vendor", "note": "waiting on vendor"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-update-status"], ["title", "Vendor wait"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["waiting_type", "vendor"], ["waiting_on", "vendor"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 30302, "tags": [["d", "wv-update-status"], ["created", "{{created:wv-update-status}}"], ["title", "Vendor wait"], ["a", "30301:{{owner}}:project"], ["s", "waiting"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["waiting_type", "vendor"], ["waiting_on", "vendor"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
         {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-update-status"], ["d", "wv-update-status"], ["status", "waiting"], ["e", "{{card:wv-update-status}}"], ["e", "{{issue:wv-update-status}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "waiting on vendor"}}
       ],
       "post_fold": {"id": "wv-update-status", "status": "waiting", "waiting_type": "vendor"}
@@ -256,7 +256,7 @@
       ],
       "args": {"label": "bug"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-knowngap-target"], ["title", "Gap target"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["i", "wv-knowngap-blocker"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-knowngap-target"], ["created", "{{created:wv-knowngap-target}}"], ["title", "Gap target"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["i", "wv-knowngap-blocker"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-knowngap-target", "status": "blocked", "labels": ["bug"], "blocked_by": ["wv-knowngap-blocker"]}
     },

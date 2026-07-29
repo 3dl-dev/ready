@@ -95,6 +95,7 @@ func Build() (*File, error) {
 		b.vLabelsFreeform,
 		b.vCardLatestWins,
 		b.vCardTieLowestID,
+		b.vCardCarriedCreatedTagSurvivesRepublish,
 		b.vDedupByEventID,
 		b.vStatusChainHistory,
 		b.vStatusSameSecondTiebreak,

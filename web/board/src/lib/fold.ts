@@ -95,9 +95,27 @@ function appendUniqueStr(arr: string[] | undefined, val: string): string[] {
   return out;
 }
 
-/** itemFromCard mirrors nostrproject.go's itemFromCard (spec §5). */
+/** itemFromCard mirrors nostrproject.go's itemFromCard (spec §5, and the
+ * ready-4ec carried "created" tag rework). TRUE CREATION TIME: read the
+ * CARRIED "created" tag when present -- a derived min()-over-admitted-events
+ * is subset-sensitive (a relay retains only the latest addressable card, so a
+ * relay-bootstrapped machine never sees historical cards and would disagree
+ * with a full-log machine about the minimum). Falls back to this card's OWN
+ * created_at when the tag is absent (a genesis card that has never been
+ * republished since this field existed) -- correct for that one bootstrap
+ * case, and the value CardSpecFromItem (Go) / the equivalent TS write path
+ * then carries forward unchanged on every subsequent republish. */
 function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
   const tsNano = BigInt(e.created_at) * 1_000_000_000n;
+  let createdAtNano = tsNano;
+  const createdTag = tagValue(e, "created");
+  if (createdTag !== "") {
+    try {
+      createdAtNano = BigInt(createdTag) * 1_000_000_000n;
+    } catch {
+      // malformed tag value: fall back to the card's own created_at.
+    }
+  }
   const item: Item = {
     id: tagValue(e, "d"),
     msg_id: e.id,
@@ -107,7 +125,7 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
     type: tagValue(e, "itype"),
     context: e.content,
     description: e.content,
-    created_at: tsNano,
+    created_at: createdAtNano,
     updated_at: tsNano,
     blocked_by: tagValues(e, "i"),
     gate: tagValue(e, "gate") || undefined,

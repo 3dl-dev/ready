@@ -702,7 +702,11 @@ var citationExceptions = map[string]string{
 		"the read-trust gate (`grantTrusts(levels, e.PubKey)` (:252), shifted again " +
 		"by ready-4ec's rework, which removed the firstSeen tracking that had " +
 		"shifted it before); grantTrusts itself is declared at :136",
-	"newerGrant|pkg/sync/rolegrant.go|551@decl669": "§4.4: CALL site — the ascending sort " +
+	"nostrTrustSet|cmd/rd/nostr.go|937@decl178": "§3.4: CALL site — " +
+		"`trusted := nostrTrustSet(dir, k.PubKeyHex())` inside nostrProjectAllItems " +
+		"(:937), fed into the ProjectItems(...) call's Trusted field a few lines " +
+		"later; nostrTrustSet itself is declared at :178",
+	"newerGrant|pkg/sync/rolegrant.go|550@decl669": "§4.4: CALL site — the ascending sort " +
 		"is expressed as `newerGrant(grants[j], grants[i])` (:550-552); newerGrant itself " +
 		"is declared at :669 (shifted +26 by ready-55f's per-claim addressable slot)",
 	"FocusFilter|pkg/views/views.go|47@decl185": "§13.2: CALL site inside Named's " +

@@ -67,27 +67,27 @@ a CLI concern, not a fold concern (§13.13, §15.7).
 ## 2. Event kinds that fold
 
 **§2.1 kind 30301 — board.** Addressable board = an rd project.
-`KindBoard = 30301` (`pkg/sync/nostrwire.go:41`); built by `BuildBoardEvent`
+`KindBoard = 30301` (`pkg/sync/nostrwire.go:42`); built by `BuildBoardEvent`
 (`pkg/sync/nostrwire.go:217`) with tags `d`=boardD, `title`, and one `p` per
 maintainer. A board event carries **status-authority policy only**; it never
 produces an item (`pkg/sync/nostrproject.go:268-275`).
 
 **§2.2 kind 30302 — card.** Addressable card = an rd work item, the materialized
-CURRENT state. `KindCard = 30302` (`pkg/sync/nostrwire.go:43`); built by
+CURRENT state. `KindCard = 30302` (`pkg/sync/nostrwire.go:44`); built by
 `BuildCardEvent` (`pkg/sync/nostrwire.go:265`). The clear-tag/sealed-field split is
 the frozen envelope spec §1; the tag → field projection is §5 here.
 
 **§2.3 kinds 1630 / 1631 / 1632 — NIP-34 status.** `KindStatusOpen = 1630`,
 `KindStatusResolved = 1631`, `KindStatusClosed = 1632`
-(`pkg/sync/nostrwire.go:48-52`). `KindStatusDraft = 1633`
-(`pkg/sync/nostrwire.go:54`) is reserved and never written by rd, but IS accepted
+(`pkg/sync/nostrwire.go:49-53`). `KindStatusDraft = 1633`
+(`pkg/sync/nostrwire.go:55`) is reserved and never written by rd, but IS accepted
 by the fold because `isStatusKind` is a range test `1630 <= kind <= 1633`
 (`pkg/sync/nostrwire.go:560-562`). The rd status → kind map is `statusKindFor`
 (`pkg/sync/nostrwire.go:73-83`) and is **lossy**: the authoritative rd status is
 read from the `status` tag, never from the kind (§6.5).
 
 **§2.4 kind 1621 — NIP-34 issue.** `KindIssue = 1621`
-(`pkg/sync/nostrwire.go:66`), published at most once per item
+(`pkg/sync/nostrwire.go:67`), published at most once per item
 (`BuildIssueEvent`, `pkg/sync/nostrwire.go:503`; `FindIssueEventID`,
 `pkg/sync/nostrwire.go:528`). It exists purely for generic-client interop and
 **does not fold**: `itemIDForEvent` returns `""` for it
@@ -115,7 +115,7 @@ item; it feeds read-trust, status authority and confidential key material (§11,
 
 ## 3. Admission gates, in order
 
-The main replay loop (`pkg/sync/nostrproject.go:222-314`) applies these gates in
+The main replay loop (`pkg/sync/nostrproject.go:224-313`) applies these gates in
 exactly this sequence. **The order is normative** — an independent client that
 reorders them will disagree on edge cases (e.g. a duplicate of an untrusted
 event, or a board event that would fail the board-pin test).
@@ -123,60 +123,61 @@ event, or a board event that would fail the board-pin test).
 Citation shorthand for this section only: a bare `:N` means
 `pkg/sync/nostrproject.go:N`. Any other file is named in full.
 
-**§3.1** A `nil` event is skipped (`:223-225`).
+**§3.1** A `nil` event is skipped (`:225-227`).
 
 **§3.2 Dedup by event id.** The first occurrence of an event id is authoritative;
-later copies are skipped (`seen`, `:221`, `:226-228`). Because the id is a content
+later copies are skipped (`seen`, `:223`, `:228-230`). Because the id is a content
 hash, duplicates are byte-identical, so "first wins" is order-independent. Note
-`seen[e.ID]` is only *set* for events that reach `:301` (or a board event at
-`:269`) — an event dropped by §3.3–§3.9 is not recorded, so a later duplicate of
+`seen[e.ID]` is only *set* for events that reach `:303` (or a board event at
+`:271`) — an event dropped by §3.3–§3.9 is not recorded, so a later duplicate of
 it re-runs the same gates and is dropped again, identically.
 
 **§3.3 Signature.** `e.Verify()` must pass; a forged or tampered line is ignored
-(`:229-231`).
+(`:231-233`).
 
 **§3.4 Read-trust.** The author must satisfy `opts.trusts(e.PubKey)` OR
 `grantTrusts(levels, e.PubKey)` (`:252`; `trusts` at `:122-127`, `grantTrusts`
 at `:136-139`). `opts.Trusted == nil` disables the allowlist entirely (`:122-124`)
-— production always passes a non-nil set (`cmd/rd/nostr.go:907` and
-`cmd/rd/nostr.go:915-920`). `levels` is the grant-derived membership for the
+— production always passes a non-nil set (`nostrTrustSet(dir, ...)`,
+`cmd/rd/nostr.go:937`, fed into the `ProjectOptions{Trusted: trusted, ...}` call at
+`cmd/rd/nostr.go:945-950`). `levels` is the grant-derived membership for the
 pinned board (§12.8) and is empty when no board is pinned
 (`pkg/sync/nostrproject.go:153-160`).
 
 **§3.5 Point-in-time read-trust (prospective revocation).** If the author has a
 bounded `until`, the event is dropped when `e.CreatedAt >= until[e.PubKey]`
-(`pkg/sync/nostrproject.go:261-263`). A revoked key's **past** events survive; its
+(`pkg/sync/nostrproject.go:263-265`). A revoked key's **past** events survive; its
 **future** events drop.
 Non-revoked keys map to `authoritativeForever = MaxInt64`
 (`pkg/sync/rolegrant.go:72`), so the comparison is inert for them.
 
 **§3.6 Board branch.** A `KindBoard` event is recorded as the latest-wins board
 for its coordinate `BoardCoord(e.PubKey, tagValue(e,"d"))` and the loop
-`continue`s (`pkg/sync/nostrproject.go:268-275`). This runs BEFORE the item-id
+`continue`s (`pkg/sync/nostrproject.go:270-277`). This runs BEFORE the item-id
 guard because a board's `d` tag is a boardD, not an item id.
 
 **§3.7 Item-id guard.** `itemIDForEvent(e)` must be non-empty
-(`pkg/sync/nostrproject.go:276-279`). For a card that is the `d` tag; for a status event it is `d`, else
+(`pkg/sync/nostrproject.go:278-281`). For a card that is the `d` tag; for a status event it is `d`, else
 the third field of the first `a` coordinate (`pkg/sync/nostrwire.go:636-653`).
 
 **§3.8 Board pinning (cards only).** When `opts.PinnedBoard != ""`, a `KindCard`
 whose FIRST `a` tag is not exactly `PinnedBoard` is rejected
-(`pkg/sync/nostrproject.go:286-288`). This
+(`pkg/sync/nostrproject.go:288-290`). This
 kills parallel-board self-escalation. Status events are NOT gated here — their
 authority is already coordinate-bound (§6.1). Inert when no board is pinned.
 
 **§3.9 Fail-closed fold gate (confidential boards).** A card or status event that
 `shouldQuarantine` returns true for is skipped entirely
-(`pkg/sync/nostrproject.go:298-300`). Full rule in §11.3–§11.4.
+(`pkg/sync/nostrproject.go:300-302`). Full rule in §11.3–§11.4.
 
 **§3.10 Classification.** Surviving events are marked seen
-(`pkg/sync/nostrproject.go:301`) and routed: a card competes for
-`winningCard[itemID]` under §4.1 (`pkg/sync/nostrproject.go:306-310`); a status
+(`pkg/sync/nostrproject.go:303`) and routed: a card competes for
+`winningCard[itemID]` under §4.1 (`pkg/sync/nostrproject.go:305-309`); a status
 event is appended to `statusEvents[itemID]` in log order, to be sorted later
-(`pkg/sync/nostrproject.go:311-313`).
+(`pkg/sync/nostrproject.go:310-311`).
 
 **§3.11** An item exists in the output **iff** it has at least one surviving card
-(`pkg/sync/nostrproject.go:342-343`). Status events for an item with no surviving card produce nothing —
+(`pkg/sync/nostrproject.go:341-342`). Status events for an item with no surviving card produce nothing —
 they are neither an item nor an error.
 
 ---
@@ -192,18 +193,18 @@ and the local winner agree.
 
 **§4.2 Status chain ordering.** The authoritative status events for an item are
 sorted by `(created_at ASC, event-id ASC)`
-(`pkg/sync/nostrproject.go:397-403`). History is emitted in that order (§6.5) and
+(`pkg/sync/nostrproject.go:393-399`). History is emitted in that order (§6.5) and
 the LAST entry sets current status (§6.10).
 
 **§4.3 No append-index dependence.** Neither §4.1 nor §4.2 may consult log-append
 position, relay fetch order, or merge order. Both keys are pure functions of the
 event set, which is what makes replay convergent across machines
-(`pkg/sync/nostrproject.go:388-396` documents the prior divergent behaviour).
+(`pkg/sync/nostrproject.go:384-392` documents the prior divergent behaviour).
 
 **§4.4 Grant ordering.** 39301 grants replay oldest-first under the same key:
 `newerGrant` is `newerThan` on `(created_at, id)`
 (`pkg/sync/rolegrant.go:669-674`), and the ascending sort is expressed as
-`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:551-553`). Last
+`newerGrant(grants[j], grants[i])` (`pkg/sync/rolegrant.go:550-552`). Last
 cap-valid grant applied per grantee wins (`:518-550`).
 
 **§4.5 Board ordering.** Latest-wins per board coordinate under `newerThan`
@@ -214,8 +215,8 @@ without a `p` tag revokes that maintainer.
 **§4.6 Time units.** Event `created_at` is unix **seconds** (NIP-01). `state.Item`
 timestamps are unix **nanoseconds**: `itemFromCard` multiplies by
 `int64(time.Second)` (`pkg/sync/nostrproject.go:586-587`), and `UpdatedAt` from a
-status event does the same (`:424`). `HistoryEntry.Timestamp` is RFC3339 UTC at
-second granularity (`:418`).
+status event does the same (`:446`). `HistoryEntry.Timestamp` is RFC3339 UTC at
+second granularity (`:440`).
 
 **§4.7 Write-side monotonic stamping (per causal chain).** A new event's
 `created_at` is `max(now, newestInScope+1)` where scope is the event's causal
@@ -307,7 +308,7 @@ so the shipped nostr JSON surface carries no `campfire_id`
 
 **§5.5** `History` is NOT sourced from the card. The 30302 card is a latest-wins
 projection with no history of its own; the append-only status chain IS the audit
-trail (§6.5, `pkg/sync/nostrproject.go:372-380`).
+trail (§6.5, `pkg/sync/nostrproject.go:370-373`).
 
 **§5.6** The inverse mapping (item → card) is `CardSpecFromItem`
 (`pkg/sync/nostrmigrate.go:106-127`) → `BuildCardEvent`
@@ -323,56 +324,56 @@ tag (**scope**, `For`).
 
 **§6.1 Board-derived maintainers.** For each winning board coordinate, the
 maintainer set is the board **author** plus every `p` tag on that winning board
-(`pkg/sync/nostrproject.go:320-325`; `addBoardMaintainer` at `:192-202`). Keyed by
+(`pkg/sync/nostrproject.go:319-324`; `addBoardMaintainer` at `:194-204`). Keyed by
 coordinate `30301:<author>:<boardD>` — deriving per-coordinate is what stops a
 trusted key minting status authority for another author's item by publishing its
 own board.
 
 **§6.2 Grant-derived maintainers.** When a board is pinned, every key with derived
 level `>= LevelMaintainer` (2) is ALSO a maintainer of the pinned coordinate
-(`pkg/sync/nostrproject.go:334-340`). Revoked keys are deliberately NOT stripped
+(`pkg/sync/nostrproject.go:333-339`). Revoked keys are deliberately NOT stripped
 here: revocation is prospective and already enforced by §3.5; stripping would
-erase past authority and reopen completed items (`:326-333`).
+erase past authority and reopen completed items (`:325-332`).
 
 **§6.3 Explicit maintainers.** `opts.Maintainers` is unioned in per item
-(`pkg/sync/nostrproject.go:368-370`). Production passes `nil`
-(`cmd/rd/nostr.go:915-920`); it exists for tests and for event sets constructed
-without a 30301 board (`pkg/sync/nostrproject.go:32-34`).
+(`pkg/sync/nostrproject.go:364-366`). Production passes `nil`
+(`cmd/rd/nostr.go:944-950`); it exists for tests and for event sets constructed
+without a 30301 board (`pkg/sync/nostrproject.go:33-35`).
 
 **§6.4 Authoritative filter.** A status event counts only if its author is the
 item's card author OR a member of the item's maintainer set
-(`pkg/sync/nostrproject.go:381-387`). A non-authoritative status event contributes
+(`pkg/sync/nostrproject.go:377-383`). A non-authoritative status event contributes
 **neither state nor history** — it is excluded entirely. The item's maintainer set
 is looked up by the winning card's FIRST `a` tag (`:358-363`).
 
 **§6.5 History emission.** Every authoritative status event, in §4.2 order,
 becomes one `HistoryEntry` with `Timestamp` (RFC3339 UTC), `FromStatus` =
 `prevStatus` (initially `""`), `ToStatus`, `ChangedBy`, `Note`
-(`pkg/sync/nostrproject.go:405-452`).
+(`pkg/sync/nostrproject.go:439-445`).
 
 **§6.6 Missing status tag.** If a status event has no `status` tag, `ToStatus`
-inherits `prevStatus` (`pkg/sync/nostrproject.go:407-410`) — the kind is NOT
+inherits `prevStatus` (`pkg/sync/nostrproject.go:403-406`) — the kind is NOT
 consulted as a fallback.
 
 **§6.7 `ChangedBy` and the `by` spoof guard.** `ChangedBy` defaults to the event's
 signer. An rd-extension `by` tag overrides it ONLY when the signer is a board
-maintainer (`pkg/sync/nostrproject.go:427-430`). A bare item author's `by` tag is
+maintainer (`pkg/sync/nostrproject.go:423-426`). A bare item author's `by` tag is
 ignored, so a trusted-but-not-maintainer signer cannot attribute a transition to a
 third party. Migrated campfire history relies on the maintainer-signed case.
 
 **§6.8 `Note`.** Plaintext status events carry the close/change reason in
 `Content` verbatim. A confidential status event carries sealed ciphertext:
 a granted reader gets the decrypted reason, everyone else gets `placeholderText`
-(`pkg/sync/nostrproject.go:431-442`; §11.8).
+(`pkg/sync/nostrproject.go:431-438`; §11.8).
 
 **§6.9 `UpdatedAt`.** Advanced to `max(current, s.CreatedAt * 1e9)` per
-authoritative status event (`pkg/sync/nostrproject.go:450`). It is initialized
+authoritative status event (`pkg/sync/nostrproject.go:446`). It is initialized
 from the winning card (§5.1), so an item with no status events keeps the card's
 timestamp.
 
 **§6.10 Current status.** When at least one authoritative status event exists, the
 item's `Status` is the LAST one's `ToStatus`, overriding the card's `s` tag
-(`pkg/sync/nostrproject.go:453-458`).
+(`pkg/sync/nostrproject.go:449-454`).
 
 **§6.11** With zero authoritative status events, the card's `s` tag stands as
 current status (§5.1) and `History` is empty.
@@ -426,32 +427,32 @@ references to `StatusScheduled` are the two view predicates
 ## 8. Dependency edge derivation
 
 **§8.1 Staging.** `itemFromCard` puts the card's raw `i` tags into `BlockedBy`
-unvalidated (`pkg/sync/nostrproject.go:605`). `applyDepAndGateStatus` then drains
+unvalidated (`pkg/sync/nostrproject.go:614`). `applyDepAndGateStatus` then drains
 that field into an edge list and CLEARS it, rebuilding it from validated edges
 only (`pkg/sync/nostrproject.go:475-482`). So `BlockedBy` on the returned item is
 never the raw tag set.
 
 **§8.2 Unresolvable edges are dropped silently.** An edge whose blocker or blocked
 id is not present in this projection is skipped
-(`pkg/sync/nostrproject.go:488-491`) — no warning, no field, no error.
+(`pkg/sync/nostrproject.go:484-488`) — no warning, no field, no error.
 
 **§8.3 Terminal blocked items are skipped.** An edge whose *blocked* item is
 terminal contributes nothing at all — not even a `BlockedBy` entry
-(`pkg/sync/nostrproject.go:493-495`).
+(`pkg/sync/nostrproject.go:489-491`).
 
 **§8.4 Blocked status.** For a surviving edge, if the BLOCKER is non-terminal the
 blocked item's status is set to `blocked`
-(`pkg/sync/nostrproject.go:496-498`). This overwrites whatever §6.10 decided.
+(`pkg/sync/nostrproject.go:492-494`). This overwrites whatever §6.10 decided.
 
 **§8.5 Edge fields.** For every surviving edge (regardless of the blocker's
 terminal state) `blocked.BlockedBy += blockerID` and `blocker.Blocks += blockedID`
-(`pkg/sync/nostrproject.go:499-500`), deduped by `appendUniqueStr`
+(`pkg/sync/nostrproject.go:495-496`), deduped by `appendUniqueStr`
 (`:553-560`). So `BlockedBy` records the *dependency*, not only *active* blockers
 — matching `pkg/state/state.go:1008-1009`.
 
 **§8.6 No cycle detection.** A dependency cycle is not detected, rejected, or
 reported at fold time. Each member of a cycle simply blocks the others
-(`pkg/sync/nostrproject.go:487-501` has no visited set).
+(`pkg/sync/nostrproject.go:483-497` has no visited set).
 
 **§8.7 Implicit unblock is a WRITE rule, not a fold rule.** On close, rd
 re-publishes the cards of every item this item was blocking
@@ -508,34 +509,34 @@ ruling is preserved in history.
 
 **§9.4 Card-declared gate promotion.** Define
 `declaresGate := WaitingType != "" || WaitingOn != "" || Gate != ""`
-(`pkg/sync/nostrproject.go:516`). A non-blocked, non-terminal item that
+(`pkg/sync/nostrproject.go:512`). A non-blocked, non-terminal item that
 `declaresGate` is promoted to `Status=waiting`
-(`:517-519`). This exists because a gate can be CURRENT state without ever having
+(`:513-515`). This exists because a gate can be CURRENT state without ever having
 been a status transition (migrated campfire items), and blocking is checked FIRST
 so it supersedes.
 
 **§9.5 Terminal clears everything.** A terminal item has `WaitingOn`,
 `WaitingType`, `WaitingSince`, `GateMsgID` cleared unconditionally
-(`pkg/sync/nostrproject.go:520-526`). Note `Gate` itself is NOT cleared here.
+(`pkg/sync/nostrproject.go:517-522`). Note `Gate` itself is NOT cleared here.
 
 **§9.6 Gate field derivation (non-terminal, `declaresGate`).** `WaitingSince`, if
 empty, is derived from `UpdatedAt` as RFC3339 UTC
-(`pkg/sync/nostrproject.go:538-540`). `GateMsgID` is set to `item.MsgID` — the
+(`pkg/sync/nostrproject.go:534-536`). `GateMsgID` is set to `item.MsgID` — the
 **winning card's event id** (§5.1) — if and only if `WaitingType == "gate"`;
-otherwise it is cleared (`:541-545`). There is no separate "gate event"; the gate
+otherwise it is cleared (`:537-541`). There is no separate "gate event"; the gate
 identity IS the card identity, which is why the id changes on every card
 republish.
 
 **§9.7 Gate fields persist under blocking.** When an item both `declaresGate` and
 is blocked, §8.4 wins on STATUS (`blocked`) but the gate fields are retained by
-`:527-545` — the pending gate is still real. This is the documented parity fix
+`:523-541` — the pending gate is still real. This is the documented parity fix
 with `pkg/state.applyBlockStatus`, which likewise never clears them.
 
 **§9.8 No declared gate.** All four fields are cleared
-(`pkg/sync/nostrproject.go:546-552`).
+(`pkg/sync/nostrproject.go:542-547`).
 
 **§9.9 Ordering.** §9.4–§9.8 run inside `applyDepAndGateStatus` AFTER the dep pass
-(`pkg/sync/nostrproject.go:474`, dep loop `:483-497`, gate loop `:499-550`), and
+(`pkg/sync/nostrproject.go:474`, dep loop `:483-497`, gate loop `:499-549`), and
 `applyDepAndGateStatus` itself runs after the whole per-item status pass
 (`:457`). An independent client MUST use this ordering: gate promotion reads the
 blocked status the dep pass just wrote.

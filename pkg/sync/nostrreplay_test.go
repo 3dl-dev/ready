@@ -176,25 +176,32 @@ func TestProjection_StaleReplayDoesNotResurrect(t *testing.T) {
 // card-republish + status-event mechanics this test exercises), while its
 // last-modified time (UpdatedAt) keeps advancing.
 //
-// This exercises the CARRIED-TAG mechanism (ready-4ec rework), not a derived
-// min(): each republish explicitly sets CardSpec.CreatedAt to the genesis value,
-// exactly as the real write path does — CardSpecFromItem reads the item's
-// CURRENT (already-projected) CreatedAt and re-emits it verbatim on every
-// mutation (see nostrmigrate.go). The genesis card alone carries NO "created" tag
-// (CreatedAt: 0 is the zero value / unknown), so itemFromCard falls back to ITS
-// OWN event created_at — correct for exactly that one bootstrap card.
+// This drives the REAL production write path, not a hand-set CardSpec.CreatedAt:
+// each step takes the *state.Item ProjectItems just returned, mutates it in place
+// exactly as an `rd` verb would (title edit, status change), and rebuilds the
+// republish CardSpec by calling CardSpecFromItem(item, boardD) — the same call
+// nostrwrite.go makes on every live mutation. If CardSpecFromItem's `CreatedAt:
+// itemCreatedAtSecs(item)` line were deleted (or the field ignored), every
+// republish below would carry NO "created" tag, itemFromCard would fall back to
+// each new card's OWN event created_at, and the CreatedAt assertions after the
+// 2000/3000/4000 steps would fail — this test cannot pass without that line
+// actually running. The genesis card alone carries NO "created" tag (a brand-new
+// item's CreatedAt is unset), so itemFromCard falls back to ITS OWN event
+// created_at — correct for exactly that one bootstrap card.
 func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 	k := testKey(t)
 	itemID := "ready-created-1"
+	boardD := "ready"
 	opts := ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}}
 	wantCreated := int64(1000) * int64(time.Second)
 
 	// t=1000: genesis create (inbox). No "created" tag yet (CreatedAt unset) --
 	// the fallback to this card's own created_at is what seeds the true value.
-	c0, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 1000)
+	c0, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusInbox, Priority: "p1", BoardD: boardD}, 1000)
 	s0, _ := BuildStatusEvent(k, itemID, state.StatusInbox, c0.ID, "", 1000)
 
-	items := ProjectItems([]*nostr.Event{c0, s0}, opts)
+	events := []*nostr.Event{c0, s0}
+	items := ProjectItems(events, opts)
 	it, ok := items[itemID]
 	if !ok {
 		t.Fatalf("item %s not projected after genesis", itemID)
@@ -206,22 +213,53 @@ func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
 		t.Fatalf("genesis UpdatedAt = %d, want %d", it.UpdatedAt, wantCreated)
 	}
 
-	// t=2000: a card edit republishes the card (e.g. `rd update`, `rd dep add`, a
-	// re-parent) — a plain card-only mutation, no new status event. Carries the
-	// genesis CreatedAt forward explicitly, as CardSpecFromItem does in production.
-	c1, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusInbox, Priority: "p1", BoardD: "ready", CreatedAt: 1000}, 2000)
+	// t=2000: MUTATE the projected item (title edit, no status change — the same
+	// shape as `rd update`/`rd dep add`/a re-parent) and republish it through
+	// CardSpecFromItem, the real production call, not a hand-authored CardSpec.
+	it.Title = "v1 edited"
+	c1, _ := BuildCardEvent(k, CardSpecFromItem(it, boardD), 2000)
+	events = append(events, c1)
 
-	// t=3000: claim (active) — card republish + authoritative status event, the
-	// same mechanics `rd claim`/`rd delegate` use. Still carries CreatedAt: 1000.
-	c2, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 3000)
+	items = ProjectItems(events, opts)
+	it, ok = items[itemID]
+	if !ok {
+		t.Fatalf("item %s not projected after card-only republish", itemID)
+	}
+	if it.CreatedAt != wantCreated {
+		t.Errorf("CreatedAt after card-only republish = %d, want unchanged genesis value %d (ready-4ec regression)", it.CreatedAt, wantCreated)
+	}
+	wantUpdatedAfterEdit := int64(2000) * int64(time.Second)
+	if it.UpdatedAt != wantUpdatedAfterEdit {
+		t.Errorf("UpdatedAt after card-only republish = %d, want %d", it.UpdatedAt, wantUpdatedAfterEdit)
+	}
+
+	// t=3000: MUTATE status to active (the same shape as `rd claim`/`rd
+	// delegate`) — republish the card via CardSpecFromItem AND emit an
+	// authoritative status event.
+	it.Status = state.StatusActive
+	it.By = k.PubKeyHex()
+	c2, _ := BuildCardEvent(k, CardSpecFromItem(it, boardD), 3000)
 	s1, _ := BuildStatusEvent(k, itemID, state.StatusActive, c2.ID, "claimed", 3000)
+	events = append(events, c2, s1)
 
-	// t=4000: close (done) — the same mechanics `rd done`/`rd cancel`/`rd fail`
-	// use: republish the card AND emit a terminal status event. Still CreatedAt: 1000.
-	c3, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusDone, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready", CreatedAt: 1000}, 4000)
+	items = ProjectItems(events, opts)
+	it, ok = items[itemID]
+	if !ok {
+		t.Fatalf("item %s not projected after claim", itemID)
+	}
+	if it.CreatedAt != wantCreated {
+		t.Errorf("CreatedAt after claim = %d, want unchanged genesis value %d (ready-4ec regression)", it.CreatedAt, wantCreated)
+	}
+
+	// t=4000: MUTATE status to done (the same shape as `rd done`/`rd cancel`/`rd
+	// fail`) — republish the card via CardSpecFromItem AND emit a terminal status
+	// event.
+	it.Status = state.StatusDone
+	c3, _ := BuildCardEvent(k, CardSpecFromItem(it, boardD), 4000)
 	s2, _ := BuildStatusEvent(k, itemID, state.StatusDone, c3.ID, "shipped", 4000)
+	events = append(events, c3, s2)
 
-	all := []*nostr.Event{c0, s0, c1, c2, s1, c3, s2}
+	all := events
 	items = ProjectItems(all, opts)
 	it, ok = items[itemID]
 	if !ok {

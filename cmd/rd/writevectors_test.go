@@ -25,6 +25,7 @@ package main
 // path), and the log read back is the real on-disk .ready/nostr-log.jsonl.
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -148,10 +149,15 @@ func dispatchWriteVectorOp(t *testing.T, dir string, v writevectors.Vector) (tar
 }
 
 // expandPlaceholders substitutes every {{owner}} / {{card:<id>}} /
-// {{issue:<id>}} token in s -- see testdata/write.vectors.json's top-level
-// "compared" field for why these three, and only these three, are
-// templated rather than compared as literal hex.
-func expandPlaceholders(s, owner string, cardIDs, issueIDs map[string]string) string {
+// {{issue:<id>}} / {{created:<id>}} token in s -- see testdata/write.vectors.json's
+// top-level "compared" field for why these, and only these, are templated
+// rather than compared as literal values. {{created:<id>}} is the ready-4ec
+// addition (CardSpecFromItem now carries the item's TRUE creation time
+// forward as a "created" tag on every republish): its value is the SEED
+// card's own wall-clock created_at (unix seconds) observed in THIS replay --
+// necessarily wall-clock-dependent, exactly like {{card:<id>}}'s event id, so
+// it cannot be a literal in the committed vector file either.
+func expandPlaceholders(s, owner string, cardIDs, issueIDs, createdSecs map[string]string) string {
 	s = strings.ReplaceAll(s, "{{owner}}", owner)
 	for id, cid := range cardIDs {
 		s = strings.ReplaceAll(s, "{{card:"+id+"}}", cid)
@@ -159,15 +165,18 @@ func expandPlaceholders(s, owner string, cardIDs, issueIDs map[string]string) st
 	for id, iid := range issueIDs {
 		s = strings.ReplaceAll(s, "{{issue:"+id+"}}", iid)
 	}
+	for id, secs := range createdSecs {
+		s = strings.ReplaceAll(s, "{{created:"+id+"}}", secs)
+	}
 	return s
 }
 
-func expandTags(tags [][]string, owner string, cardIDs, issueIDs map[string]string) [][]string {
+func expandTags(tags [][]string, owner string, cardIDs, issueIDs, createdSecs map[string]string) [][]string {
 	out := make([][]string, len(tags))
 	for i, tag := range tags {
 		row := make([]string, len(tag))
 		for j, v := range tag {
-			row[j] = expandPlaceholders(v, owner, cardIDs, issueIDs)
+			row[j] = expandPlaceholders(v, owner, cardIDs, issueIDs, createdSecs)
 		}
 		out[i] = row
 	}
@@ -259,6 +268,23 @@ func TestWriteConformanceVectors(t *testing.T) {
 					}
 				}
 			}
+			// createdSecs (ready-4ec): every seed's GENESIS card, published before
+			// this vector's op ran, is the one card the fold's "created" tag
+			// fallback ever applies to (no tag yet) -- its own wall-clock
+			// created_at is exactly the value CardSpecFromItem now carries forward
+			// into every later republish's "created" tag. Sourced from `before`
+			// (pre-op), never `after`, so a vector whose own op republishes the
+			// card cannot see its own new (later) timestamp here.
+			createdSecs := map[string]string{}
+			for _, e := range before {
+				if e.Kind == rdSync.KindCard {
+					if d, ok := tagVal(e.Tags, "d"); ok && d != "" {
+						if _, seen := createdSecs[d]; !seen {
+							createdSecs[d] = strconv.FormatInt(e.CreatedAt, 10)
+						}
+					}
+				}
+			}
 
 			if len(newEvents) != len(v.Events) {
 				t.Fatalf("appended %d event(s), want %d -- got kinds %v", len(newEvents), len(v.Events), kindsOf(newEvents))
@@ -268,7 +294,7 @@ func TestWriteConformanceVectors(t *testing.T) {
 				if got.Kind != want.Kind {
 					t.Errorf("event %d: kind = %d, want %d", i, got.Kind, want.Kind)
 				}
-				wantTags := expandTags(want.Tags, owner, cardIDs, issueIDs)
+				wantTags := expandTags(want.Tags, owner, cardIDs, issueIDs, createdSecs)
 				if !reflect.DeepEqual(wantTags, got.Tags) {
 					t.Errorf("event %d (kind %d) tags mismatch:\n  want: %v\n  got:  %v", i, want.Kind, wantTags, got.Tags)
 				}
@@ -320,7 +346,7 @@ func checkPostFold(t *testing.T, want *writevectors.ItemFixture, got *state.Item
 		t.Errorf("post-fold context = %q, want %q", got.Context, want.Context)
 	}
 	if want.By != "" {
-		wantBy := expandPlaceholders(want.By, owner, nil, nil)
+		wantBy := expandPlaceholders(want.By, owner, nil, nil, nil)
 		if got.By != wantBy {
 			t.Errorf("post-fold by = %q, want %q", got.By, wantBy)
 		}

@@ -224,6 +224,71 @@ func (b *builder) vCardTieLowestID() error {
 	})
 }
 
+// vCardCarriedCreatedTagSurvivesRepublish pins §5.1/§5.6's carried "created"
+// tag mechanism (ready-4ec): a republished card's Item.CreatedAt comes from the
+// CARRIED "created" tag, NOT from that card's own wire created_at, so an
+// item's true creation time survives every later republish even though the
+// card's own timestamp keeps advancing. card_latest_wins_created_at and
+// trust_gate_disabled_admits_anyone (both in this corpus) build raw wire
+// events with NO "created" tag at all -- they pin the FALLBACK path only, and
+// by construction cannot distinguish "reads the tag" from "reads the event's
+// own created_at", since the two agree whenever the tag is absent. THIS
+// vector is the one place in the corpus where they would diverge (the
+// republished card's own created_at is t0+500, but its carried tag says t0),
+// so it is the cross-implementation proof that BOTH the Go fold
+// (pkg/sync.ProjectItems, checked below by Build()) and the TS port
+// (web/board/src/lib/fold.ts's itemFromCard, replayed by fold.vectors.test.ts)
+// read the tag rather than the event's own timestamp.
+func (b *builder) vCardCarriedCreatedTagSurvivesRepublish() error {
+	// Genesis card @t0: no "created" tag (CreatedAt: 0 is the zero value), so
+	// both folds fall back to this card's OWN created_at (t0) -- the one
+	// bootstrap case where that fallback is correct.
+	genesis, err := b.card(b.owner, rdsync.CardSpec{
+		ItemID: "ready-v34", Title: "v0", Status: state.StatusInbox, Priority: "p1", Type: "task",
+	}, t0)
+	if err != nil {
+		return err
+	}
+	// Republish @t0+500: the card CARRIES "created": t0 explicitly (exactly
+	// what CardSpecFromItem does on every live `rd` mutation), even though this
+	// card's OWN wire created_at has moved on to t0+500. A fold that read the
+	// card's own created_at instead of the tag would wrongly report t0+500.
+	republished, err := b.card(b.owner, rdsync.CardSpec{
+		ItemID: "ready-v34", Title: "v1 edited", Status: state.StatusActive, Priority: "p1",
+		Assignee: b.ownerPub, Type: "task", CreatedAt: t0,
+	}, t0+500)
+	if err != nil {
+		return err
+	}
+	items, err := itemsJSON(&state.Item{
+		ID: "ready-v34", MsgID: republished.ID, Title: "v1 edited",
+		Type: "task", Priority: "p1", Status: state.StatusActive, By: b.ownerPub,
+		CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 500),
+	})
+	if err != nil {
+		return err
+	}
+	return b.add(Vector{
+		Name:        "card_carried_created_tag_survives_republish",
+		SpecClauses: []string{"4.1", "5.1", "5.6"},
+		Note: "Genesis card @t0 carries no \"created\" tag (falls back to its own created_at, t0). " +
+			"It is republished @t0+500 CARRYING \"created\": t0 (as CardSpecFromItem does on every " +
+			"live mutation) even though the republished card's OWN wire created_at is t0+500. " +
+			"Item.CreatedAt must read t0 (the carried tag), not t0+500 (the winning card's own " +
+			"created_at) -- this is the one vector in the corpus where the tag and the event's own " +
+			"timestamp actually disagree, so it is the cross-implementation (Go/TS) proof of the " +
+			"carried-tag mechanism itself, not just of its absent-tag fallback.",
+		Options: Options{Trusted: trust(b.ownerPub)},
+		Events:  []*nostr.Event{genesis, republished},
+		Expect: Expect{
+			Items: items,
+			Views: vw(map[string][]string{
+				"ready": {"ready-v34"}, "work": {"ready-v34"}, "focus": {"ready-v34"},
+			}),
+		},
+	})
+}
+
 // vDedupByEventID pins §3.2: re-ingesting an identical event is a no-op, so a
 // duplicated status event cannot fabricate a phantom history row.
 func (b *builder) vDedupByEventID() error {
