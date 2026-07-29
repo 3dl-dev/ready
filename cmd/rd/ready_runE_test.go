@@ -257,3 +257,73 @@ func TestSortByPriorityETA_DeterministicTiebreak(t *testing.T) {
 		t.Fatalf("sorted order from input order B (different starting order, same item set): got %v, want %v -- sort must be deterministic regardless of input order", gotB, want)
 	}
 }
+
+// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns is the ready-f5f done-condition
+// clause 1 test: it runs the SAME event set through the real ready view
+// (readyCmd.RunE, end to end -- nostr log read -> rdSync.ProjectItems fold ->
+// sortByPriorityETA -> JSON encode) readyRunCount (>=20) times against ONE
+// already-published project, and asserts every run's raw output is
+// byte-identical to the first.
+//
+// This does NOT construct a []*state.Item by hand and sort it (that is what
+// TestSortByPriorityETA_DeterministicTiebreak above already covers, and per
+// this item's done condition, unit-testing the comparator alone is not
+// sufficient). It goes through nostrProjectAllItems's real
+// `for _, it := range byID { items = append(items, it) }` loop
+// (cmd/rd/nostr.go), where byID is a map[string]*state.Item -- Go's
+// documented map-iteration randomization applies PER range clause, not just
+// per process, so calling the full RunE pipeline N times in the SAME test
+// binary run genuinely re-randomizes the pre-sort slice order each time. A
+// single execution (or a two-orders-by-hand test) cannot exercise that: only
+// repeated real derivations can. All 20 children below share priority (p2)
+// and ETA (empty), so every one of them ties past both fields and lands on
+// the ID tiebreak -- the exact case that was unstable before ready-e88.
+//
+// VERIFIED regression check: reverting sortByPriorityETA's comparator to drop
+// the `return items[i].ID < items[j].ID` tiebreak line (leaving ties
+// unresolved) and switching sort.SliceStable back to sort.Slice makes this
+// test flake/fail (divergent order across runs) -- confirmed by running it
+// with that reversion locally; see this item's test_decisions for the exact
+// command and result.
+const readyRunCount = 25
+
+func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+
+	// 20 children, all tied on priority (p2) and ETA (empty) -- the worst
+	// case for the comparator, and the case that was flaky pre-ready-e88.
+	buildTreeShapedProject(t, "runeproject-detN", "runE-detN-epic", 20)
+	jsonOutput = true
+	defer resetReadyRunFlags(t)()
+
+	var first string
+	for i := 0; i < readyRunCount; i++ {
+		output := captureStdoutPipe(t, func() {
+			if err := readyCmd.RunE(readyCmd, []string{}); err != nil {
+				t.Fatalf("readyCmd.RunE (run %d): %v", i, err)
+			}
+		})
+		if i == 0 {
+			first = output
+			var decoded []map[string]interface{}
+			if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+				t.Fatalf("run 0 output is not valid JSON: %v\noutput:\n%s", err, output)
+			}
+			if len(decoded) != 20 {
+				t.Fatalf("run 0: expected 20 ready children, got %d:\n%s", len(decoded), output)
+			}
+			continue
+		}
+		if output != first {
+			t.Fatalf("run %d diverged from run 0's output -- ready view is not byte-identical across repeated runs of the same event set:\nrun 0:\n%s\nrun %d:\n%s", i, first, i, output)
+		}
+	}
+}

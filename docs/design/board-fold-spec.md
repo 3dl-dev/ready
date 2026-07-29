@@ -1027,23 +1027,25 @@ browser client that builds the filter once and re-applies it) will silently use 
 stale clock. **Question:** move the clock read inside the closure, or document the
 construct-per-use contract as normative?
 
-**§15.7 `sortByPriorityETA` is not a total order. RESOLVED (ready-e88 rework).**
-§13.14. The comparator used to tie on equal `(priority, ETA)`, so two items
-sharing both (the common case for un-triaged items, both empty) rendered in
-either order across runs — the input slice comes from nondeterministic map
-iteration (`cmd/rd/nostr.go:921-925`), and this was observed directly: an
-adversary ran the same locally-built binary twice against the same live
-board and got differing piped bare-ID order and 6 differing `--json` fields
-(nested `blocks` array order). Fixed by adding an ID tie-break — mirroring
-`rd list`'s existing tie-break on ID (`cmd/rd/list.go:103-110`) — and
-switching `sort.Slice` to `sort.SliceStable` as defense-in-depth on top of it
-(`sortByPriorityETA`, `cmd/rd/ready.go:276-288`). With a full total
-order over `(priority, ETA, ID)`, output order is now fully determined by the
-item set, not by input order, closing the "MUST NOT assert on ordering"
-caveat below — a conformance suite MAY now assert on `rd ready` ordering.
-Covered by `TestSortByPriorityETA_DeterministicTiebreak`
-(`cmd/rd/ready_runE_test.go`), which sorts the same item set from two
-different starting orders and asserts identical output order both times.
+**§15.7 — RESOLVED AND REMOVED (ready-f5f, completing the ready-e88 rework).**
+This entry is no longer an open question: `sortByPriorityETA` is now a total
+order over `(priority, ETA, ID)`, so `rd ready`/`work`/`pending`/`focus`/`gates`
+output is fully determined by the item set, never by the nondeterministic map
+iteration that fed it (`cmd/rd/nostr.go:951-954`). The normative statement of
+the tiebreak — the numbered clause required in its place — lives in **§13.14**,
+not here; this stub stays in place, per this document's own §27.1 precedent, so
+that every existing `§15.7` citation elsewhere (`internal/foldvectors`,
+`cmd/rd/ready.go`, this file's own §13.14 and §1) still resolves to the right
+place rather than a renumbered section. Coverage: `sortByPriorityETA` is a
+strict total order and independent of input order
+(`TestSortByPriorityETA_DeterministicTiebreak`,
+`cmd/rd/ready_runE_test.go`); the real end-to-end pipeline (nostr log read →
+`ProjectItems` fold → sort → JSON encode) is byte-identical across 25 repeated
+runs of the same event set
+(`TestReadyCmd_RunE_ByteIdenticalAcrossNRuns`, `cmd/rd/ready_runE_test.go`).
+**Consequence: `internal/foldvectors` (ready-a13a) may now assert view ORDER
+instead of membership-as-a-set** — the "MUST NOT assert on ordering" caveat
+those vectors were annotated with is lifted as of this entry closing.
 
 **§15.8 The frozen envelope spec's line citations have drifted.** Frozen §1 cites
 `BuildCardEvent` at `pkg/sync/nostrwire.go:237-310` and §2 cites
