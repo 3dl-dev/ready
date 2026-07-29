@@ -46,6 +46,7 @@ import {
   type RelayStatusEvent,
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
+import { dedupeExact } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard } from "./lib/boarddiscovery";
 import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
@@ -103,18 +104,20 @@ export const defaultDeps: BoardDeps = {
  */
 const AUTHORITY_KINDS = [KIND_BOARD, KIND_ROLE_GRANT];
 
-/** dedupeById merges event lists from separate REQs into one snapshot. The
+/** dedupeSnapshot merges event lists from separate REQs into one snapshot. The
  * single-board path (ready-5c5) needs two REQs — the two authority kinds hang
  * off different tags — and a relay may legitimately serve the same event to
  * both, so the snapshot handed to discoverOwnerBoards / deriveBoardKeyring is
  * de-duplicated first: a grant replayed twice would otherwise be replayed twice
- * by deriveLevels. */
-function dedupeById(events: NostrEvent[]): NostrEvent[] {
-  const byId = new Map<string, NostrEvent>();
-  for (const e of events) {
-    if (e && typeof e.id === "string") byId.set(e.id, e);
-  }
-  return Array.from(byId.values());
+ * by deriveLevels.
+ *
+ * ready-dd5: it dedups on the FULL event content, never on the self-declared
+ * id, because nothing here has verified a signature yet. Keying on the id let a
+ * forgery reusing a genuine id evict the genuine event before any consumer
+ * (discoverOwnerBoards, deriveBoardKeyring, projectItems — all of which DO
+ * verify) ever saw it. */
+function dedupeSnapshot(events: NostrEvent[]): NostrEvent[] {
+  return dedupeExact(events);
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -503,7 +506,7 @@ export async function afterLogin(
         // "a" is the board coordinate ON each 39301 grant.
         deps.fetchEvents(relays, { kinds: [KIND_ROLE_GRANT], ["#a"]: [fragment.board] }, { onStatus }),
       ]);
-      authorityEvents = dedupeById([...boardDefs, ...boardGrants]);
+      authorityEvents = dedupeSnapshot([...boardDefs, ...boardGrants]);
       boards = discoverOwnerBoards(authorityEvents, [parsedCoord.owner], parsedCoord.boardD);
     } else if (fragment.kind === "portfolio") {
       // ready-4d9. The WHOLE portfolio: no boardD filter, so discovery returns
