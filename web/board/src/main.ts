@@ -417,6 +417,30 @@ function unservedBoardsNotice(keys: PortfolioKeys | undefined, boards: Discovere
   );
 }
 
+/**
+ * droppedRelaysNotice names relay= entries fragment.ts rejected before this
+ * page ever tried them (ready-280). Those entries never reach fetchEvents at
+ * all — they are not a connection that failed, they are a scheme this
+ * page's origin cannot open (ws:// from https, or any non-wss:// scheme),
+ * so silence here would look like the relay just never answered rather than
+ * "this link is carrying a dead entry, minted before ready-634's mint-side
+ * filter, or crafted." Reported instead of silently dropped, per the same
+ * rule unservedBoardsNotice above already follows for a different gap.
+ *
+ * Returns "" when nothing was dropped, so the common case (every relay= entry
+ * already wss://) adds no paragraph.
+ */
+function droppedRelaysNotice(fragment: ParsedFragment): string {
+  if (fragment.kind !== "board" && fragment.kind !== "portfolio") return "";
+  const dropped = fragment.droppedRelays;
+  if (!dropped || dropped.length === 0) return "";
+  return (
+    `This link's relays= parameter named ${dropped.length} relay(s) this page could not open and never tried: ${dropped.join(", ")}. ` +
+    `A browser on a secure page cannot open a ws:// (non-TLS) socket — that is not a permission or reachability problem, it is a rule the browser enforces with no override. ` +
+    `The board opens using its other relay(s), if any, or its own configured default when the whole list was unusable.`
+  );
+}
+
 function safeEncodeNpub(pubkeyHex: string): string {
   try {
     return encodeNpub(pubkeyHex);
@@ -530,7 +554,11 @@ export async function afterLogin(
     );
     connecting.remove();
 
-    const notice = [confidential ? confidentialNotice(items, boards.length) : "", unservedBoardsNotice(linkKeys, boards)]
+    const notice = [
+      confidential ? confidentialNotice(items, boards.length) : "",
+      unservedBoardsNotice(linkKeys, boards),
+      droppedRelaysNotice(fragment),
+    ]
       .filter((s) => s !== "")
       .join(" ");
 
