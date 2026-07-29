@@ -578,6 +578,54 @@ func TestDist_BuildStampReachesBundle(t *testing.T) {
 	}
 }
 
+// TestDist_NoRawSecretKeyCryptoInBundle proves — against the REAL production
+// dist/, not a symbol-grep of a stale local build — that no code taking a raw
+// secp256k1 secret-key scalar (src/lib/nip44.ts, and its KAT-validated test
+// double src/lib/nip44ref.ts) reaches the shipped bundle. That is the
+// property "no secret material passes through this code in the shipped
+// bundle" actually needs: the page must only ever hand a NIP-07 extension's
+// own window.nostr.nip44 namespace a request, never derive a conversation key
+// from a secret key itself (see nip07.ts's header and keyunwrap.ts).
+//
+// ready-506: an earlier review asserted this by grepping
+// web/board/dist/assets/index-*.js — but `git ls-files web/board/dist` is
+// empty, dist/ is untracked, so that grep proved a property of whatever the
+// reviewer happened to have built locally, not of what ships. This test
+// builds the real dist/ itself (buildDist, same as every other test in this
+// file) so the assertion is reproducible in CI and cannot rest on a stale or
+// absent local artifact.
+//
+// The marker is the literal salt string "nip44-v2" (src/lib/nip44.ts and
+// src/lib/nip44ref.ts both compute
+// CONV_SALT = new TextEncoder().encode("nip44-v2") as the first step of their
+// conversation-key derivation). A string literal survives minification
+// unrenamed, unlike a function or variable name, so grepping for it is not
+// defeated by esbuild's identifier mangling the way grepping for
+// "ecdhRawX"/"conversationKey" would be. If this ever starts failing because
+// the salt moved to a shared source-level constant reused by something that
+// SHOULD ship, that is a real finding, not a reason to delete the test.
+func TestDist_NoRawSecretKeyCryptoInBundle(t *testing.T) {
+	dist := buildDist(t)
+	assetsDir := filepath.Join(dist, "assets")
+	entries, err := os.ReadDir(assetsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", assetsDir, err)
+	}
+	const marker = "nip44-v2"
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".js" {
+			continue
+		}
+		b, rerr := os.ReadFile(filepath.Join(assetsDir, e.Name()))
+		if rerr != nil {
+			t.Fatalf("read %s: %v", e.Name(), rerr)
+		}
+		if strings.Contains(string(b), marker) {
+			t.Fatalf("%s: contains %q — raw-secret-key NIP-44 derivation code (nip44.ts or nip44ref.ts) reached the shipped bundle", e.Name(), marker)
+		}
+	}
+}
+
 // assertSameOriginAttrs proves every <script src="..."> / <link href="...">
 // in the built HTML resolves same-origin: either root-relative
 // ("/board/...", required by vite.config.ts's base: "/board/" so assets
