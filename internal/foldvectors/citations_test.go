@@ -699,9 +699,9 @@ var citationExceptions = map[string]string{
 	"grantTrusts|pkg/sync/nostrproject.go|235@decl135": "§3.4/§25.4: CALL site inside " +
 		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:235-237) and " +
 		"§25.4's restatement); grantTrusts itself is declared at :135",
-	"newerGrant|pkg/sync/rolegrant.go|525@decl643": "§4.4: CALL site — the ascending sort " +
-		"is expressed as `newerGrant(grants[j], grants[i])` (:487-489); newerGrant itself " +
-		"is declared at :605",
+	"newerGrant|pkg/sync/rolegrant.go|551@decl669": "§4.4: CALL site — the ascending sort " +
+		"is expressed as `newerGrant(grants[j], grants[i])` (:550-552); newerGrant itself " +
+		"is declared at :669 (shifted +26 by ready-55f's per-claim addressable slot)",
 	"FocusFilter|pkg/views/views.go|47@decl185": "§13.2: CALL site inside Named's " +
 		"ViewFocus case (`return FocusFilter(\"\")`, :47); FocusFilter itself is " +
 		"declared at :185",

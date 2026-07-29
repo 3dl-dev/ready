@@ -227,7 +227,7 @@ func TestTwoIdentityConfidentialCLI(t *testing.T) {
 	memberCf := t.TempDir()
 
 	// Owner grants the member read access (wraps the CEK into the signed grant).
-	if err := publishRoleGrant(memberPub, rdSync.RoleContributor, "", 0, ""); err != nil {
+	if _, err := publishRoleGrant(memberPub, rdSync.RoleContributor, "", 0, ""); err != nil {
 		t.Fatalf("owner grant: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestConfidentialBootstrapWrapsExistingMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("member key: %v", err)
 	}
-	if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
+	if _, err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
 		t.Fatalf("grant member on public board: %v", err)
 	}
 

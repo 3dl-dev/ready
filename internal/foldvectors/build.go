@@ -119,6 +119,7 @@ func Build() (*File, error) {
 		b.vTrustGateDisabledAdmitsAnyone,
 		b.vBoardPinRejectsForeignBoard,
 		b.vGrantRevocationPointInTime,
+		b.vClaimSingleUseAcrossRevoke,
 		b.vConfidentialGrantedReader,
 		b.vConfidentialWrongCEK,
 		b.vConfidentialNoDecryptor,

@@ -138,7 +138,7 @@ func BoardRelayDelta(ctx context.Context, relayURL string, localEvents []*nostr.
 
 func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event, boardCoord string) (BoardRelayAudit, []*nostr.Event, error) {
 	audit := BoardRelayAudit{Relay: relayURL, BoardCoord: boardCoord}
-	owner, boardD, err := splitBoardCoord(boardCoord)
+	_, boardD, err := splitBoardCoord(boardCoord)
 	if err != nil {
 		return audit, nil, err
 	}
@@ -178,12 +178,16 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 	if err != nil {
 		return audit, nil, err
 	}
-	defEvents, err := nostr.FetchMany(ctx, relayURL, map[string]any{
-		"kinds":   []int{KindBoard},
-		"authors": []string{owner},
-		"#d":      []string{boardD},
-		"limit":   1,
-	})
+	// The board DEFINITION is fetched by kind + "#d" only — NEVER "authors".
+	// See ready-d84: the deployed relay's author index silently under-returns
+	// (galtrader 108/371 by authors vs 371/371 by #a; a grants query returning 8
+	// of 11), and a kind-30301 event carries no self-referential "a" tag, so it
+	// is unreachable by the #a walk above. Dropping `authors` widens the match to
+	// every author using this exact "d" string, which fetchPaged's client-side
+	// EventBelongsToBoard check below narrows back to this owner's coordinate —
+	// the same client-side-check-instead-of-relay-index pattern ready-5c5 used
+	// for board discovery (merged 665218c).
+	defEvents, err := fetchBoardDefinitionFromRelay(ctx, relayURL, boardD)
 	if err != nil {
 		return audit, nil, fmt.Errorf("sync: audit board-definition read from %s: %w", relayURL, err)
 	}
@@ -288,9 +292,16 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 	return audit, delta, nil
 }
 
-// fetchBoardEventsFromRelay walks every event tagged with boardCoord off one
-// relay, paginating backwards with `until` because the relay caps a single REQ
-// at auditPageLimit events and REFUSES (rather than truncates) a larger limit.
+// fetchPaged walks baseFilter off one relay, paginating backwards with `until`
+// because the relay caps a single REQ at auditPageLimit events and REFUSES
+// (rather than truncates) a larger limit. baseFilter must not set "limit" or
+// "until" itself — fetchPaged owns both. label is used only in error text.
+//
+// This is the ONE paginated-read primitive the whole audit uses, for BOTH the
+// membership walk (`#a` filter) and the board-definition walk (`kind`+`#d`
+// filter, ready-d84) — neither may be an unpaged, author-scoped REQ. See
+// ready-d84: a single unpaged REQ proves nothing, and an `authors` filter is
+// the one shape the deployed relay is measured to silently under-return on.
 //
 // `until` is inclusive in NIP-01, so each page re-serves the previous page's
 // oldest second; dedup by id absorbs that.
@@ -310,18 +321,22 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 // ERROR, never as a short result — a read-back that looks complete but is not
 // would turn a real gap into a false "match", the worst outcome an audit can
 // produce.
-func fetchBoardEventsFromRelay(ctx context.Context, relayURL, boardCoord string) ([]*nostr.Event, error) {
+func fetchPaged(ctx context.Context, relayURL string, baseFilter map[string]any, label string) ([]*nostr.Event, error) {
 	seen := map[string]bool{}
 	var out []*nostr.Event
 	var until int64
 	for page := 0; page < maxAuditPages; page++ {
-		filter := map[string]any{"#a": []string{boardCoord}, "limit": auditPageLimit}
+		filter := make(map[string]any, len(baseFilter)+2)
+		for k, v := range baseFilter {
+			filter[k] = v
+		}
+		filter["limit"] = auditPageLimit
 		if until > 0 {
 			filter["until"] = until
 		}
 		evs, err := nostr.FetchMany(ctx, relayURL, filter)
 		if err != nil {
-			return out, fmt.Errorf("sync: audit read page %d of %s from %s: %w", page, boardCoord, relayURL, err)
+			return out, fmt.Errorf("sync: audit read page %d of %s from %s: %w", page, label, relayURL, err)
 		}
 		added := 0
 		oldest := int64(0)
@@ -344,11 +359,31 @@ func fetchBoardEventsFromRelay(ctx context.Context, relayURL, boardCoord string)
 			return out, nil
 		}
 		if added == 0 {
-			return out, fmt.Errorf("sync: audit read of %s from %s stalled: a full page of %d events shares created_at %d, so `until` cannot page further — the read-back would be silently incomplete", boardCoord, relayURL, len(evs), until)
+			return out, fmt.Errorf("sync: audit read of %s from %s stalled: a full page of %d events shares created_at %d, so `until` cannot page further — the read-back would be silently incomplete", label, relayURL, len(evs), until)
 		}
 		until = oldest
 	}
-	return out, fmt.Errorf("sync: audit read of %s from %s exceeded %d pages — refusing to report a truncated read-back", boardCoord, relayURL, maxAuditPages)
+	return out, fmt.Errorf("sync: audit read of %s from %s exceeded %d pages — refusing to report a truncated read-back", label, relayURL, maxAuditPages)
+}
+
+// fetchBoardEventsFromRelay walks every event tagged with boardCoord off one
+// relay via its `#a` coordinate tag. See fetchPaged for the pagination
+// contract this relies on.
+func fetchBoardEventsFromRelay(ctx context.Context, relayURL, boardCoord string) ([]*nostr.Event, error) {
+	return fetchPaged(ctx, relayURL, map[string]any{"#a": []string{boardCoord}}, boardCoord)
+}
+
+// fetchBoardDefinitionFromRelay walks every kind-30301 event carrying #d=boardD
+// off one relay. It deliberately filters on kind + "#d" ONLY — no "authors" —
+// because a kind-30301 event carries no self-referential "a" tag (so it is
+// unreachable via fetchBoardEventsFromRelay's #a walk) and the deployed relay's
+// author index is measured to silently under-return (ready-d84, ready-5c5,
+// ready-0ab). The caller narrows the result to the exact owner by checking
+// EventBelongsToBoard against the target coordinate, the same client-side
+// check ready-5c5 used for board discovery in place of the relay's author
+// index.
+func fetchBoardDefinitionFromRelay(ctx context.Context, relayURL, boardD string) ([]*nostr.Event, error) {
+	return fetchPaged(ctx, relayURL, map[string]any{"kinds": []int{KindBoard}, "#d": []string{boardD}}, "board definition "+boardD)
 }
 
 // EventReadBack is the result of reading a SPECIFIC set of already-published

@@ -90,9 +90,20 @@ export function myWorkFilter(identity: string): Filter {
   return myWorkFilterSet(identitySet(identity));
 }
 
-/** gatesFilter mirrors views.go's GatesFilter (spec §13.10). */
+/**
+ * gatesFilter mirrors views.go's GatesFilter (spec §13.10).
+ *
+ * ready-e0e: blocked is admitted alongside waiting. A gate raised on a BLOCKED
+ * item was recorded but invisible here and in `rd gates`, and blocked-and-gated
+ * is the normal case for a design gate — the ruling is usually what unblocks the
+ * chain. Keep this in lockstep with GatesFilter; the fold.vectors.json
+ * conformance vector gate_fields_persist_under_blocking pins the parity.
+ */
 export function gatesFilter(): Filter {
-  return (item) => item.status === StatusWaiting && item.waiting_type === "gate" && !!item.gate_msg_id;
+  return (item) =>
+    (item.status === StatusWaiting || item.status === StatusBlocked) &&
+    item.waiting_type === "gate" &&
+    !!item.gate_msg_id;
 }
 
 /** focusFilter mirrors views.go's FocusFilter (spec §13.11). */

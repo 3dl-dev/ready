@@ -96,7 +96,7 @@ func TestRotationSurvivesRelayReplacement(t *testing.T) {
 	}
 
 	member, _, _ := mintIdentity(t)
-	if err := publishRoleGrant(member.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
+	if _, err := publishRoleGrant(member.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
 		t.Fatalf("grant member: %v", err)
 	}
 
@@ -188,10 +188,10 @@ func TestRevokeStillSupersedesCEKGrantAcrossSlots(t *testing.T) {
 
 	member, _, _ := mintIdentity(t)
 	pub := member.PubKeyHex()
-	if err := publishRoleGrant(pub, rdSync.RoleContributor, "member", 0, ""); err != nil {
+	if _, err := publishRoleGrant(pub, rdSync.RoleContributor, "member", 0, ""); err != nil {
 		t.Fatalf("grant member: %v", err)
 	}
-	if err := publishRoleGrant(pub, rdSync.RoleRevoked, "revoked", 0, ""); err != nil {
+	if _, err := publishRoleGrant(pub, rdSync.RoleRevoked, "revoked", 0, ""); err != nil {
 		t.Fatalf("revoke member: %v", err)
 	}
 

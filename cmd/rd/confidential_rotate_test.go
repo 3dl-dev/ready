@@ -281,7 +281,7 @@ func TestConfidentialRotateDoesNotTouchHistoryAtRest(t *testing.T) {
 	}
 	// A member exists, so the rotation publishes member wraps too, not just a self-grant.
 	mk, _, _ := mintIdentity(t)
-	if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "member-a", 0, ""); err != nil {
+	if _, err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "member-a", 0, ""); err != nil {
 		t.Fatalf("grant member: %v", err)
 	}
 
@@ -340,7 +340,7 @@ func TestConfidentialRotateWithholdsFromEVERYRevokedKey(t *testing.T) {
 	m1, m1Home, m1Cf := mintIdentity(t)
 	m2, m2Home, m2Cf := mintIdentity(t)
 	for _, m := range []*nostr.Key{m1, m2} {
-		if err := publishRoleGrant(m.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
+		if _, err := publishRoleGrant(m.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
 			t.Fatalf("grant %s: %v", shortKey(m.PubKeyHex()), err)
 		}
 	}
@@ -461,7 +461,7 @@ func TestConfidentialRotateTwiceStrandsNoOne(t *testing.T) {
 	}
 
 	mk, mHome, mCf := mintIdentity(t)
-	if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
+	if _, err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "member", 0, ""); err != nil {
 		t.Fatalf("grant member: %v", err)
 	}
 
@@ -521,7 +521,7 @@ func TestConfidentialRotatePreservesRoleAndLabel(t *testing.T) {
 	}
 	mk, _, _ := mintIdentity(t)
 	const label = "baron's laptop"
-	if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleMaintainer, label, 0, ""); err != nil {
+	if _, err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleMaintainer, label, 0, ""); err != nil {
 		t.Fatalf("grant maintainer: %v", err)
 	}
 
@@ -598,7 +598,7 @@ func TestConfidentialRotateRefusals(t *testing.T) {
 			t.Fatalf("bootstrap write: %v", err)
 		}
 		mk, mHome, mCf := mintIdentity(t)
-		if err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
+		if _, err := publishRoleGrant(mk.PubKeyHex(), rdSync.RoleContributor, "", 0, ""); err != nil {
 			t.Fatalf("grant member: %v", err)
 		}
 		epochsBefore := keyringFor(t, dir, mk, owner, boardD).Epochs(coord)
