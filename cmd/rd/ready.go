@@ -14,6 +14,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// isTTYStdout reports whether stdout is a terminal. Indirected through a var
+// (rather than calling isatty directly at each call site) for exactly one
+// reason: testability. go test's own stdout is never a real terminal --
+// piped through a test runner or a CI log, it always reports non-TTY -- so
+// without this indirection, readyCmd.RunE's TTY-only branches (the
+// printReadyTree/printItemTable choice, and the pipe-friendly bare-ID
+// fallback) could never be driven through RunE in-process at all; a test
+// could only ever exercise the non-TTY path. Tests override this var to
+// force either branch deterministically (see ready_tree_test.go).
+var isTTYStdout = func() bool {
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
 var readyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Show items needing attention now",
@@ -167,7 +180,7 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 			}
 
 			if len(items) == 0 {
-				if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+				if isTTYStdout() {
 					fmt.Println("nothing ready")
 				}
 				return nil
@@ -175,7 +188,7 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 
 			// Pipe-friendly output: print bare IDs when stdout is not a TTY so
 			// scripts can do: for id in $(rd ready); do ...; done
-			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+			if isTTYStdout() {
 				// Owner ruling (ready-e88, 2026-07-29): the default human-facing
 				// `rd ready` view groups items under their epic (topmost parent_id
 				// ancestor) and indents children, with the pre-existing flat table
@@ -240,16 +253,37 @@ func filterByProject(items []*state.Item, project string) []*state.Item {
 	return out
 }
 
-// sortByPriorityETA sorts items by priority (ascending) then ETA (ascending).
-// Used by ready, work, pending, focus, and gates views.
+// sortByPriorityETA sorts items by priority (ascending), then ETA (ascending),
+// then ID (ascending) as a final tiebreak. Used by ready, work, pending,
+// focus, and gates views.
+//
+// The ID tiebreak (ready-e88 rework, challenge 5) makes this a strict total
+// order over the input, and therefore deterministic regardless of the
+// slice's incoming order -- which matters because callers build that slice
+// from a nostr projection whose map iteration is itself nondeterministic
+// (board-fold-spec.md §15.7). Before this fix, two items sharing a priority
+// and ETA (or both empty, the common case for un-triaged items) sorted in
+// whatever order they happened to arrive in, so `rd ready`'s piped/--json
+// output could reorder between two runs of the SAME binary over the SAME
+// board with no state change in between -- observed directly: two live-board
+// runs differed in bare-ID order and in 6 --json fields (nested `blocks`
+// array order, itself sorted by iteration of a different unordered
+// collection upstream). sort.Slice's comparator was already correct given a
+// total order; it only lacked one (nothing broke the tie past ETA).
+// Switching to SliceStable is defense-in-depth on top of the ID tiebreak --
+// once the tiebreak makes every comparison unambiguous, input order can no
+// longer influence output order at all.
 func sortByPriorityETA(items []*state.Item) {
-	sort.Slice(items, func(i, j int) bool {
+	sort.SliceStable(items, func(i, j int) bool {
 		pi := priorityOrder(items[i].Priority)
 		pj := priorityOrder(items[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
-		return items[i].ETA < items[j].ETA
+		if items[i].ETA != items[j].ETA {
+			return items[i].ETA < items[j].ETA
+		}
+		return items[i].ID < items[j].ID
 	})
 }
 
@@ -326,6 +360,28 @@ func outputItemsJSON(items []*state.Item) error {
 // Capping is what makes an epic with 20+ ready children collapse to a
 // handful of lines instead of 20+.
 const maxChildrenPerEpic = 5
+
+// headerThreshold is the smallest ready-children-under-an-epic count for
+// which printing an epic header is not itself a regression against the flat
+// list (ready-e88 rework, challenge 4 -- "small epics render longer than
+// flat"). Printing a header costs 1 line; the cap+"more" line costs another
+// 1 line once the group exceeds maxChildrenPerEpic. So for a group of N
+// ready children the header form costs:
+//
+//	N <= maxChildrenPerEpic:  1 (header) + N                      = N+1
+//	N >  maxChildrenPerEpic:  1 (header) + maxChildrenPerEpic + 1 = maxChildrenPerEpic+2
+//
+// The header form only breaks even with (or beats) the flat N-line cost
+// once maxChildrenPerEpic+2 <= N, i.e. N >= maxChildrenPerEpic+2 -- one MORE
+// than "exceeds the cap" would naively suggest, because collapsing exactly
+// one item into a "+1 more" line still costs a line to say so. Any group at
+// or under this threshold is inlined instead (see printReadyTree): its rows
+// print with no header at all, so its contribution to total line count is
+// exactly what the flat list would have used for the same items -- never
+// more. This is what closes the "many small epics" gap: a board of many
+// epics each with 2-3 ready children renders identically to the flat list
+// instead of costing +1 line per epic.
+const headerThreshold = maxChildrenPerEpic + 2
 
 // readyGroup is one epic's worth of ready items in the indented tree: the
 // root item (the topmost parent_id ancestor reachable from any member) and
@@ -405,24 +461,47 @@ func formatItemRow(item *state.Item, indent string) string {
 // printReadyTree renders ready items grouped under their epic, indented,
 // each epic capped at maxChildrenPerEpic children with a "N more" line past
 // the cap -- see maxChildrenPerEpic's doc for why the cap (not the grouping
-// or the indentation) is what actually shortens the output.
+// or the indentation) is what actually shortens the output, and
+// headerThreshold's doc for why small groups skip the header entirely.
 //
-// A group whose only member IS its own root -- a true orphan (no parent_id
-// at all) or a dangling-pointer fallback, both handled identically by
-// findReadyRoot -- has nothing to nest it under, so it renders as one plain
-// row with no epic header (a header would just repeat the same line).
+// A ready item's own root can itself be ready (an unblocked epic that is
+// also directly workable -- ready-e88 rework, challenge 3), not just a
+// closed/blocked aggregator. displayChildren excludes the root from the
+// rows nested under its own header so it is never printed twice (once as
+// the header, again as a child row identical to it), and the "(N ready)"
+// header count reflects only the rows shown/collapsed below the header --
+// consistent with the meaning that count has always had for the ordinary
+// case where the root itself is never ready.
 func printReadyTree(items []*state.Item, allItems []*state.Item) {
 	byID := make(map[string]*state.Item, len(allItems))
 	for _, it := range allItems {
 		byID[it.ID] = it
 	}
 	for _, g := range buildReadyGroups(items, byID) {
-		if len(g.children) == 1 && g.children[0].ID == g.root.ID {
-			fmt.Println(formatItemRow(g.children[0], "  "))
+		displayChildren := make([]*state.Item, 0, len(g.children))
+		for _, c := range g.children {
+			if c.ID == g.root.ID {
+				continue
+			}
+			displayChildren = append(displayChildren, c)
+		}
+
+		// Inline (no epic header) whenever a header can't beat the flat list
+		// for this group's items: a true orphan / a ready root with no other
+		// ready children (displayChildren empty -- the group is just the root
+		// itself), or any group at or under headerThreshold (challenge 4).
+		// Printing every item in g.children with no header/cap/more bookkeeping
+		// reproduces exactly what the flat list would have printed for this
+		// same item set -- so this branch can never cost more lines than flat.
+		if len(displayChildren) < headerThreshold {
+			for _, c := range g.children {
+				fmt.Println(formatItemRow(c, "  "))
+			}
 			continue
 		}
-		fmt.Printf("%s  (%d ready)  %s\n", g.root.ID, len(g.children), g.root.Title)
-		shown := g.children
+
+		fmt.Printf("%s  (%d ready)  %s\n", g.root.ID, len(displayChildren), g.root.Title)
+		shown := displayChildren
 		more := 0
 		if len(shown) > maxChildrenPerEpic {
 			more = len(shown) - maxChildrenPerEpic
