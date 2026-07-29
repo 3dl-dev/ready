@@ -8,6 +8,24 @@ on:
       - 'site/**'
       - 'web/**'
       - '.github/workflows/pages.yml'
+  workflow_run:
+    # ready-3bd (WAVE 1 fix): `release: types: [published]` never fires.
+    # release.yml's "Create GitHub Release" step uses softprops/action-gh-release@v3
+    # with no token override, so the release is authored by the default
+    # GITHUB_TOKEN — and GitHub does not start new workflow runs from events
+    # authored by GITHUB_TOKEN (this is a hard platform rule, not a config
+    # knob). Verified empirically: `gh api repos/3dl-dev/ready/releases` shows
+    # v0.17.0/v0.16.2/v0.16.1 all authored by github-actions[bot], and
+    # `gh api repos/3dl-dev/ready/actions/runs` has never recorded a
+    # release-triggered run (only push/pull_request/dynamic). workflow_run
+    # has no such restriction — it fires from the *Release* workflow run's
+    # completion regardless of what token created the artifacts inside it,
+    # and needs no new secret/PAT. A repository_dispatch/workflow_dispatch
+    # call from inside release.yml would also work but needs release.yml to
+    # carry a token with workflow-trigger rights (a PAT, since GITHUB_TOKEN
+    # can't self-trigger either) — workflow_run avoids that entirely.
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +39,12 @@ concurrency:
 
 jobs:
   deploy:
+    # ready-3bd: workflow_run fires on EVERY completion of the Release
+    # workflow, including failed ones (e.g. a build/sign step blew up before
+    # any release was created). Only redeploy when it actually succeeded;
+    # push/workflow_dispatch triggers carry no workflow_run event at all, so
+    # they're unaffected by this guard.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -28,6 +52,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # fetch-depth: 0 (full history + tags) so "Stamp site version"
+          # below can resolve the latest v* tag with `git describe`.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -54,6 +82,22 @@ jobs:
         # scripts/assemble-pages.sh so it is exercised by
         # scripts/assemble_pages_test.go, not just this YAML comment.
         run: scripts/assemble-pages.sh site web/board/dist _site
+
+      - name: Stamp site version from latest release tag
+        # ready-3bd: derives the version at deploy time instead of a
+        # release-workflow commit to main (which branch protection
+        # rejects). Writes only into the built _site/ artifact — never
+        # back into the repo — so the softwareVersion shown on the live
+        # site can never drift from the actual latest release tag.
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          if [ -z "${VERSION}" ]; then
+            echo "no v* tag reachable from HEAD; leaving _site/index.html softwareVersion as committed" >&2
+          else
+            VERSION_BARE="${VERSION#v}"
+            sed -i "s/\"softwareVersion\": \"[^\"]*\"/\"softwareVersion\": \"${VERSION_BARE}\"/" _site/index.html
+            echo "stamped softwareVersion=${VERSION_BARE} (from tag ${VERSION})"
+          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

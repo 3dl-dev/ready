@@ -104,6 +104,167 @@ func TestBoardCIWorkflow_GatesPullRequests(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflow_DoesNotPushToMain proves release.yml never commits or
+// pushes back into the repo (ready-3bd). It used to have an `update-site`
+// job that pushed a version-bump commit straight to main; branch
+// protection (ready-fe2: required 'test' check, no direct pushes)
+// correctly rejected that push, so every release run reported FAILURE
+// even when the actual release (binaries, checksums, signatures) was
+// fine. The fix removes the write entirely rather than authorizing it, so
+// this test guards against that job (or an equivalent `git push`) coming
+// back.
+func TestReleaseWorkflow_DoesNotPushToMain(t *testing.T) {
+	raw := readWorkflow(t, "release.yml")
+
+	if strings.Contains(raw, "git push") {
+		t.Fatalf("release.yml runs `git push` — this is what branch protection (ready-fe2) rejects and caused every release run to report FAILURE (ready-3bd)")
+	}
+	wf := parseWorkflow(t, raw)
+	if _, ok := wf.Jobs["update-site"]; ok {
+		t.Fatalf("release.yml still has an update-site job that writes the version bump back to main")
+	}
+}
+
+// TestPagesWorkflow_StampsVersionFromLatestTag proves the Pages deploy
+// derives site/index.html's softwareVersion from the latest release tag at
+// BUILD time (ready-3bd fix (c)/(d)) rather than release.yml committing a
+// version string to main. The stamp must:
+//   - run AFTER assemble-pages.sh (so it edits the assembled _site/ output,
+//     not the pre-assembly site/ source — editing the source would be
+//     silently discarded by the next assemble run and never verified here)
+//   - run BEFORE upload-pages-artifact (so the stamped value actually ships)
+//   - derive the version via `git describe --tags`, not a hardcoded/copied
+//     string (a derived version cannot drift from the actual latest
+//     release; a hardcoded one reintroduces the drift risk the fix exists
+//     to remove)
+//   - never commit or push (the whole point is to stop writing to the repo)
+func TestPagesWorkflow_StampsVersionFromLatestTag(t *testing.T) {
+	raw := readWorkflow(t, "pages.yml")
+	wf := parseWorkflow(t, raw)
+
+	deploy, ok := wf.Jobs["deploy"]
+	if !ok {
+		t.Fatalf("pages.yml has no `deploy` job")
+	}
+
+	assembleIdx, stampIdx, uploadIdx := -1, -1, -1
+	for i, step := range deploy.Steps {
+		switch {
+		case strings.Contains(step.Run, "scripts/assemble-pages.sh"):
+			assembleIdx = i
+		case strings.Contains(step.Run, "softwareVersion"):
+			stampIdx = i
+		}
+		if step.Uses != "" && strings.HasPrefix(step.Uses, "actions/upload-pages-artifact") {
+			uploadIdx = i
+		}
+	}
+
+	if stampIdx == -1 {
+		t.Fatalf("deploy job has no version-stamping step (expected a step editing softwareVersion)")
+	}
+	stampRun := deploy.Steps[stampIdx].Run
+	if strings.Contains(stampRun, "git commit") || strings.Contains(stampRun, "git push") {
+		t.Fatalf("pages.yml version-stamp step commits/pushes — it must only edit the built _site/ artifact, never write back to the repo (ready-3bd)")
+	}
+	if !strings.Contains(stampRun, "git describe") {
+		t.Fatalf("pages.yml version-stamp step does not derive the version via `git describe` — a non-derived version can drift from the actual latest release")
+	}
+	if !strings.Contains(stampRun, "_site/index.html") {
+		t.Fatalf("pages.yml version-stamp step does not target the assembled _site/index.html")
+	}
+
+	if assembleIdx == -1 {
+		t.Fatalf("deploy job has no assemble-pages.sh step")
+	}
+	if stampIdx < assembleIdx {
+		t.Fatalf("version-stamp step (index %d) runs before assemble-pages.sh (index %d) — it would edit the pre-assembly site/ source, which the next assemble step overwrites unstamped", stampIdx, assembleIdx)
+	}
+	if uploadIdx == -1 {
+		t.Fatalf("deploy job has no upload-pages-artifact step")
+	}
+	if stampIdx > uploadIdx {
+		t.Fatalf("version-stamp step (index %d) runs after upload-pages-artifact (index %d) — the stamped version never reaches the deployed site", stampIdx, uploadIdx)
+	}
+
+	if !strings.Contains(raw, "fetch-depth: 0") {
+		t.Fatalf("pages.yml checkout has no fetch-depth: 0 — `git describe --tags` needs full history and tags to find the latest release tag")
+	}
+}
+
+// TestPagesWorkflow_RedeploysAfterReleaseCompletes proves pages.yml
+// retriggers when the Release workflow finishes, using a trigger that
+// ACTUALLY fires under GITHUB_TOKEN semantics (ready-3bd WAVE 1 fix).
+//
+// A prior version of this fix used `on.release: types: [published]`, and a
+// prior version of THIS test only asserted that YAML key existed — which
+// stayed green even though the trigger can never fire in this repo.
+// release.yml's "Create GitHub Release" step (softprops/action-gh-release@v3)
+// runs with no token override, so the release is authored by the default
+// GITHUB_TOKEN, and GitHub does not start new workflow runs from events
+// authored by GITHUB_TOKEN — this is a hard platform restriction, not
+// something any YAML key on the `release` trigger can override. Proof (no
+// tag needed): `gh api repos/3dl-dev/ready/releases` shows v0.17.0/v0.16.2/
+// v0.16.1 all authored by github-actions[bot], and
+// `gh api repos/3dl-dev/ready/actions/runs` has never recorded a
+// release-triggered run in this repo (only push/pull_request/dynamic
+// events appear).
+//
+// `workflow_run` has no such restriction: it fires from the Release
+// workflow's own run completing, regardless of what token the *steps
+// inside that run* used to create the GitHub Release. So this test:
+//  1. asserts pages.yml is NOT relying on the `release` trigger anymore
+//     (closing off a regression back to the trap), and
+//  2. asserts it uses `workflow_run` scoped to the exact workflow name
+//     `Release` (must match release.yml's `name:` field, or the platform
+//     silently never fires it) with `types: [completed]` (the only type
+//     workflow_run supports — there is no "published" analog), and
+//  3. asserts the deploy job gates on `conclusion == 'success'` so a
+//     FAILED release build doesn't redeploy the site with a stale stamp
+//     over a false-green appearance.
+func TestPagesWorkflow_RedeploysAfterReleaseCompletes(t *testing.T) {
+	raw := readWorkflow(t, "pages.yml")
+	wf := parseWorkflow(t, raw)
+
+	if wf.On.Release != nil {
+		t.Fatalf("pages.yml still declares an `on.release` trigger (%+v) — this event is never delivered because release.yml creates releases with the default GITHUB_TOKEN, which cannot start new workflow runs (ready-3bd)", wf.On.Release)
+	}
+
+	if wf.On.WorkflowRun == nil {
+		t.Fatalf("pages.yml has no `on.workflow_run` trigger — nothing retriggers a Pages deploy after a release, so the stamped version goes stale until an unrelated site/web change lands (ready-3bd)")
+	}
+	releaseWorkflowName := readWorkflowName(t, "release.yml")
+	if !containsPath(wf.On.WorkflowRun.Workflows, releaseWorkflowName) {
+		t.Fatalf("pages.yml's workflow_run.workflows %v does not include %q (release.yml's actual `name:`) — a mismatched name means the trigger silently never fires", wf.On.WorkflowRun.Workflows, releaseWorkflowName)
+	}
+	if !containsPath(wf.On.WorkflowRun.Types, "completed") {
+		t.Fatalf("pages.yml's workflow_run trigger does not include types: [completed], got %v", wf.On.WorkflowRun.Types)
+	}
+
+	deploy, ok := wf.Jobs["deploy"]
+	if !ok {
+		t.Fatalf("pages.yml has no `deploy` job")
+	}
+	if !strings.Contains(deploy.If, "workflow_run") || !strings.Contains(deploy.If, "conclusion") || !strings.Contains(deploy.If, "success") {
+		t.Fatalf("deploy job's `if:` (%q) does not gate workflow_run redeploys on conclusion == 'success' — a failed Release run would still redeploy the site", deploy.If)
+	}
+}
+
+func readWorkflowName(t *testing.T, file string) string {
+	t.Helper()
+	raw := readWorkflow(t, file)
+	var meta struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("parse %s name: %v", file, err)
+	}
+	if meta.Name == "" {
+		t.Fatalf("%s has no top-level `name:`", file)
+	}
+	return meta.Name
+}
+
 func containsPath(paths []string, want string) bool {
 	for _, p := range paths {
 		if p == want {
@@ -122,6 +283,17 @@ type workflowFile struct {
 
 type workflowOn struct {
 	PullRequest *pullRequestTrigger `yaml:"pull_request"`
+	Release     *releaseTrigger     `yaml:"release"`
+	WorkflowRun *workflowRunTrigger `yaml:"workflow_run"`
+}
+
+type releaseTrigger struct {
+	Types []string `yaml:"types"`
+}
+
+type workflowRunTrigger struct {
+	Workflows []string `yaml:"workflows"`
+	Types     []string `yaml:"types"`
 }
 
 type pullRequestTrigger struct {
@@ -130,6 +302,7 @@ type pullRequestTrigger struct {
 }
 
 type workflowJob struct {
+	If    string         `yaml:"if"`
 	Steps []workflowStep `yaml:"steps"`
 }
 
