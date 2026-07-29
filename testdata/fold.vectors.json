@@ -2959,7 +2959,7 @@
         "8.4",
         "13.10"
       ],
-      "note": "The gated item also gains a live blocker. Status becomes `blocked` (the dep pass runs first and the gate promotion checks it), but gate/waiting_type/waiting_on/waiting_since/gate_msg_id all survive — the pending gate is still real. It drops out of the gates view because that predicate also requires status=waiting.",
+      "note": "The gated item also gains a live blocker. Status becomes `blocked` (the dep pass runs first and the gate promotion checks it), but gate/waiting_type/waiting_on/waiting_since/gate_msg_id all survive — the pending gate is still real. It STILL appears in the gates view (ready-e0e): blocked-and-gated is the ordinary case for a design gate, since the ruling is usually exactly what unblocks the chain, so GatesFilter accepts status=waiting OR status=blocked, not waiting alone.",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -3105,7 +3105,9 @@
           "focus": [
             "ready-v20a"
           ],
-          "gates": [],
+          "gates": [
+            "ready-v20b"
+          ],
           "my-work": [],
           "overdue": [],
           "pending": [
@@ -4377,7 +4379,7 @@
       "identity": "",
       "events": [
         {
-          "id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
+          "id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4427,11 +4429,11 @@
               "1"
             ]
           ],
-          "content": "Zf2ggd6/XlX2+WLTuu27BcSb5Fjx3z9AuW1EXayUpEqeHuUm+V5v3UYroaRXh3N/7cPV6Evff+owT/w0Hz9EhjotApf4zpWps446cwkhvgvRh720fM347ph3d+zV7LuWoQEFGflsJytM3xucEHK1zSlqCVSGl8m0vbwTT3v67aOo",
-          "sig": "6dcc149974a2de3f8f9b2ecb23165eb98ede9c833aac7f315afdd3f95649425532c28599e659a1aba39bf4f94a15e9adbf665ed128b169d2a969f69dcb72fee5"
+          "content": "tDxoqB3ImM5JvOb3etBkZ/hBVm7+9gexAs+LsV/49dNPTRPk8TIWvx7OYaZgREnhP3d14d8d/BtyaZRSV75oFTw6QXzdJU6YE3xzM8faPMQM86/1iQvhTix3CIEd2hiw2xne7HfH/063bad5kVBzRRa4GNSCa/Z7G20ga+jq39lD",
+          "sig": "41040ca5e4744ea8731202b7035a1abd23aa71953970ddc328858f50d464bd07d2ea32000d6dcff9e50fe9905af95bc45d67543396faf0694a822b4641608dcf"
         },
         {
-          "id": "9ec338c8a1a5aa3f632187350447a8c3c31bde50827d04c47bd3f6098ecbe3a0",
+          "id": "68e8fdf117de3bad83d9409a186f9a203a14b10a404a7a8eb68975d40347d63c",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4461,8 +4463,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "3r2AKs5pRQgd2LeqwLB3LC0DPDpfA8IBENiHfo1O5P4RXK3axEGmgIvwoOwYKqZ7iQNlao8S",
-          "sig": "1b4ae3fccfcb0fdd66f5f17d517df65f8e3cf605e46db0b959c88daff47b7abad1664c74c33e9bb38a5ce1656f9933bdb03f28e1eb061bfb6b98e57a8e139bd8"
+          "content": "xlhAw10Kt+yrWCmAFH+Xp+vEVg7cl23rWoWIZIrp+5SOV4bhB6DoOOy2Jgg9NLPO2INKKs4a",
+          "sig": "127fa2d38720cafad253d866d6115c8e994319e0eb20a078b257e10ef0f569f08cb4def7251c1b5ac083832bc53d4744791a4a9eaac724dd2f51acdfcc4002e6"
         }
       ],
       "expect": {
@@ -4473,7 +4475,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
+            "gate_msg_id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4487,7 +4489,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "74b7aecde3ce7ad24e8bc81b2fd4d4b315b905fe393164ffa0ada82da4286c63",
+            "msg_id": "152ebc47b4ae026437b2c06c6eeebcc463d5879a7f3723ed9db857bd7cfa49c4",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -4555,7 +4557,7 @@
       "identity": "",
       "events": [
         {
-          "id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
+          "id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4605,11 +4607,11 @@
               "1"
             ]
           ],
-          "content": "JHfFbDi9PpP+CBEEgmRBWmEb3WpxpHDtbtpukicIkH9AqrxMStv36WDdJVKilV0+XVi5uZ3j+/TORB80aGXGmqpwjNkS3nFGlELRm6NQejmJoOO185Hh35VpNiTjh23Gpk8QE6pPGpRrhmik2WHrYTkH3lrjVHHJRAUudTsKvVEJ",
-          "sig": "957fc96ee89ad891ee916cdb750dfa289757b122f097c1e1b7e0e7f2bb65fa94719ecc4885282bd6c1d30a3c08959bba2c5b3fc003abe85421fd38e013d7b6fe"
+          "content": "SQ5L3ErhjqBh2NTRiB1oNNw/Dr6030+ArWXB+tx6FIGs2DuBBb6J7BMwyTtCWNZdYhntrtQ309NxFP79Et/scDEHvCpiDFp7TjAceIO5d7c1OX3pW7OyuPTVRTCuHnZGRkTiVcxb4zaWoo3WiXBl2Py0yquDQ8RRxVYgaYZSvcQg",
+          "sig": "e4e9cdcdab4af72e79b541c7f201239da40ca8a23912f4ceeca69cf97d4a86c2c2d2a16992bb75fa323fcd4248481b9483912e9d39f814aae4a66ea6cb0ece36"
         },
         {
-          "id": "5b2078cd160c76829f813cce246f52693496cfefebf904725e8807a745ad0a46",
+          "id": "e49611f853fb93dd7ef518e54b5a7f0e93e47000652cbce1731748b485930a63",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4639,8 +4641,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "+WhiG4PEV0CwmcRWK0IbFNCgxLx9fv5yGohVlLC/D18n/8OL1ZoQ9m0xjsC+z9SjCIBRYYi1",
-          "sig": "9447e1da2c9732cd134906a5981800804e6ae5c188f91d022f26fafc700a59561ac9fc6e6043c948ce57a03d0f9a2ae71c9c5c478bc33c4cb7fa4b0af43fe2a3"
+          "content": "XexgHQzs2HYK7vMCpmj/4UB1hbW834vxWiQnAVBfa9PdmJlY73lFGtSPYwI6TQHLTiMeFz5F",
+          "sig": "0a0e04410aced1e7105909ac89f35b330be95badae21730d3c71b7e6bd3a90f5a9566428c4a5a2c21951b4dd604989faa55ea8f05cfddcb1765a7cb497c8b71f"
         }
       ],
       "expect": {
@@ -4651,7 +4653,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
+            "gate_msg_id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4665,7 +4667,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "f95959f5d1b6811f8b818958f4d11dedfef0ffabf9f8f74bd0f06988f3be5092",
+            "msg_id": "4811350434386d582012dd0dff32463f393ec9842c72bdcf7082596dcc6e2025",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -4723,7 +4725,7 @@
       "identity": "",
       "events": [
         {
-          "id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
+          "id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4773,11 +4775,11 @@
               "1"
             ]
           ],
-          "content": "7i82IKk/ipRBNLm62YnqI3oHcMvEUqhqiQmEV7S0BVGuGDPC4v4e7idugLApAYoGy7ilPhV1h27AsCOnDUJszkpbtjD/9WaFZj7+HYCotCMJdRlvh9p9YVH/sZdRK5kvTwUnBDK9zhM7hQB+21cP0LAkcgzK2fhrxPYMfDTpKKtg",
-          "sig": "6f11c64d544c9a6ee4cdfc52ff66ecd2ae6357763c69752936ed3a7be941dce81259983cbe478adf96280fed6087cb57d5672b3189bd598ca5dac23ee3ec7537"
+          "content": "5RAQO87fKPYnzb0YyIE7sW+ZGcDo/dBy45mPCX26Pfdr/6JfaYEM/kjyKSo9X6FDbjILZAd9VwCyz+cCdA0Nb+gWVsdjliCYMpwbBfQa6cVkZXt9OTgS6Uv2g6GQhzXzMebUfM4dbEkizPIXXd8lABH0crc1LoiAnuA4XWoLqvnz",
+          "sig": "569320f4fc8d034773a2d2c9a42a0d09845878a25a46ab185c9e9fdfafadaaf002432a6bdae573175450d4181a5e8f20024b854394f18eef28293423bda095d8"
         },
         {
-          "id": "e99ab67e4c1c3227419f67600c0a516c8ce8fd9d65d0d26488bd80946c66de72",
+          "id": "5bd42e780fdc9361913a7e52da7e941d33d296826a2df612b14c886ccb6a1a8e",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4807,8 +4809,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "I0Qdb0PsB568NCthMiMMlgchV5Q3Qs1GtpVBnEu+IL8DTXDGKpLBSLnD7wrRM6TQttQOKWBE",
-          "sig": "f88f1238b77afdb66bd1ca9bdb0d5ff349c9fa57991f3199dc1bc110b377bbcac7e9d82eeb0b3591793e021cb9bfc79a070d48ef474cb586c5be87aa17d61a48"
+          "content": "SHOVc1ucFUsnxIqyKGFy2keb43TijPvVH+WOVnxskVxK9SOxc8R9p64bhRUr3Hu3mxgDQwPI",
+          "sig": "2a0de49004dd3aa9a17e50883dc2064e7cdc4b1d7402172fbf45b3e5b20511056755accedef9ee28f3cdd4048d11652b5cd3a3814e61927e89254371c6ced0c9"
         }
       ],
       "expect": {
@@ -4819,7 +4821,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
+            "gate_msg_id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4833,7 +4835,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "c61ef4071fa919def12f37cc1e5e96536290f4a3815dd23e3f4d9384f0385847",
+            "msg_id": "edf8ad9c00325ecd95ccbdfe84504a99c62a5424c0cc8163a4f25cf306012aa7",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",

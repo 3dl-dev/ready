@@ -477,18 +477,28 @@ but **no warning is produced** — `Item.CrossCampfireWarnings`
 `WaitingType="gate"`, `WaitingOn=<description>` and publishes a status change; the
 description doubles as the status-event reason
 (`runGateNostr`, `cmd/rd/nostrwrite.go:276-299`). Terminal items are refused
-(`:281-283`). It then re-resolves the item to report the projection-derived
-`GateMsgID` (`:291-296`) — i.e. even the writer learns the gate id from the fold.
+(`:281-283`). It then re-resolves the item and VERIFIES the gate landed in a
+state `rd gates`/`rd approve`/`rd reject` can see — `GateMsgID != ""` and
+`Status` is `waiting` or `blocked` (`:291-297`) — failing loudly instead of
+reporting "gate sent" for an escalation that would never surface (ready-e0e).
+Only then does it report the projection-derived `GateMsgID`: even the writer
+learns the gate id from the fold.
 
 **§9.2 Approve.** `rd approve` requires a pending gate (`GateMsgID != ""` OR
-`Gate != ""` OR `WaitingType == "gate"`) and `Status == waiting`
-(`runApproveNostr`, `cmd/rd/nostrwrite.go:307-312`). It sets `Status=active` and
+`Gate != ""` OR `WaitingType == "gate"`) and `Status ∈ {waiting, blocked}`
+(`runApproveNostr`, `cmd/rd/nostrwrite.go:307-312`; widened from `waiting`-only
+by ready-e0e — a blocked item's gate is resolvable WITHOUT unblocking it first,
+since the ruling is often exactly what unblocks it). It sets `Status=active` and
 CLEARS `Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`, `GateMsgID`
-(`:313-318`), then publishes. Because the republished card omits the gate tags,
-§9.4's promotion cannot re-gate the item.
+(`:313-318`), then publishes. If the item is still blocked, §8.4 recomputes
+`Status=blocked` on the next fold regardless of the published `active` — the
+gate clears, the block does not, until the blocker itself closes. Because the
+republished card omits the gate tags, §9.4's promotion cannot re-gate the item.
 
-**§9.3 Reject.** `rd reject` publishes a status event that RE-AFFIRMS `waiting`
-with the rejection reason, changing no field
+**§9.3 Reject.** `rd reject` applies the SAME `Status ∈ {waiting, blocked}`
+precondition as §9.2 (ready-e0e) and publishes a status event that RE-AFFIRMS
+the item's current status (`waiting` or `blocked`) with the rejection reason,
+changing no field
 (`runRejectNostr`, `cmd/rd/nostrwrite.go:330-348`). The gate stays open and the
 ruling is preserved in history.
 
@@ -822,16 +832,20 @@ keys on `By` (the actor), NOT `For`.
 otherwise (`pkg/views/views.go:164-169`) — this is what makes "empty identity
 excludes everything" hold on the raw-string path.
 
-**§13.10 `GatesFilter()`** — `Status == waiting` AND `WaitingType == "gate"` AND
-`GateMsgID != ""` (`pkg/views/views.go:175-181`). All three conjuncts matter; §9.6
+**§13.10 `GatesFilter()`** — `Status ∈ {waiting, blocked}` AND `WaitingType ==
+"gate"` AND `GateMsgID != ""` (`pkg/views/views.go:175-181`). Widened from
+`waiting`-only by ready-e0e: blocked-and-gated is the ordinary case for a design
+gate (§9.7), and excluding it silently dropped the escalation from the one view
+whose job is surfacing pending human decisions. All three conjuncts matter; §9.6
 is what makes the third one true on the nostr path. Consumed by `rd gates`
-(`cmd/rd/gates.go:32`).
+(`cmd/rd/gates.go:32`), which flags a `blocked` result `[BLOCKED]` in its
+human-readable output so the human is not misled into thinking it is actionable.
 
 **§13.11 `FocusFilter(gateType)`** — `ReadyFilter` AND (`gateType == ""` OR
 `item.Gate == gateType`) (`pkg/views/views.go:185-196`). Note it filters on
 `Gate`, the escalation CATEGORY, on items that are READY — so it does not overlap
-`GatesFilter`, whose items are `waiting` and therefore not ready. Consumed by
-`rd focus` (`cmd/rd/focus.go:31`).
+`GatesFilter`, whose items are `waiting` or `blocked` and therefore not ready.
+Consumed by `rd focus` (`cmd/rd/focus.go:31`).
 
 **§13.12 `LabelFilter(atom)`** — exact match of `atom` against a member of
 `Item.Labels`; no substring, no glob (`pkg/views/views.go:202-211`). Multiple
@@ -999,7 +1013,8 @@ status transition (`pkg/sync/nostrwire.go:542-544`,
 **§15.5 `Gate` survives on terminal items.** §9.5. The terminal branch clears
 `WaitingOn`, `WaitingType`, `WaitingSince` and `GateMsgID` but NOT `Gate`
 (`pkg/sync/nostrproject.go:494-500`), so a closed item can still report a gate
-category. This is invisible to `GatesFilter` (which requires `waiting`) but
+category. This is invisible to `GatesFilter` (which requires `waiting` or
+`blocked`, never terminal) but
 visible in `rd show` / JSON, and `FocusFilter` also cannot see it (terminal items
 are not ready). **Question:** is the retained `Gate` deliberate provenance ("this
 was closed while gated on design") or a missed clear?
@@ -1627,35 +1642,48 @@ item (`:281-283`), then sets FOUR fields — `Status=waiting`, `Gate=<type>`,
 status change whose reason IS the description (`:288`). Wire result: a card
 carrying `s=waiting` + `gate=<type>` + `waiting_type=gate` + `waiting_on=<desc>`
 (the last omitted and sealed in confidential mode, §18.3 row 12) and a kind-1630
-status event with `status=waiting`. It then RE-RESOLVES the item purely to report
-the projection-derived `GateMsgID` (`:291-296`) — there is no gate event, and even
-the writer learns the gate id from the fold (§9.6: `GateMsgID` IS the winning
-card's event id).
+status event with `status=waiting`. It then RE-RESOLVES the item and VERIFIES the
+gate landed in a state the gates view and approve/reject can see —
+`GateMsgID != ""` and `Status ∈ {waiting, blocked}` (`:291-297`, ready-e0e) —
+returning a loud error instead of a false "gate sent" if it did not (e.g. §8.4
+having reprojected the item to some other status this build does not anticipate).
+Only then does it report the projection-derived `GateMsgID` (`:298`) — there is
+no gate event, and even the writer learns the gate id from the fold (§9.6:
+`GateMsgID` IS the winning card's event id).
 
 **§22.2 Approve.** `runApproveNostr` (`cmd/rd/nostrwrite.go:302-324`) requires a
 pending gate — `GateMsgID != "" OR Gate != "" OR WaitingType == "gate"`
-(`:307-309`) — AND `Status == waiting` (`:310-312`). It sets `Status=active` and
-CLEARS all five gate fields: `Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`,
-`GateMsgID` (`:313-318`), then publishes (`:319`). Because the republished card
-omits `gate` / `waiting_type` / `waiting_on`, the fold's card-declared gate
-promotion (§9.4) finds nothing to promote and the item stays `active`. A client
-that clears only `Status` and leaves the gate tags on the card will see the item
-snap back to `waiting` on the next read.
+(`:307-309`) — AND `Status ∈ {waiting, blocked}` (`:310-312`; widened from
+`waiting`-only by ready-e0e, so a blocked item's gate can be resolved WITHOUT
+unblocking it first). It sets `Status=active` and CLEARS all five gate fields:
+`Gate`, `WaitingType`, `WaitingOn`, `WaitingSince`, `GateMsgID` (`:313-318`), then
+publishes (`:319`). If the item is still blocked, §8.4 overrides the published
+`active` back to `blocked` on the next fold — approving the gate does not itself
+unblock the dependency. Because the republished card omits `gate` /
+`waiting_type` / `waiting_on`, the fold's card-declared gate promotion (§9.4)
+finds nothing to promote and the item stays `active` (or reverts to `blocked` per
+§8.4, never back to `waiting`). A client that clears only `Status` and leaves the
+gate tags on the card will see the item snap back to `waiting` (or `blocked`) on
+the next read.
 
 **§22.3 Reject.** `runRejectNostr` (`cmd/rd/nostrwrite.go:330-348`) applies the
-SAME two preconditions (`:335-340`) and then changes NO field: it republishes the
-card unchanged and emits a kind-1630 status event that re-affirms `status=waiting`
-with the rejection reason as Content (`:343`). The gate stays open; the ruling
-survives as a history entry (§6.5). Rejecting is therefore not a state transition
-at all — it is a durable note attached to the still-open gate.
+SAME two preconditions as §22.2 (`:335-340`, including the `Status ∈ {waiting,
+blocked}` widening) and then changes NO field: it republishes the card unchanged
+and emits a kind-1630 status event that re-affirms the item's CURRENT status —
+`waiting` or `blocked` — with the rejection reason as Content (`:343`). The gate
+stays open; the ruling survives as a history entry (§6.5). Rejecting is therefore
+not a state transition at all — it is a durable note attached to the still-open
+gate.
 
 **§22.4 Approve and reject are indistinguishable on the wire except by
-reason.** Both are kind-1630 status events on a `waiting` item; approve differs
-only in that its status tag is `active` and its card drops the gate tags. There
-is no `resolution` tag — the JSON `{"resolution":"approved"|"rejected"}` is CLI
-output only (`cmd/rd/nostrwrite.go:322-323`, `:346-347`), never an event field. An independent client
-MUST NOT invent one; a reviewer reading history distinguishes them by the
-`waiting → active` transition versus a `waiting → waiting` self-transition.
+reason.** Both are kind-1630 status events on a `waiting` OR `blocked` item
+(ready-e0e); approve differs only in that its status tag is `active` and its
+card drops the gate tags. There is no `resolution` tag — the JSON
+`{"resolution":"approved"|"rejected"}` is CLI output only
+(`cmd/rd/nostrwrite.go:322-323`, `:346-347`), never an event field. An
+independent client MUST NOT invent one; a reviewer reading history distinguishes
+them by the `waiting|blocked → active` transition versus a self-transition that
+re-affirms the same status.
 
 **§22.5 `WaitingSince` and `GateMsgID` are never written.** Neither is in
 `CardSpec` (§18.2); both are derived at fold time (§9.6). Clearing them in memory

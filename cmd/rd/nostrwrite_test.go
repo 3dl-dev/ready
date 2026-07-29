@@ -554,6 +554,139 @@ func TestNostrNative_RejectGate(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_GateOnBlockedItem_RaiseListResolve is the ready-e0e regression
+// test: a gate raised on a BLOCKED item (the ordinary case for a design gate,
+// since the ruling is usually exactly what unblocks the chain) must be
+// (1) raisable without a false "gate sent" success report, (2) VISIBLE in
+// `rd gates` / `rd gates --json` with its blocked state surfaced, and
+// (3) RESOLVABLE by both approve and reject without first unblocking the item.
+// Before the fix: raise reported success but the item never appeared in
+// `rd gates`, and both approve and reject refused it with "item is not waiting".
+func TestNostrNative_GateOnBlockedItem_RaiseListResolve(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	approveTarget, err := runCreateNostr(dir, nostrCreateSpec{title: "Approve target", itemType: "decision", priority: "p0"})
+	if err != nil {
+		t.Fatalf("create approve target: %v", err)
+	}
+	rejectTarget, err := runCreateNostr(dir, nostrCreateSpec{title: "Reject target", itemType: "decision", priority: "p0"})
+	if err != nil {
+		t.Fatalf("create reject target: %v", err)
+	}
+	if err := runDepAddNostr(approveTarget, blocker); err != nil {
+		t.Fatalf("dep add (approve target): %v", err)
+	}
+	if err := runDepAddNostr(rejectTarget, blocker); err != nil {
+		t.Fatalf("dep add (reject target): %v", err)
+	}
+	it, _ := nostrResolveItem(approveTarget)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("approve target status = %q before gating; want blocked", it.Status)
+	}
+
+	// --- RAISE: gating a blocked item must succeed, not report false success. ---
+	if err := runGateNostr(approveTarget, "design", "confirm approach"); err != nil {
+		t.Fatalf("gate on blocked item must succeed, got: %v", err)
+	}
+	if err := runGateNostr(rejectTarget, "design", "confirm approach"); err != nil {
+		t.Fatalf("gate on blocked item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(approveTarget)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after gate, status = %q; want STILL blocked (blocking supersedes waiting)", it.Status)
+	}
+	if it.WaitingType != "gate" || it.GateMsgID == "" {
+		t.Fatalf("after gate on blocked item, waitingType=%q gateMsgID=%q; want gate/non-empty (the gate must survive blocking)", it.WaitingType, it.GateMsgID)
+	}
+
+	// --- LIST: the blocked-and-gated item must appear in `rd gates`. ---
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	jsonOutput = true
+	jsonOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (json): %v", err)
+		}
+	})
+	var listed []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &listed); err != nil {
+		t.Fatalf("rd gates --json output is not valid JSON: %v; output:\n%s", err, jsonOut)
+	}
+	foundApprove, foundReject := false, false
+	for _, row := range listed {
+		if row["id"] == approveTarget {
+			foundApprove = true
+			if row["status"] != state.StatusBlocked {
+				t.Errorf("rd gates --json row for %s has status=%v; want %q (blocked state must be visible)", approveTarget, row["status"], state.StatusBlocked)
+			}
+		}
+		if row["id"] == rejectTarget {
+			foundReject = true
+		}
+	}
+	if !foundApprove {
+		t.Fatalf("rd gates --json did not list %s (a gate on a blocked item); listed=%v", approveTarget, listed)
+	}
+	if !foundReject {
+		t.Fatalf("rd gates --json did not list %s (a gate on a blocked item); listed=%v", rejectTarget, listed)
+	}
+
+	jsonOutput = false
+	humanOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (human): %v", err)
+		}
+	})
+	if !strings.Contains(humanOut, approveTarget) {
+		t.Fatalf("rd gates human output missing %s; got:\n%s", approveTarget, humanOut)
+	}
+	if !strings.Contains(humanOut, "[BLOCKED]") {
+		t.Fatalf("rd gates human output does not flag the blocked item as [BLOCKED] — a human could mistake it for actionable; got:\n%s", humanOut)
+	}
+
+	// --- RESOLVE: approve and reject must both work WITHOUT unblocking first. ---
+	if err := runApproveNostr(approveTarget, "go ahead"); err != nil {
+		t.Fatalf("approve of a blocked-and-gated item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(approveTarget)
+	if it.WaitingType != "" || it.GateMsgID != "" || it.Gate != "" {
+		t.Fatalf("after approve, gate fields not cleared: waitingType=%q gate=%q gateMsgID=%q", it.WaitingType, it.Gate, it.GateMsgID)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after approve, status = %q; want STILL blocked — approving the gate does not itself unblock the dependency", it.Status)
+	}
+
+	const rejectReason = "not yet — revisit after blocker closes"
+	if err := runRejectNostr(rejectTarget, rejectReason); err != nil {
+		t.Fatalf("reject of a blocked-and-gated item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(rejectTarget)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after reject, status = %q; want STILL blocked (reject does not transition out of the gate)", it.Status)
+	}
+	if it.WaitingType != "gate" || it.GateMsgID == "" {
+		t.Fatalf("after reject, waitingType=%q gateMsgID=%q; want the gate to remain open", it.WaitingType, it.GateMsgID)
+	}
+	foundReason := false
+	for _, h := range it.History {
+		if h.Note == rejectReason {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("reject reason %q not preserved in history: %+v", rejectReason, it.History)
+	}
+
+	assertNoDotCf(t)
+}
+
 func mustDir(t *testing.T) string {
 	t.Helper()
 	dir, ok := readyProjectDir()

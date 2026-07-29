@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/3dl-dev/ready/pkg/state"
 	"github.com/3dl-dev/ready/pkg/views"
 	"github.com/spf13/cobra"
 )
@@ -13,11 +14,16 @@ var gatesCmd = &cobra.Command{
 	Long: `Show work items that have a pending gate awaiting human resolution.
 
 Items appear in the gates view when:
-  - status=waiting
+  - status=waiting OR status=blocked (a gate on a blocked item is still pending —
+    the ruling is often exactly what unblocks it, ready-e0e)
   - waiting_type=gate
   - a work:gate message has been sent but no work:gate-resolve has been received
 
-Use 'rd approve <item-id>' or 'rd reject <item-id>' to resolve a gate.
+A [BLOCKED] item is not yet actionable even once the gate is resolved — it is
+still waiting on its dependency.
+
+Use 'rd approve <item-id>' or 'rd reject <item-id>' to resolve a gate; both work
+on a blocked-and-gated item without requiring it to be unblocked first.
 
 Convention spec §5: gates view — pending human escalations.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -45,13 +51,19 @@ Convention spec §5: gates view — pending human escalations.`,
 		}
 
 		// Print with gate-specific columns: item ID, priority, gate type (from WaitingOn), title.
+		// A blocked-and-gated item is flagged [BLOCKED] so the human resolving the gate is
+		// not misled into thinking the item is immediately actionable (ready-e0e).
 		for _, item := range items {
 			waitingOn := item.WaitingOn
 			if waitingOn == "" {
 				waitingOn = "(no description)"
 			}
+			title := item.Title
+			if item.Status == state.StatusBlocked {
+				title = "[BLOCKED] " + title
+			}
 			fmt.Printf("  %-16s  %-8s  %-36s  %s\n",
-				item.ID, item.Priority, truncate(waitingOn, 36), item.Title)
+				item.ID, item.Priority, truncate(waitingOn, 36), title)
 		}
 		return nil
 	},

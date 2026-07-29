@@ -168,13 +168,13 @@ func identitySet(identity string) map[string]bool {
 	return map[string]bool{identity: true}
 }
 
-// GatesFilter returns items that have an unfulfilled gate (status=waiting with
-// waiting_type=gate and a non-empty GateMsgID). These are items awaiting human
-// resolution before work can proceed.
+// GatesFilter returns items that have an unfulfilled gate: status is waiting OR
+// blocked (blocked-and-gated is ordinary — the ruling often unblocks the chain,
+// ready-e0e), waiting_type=gate, and GateMsgID != "". Awaiting human resolution.
 // Convention spec §5: gates view — pending human escalations.
 func GatesFilter() Filter {
 	return func(item *state.Item) bool {
-		return item.Status == state.StatusWaiting &&
+		return (item.Status == state.StatusWaiting || item.Status == state.StatusBlocked) &&
 			item.WaitingType == "gate" &&
 			item.GateMsgID != ""
 	}

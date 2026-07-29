@@ -978,15 +978,17 @@ func (b *builder) vGateUnderBlocking() error {
 		SpecClauses: []string{"9.7", "9.9", "8.4", "13.10"},
 		Note: "The gated item also gains a live blocker. Status becomes `blocked` (the dep pass runs " +
 			"first and the gate promotion checks it), but gate/waiting_type/waiting_on/waiting_since/" +
-			"gate_msg_id all survive — the pending gate is still real. It drops out of the gates view " +
-			"because that predicate also requires status=waiting.",
+			"gate_msg_id all survive — the pending gate is still real. It STILL appears in the gates " +
+			"view (ready-e0e): blocked-and-gated is the ordinary case for a design gate, since the " +
+			"ruling is usually exactly what unblocks the chain, so GatesFilter accepts status=waiting " +
+			"OR status=blocked, not waiting alone.",
 		Options: Options{Trusted: trust(b.ownerPub)},
 		Events:  []*nostr.Event{blocker, gated},
 		Expect: Expect{
 			Items: items,
 			Views: vw(map[string][]string{
 				"ready": {"ready-v20a"}, "work": {"ready-v20a"}, "focus": {"ready-v20a"},
-				"pending": {"ready-v20b"},
+				"pending": {"ready-v20b"}, "gates": {"ready-v20b"},
 			}),
 		},
 	})

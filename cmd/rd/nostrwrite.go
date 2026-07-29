@@ -272,7 +272,7 @@ func runDelegateNostr(itemID, to, reason string) error {
 }
 
 // runGateNostr transitions an item to waiting (waiting_type=gate) carrying the
-// gate description as the reason.
+// gate description; verifies the gate landed visibly before reporting success.
 func runGateNostr(itemID, gateType, description string) error {
 	item, err := nostrResolveItem(itemID)
 	if err != nil {
@@ -288,14 +288,14 @@ func runGateNostr(itemID, gateType, description string) error {
 	if err := publishItemStatusChangeNostr(item, description); err != nil {
 		return fmt.Errorf("nostr publish (gate): %w", err)
 	}
-	// Re-resolve so msg_id reports the projection-derived gate event id — the same
-	// value `rd show`/`rd gates` surface for this pending gate (GateMsgID).
-	var gateMsgID string
-	if gated, rerr := nostrResolveItem(itemID); rerr == nil {
-		gateMsgID = gated.GateMsgID
+	gated, rerr := nostrResolveItem(itemID)
+	if rerr != nil {
+		return fmt.Errorf("gate published for %s but could not verify it landed: %v", item.ID, rerr)
 	}
-	return emitMutationResult(fmt.Sprintf("gate sent for %s (%s)", item.ID, gateType),
-		map[string]any{"id": item.ID, "gate_type": gateType, "msg_id": gateMsgID})
+	if gated.GateMsgID == "" || (gated.Status != state.StatusWaiting && gated.Status != state.StatusBlocked) {
+		return fmt.Errorf("gate for %s did not land in a visible/resolvable state (status=%s)", item.ID, gated.Status)
+	}
+	return emitMutationResult(fmt.Sprintf("gate sent for %s (%s)", item.ID, gateType), map[string]any{"id": item.ID, "gate_type": gateType, "msg_id": gated.GateMsgID})
 }
 
 // runApproveNostr resolves a pending gate: back to active, gate/waiting cleared.
@@ -307,8 +307,8 @@ func runApproveNostr(itemID, reason string) error {
 	if item.GateMsgID == "" && item.Gate == "" && item.WaitingType != "gate" {
 		return fmt.Errorf("item %s has no pending gate to approve", item.ID)
 	}
-	if item.Status != state.StatusWaiting {
-		return fmt.Errorf("item %s is not waiting (status=%s)", item.ID, item.Status)
+	if item.Status != state.StatusWaiting && item.Status != state.StatusBlocked {
+		return fmt.Errorf("item %s is not waiting or blocked (status=%s)", item.ID, item.Status)
 	}
 	item.Status = state.StatusActive
 	item.Gate = ""
@@ -323,10 +323,10 @@ func runApproveNostr(itemID, reason string) error {
 		map[string]any{"id": item.ID, "resolution": "approved"})
 }
 
-// runRejectNostr rejects a pending gate: the item REMAINS waiting, but the
-// rejection reason is recorded in the audit-history replay via a status event that
-// re-affirms waiting. Closes the reject publisher GAP (reject previously published
-// NO nostr event).
+// runRejectNostr rejects a pending gate: the item stays in its current status
+// (waiting or blocked, ready-e0e), and the rejection reason is recorded in the
+// audit-history replay via a status event that re-affirms it. Closes the reject
+// publisher GAP (reject previously published NO nostr event).
 func runRejectNostr(itemID, reason string) error {
 	item, err := nostrResolveItem(itemID)
 	if err != nil {
@@ -335,11 +335,11 @@ func runRejectNostr(itemID, reason string) error {
 	if item.GateMsgID == "" && item.Gate == "" && item.WaitingType != "gate" {
 		return fmt.Errorf("item %s has no pending gate to reject", item.ID)
 	}
-	if item.Status != state.StatusWaiting {
-		return fmt.Errorf("item %s is not waiting (status=%s)", item.ID, item.Status)
+	if item.Status != state.StatusWaiting && item.Status != state.StatusBlocked {
+		return fmt.Errorf("item %s is not waiting or blocked (status=%s)", item.ID, item.Status)
 	}
-	// Item stays waiting; publish the rejection as a status(waiting) event so the
-	// ruling is preserved in history without transitioning out of the gate.
+	// Item stays in its current status (waiting or blocked); publish the rejection
+	// as a status event re-affirming it, without transitioning out of the gate.
 	if err := publishItemStatusChangeNostr(item, reason); err != nil {
 		return fmt.Errorf("nostr publish (reject): %w", err)
 	}
