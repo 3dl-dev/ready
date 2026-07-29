@@ -15,7 +15,7 @@ var updateCmd = &cobra.Command{
 	Short: "Update fields on a work item",
 	Long: `Update one or more mutable fields on a work item.
 
-Field flags: --title, --context, --priority, --eta, --due
+Field flags: --title, --context, --priority, --eta, --due, --parent-id
 Status flags: --status, --waiting-on, --waiting-type (auto-sets status=waiting when --waiting-on is used)
 Note flag:    --note (used as reason for status transitions)
 
@@ -23,7 +23,8 @@ Examples:
   rd update ready-a1b --priority p0 --eta 2026-04-01T12:00:00Z
   rd update ready-a1b --title "New title" --context "Updated context"
   rd update ready-a1b --status waiting --waiting-on "vendor quote" --waiting-type vendor
-  rd update ready-a1b --waiting-on "design review" --waiting-type person`,
+  rd update ready-a1b --waiting-on "design review" --waiting-type person
+  rd update ready-a1b --parent-id ready-epic1   # adopt an existing item into an epic`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Helpful redirect for --blocks (agents may try bd-style dep wiring via update).
@@ -54,13 +55,18 @@ Examples:
 			statusTo = state.StatusWaiting
 		}
 
+		parentID, _ := cmd.Flags().GetString("parent-id")
+		if parentID != "" && parentID == itemID {
+			return fmt.Errorf("--parent-id cannot be the item itself (%s)", itemID)
+		}
+
 		// Validate that at least one flag is set.
 		hasFieldUpdate := title != "" || context != "" || priority != "" ||
-			eta != "" || due != "" || level != ""
+			eta != "" || due != "" || level != "" || parentID != ""
 		hasStatusUpdate := statusTo != "" || waitingOn != ""
 
 		if !hasFieldUpdate && !hasStatusUpdate && !claim {
-			return fmt.Errorf("no fields to update: specify at least one of --title, --context, --priority, --eta, --due, --level, --status, --waiting-on, --claim")
+			return fmt.Errorf("no fields to update: specify at least one of --title, --context, --priority, --eta, --due, --level, --parent-id, --status, --waiting-on, --claim")
 		}
 
 		// Resolve status aliases (bd-compat).
@@ -91,7 +97,7 @@ Examples:
 		if _, native := nostrNativeProject(); native {
 			return runUpdateNostr(itemID, nostrUpdateSpec{
 				title: title, context: context, priority: priority,
-				eta: eta, due: due, level: level,
+				eta: eta, due: due, level: level, parentID: parentID,
 				statusTo: statusTo, waitingOn: waitingOn, waitingType: waitingType, note: note,
 				hasFieldUpdate: hasFieldUpdate, hasStatusUpdate: hasStatusUpdate, claim: claim,
 			})
@@ -107,6 +113,7 @@ func init() {
 	updateCmd.Flags().String("eta", "", "ETA in RFC3339 format")
 	updateCmd.Flags().String("due", "", "hard deadline in RFC3339 format")
 	updateCmd.Flags().String("level", "", "level: epic, task, subtask")
+	updateCmd.Flags().String("parent-id", "", "reparent: new parent item ID (adopt an existing item into an epic)")
 	updateCmd.Flags().String("status", "", "status: inbox, active, scheduled, waiting, done, cancelled, failed")
 	updateCmd.Flags().String("waiting-on", "", "what we are waiting on (auto-sets status=waiting if no --status given)")
 	updateCmd.Flags().String("waiting-type", "", "waiting type: person, vendor, client, date, event, external, agent, gate")

@@ -422,9 +422,9 @@ func runLabelRemoveNostr(itemID, label string) error {
 // nostrUpdateSpec carries the resolved, normalized update fields for the
 // nostr-native update path.
 type nostrUpdateSpec struct {
-	title, context, priority, eta, due, level string
-	statusTo, waitingOn, waitingType, note    string
-	hasFieldUpdate, hasStatusUpdate, claim    bool
+	title, context, priority, eta, due, level, parentID string
+	statusTo, waitingOn, waitingType, note              string
+	hasFieldUpdate, hasStatusUpdate, claim              bool
 }
 
 // runUpdateNostr applies field edits and/or a status transition and/or a claim to
@@ -461,6 +461,9 @@ func runUpdateNostr(itemID string, u nostrUpdateSpec) error {
 		}
 		if u.level != "" {
 			item.Level = u.level
+		}
+		if u.parentID != "" {
+			item.ParentID = u.parentID
 		}
 		if err := publishItemCardEditNostr(item); err != nil {
 			return fmt.Errorf("nostr publish (update fields): %w", err)

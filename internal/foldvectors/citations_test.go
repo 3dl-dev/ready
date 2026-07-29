@@ -683,9 +683,9 @@ var citationExceptions = map[string]string{
 	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
 		"`parseTimestamp` / `parseTimestampValue` (:324-354) spanning BOTH funcs' " +
 		"declarations; parseTimestampValue itself is declared at :339",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|550@decl155": "§20.6: CALL site inside " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|553@decl155": "§20.6: CALL site inside " +
 		"runCreateNostr; publishItemFullCreateNostr is declared at :155",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|625@decl155": "§21.x: second CALL site, " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|628@decl155": "§21.x: second CALL site, " +
 		"inside runEngageNostr; publishItemFullCreateNostr is declared at :155",
 	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435@decl452": "§9.9: CALL site inside " +
 		"ProjectItems; applyDepAndGateStatus is declared at :452",
@@ -800,9 +800,9 @@ var citationExceptions = map[string]string{
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
 		"(`:593-610`)",
-	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|618@decl605": "§27.x: the " +
-		"project-prefix assignment (:615) inside publishEngagedItemsNostr's body; " +
-		"its declaration is cited exactly at :602 (§26.3)",
+	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|621@decl608": "§27.x: the " +
+		"project-prefix assignment (:618) inside publishEngagedItemsNostr's body; " +
+		"its declaration is cited exactly at :608 (§26.3)",
 	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
 		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
 		"publishEvents itself is declared at :581",
@@ -815,24 +815,26 @@ var citationExceptions = map[string]string{
 	"runCloseNostr|cmd/rd/nostrwrite.go|250@decl237": "§20.5 recap: the implicit " +
 		"unblock call site (:247) inside runCloseNostr's body; its declaration is " +
 		"cited exactly by §26.2's bare `:234`",
-	"runCreateNostr|cmd/rd/nostrwrite.go|540@decl507": "§27.x: the `item.Project` " +
-		"assignment (:537) inside runCreateNostr's body; its declaration+body is " +
-		"cited exactly at :504 (§18.8, `:504-551`)",
+	"runCreateNostr|cmd/rd/nostrwrite.go|543@decl510": "§27.x: the `item.Project` " +
+		"assignment (:543) inside runCreateNostr's body; its declaration+body is " +
+		"cited exactly at :510 (§18.8, `:510-557`)",
 	"runDepAddNostr|cmd/rd/nostrwrite.go|354@decl353": "§21.1/§21.3 recap: the " +
 		"cross-board/read-trust guard (:351-353) one line into runDepAddNostr's " +
 		"body; its declaration is cited exactly by §26.2's bare `:350`",
 	"runUpdateNostr|cmd/rd/nostrwrite.go|442@decl433": "§20.4/§24.7 recap: the " +
 		"status-only-update detail range (:439-441); runUpdateNostr's declaration " +
-		"is cited exactly by §26.2's bare `:430`",
+		"is cited exactly by §26.2's bare `:433`",
 	"runUpdateNostr|cmd/rd/nostrwrite.go|446@decl433": "§24.1 recap: the " +
-		"field-rewrite block (:443-465); runUpdateNostr's declaration is cited " +
-		"exactly by §26.2's bare `:430`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|465@decl433": "§16.x/§24.1 recap: the " +
-		"card-edit-publish detail line (:462); runUpdateNostr's declaration is " +
-		"cited exactly by §26.2's bare `:430`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|470@decl433": "§20.4/§24.7 recap: the " +
-		"`Status=<statusTo>` assignment block (:467-478); runUpdateNostr's " +
-		"declaration is cited exactly by §26.2's bare `:430`",
+		"field-rewrite block (:443-465, extended to include the ready-b878 " +
+		"ParentID assignment through :468); runUpdateNostr's declaration is cited " +
+		"exactly by §26.2's bare `:433`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|468@decl433": "§16.x/§24.1 recap: the " +
+		"card-edit-publish detail line (:468, shifted +3 by ready-b878's ParentID " +
+		"field block); runUpdateNostr's declaration is cited exactly by §26.2's " +
+		"bare `:433`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|473@decl433": "§20.4/§24.7 recap: the " +
+		"`Status=<statusTo>` assignment block (:473-484); runUpdateNostr's " +
+		"declaration is cited exactly by §26.2's bare `:433`",
 }
 
 // TestNamedCitationsAnchorToRealDeclarations is ready-cee's done condition 2
