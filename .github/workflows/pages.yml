@@ -89,8 +89,22 @@ jobs:
         # rejects). Writes only into the built _site/ artifact — never
         # back into the repo — so the softwareVersion shown on the live
         # site can never drift from the actual latest release tag.
+        #
+        # --exclude '*-*' (ready-3bd follow-up): `--match 'v*'` alone
+        # matches ANY reachable tag including prereleases (e.g.
+        # v0.17.1-rc1), so a prerelease tag would get stamped onto the
+        # live site as though it were the actual release. Semver
+        # prereleases always carry a hyphen after the version core, so
+        # excluding `*-*` restricts this to the latest STABLE tag.
+        # Verified locally against this repo's real tag history: with a
+        # throwaway `v0.17.1-rc1` tag added ahead of v0.17.0, plain
+        # `--match 'v*'` returns `v0.17.1-rc1`; adding `--exclude '*-*'`
+        # correctly returns `v0.17.0`. See
+        # TestPagesWorkflow_StampExcludesPrereleaseTags, which runs this
+        # exact command against a scratch git repo it builds, rather than
+        # asserting the flag's presence.
         run: |
-          VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          VERSION=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' 2>/dev/null || echo "")
           if [ -z "${VERSION}" ]; then
             echo "no v* tag reachable from HEAD; leaving _site/index.html softwareVersion as committed" >&2
           else
