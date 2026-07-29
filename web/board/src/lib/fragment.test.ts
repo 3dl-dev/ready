@@ -270,3 +270,74 @@ describe("parseFragment — portfolio links", () => {
     replaceState.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ready-280: the board must reject non-wss relays from a link fragment
+// instead of silently handing them to the connector. cmd/rd/board.go's
+// browserOpenableRelays already narrows relays= at MINT time (ready-634), but
+// that fix cannot reach into a link already sitting in someone's browser
+// history or a link a sender hand-crafted — the fragment is the one part of
+// a link that is never re-validated against the current build. This is the
+// reader-side backstop, proven red-first: before this fix, parseRelays did
+// no scheme check at all and every one of these would have kept the ws:// and
+// junk-scheme entries in `relays`.
+// ---------------------------------------------------------------------------
+describe("parseFragment — ready-280 relay scheme filtering", () => {
+  const MIXED_RELAYS =
+    "wss%3A%2F%2Fgood.example" + // wss:// — always usable
+    "%2Cws%3A%2F%2Fbad.example" + // ws:// — mixed content on a secure page
+    "%2Cftp%3A%2F%2Fjunk.example"; // junk scheme — never a relay a client can open
+
+  it('DELIVERABLE FIXTURE: a "board" link with wss + ws + a junk scheme keeps only wss:// on a secure page, and reports what was dropped', () => {
+    const parsed = parseFragment(`#board=30301%3Aabc%3Ab&relays=${MIXED_RELAYS}`); // secure defaults to true
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.relays).toEqual(["wss://good.example"]);
+    expect(parsed.droppedRelays).toEqual(["ws://bad.example", "ftp://junk.example"]);
+  });
+
+  it("the same mixed list on a portfolio link: only wss:// kept, the rest reported", () => {
+    const PK = "e".repeat(64);
+    const parsed = parseFragment(`#pk=${PK}&relays=${MIXED_RELAYS}`);
+    if (parsed.kind !== "portfolio") throw new Error("expected a portfolio fragment");
+    expect(parsed.relays).toEqual(["wss://good.example"]);
+    expect(parsed.droppedRelays).toEqual(["ws://bad.example", "ftp://junk.example"]);
+  });
+
+  it("an all-wss:// relay list carries no droppedRelays field at all", () => {
+    const parsed = parseFragment("#board=30301%3Aabc%3Ab&relays=wss%3A%2F%2Fa.example%2Cwss%3A%2F%2Fb.example");
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.relays).toEqual(["wss://a.example", "wss://b.example"]);
+    expect(parsed.droppedRelays).toBeUndefined();
+  });
+
+  it("an explicitly insecure page context (secure=false) keeps ws:// alongside wss:// — but a junk scheme is still rejected regardless of page security", () => {
+    const parsed = parseFragment(`#board=30301%3Aabc%3Ab&relays=${MIXED_RELAYS}`, false);
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.relays).toEqual(["wss://good.example", "ws://bad.example"]);
+    expect(parsed.droppedRelays).toEqual(["ftp://junk.example"]);
+  });
+
+  it("parseAndStripFragment derives secure from loc.protocol: an http:// page keeps ws://, an https:// page does not", () => {
+    const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+    const hash = `#board=30301%3Aabc%3Ab&relays=${MIXED_RELAYS}`;
+
+    const httpsLoc = { hash, protocol: "https:", pathname: "/board", search: "" } as unknown as Location;
+    const onHttps = parseAndStripFragment(httpsLoc);
+    if (onHttps.kind !== "board") throw new Error("expected a board fragment");
+    expect(onHttps.relays).toEqual(["wss://good.example"]);
+
+    const httpLoc = { hash, protocol: "http:", pathname: "/board", search: "" } as unknown as Location;
+    const onHttp = parseAndStripFragment(httpLoc);
+    if (onHttp.kind !== "board") throw new Error("expected a board fragment");
+    expect(onHttp.relays).toEqual(["wss://good.example", "ws://bad.example"]);
+
+    replaceState.mockRestore();
+  });
+
+  it("a relay list that is ENTIRELY dropped leaves an empty relays array (the board=/pk= branches then fall back to same-origin relays.json — see main.ts)", () => {
+    const parsed = parseFragment("#board=30301%3Aabc%3Ab&relays=ws%3A%2F%2Fbad.example%2Cftp%3A%2F%2Fjunk.example");
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.relays).toEqual([]);
+    expect(parsed.droppedRelays).toEqual(["ws://bad.example", "ftp://junk.example"]);
+  });
+});
