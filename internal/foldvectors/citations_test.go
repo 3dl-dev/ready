@@ -798,10 +798,11 @@ var citationExceptions = map[string]string{
 	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
 		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
 		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
-	"itemIDForEvent|pkg/sync/nostrwire.go|622@decl618": "§9.x: a detail range " +
-		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
-		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
-		"(`:593-610`)",
+	"itemIDForEvent|pkg/sync/nostrwire.go|637@decl633": "§9.x: a detail range " +
+		"(:612-623, moved from :604-615 by ready-a9b, then +15 by ready-816's " +
+		"isStatusKind allowlist rewrite) inside itemIDForEvent's body; " +
+		"itemIDForEvent's own declaration+body is cited exactly at :608 " +
+		"(`:608-625`)",
 	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|634@decl621": "§27.x: the " +
 		"project-prefix assignment (:634, moved from :621 by ready-ca3) inside " +
 		"publishEngagedItemsNostr's body; its declaration is cited exactly at " +

@@ -80,18 +80,24 @@ the frozen envelope spec §1; the tag → field projection is §5 here.
 **§2.3 kinds 1630 / 1631 / 1632 — NIP-34 status.** `KindStatusOpen = 1630`,
 `KindStatusResolved = 1631`, `KindStatusClosed = 1632`
 (`pkg/sync/nostrwire.go:48-52`). `KindStatusDraft = 1633`
-(`pkg/sync/nostrwire.go:54`) is reserved and never written by rd, but IS accepted
-by the fold because `isStatusKind` is a range test `1630 <= kind <= 1633`
-(`pkg/sync/nostrwire.go:542-544`). The rd status → kind map is `statusKindFor`
-(`pkg/sync/nostrwire.go:72-82`) and is **lossy**: the authoritative rd status is
-read from the `status` tag, never from the kind (§6.5).
+(`pkg/sync/nostrwire.go:54`) is reserved and never written by rd. `isStatusKind`
+is an EXPLICIT ALLOWLIST of exactly `{1630, 1631, 1632}`
+(`pkg/sync/nostrwire.go:552-559`), not the 1630-1633 NIP-34 range: 1633 sits
+inside the NIP-34 range but rd never emits it, and admitting an rd-unowned kind
+here would let a foreign client (or a future NIP claiming 1633) mutate rd item
+state under an already-trusted signer — a cross-application collision, not a
+remote-write vulnerability, but still an rd-unowned kind mutating rd state
+(ready-816; resolves the former open question §15.4). The rd status → kind map
+is `statusKindFor` (`pkg/sync/nostrwire.go:72-82`) and is **lossy**: the
+authoritative rd status is read from the `status` tag, never from the kind
+(§6.5).
 
 **§2.4 kind 1621 — NIP-34 issue.** `KindIssue = 1621`
 (`pkg/sync/nostrwire.go:66`), published at most once per item
 (`BuildIssueEvent`, `pkg/sync/nostrwire.go:485`; `FindIssueEventID`,
 `pkg/sync/nostrwire.go:510`). It exists purely for generic-client interop and
 **does not fold**: `itemIDForEvent` returns `""` for it
-(`pkg/sync/nostrwire.go:618-635`), so the loop skips it at
+(`pkg/sync/nostrwire.go:633-650`), so the loop skips it at
 `pkg/sync/nostrproject.go:261-264`.
 
 **§2.5 kind 39301 — rd role grant.** `KindRoleGrant = 39301`
@@ -157,7 +163,7 @@ guard because a board's `d` tag is a boardD, not an item id.
 
 **§3.7 Item-id guard.** `itemIDForEvent(e)` must be non-empty
 (`pkg/sync/nostrproject.go:261-264`). For a card that is the `d` tag; for a status event it is `d`, else
-the third field of the first `a` coordinate (`pkg/sync/nostrwire.go:618-635`).
+the third field of the first `a` coordinate (`pkg/sync/nostrwire.go:633-650`).
 
 **§3.8 Board pinning (cards only).** When `opts.PinnedBoard != ""`, a `KindCard`
 whose FIRST `a` tag is not exactly `PinnedBoard` is rejected
@@ -220,7 +226,7 @@ second granularity (`:418`).
 **§4.7 Write-side monotonic stamping (per causal chain).** A new event's
 `created_at` is `max(now, newestInScope+1)` where scope is the event's causal
 chain (`nostrNextCreatedAt`, `cmd/rd/nostr.go:222-241`). Scope keys come from
-`DriftScope` (`pkg/sync/nostrwire.go:557-597`): `item:<id>` for a card / status /
+`DriftScope` (`pkg/sync/nostrwire.go:572-612`): `item:<id>` for a card / status /
 issue, `grant:<boardD>:<grantee>` for a 39301, `board:<d>` for a 30301. Scoping the
 bump to one chain bounds future-drift so an unrelated write burst cannot inflate a
 card's `created_at` past a genuinely-later cross-machine edit. This is a **write**
@@ -803,7 +809,7 @@ for that grantee. Splitting is safe for the SAME reason the epoch split is safe:
 nothing reads `d` for meaning (§12.1's parse never inspects it; `deriveGrants`
 replays by `(created_at, id)` and reads single-use binding off the `claim` TAG
 directly), and causal ordering (`DriftScope`/`GrantDriftScope`,
-`pkg/sync/nostrwire.go:556-590,611-613`) is keyed on `(a, p)`, never on `d`, so a
+`pkg/sync/nostrwire.go:571-605,626-628`) is keyed on `(a, p)`, never on `d`, so a
 revoke still stamps strictly after the grant it supersedes regardless of which
 slot that grant occupied. An independent client that only ever READS grants (never
 builds/publishes a 39301 event) needs NO change at all: it fetches by kind + the
@@ -963,7 +969,7 @@ types `replayState` (`:373-388`), `blockEdge` (`:391-395`) and `blockEdgeKey`
 (`:274-278`), `gateResolvePayload` (`:281-285`), `labelDefinePayload`
 (`:472-475`), `labelMutPayload` (`:641-644`). **Reason:** all decode `work:*`
 campfire messages. The nostr fold resolves items by the `d` tag / `a` coordinate
-instead (`itemIDForEvent`, `pkg/sync/nostrwire.go:618-635`) and its dedup helper
+instead (`itemIDForEvent`, `pkg/sync/nostrwire.go:633-650`) and its dedup helper
 is `appendUniqueStr` (§8.5). Note `state.statusPayload` is unrelated to
 `sync.statusPayload` (§11.8), which is the sealed `{"reason": ...}` blob.
 
@@ -983,10 +989,12 @@ fold (§5.3, §8.9). Both are `omitempty` so they do not appear in the nostr JSO
 surface.
 
 **§14.10 Kind 1633 (`KindStatusDraft`).** **Reason:** never written by rd
-(`pkg/sync/nostrwire.go:53-54`), though accepted by `isStatusKind` (§2.3). Its fold
-behaviour would be identical to any other status kind (§6) — the kind is not
-consulted for status (§6.6) — so there is nothing distinct to specify. Flagged in
-§15.4 as a conformance-vector concern.
+(`pkg/sync/nostrwire.go:53-54`) and, as of ready-816, no longer accepted by
+`isStatusKind` (§2.3) either — it is REJECTED at the fold gate
+(`pkg/sync/nostrproject.go:283,293`) alongside every other kind rd does not
+itself write. There is nothing distinct to specify because the event never
+enters `statusEvents` at all. Formerly flagged in §15.4 as an open
+conformance-vector question; that question is now resolved (see §15.4).
 
 **§14.11 `pkg/sync` machinery outside the fold** — relay transport
 (`nostrinbound.go`, `nostroutbound.go`, `negentropy.go`, `negsync.go`,
@@ -1040,11 +1048,24 @@ schema. **Question:** delete the read-side registry concept for nostr (and drop
 signed events? Until ruled, a conformance vector MUST NOT assert any label
 validation.
 
-**§15.4 `isStatusKind` accepts 1633 but rd never writes it.** §2.3, §14.10. A
-foreign client's kind-1633 draft event WOULD fold into rd's history as an ordinary
-status transition (`pkg/sync/nostrwire.go:542-544`,
-`pkg/sync/nostrproject.go:293-295`). **Question:** intended interop, or should
-1633 be excluded from `isStatusKind` so a draft cannot mutate rd state?
+**§15.4 RESOLVED (ready-816) — `isStatusKind` no longer accepts 1633.** §2.3,
+§14.10. Formerly open: a foreign client's kind-1633 draft event folded into rd's
+history as an ordinary status transition because `isStatusKind` was a RANGE test
+(`1630 <= kind <= 1633`). **Ruling:** 1633 is excluded. `isStatusKind` is now an
+explicit allowlist of exactly `{1630, 1631, 1632}`
+(`pkg/sync/nostrwire.go:552-559`), so a kind-1633 event — even signed by an
+already-trusted key — is dropped at the fold gate
+(`pkg/sync/nostrproject.go:283,293`) and contributes neither status nor history.
+Severity was cross-application collision / blast-radius, not a remote-write
+path: exploitation required a signature from an already-trusted pubkey.
+**Outstanding conflict (not resolved by ready-816):** `internal/foldvectors`'s
+`status_kind_1633_folds_like_any_status` vector (`vStatusKind1633`,
+`internal/foldvectors/cases_core.go:611-657`) still pins the PRE-ready-816
+behavior (kind 1633 folding like any status) and fails against this fix.
+Retiring or rewriting that vector — and any citation/exception-count
+consequences in `internal/foldvectors/citations_test.go` — is a decision for
+whoever owns the fold-vector suite, deliberately left unmade here; see the
+ready-816 escalation.
 
 **§15.5 `Gate` survives on terminal items.** §9.5. The terminal branch clears
 `WaitingOn`, `WaitingType`, `WaitingSince` and `GateMsgID` but NOT `Gate`
@@ -1253,7 +1274,7 @@ supersedes every earlier grant for that grantee regardless of which slot each on
 occupies.
 
 Causal ORDERING deliberately does NOT follow the split. `DriftScope`
-(`pkg/sync/nostrwire.go:557`) keys a 39301's chain off `(a, p)` rather than `d`, so
+(`pkg/sync/nostrwire.go:572`) keys a 39301's chain off `(a, p)` rather than `d`, so
 a CEK grant in a per-epoch slot and the revoke that supersedes it share one
 monotonic scope and the revoke still stamps strictly after it. Keying on `d` would
 put them in different scopes and let a same-second revoke lose to the grant it was
@@ -1322,15 +1343,15 @@ No builder calls `time.Now()`.
 `newestInScope` is the greatest `created_at` among events in the local log whose
 `DriftScope` equals the target scope (`:230-232`).
 
-**§17.3 Scope.** `DriftScope` (`pkg/sync/nostrwire.go:557-597`) is the event's
-**causal chain**: `item:<itemID>` for a card, status or issue event (`:593-596`,
-via `itemIDForEvent` `:618-635`), `grant:<boardD>:<grantee>` for a 39301
-(`:561-586`), `board:<d>` for a 30301 (`:587-592`), `""` for anything else (which
+**§17.3 Scope.** `DriftScope` (`pkg/sync/nostrwire.go:572-612`) is the event's
+**causal chain**: `item:<itemID>` for a card, status or issue event (`:608-611`,
+via `itemIDForEvent` `:633-650`), `grant:<boardD>:<grantee>` for a 39301
+(`:576-601`), `board:<d>` for a 30301 (`:602-607`), `""` for anything else (which
 therefore matches no scope). Callers name the scope explicitly:
 `ItemDriftScope(item.ID)` for every item mutation
-(`pkg/sync/nostrwire.go:602`; used at `cmd/rd/nostrwrite.go:184`,
+(`pkg/sync/nostrwire.go:617`; used at `cmd/rd/nostrwrite.go:184`,
 `cmd/rd/nostr.go:376`, `:415`) and `GrantDriftScope(boardD, grantee)` for grants
-(`pkg/sync/nostrwire.go:611`; used at `cmd/rd/confidential.go:235`).
+(`pkg/sync/nostrwire.go:626`; used at `cmd/rd/confidential.go:235`).
 
 **§17.4 Why scoped and not log-wide.** A log-wide max let an unrelated burst
 (`rd engage` over N items) inflate the NEXT write to ANY item by one second per
@@ -2096,7 +2117,7 @@ authored by a maintainer about another author's item (§19.8), where the
 coordinate points at a 30302 event that does not exist. The fold does not
 currently follow that coordinate for authority (it uses the winning CARD's first
 `a`, `pkg/sync/nostrproject.go:337`) and falls back to the `d` tag for item
-resolution (`itemIDForEvent`, `pkg/sync/nostrwire.go:622-633`), so nothing breaks
+resolution (`itemIDForEvent`, `pkg/sync/nostrwire.go:637-648`), so nothing breaks
 today. **Question:** should the card coordinate be built from the winning card's
 author, or should the clause simply forbid publishing a status event without its
 card (§19.9)?
