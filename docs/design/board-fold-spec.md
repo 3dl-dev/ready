@@ -391,10 +391,10 @@ else (including any unknown string) `→ 1630`
 the exact status rides the `status` tag (§2.3).
 
 **§7.4 Initial status.** A newly created item is built with
-`Status: state.StatusInbox` (`cmd/rd/nostrwrite.go:544`, and `:621` on the
+`Status: state.StatusInbox` (`cmd/rd/nostrwrite.go:547`, and `:624` on the
 playbook-engage path) and published as card + a 1630 status event by
-`publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:155`, called at `:550` and
-`:625`).
+`publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:155`, called at `:553` and
+`:628`).
 
 **§7.5 Close resolutions.** `rd done/fail/cancel` map through
 `closeResolutionToStatus` (`cmd/rd/nostrwrite.go:246`); a close is refused when the
@@ -451,7 +451,7 @@ reported at fold time. Each member of a cycle simply blocks the others
 
 **§8.7 Implicit unblock is a WRITE rule, not a fold rule.** On close, rd
 re-publishes the cards of every item this item was blocking
-(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:638`, called from
+(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:641`, called from
 `runCloseNostr`, `:250`). The fold itself needs no such step: §8.4 already ignores
 terminal blockers on the next replay.
 
@@ -1313,7 +1313,7 @@ stamped strictly later (§17.2).
 
 **§17.7 Multi-publish commands stamp per publish, not per command.**
 `runUpdateNostr` can issue up to three separate publishes in one invocation — a
-card edit (`cmd/rd/nostrwrite.go:465`), a status change (`:478`), a claim status
+card edit (`cmd/rd/nostrwrite.go:468`), a status change (`:481`), a claim status
 change (`:486`) — and each calls `nostrNextCreatedAt` independently after the
 previous publish has already appended. So a single `rd update --title X --status
 active` produces events at `T` and `T+1`, in that order, deterministically.
@@ -1425,11 +1425,11 @@ or a body shorter than nonce+tag, and quarantines the event
 There is NEVER a content-hash tag (frozen envelope §6, restated at
 `pkg/sync/nostrwire.go:341`).
 
-**§18.8 Card create.** `runCreateNostr` (`cmd/rd/nostrwrite.go:507-554`) derives
+**§18.8 Card create.** `runCreateNostr` (`cmd/rd/nostrwrite.go:510-557`) derives
 the id (generated from the project prefix, collision-checked against the whole
-projection, `:519-532`), defaults `For` to the signer unless `--for` was given
-(`:512-517`), builds the item with `Status: state.StatusInbox` (`:544`), and calls
-`publishItemFullCreateNostr` (`:550`). That publishes, in ONE call at ONE
+projection, `:522-535`), defaults `For` to the signer unless `--for` was given
+(`:515-520`), builds the item with `Status: state.StatusInbox` (`:547`), and calls
+`publishItemFullCreateNostr` (`:553`). That publishes, in ONE call at ONE
 `created_at` (§17.6): the board event **iff** the signer is the board author
 (§16.6), the card, the kind-1621 issue event iff none exists yet and the board is
 plaintext (§19.6), and a kind-1630 status event carrying `status=inbox`
@@ -1579,11 +1579,11 @@ was blocking. `rd done` and `rd complete` route here with resolution `"done"`
 `done`/`fail`/`cancel` (`cmd/rd/aliases.go:222`).
 
 **§20.4 Explicit status set.** `runUpdateNostr`'s status block
-(`cmd/rd/nostrwrite.go:470-481`) assigns `Status=<statusTo>` and, when supplied,
-`WaitingOn` / `WaitingType` (`:471-477`), then publishes with `--note` as the
-reason (`:478`). The CLI auto-sets `statusTo=waiting` when `--waiting-on` is given
-without `--status` (`cmd/rd/update.go:52-55`) and resolves bd-style status
-aliases before dispatch (`:66-72`). Note the terminal guard here is
+(`cmd/rd/nostrwrite.go:473-484`) assigns `Status=<statusTo>` and, when supplied,
+`WaitingOn` / `WaitingType` (`:474-480`), then publishes with `--note` as the
+reason (`:481`). The CLI auto-sets `statusTo=waiting` when `--waiting-on` is given
+without `--status` (`cmd/rd/update.go:53-56`) and resolves bd-style status
+aliases before dispatch (`:72-78`). Note the terminal guard here is
 **field-conditional**: `runUpdateNostr` refuses a terminal item only when a FIELD
 update is also present (`cmd/rd/nostrwrite.go:442-444`) — a status-only update
 can reopen a terminal item. See §27.2.
@@ -1620,9 +1620,9 @@ tests only the BLOCKED argument, not the BLOCKER (§27.4).
 
 **§21.4 Implicit unblock is a write-side courtesy, not a fold rule.** On close,
 rd republishes the card of every item the closing item was blocking
-(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:638-652`), each as a
-plain card edit (`:648`), each failure warned and skipped rather than fatal
-(`:645`, `:649`). The fold does not need this — §8.4 already ignores terminal
+(`publishImplicitUnblockNostrNative`, `cmd/rd/nostrwrite.go:641-655`), each as a
+plain card edit (`:651`), each failure warned and skipped rather than fatal
+(`:648`, `:652`). The fold does not need this — §8.4 already ignores terminal
 blockers on the next replay — so an independent client MAY omit it. What it MUST
 NOT do is write `s=blocked` to express a dependency: `blocked` is derived (§7.6,
 §8.4) and any authored value is overwritten on the next replay.
@@ -1743,21 +1743,27 @@ see §27.1.
 
 ---
 
-## 24. Field edits: title, priority, context, ETA, due, level
+## 24. Field edits: title, priority, context, ETA, due, level, parent
 
-**§24.1 All six are card rewrites, not separate events.** `runUpdateNostr`'s field
-block (`cmd/rd/nostrwrite.go:446-468`) assigns `Title`, `Context`, `Priority`,
-`ETA`, `Due`, `Level` — each only when the corresponding flag was non-empty
-(`:447-464`) — and publishes ONE card edit (`:465`). There is no title event, no
-priority event, no `rank`-only event. A retitle and a re-prioritise are the same
-kind of act: republish the whole card (§18.2) with one tag different.
+**§24.1 All seven are card rewrites, not separate events.** `runUpdateNostr`'s field
+block (`cmd/rd/nostrwrite.go:446-471`) assigns `Title`, `Context`, `Priority`,
+`ETA`, `Due`, `Level`, `ParentID` — each only when the corresponding flag was
+non-empty (`:447-467`) — and publishes ONE card edit (`:468`). There is no title
+event, no priority event, no `rank`-only event, no reparent event. A retitle, a
+re-prioritise, and a reparent (`rd update --parent-id`, ready-b878) are the same
+kind of act: republish the whole card (§18.2) with one tag different. Because
+this is a card-only edit (no status event), it carries no risk of the §25.6/§27.1
+derived-status-burn-in class of defect: `ParentID` is a plain stored field, never
+recomputed at fold time, so a reparent is a pure field change with none of
+`Status`'s derived-vs-authoritative ambiguity.
 
 **§24.2 Empty string means "unchanged", not "clear".** Every field assignment is
-guarded by `!= ""` (`cmd/rd/nostrwrite.go:447`, `:450`, `:453`, `:456`, `:459`, `:462`), so no `rd
-update` flag can CLEAR a field. Combined with §18.2 (an omitted field is a deleted
-field) this gives an asymmetry an independent client must understand: rd's own CLI
-cannot empty a field, but any client that builds a `CardSpec` directly and leaves a
-field empty WILL empty it on the winning card.
+guarded by `!= ""` (`cmd/rd/nostrwrite.go:447`, `:450`, `:453`, `:456`, `:459`, `:462`, `:465`), so no `rd
+update` flag can CLEAR a field — including `--parent-id`: there is no way to
+un-parent an item back to orphan via `rd update` today. Combined with §18.2 (an
+omitted field is a deleted field) this gives an asymmetry an independent client
+must understand: rd's own CLI cannot empty a field, but any client that builds a
+`CardSpec` directly and leaves a field empty WILL empty it on the winning card.
 
 **§24.3 Priority emits two tags.** `Priority` produces BOTH `rank` and `priority`
 with the same value (`pkg/sync/nostrwire.go:272-276`); the fold prefers
@@ -1773,8 +1779,8 @@ therefore the event id.
 
 **§24.5 Field edit + status change in one command = two publishes.** When both
 `hasFieldUpdate` and `hasStatusUpdate` are set, the card edit is published FIRST
-(`cmd/rd/nostrwrite.go:465`), then the status change publishes ANOTHER card plus
-the status event (`:478`) at `created_at + 1` (§17.7). The intermediate card is a
+(`cmd/rd/nostrwrite.go:468`), then the status change publishes ANOTHER card plus
+the status event (`:481`) at `created_at + 1` (§17.7). The intermediate card is a
 real, permanent event; there is no transactional batching.
 
 **§24.6 `rd defer` and `rd progress` are field edits.** `rd defer` normalises the
@@ -1787,8 +1793,8 @@ it refuses a terminal item first (`:192-194`). Progress notes are therefore
 
 **§24.7 `--claim` inside `rd update`.** The claim block sets `Status=active` and
 `By=<signer>` and publishes a status change with an EMPTY reason
-(`cmd/rd/nostrwrite.go:483-489`). Because the CLI also sets `statusTo=active`
-when `--claim` is passed without `--status` (`cmd/rd/update.go:47-50`), a bare
+(`cmd/rd/nostrwrite.go:486-492`). Because the CLI also sets `statusTo=active`
+when `--claim` is passed without `--status` (`cmd/rd/update.go:48-51`), a bare
 `rd update --claim` satisfies BOTH the status block and the claim block and
 publishes TWO status changes. See §27.2.
 
@@ -1881,9 +1887,9 @@ file, and every publish helper it uses:
 `runRejectNostr` (`:330`) §22.3; `runDepAddNostr` (`:353`) §21.1;
 `runDepRemoveNostr` (`:376`) §21.1; `runLabelAddNostr` (`:394`) §23.1;
 `runLabelRemoveNostr` (`:409`) §23.1; `runUpdateNostr` (`:433`) §20.4 + §24.1 +
-§24.7; `runCreateNostr` (`:507`) §18.8; `runEngageNostr` (`:563`) /
-`publishEngagedItemsNostr` (`:605`) §26.3; `publishImplicitUnblockNostrNative`
-(`:638`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
+§24.7; `runCreateNostr` (`:510`) §18.8; `runEngageNostr` (`:566`) /
+`publishEngagedItemsNostr` (`:608`) §26.3; `publishImplicitUnblockNostrNative`
+(`:641`) §21.4; `publishItemStatusChangeNostr` (`cmd/rd/nostr.go:353`) §19.9;
 `publishItemCardEditNostr` (`cmd/rd/nostr.go:392`) §18.9; `setCardEnvelope`
 (`cmd/rd/confidential.go:311`) §16.7. The remaining non-mutating helpers in the
 same file are dispositioned too, so nothing in it is an orphan:
@@ -1894,9 +1900,9 @@ gate (Part I, §1.1); `emitMutationResult` (`:200`) formats CLI output only and
 writes no event (§22.4).
 
 **§26.3 `rd engage` is N creates.** `publishEngagedItemsNostr`
-(`cmd/rd/nostrwrite.go:605-631`) loops the expanded playbook items, building each
-with `Status: state.StatusInbox` (`:621`) and `BlockedBy: ei.Deps` (`:623`), and
-calls `publishItemFullCreateNostr` per item (`:625`). Deps between siblings work
+(`cmd/rd/nostrwrite.go:608-634`) loops the expanded playbook items, building each
+with `Status: state.StatusInbox` (`:624`) and `BlockedBy: ei.Deps` (`:626`), and
+calls `publishItemFullCreateNostr` per item (`:628`). Deps between siblings work
 regardless of publish order because the ids are pre-generated and the fold
 resolves `i` tags after all items are known (§8.2). Nothing here is a new event
 shape — §18.8 covers it entirely.
@@ -1944,9 +1950,9 @@ general rather than only for the no-key-at-all case.
 
 **§27.2 `rd update` has two status anomalies.** (a) A bare `rd update --claim`
 publishes TWO status changes: the CLI sets `statusTo=active`
-(`cmd/rd/update.go:47-50`), satisfying the status block
-(`cmd/rd/nostrwrite.go:470-481`), and the claim block then publishes again
-(`:483-489`) — two cards, two 1630 events, one at `T` and one at `T+1` (§17.7),
+(`cmd/rd/update.go:48-51`), satisfying the status block
+(`cmd/rd/nostrwrite.go:473-484`), and the claim block then publishes again
+(`:486-492`) — two cards, two 1630 events, one at `T` and one at `T+1` (§17.7),
 the second with an empty reason. (b) The terminal guard is field-conditional
 (`:442-444`): `rd update --status active` on a `done` item is ACCEPTED and reopens
 it, while `rd claim` (`:224-226`), `rd done` (`:242-244`), `rd gate` (`:281-283`)
@@ -1983,8 +1989,8 @@ write-side half of §15.3; a ruling there must also fix or delete this help text
 Until ruled, a conformance vector MUST NOT assert that any label is rejected.
 
 **§27.6 `Item.Project` is set at create time and never written to the wire.**
-`runCreateNostr` populates `item.Project` (`cmd/rd/nostrwrite.go:540`) and
-`publishEngagedItemsNostr` sets it from the project prefix (`:618`), but
+`runCreateNostr` populates `item.Project` (`cmd/rd/nostrwrite.go:543`) and
+`publishEngagedItemsNostr` sets it from the project prefix (`:621`), but
 `CardSpecFromItem` (`pkg/sync/nostrmigrate.go:106-127`) has no `Project` field and
 `BuildCardEvent` emits no such tag — so the value is dropped on the first
 publish and the fold always projects `Project=""`. The `--project` filter
