@@ -153,6 +153,9 @@ func nostrExistingIDs() (map[string]struct{}, error) {
 // without a follow-up republish. Returns an error (fatal on the native path) when
 // the log append fails.
 func publishItemFullCreateNostr(dir, signer string, item *state.Item) error {
+	if err := refuseRedactedRepublish(item); err != nil {
+		return err
+	}
 	pub, ok, err := nostrPublisher()
 	if err != nil {
 		return err

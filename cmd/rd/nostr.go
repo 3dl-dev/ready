@@ -354,6 +354,9 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	if !nostrWriteActive() {
 		return nil
 	}
+	if err := refuseRedactedRepublish(item); err != nil {
+		return err
+	}
 	pub, ok, err := nostrPublisher()
 	if err != nil || !ok {
 		return err
@@ -389,6 +392,9 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 func publishItemCardEditNostr(item *state.Item) error {
 	if !nostrWriteActive() {
 		return nil
+	}
+	if err := refuseRedactedRepublish(item); err != nil {
+		return err
 	}
 	pub, ok, err := nostrPublisher()
 	if err != nil || !ok {
@@ -527,6 +533,9 @@ var nostrPublishCmd = &cobra.Command{
 		// which does not exist on a nostr-native project (ready-50a).
 		item, err := nostrResolveItem(itemID)
 		if err != nil {
+			return err
+		}
+		if err := refuseRedactedRepublish(item); err != nil {
 			return err
 		}
 		pub, ok, err := nostrPublisher()
