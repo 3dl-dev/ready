@@ -186,7 +186,7 @@ they are neither an item nor an error.
 **§4.1 Card latest-wins.** Among surviving cards for an item, the winner is the
 one for which `newerThan` holds against the incumbent: greater `created_at`; on a
 `created_at` TIE, the **lexicographically LOWEST event id** wins
-(`pkg/sync/nostrproject.go:552-557`, applied at `:289-292`). This matches NIP-01's
+(`pkg/sync/nostrproject.go:572-577`, applied at `:289-292`). This matches NIP-01's
 replaceable-event rule and strfry's own tie-break, so the relay's retained event
 and the local winner agree.
 
@@ -213,7 +213,7 @@ without a `p` tag revokes that maintainer.
 
 **§4.6 Time units.** Event `created_at` is unix **seconds** (NIP-01). `state.Item`
 timestamps are unix **nanoseconds**: `itemFromCard` multiplies by
-`int64(time.Second)` (`pkg/sync/nostrproject.go:564-566`), and `UpdatedAt` from a
+`int64(time.Second)` (`pkg/sync/nostrproject.go:584-586`), and `UpdatedAt` from a
 status event does the same (`:424`). `HistoryEntry.Timestamp` is RFC3339 UTC at
 second granularity (`:418`).
 
@@ -270,33 +270,33 @@ number that is only safe by accident).
 
 ## 5. Card → item field projection
 
-**§5.1** `itemFromCard` (`pkg/sync/nostrproject.go:562-628`) maps the winning
+**§5.1** `itemFromCard` (`pkg/sync/nostrproject.go:582-648`) maps the winning
 card's tags and content onto `*state.Item`:
 
 | Item field | Source | Cite |
 |---|---|---|
-| `ID` | `d` tag | `:563` |
-| `MsgID` | the card's own **event id** | `:568` |
-| `Title` | `title` tag (absent when confidential) | `:569` |
-| `Status` | `s` tag | `:570` |
-| `Priority` | `priority` tag, falling back to `rank` | `:571` |
-| `Type` | `itype` tag | `:572` |
-| `Context` / `Description` | `Content` (both set to the same value) | `:573-574` |
-| `CreatedAt` / `UpdatedAt` | `created_at * 1e9` | `:575-576` |
-| `BlockedBy` | **raw** `i` tags, unvalidated (staging; see §8.1) | `:579` |
-| `Gate` | `gate` tag | `:580` |
-| `WaitingType` | `waiting_type` tag | `:581` |
-| `WaitingOn` | `waiting_on` tag (absent when confidential) | `:582` |
-| `Labels` | all `l` tags, in tag order | `:583` |
-| `ETA` | `eta` tag | `:584` |
-| `Level` | `level` tag | `:588` |
-| `For` | `for` tag | `:589` |
-| `ParentID` | `parent` tag | `:590` |
-| `Due` | `due` tag | `:591` |
-| `By` | `p` tag, only when non-empty | `:593-595` |
+| `ID` | `d` tag | `:583` |
+| `MsgID` | the card's own **event id** | `:588` |
+| `Title` | `title` tag (absent when confidential) | `:589` |
+| `Status` | `s` tag | `:590` |
+| `Priority` | `priority` tag, falling back to `rank` | `:591` |
+| `Type` | `itype` tag | `:592` |
+| `Context` / `Description` | `Content` (both set to the same value) | `:593-594` |
+| `CreatedAt` / `UpdatedAt` | `created_at * 1e9` | `:595-596` |
+| `BlockedBy` | **raw** `i` tags, unvalidated (staging; see §8.1) | `:599` |
+| `Gate` | `gate` tag | `:600` |
+| `WaitingType` | `waiting_type` tag | `:601` |
+| `WaitingOn` | `waiting_on` tag (absent when confidential) | `:602` |
+| `Labels` | all `l` tags, in tag order | `:603` |
+| `ETA` | `eta` tag | `:604` |
+| `Level` | `level` tag | `:608` |
+| `For` | `for` tag | `:609` |
+| `ParentID` | `parent` tag | `:610` |
+| `Due` | `due` tag | `:611` |
+| `By` | `p` tag, only when non-empty | `:613-615` |
 
 **§5.2** A missing tag projects to the zero value — this is the backward-compat
-rule for cards written before a tag existed (`pkg/sync/nostrproject.go:585-591`).
+rule for cards written before a tag existed (`pkg/sync/nostrproject.go:605-611`).
 
 **§5.3** `CampfireID` is NEVER set by the nostr fold; it is `omitempty` precisely
 so the shipped nostr JSON surface carries no `campfire_id`
@@ -425,32 +425,45 @@ references to `StatusScheduled` are the two view predicates
 ## 8. Dependency edge derivation
 
 **§8.1 Staging.** `itemFromCard` puts the card's raw `i` tags into `BlockedBy`
-unvalidated (`pkg/sync/nostrproject.go:579`). `applyDepAndGateStatus` then drains
+unvalidated (`pkg/sync/nostrproject.go:599`). `applyDepAndGateStatus` then drains
 that field into an edge list and CLEARS it, rebuilding it from validated edges
 only (`pkg/sync/nostrproject.go:453-460`). So `BlockedBy` on the returned item is
 never the raw tag set.
 
+**§8.1a Edge order is sorted, not map-iteration order (ready-f5f).** The edge
+list is built by ranging over the items map (inherently unordered per Go's spec),
+so it is sorted by `(blockedID, blockerID)` ascending BEFORE any edge is applied
+(`pkg/sync/nostrproject.go:461-480`). Because `blockedID` is the primary sort
+key, every blocker's own subsequence of edges stays in ascending `blockedID`
+order too, so both `BlockedBy` (§8.5) and `Blocks` (§8.5) end up deterministically
+ordered — not just deterministically PRESENT — regardless of map-iteration order
+or input event order. Without this, two folds of the identical event set could
+print a blocked item's `BlockedBy` (or a blocker's `Blocks`) in different array
+orders on different runs (or even different runs of the same process), which is
+exactly the failure mode §13.14/§15.7 rule out for view ORDER as a whole.
+
 **§8.2 Unresolvable edges are dropped silently.** An edge whose blocker or blocked
 id is not present in this projection is skipped
-(`pkg/sync/nostrproject.go:462-465`) — no warning, no field, no error.
+(`pkg/sync/nostrproject.go:482-485`) — no warning, no field, no error.
 
 **§8.3 Terminal blocked items are skipped.** An edge whose *blocked* item is
 terminal contributes nothing at all — not even a `BlockedBy` entry
-(`pkg/sync/nostrproject.go:467-469`).
+(`pkg/sync/nostrproject.go:487-489`).
 
 **§8.4 Blocked status.** For a surviving edge, if the BLOCKER is non-terminal the
 blocked item's status is set to `blocked`
-(`pkg/sync/nostrproject.go:470-472`). This overwrites whatever §6.10 decided.
+(`pkg/sync/nostrproject.go:490-492`). This overwrites whatever §6.10 decided.
 
 **§8.5 Edge fields.** For every surviving edge (regardless of the blocker's
 terminal state) `blocked.BlockedBy += blockerID` and `blocker.Blocks += blockedID`
-(`pkg/sync/nostrproject.go:473-474`), deduped by `appendUniqueStr`
-(`:531-538`). So `BlockedBy` records the *dependency*, not only *active* blockers
-— matching `pkg/state/state.go:1008-1009`.
+(`pkg/sync/nostrproject.go:493-494`), deduped by `appendUniqueStr`
+(`:551-558`). So `BlockedBy` records the *dependency*, not only *active* blockers
+— matching `pkg/state/state.go:1008-1009`. Per §8.1a, both arrays are also
+sorted ascending by the other side of the edge, not just deduped.
 
 **§8.6 No cycle detection.** A dependency cycle is not detected, rejected, or
 reported at fold time. Each member of a cycle simply blocks the others
-(`pkg/sync/nostrproject.go:461-475` has no visited set).
+(`pkg/sync/nostrproject.go:481-495` has no visited set).
 
 **§8.7 Implicit unblock is a WRITE rule, not a fold rule.** On close, rd
 re-publishes the cards of every item this item was blocking
@@ -507,34 +520,34 @@ ruling is preserved in history.
 
 **§9.4 Card-declared gate promotion.** Define
 `declaresGate := WaitingType != "" || WaitingOn != "" || Gate != ""`
-(`pkg/sync/nostrproject.go:490`). A non-blocked, non-terminal item that
+(`pkg/sync/nostrproject.go:510`). A non-blocked, non-terminal item that
 `declaresGate` is promoted to `Status=waiting`
-(`:491-493`). This exists because a gate can be CURRENT state without ever having
+(`:511-513`). This exists because a gate can be CURRENT state without ever having
 been a status transition (migrated campfire items), and blocking is checked FIRST
 so it supersedes.
 
 **§9.5 Terminal clears everything.** A terminal item has `WaitingOn`,
 `WaitingType`, `WaitingSince`, `GateMsgID` cleared unconditionally
-(`pkg/sync/nostrproject.go:494-500`). Note `Gate` itself is NOT cleared here.
+(`pkg/sync/nostrproject.go:514-520`). Note `Gate` itself is NOT cleared here.
 
 **§9.6 Gate field derivation (non-terminal, `declaresGate`).** `WaitingSince`, if
 empty, is derived from `UpdatedAt` as RFC3339 UTC
-(`pkg/sync/nostrproject.go:512-514`). `GateMsgID` is set to `item.MsgID` — the
+(`pkg/sync/nostrproject.go:532-534`). `GateMsgID` is set to `item.MsgID` — the
 **winning card's event id** (§5.1) — if and only if `WaitingType == "gate"`;
-otherwise it is cleared (`:515-519`). There is no separate "gate event"; the gate
+otherwise it is cleared (`:535-539`). There is no separate "gate event"; the gate
 identity IS the card identity, which is why the id changes on every card
 republish.
 
 **§9.7 Gate fields persist under blocking.** When an item both `declaresGate` and
 is blocked, §8.4 wins on STATUS (`blocked`) but the gate fields are retained by
-`:501-519` — the pending gate is still real. This is the documented parity fix
+`:521-539` — the pending gate is still real. This is the documented parity fix
 with `pkg/state.applyBlockStatus`, which likewise never clears them.
 
 **§9.8 No declared gate.** All four fields are cleared
-(`pkg/sync/nostrproject.go:520-526`).
+(`pkg/sync/nostrproject.go:540-546`).
 
 **§9.9 Ordering.** §9.4–§9.8 run inside `applyDepAndGateStatus` AFTER the dep pass
-(`pkg/sync/nostrproject.go:452`, dep loop `:461-475`, gate loop `:477-527`), and
+(`pkg/sync/nostrproject.go:452`, dep loop `:481-495`, gate loop `:497-547`), and
 `applyDepAndGateStatus` itself runs after the whole per-item status pass
 (`:435`). An independent client MUST use this ordering: gate promotion reads the
 blocked status the dep pass just wrote.
@@ -545,7 +558,7 @@ blocked status the dep pass just wrote.
 
 **§10.1 Nostr labels are FREEFORM.** `Item.Labels` is every `l` tag on the winning
 card, in tag order, with **no pattern check and no registry check**
-(`pkg/sync/nostrproject.go:583`). The nostr projection has no per-project label
+(`pkg/sync/nostrproject.go:603`). The nostr projection has no per-project label
 registry; this is stated in the code at `cmd/rd/list.go:199-202` and
 `cmd/rd/label.go:84-86`.
 
@@ -561,8 +574,8 @@ tag value is `hex(HMAC-SHA256(LTK, label))`
 tag at all rather than leaking a plaintext label
 (`pkg/sync/nostrwire.go:310-314`). A granted reader replaces `Item.Labels` with
 the plaintext labels from the sealed blob when the blob decrypts AND is non-empty
-(`pkg/sync/nostrproject.go:609-611`); a non-member keeps the opaque tokens
-(`:622-623`, comment).
+(`pkg/sync/nostrproject.go:629-631`); a non-member keeps the opaque tokens
+(`:642-643`, comment).
 
 **§10.4 Registry is seed-only and advisory.** `state.DeriveAll("", nil)` yields
 the built-in seed atoms (`declarations.LoadSeedLabels`,
@@ -619,14 +632,14 @@ parses, AND the decryptor holds a key for `(boardCoord, epoch)`. Every negative
 path is a silent fail-closed, never an error surfaced to the user.
 
 **§11.7 Card placeholder rule.** When `isConfidential(card)`
-(`pkg/sync/nostrproject.go:603`): on successful decrypt, `Title`, `Context`,
+(`pkg/sync/nostrproject.go:623`): on successful decrypt, `Title`, `Context`,
 `Description`, `WaitingOn` come from the sealed `cardPayload`
 (`pkg/sync/envelope.go:246-251`), and `Labels` are replaced only if the sealed
-list is non-empty (`pkg/sync/nostrproject.go:604-611`). On failure: `Title`,
+list is non-empty (`pkg/sync/nostrproject.go:624-631`). On failure: `Title`,
 `Context`, `Description` become `placeholderText` = `"[encrypted]"`
 (`pkg/sync/envelope.go:39`) and `WaitingOn` becomes `""` — hidden rather than
 shown as a placeholder, because the clear `waiting_type` still renders
-(`pkg/sync/nostrproject.go:612-625`). **Every clear routing field (§5.1) renders
+(`pkg/sync/nostrproject.go:632-645`). **Every clear routing field (§5.1) renders
 normally regardless.** The read path never surfaces raw ciphertext, never panics,
 never exits non-zero.
 
@@ -895,7 +908,7 @@ non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
 
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
-(`cmd/rd/nostr.go:942-946`) and then sorts — by priority, then ETA, then ID for
+(`cmd/rd/nostr.go:978-981`) and then sorts — by priority, then ETA, then ID for
 ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:276-288`),
 by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
 total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
@@ -1020,7 +1033,7 @@ false.
 **§15.2 Cross-board deps: non-blocking, but silently.** §8.9. The item spec for
 this document calls for "cross-board deps NON-BLOCKING **with warnings**." The
 nostr fold gives non-blocking WITHOUT warnings — the edge is dropped at
-`pkg/sync/nostrproject.go:462-465` with no record, and
+`pkg/sync/nostrproject.go:482-485` with no record, and
 `Item.CrossCampfireWarnings` is never populated. Only the campfire fold warns
 (`pkg/state/state.go:880-897`). **Question:** should `applyDepAndGateStatus`
 populate `CrossCampfireWarnings` for an unresolvable `i` tag that
@@ -1032,7 +1045,7 @@ arises only from a foreign client or a migrated card.
 The campfire fold enforces the atom pattern AND registry membership at derive time
 and drops violators into `LabelWarnings`
 (`pkg/state/state.go:610-628`). The nostr fold accepts any `l` tag verbatim
-(`pkg/sync/nostrproject.go:583`). The code states this is intentional
+(`pkg/sync/nostrproject.go:603`). The code states this is intentional
 ("card labels are freeform", `cmd/rd/label.go:63`), but the result is that
 `Item.LabelWarnings` is dead on the live path while remaining in the shipped JSON
 schema. **Question:** delete the read-side registry concept for nostr (and drop
@@ -1048,7 +1061,7 @@ status transition (`pkg/sync/nostrwire.go:542-544`,
 
 **§15.5 `Gate` survives on terminal items.** §9.5. The terminal branch clears
 `WaitingOn`, `WaitingType`, `WaitingSince` and `GateMsgID` but NOT `Gate`
-(`pkg/sync/nostrproject.go:494-500`), so a closed item can still report a gate
+(`pkg/sync/nostrproject.go:514-520`), so a closed item can still report a gate
 category. This is invisible to `GatesFilter` (which requires `waiting` or
 `blocked`, never terminal) but
 visible in `rd show` / JSON, and `FocusFilter` also cannot see it (terminal items
@@ -1062,23 +1075,66 @@ browser client that builds the filter once and re-applies it) will silently use 
 stale clock. **Question:** move the clock read inside the closure, or document the
 construct-per-use contract as normative?
 
-**§15.7 `sortByPriorityETA` is not a total order. RESOLVED (ready-e88 rework).**
-§13.14. The comparator used to tie on equal `(priority, ETA)`, so two items
-sharing both (the common case for un-triaged items, both empty) rendered in
-either order across runs — the input slice comes from nondeterministic map
-iteration (`cmd/rd/nostr.go:942-946`), and this was observed directly: an
-adversary ran the same locally-built binary twice against the same live
-board and got differing piped bare-ID order and 6 differing `--json` fields
-(nested `blocks` array order). Fixed by adding an ID tie-break — mirroring
-`rd list`'s existing tie-break on ID (`cmd/rd/list.go:103-110`) — and
-switching `sort.Slice` to `sort.SliceStable` as defense-in-depth on top of it
-(`sortByPriorityETA`, `cmd/rd/ready.go:276-288`). With a full total
-order over `(priority, ETA, ID)`, output order is now fully determined by the
-item set, not by input order, closing the "MUST NOT assert on ordering"
-caveat below — a conformance suite MAY now assert on `rd ready` ordering.
-Covered by `TestSortByPriorityETA_DeterministicTiebreak`
-(`cmd/rd/ready_runE_test.go`), which sorts the same item set from two
-different starting orders and asserts identical output order both times.
+**§15.7 — RESOLVED AND REMOVED (ready-f5f, completing the ready-e88 rework).**
+This entry is no longer an open question, but its first-pass closure
+(ready-e88) was **narrower than this stub originally claimed**, and that
+overreach has since been corrected (ready-f5f rework) — the history is kept
+below rather than silently tightened, because the gap it names (§8.1a) is
+exactly the kind of thing a conformance-vector author needs to know was once
+wrong.
+
+`sortByPriorityETA` is a total order over `(priority, ETA, ID)`, so the
+TOP-LEVEL item order `rd ready`/`work`/`pending`/`focus`/`gates` prints is
+fully determined by the item set, never by the nondeterministic map iteration
+that fed it (`cmd/rd/nostr.go:978-981`). The normative statement of the
+tiebreak — the numbered clause required in its place — lives in **§13.14**,
+not here; this stub stays in place, per this document's own §27.1 precedent,
+so that every existing `§15.7` citation elsewhere (`internal/foldvectors`,
+`cmd/rd/ready.go`, this file's own §13.14 and §1) still resolves to the right
+place rather than a renumbered section. Coverage: `sortByPriorityETA` is a
+strict total order and independent of input order
+(`TestSortByPriorityETA_DeterministicTiebreak`,
+`cmd/rd/ready_runE_test.go`).
+
+**That top-level-order proof was NOT the whole determinism claim, and treating
+it as one was the overreach.** The first version of this entry asserted
+output was "fully determined by the item set" and lifted
+`internal/foldvectors`'s ordering caveat on that basis alone — but its own
+regression test (`TestReadyCmd_RunE_ByteIdenticalAcrossNRuns`) only ever
+exercised `buildTreeShapedProject`, a fixture with `parent_id` edges and ZERO
+dependency edges. `applyDepAndGateStatus` (§8) builds its dependency-edge list
+from a Go MAP RANGE (`pkg/sync/nostrproject.go:453-460`), independently of
+`sortByPriorityETA`, so any item with 2+ dependency edges had its
+`Blocks`/`BlockedBy` array order — CONTENT, not top-level order — vary
+byte-for-byte across runs of the identical event set (tracked separately as
+ready-e12, discovered live against the production board the same day this
+entry first closed). A vector with a single-edge `Blocks`/`BlockedBy` could
+never expose this, which is why every existing `internal/foldvectors` case
+(`cases_core.go:705-871`, `cases_security.go:589`) stayed green under the
+original, overreaching claim.
+
+**Fixed as of this rework:** edges are now sorted by `(blockedID, blockerID)`
+ascending before being applied (§8.1a,
+`pkg/sync/nostrproject.go:461-480`), making `Blocks`/`BlockedBy` order
+deterministic too. Coverage:
+`TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges`
+(`cmd/rd/ready_runE_test.go`) runs a one-blocker/six-blockee fixture through
+the real end-to-end pipeline (nostr log read → `ProjectItems` fold → sort →
+JSON encode) 25 times and asserts byte-identical output, including the
+blocker's `blocks` array — verified to FAIL (diverging array order) when
+§8.1a's sort is reverted. A companion test,
+`TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView`, runs the same
+byte-identical assertion through `printReadyTree` (the actual TTY-default,
+non-`--json` render path introduced by ready-e88), since the `--json`-only
+tests above return before that branch and so never covered it.
+
+**Consequence, now actually earned: `internal/foldvectors` (ready-a13a) may
+assert view ORDER, both top-level item order and any item's own
+`Blocks`/`BlockedBy` array order, instead of membership-as-a-set** — the "MUST
+NOT assert on ordering" caveat those vectors were annotated with is lifted as
+of THIS entry's revision, not the ready-e88 one. A vector added under the
+ORIGINAL (pre-rework) green light, with 2+ dependency edges on one item, would
+have been flaky by construction; that is no longer true.
 
 **§15.8 The frozen envelope spec's line citations have drifted.** Frozen §1 cites
 `BuildCardEvent` at `pkg/sync/nostrwire.go:237-310` and §2 cites
@@ -1093,8 +1149,8 @@ argument for the conformance suite asserting on behaviour rather than on line
 numbers.
 
 **§15.9 `Description` is a permanent alias of `Context`.** §5.1. Both fields are
-set from the card's `Content` (`pkg/sync/nostrproject.go:573-574`) and both are
-overwritten together on confidential decrypt (`:606-607`, `:619-620`). The
+set from the card's `Content` (`pkg/sync/nostrproject.go:593-594`) and both are
+overwritten together on confidential decrypt (`:626-627`, `:639-640`). The
 campfire fold keeps them in sync too (`pkg/state/state.go:838`). They can never
 diverge, so the nostr JSON surface ships the same string twice. **Question:**
 retire `Description` (it is documented as "alias for context, for bd
@@ -1223,7 +1279,7 @@ constructs a `Publisher` will hit it.
 republishes the WHOLE latest-wins card, rebuilt from the PROJECTED item via
 `CardSpecFromItem` (§18.2). When the projection could not decrypt that item's
 card it fail-closes its free-text fields to the literal `"[encrypted]"`
-placeholder AND sets `Item.Redacted` (`pkg/sync/nostrproject.go:613-621`). Every
+placeholder AND sets `Item.Redacted` (`pkg/sync/nostrproject.go:633-641`). Every
 card-publishing path calls `refuseRedactedRepublish`
 (`cmd/rd/confidential_guard.go:28`) FIRST and aborts the whole mutation when that
 flag is set — `publishItemFullCreateNostr` (`cmd/rd/nostrwrite.go:156`),
@@ -1355,7 +1411,7 @@ stamped at least one second later, so §4.1's `(created_at, lowest event id)`
 tiebreak is never reached and **intent order wins**. Across machines it
 guarantees nothing: two genuinely concurrent same-second writes to the same item
 still resolve by lowest event id (§4.1, `newerThan`,
-`pkg/sync/nostrproject.go:552-557`), which is content-hash order — i.e. a lost
+`pkg/sync/nostrproject.go:572-577`), which is content-hash order — i.e. a lost
 update. An independent client MUST implement §17.2 (a client that stamps plain
 `time.Now()` will lose its own second write to its own first write whenever the
 first has the lower id).
@@ -1664,7 +1720,7 @@ can reopen a terminal item. See §27.2.
 `Status`; `Gate`, `WaitingType` and `WaitingOn` are still carried onto the
 republished card by `CardSpecFromItem`. The fold then clears `WaitingOn`,
 `WaitingType`, `WaitingSince` and `GateMsgID` on terminal items but NOT `Gate`
-(§9.5, `pkg/sync/nostrproject.go:494-500`). The writer and the reader agree; the
+(§9.5, `pkg/sync/nostrproject.go:514-520`). The writer and the reader agree; the
 retained `Gate` is already filed as §15.5.
 
 ---
@@ -1806,8 +1862,8 @@ written label tokens. It is distributed in the same owner-signed grant as the CE
 
 **§23.5 A member who cannot decrypt MUST NOT write.** On the read side an
 undecryptable confidential card projects `Labels` as the opaque tokens
-(`pkg/sync/nostrproject.go:622-624` comment) and `Title`/`Context` as
-`placeholderText` (`:612-625`). Round-tripping that item through any card edit
+(`pkg/sync/nostrproject.go:642-644` comment) and `Title`/`Context` as
+`placeholderText` (`:632-645`). Round-tripping that item through any card edit
 would re-seal the placeholder over the real title and re-tokenize already-tokenized
 labels. The write path guards the no-key case by erroring
 (`cmd/rd/confidential.go:132-138`), but NOT the holds-a-newer-epoch-only case —
@@ -1865,7 +1921,7 @@ winning card.
 **§24.3 Priority emits two tags.** `Priority` produces BOTH `rank` and `priority`
 with the same value (`pkg/sync/nostrwire.go:272-276`); the fold prefers
 `priority` and falls back to `rank` (§5.1,
-`pkg/sync/nostrproject.go:571`). A client MUST write both, or interop with
+`pkg/sync/nostrproject.go:591`). A client MUST write both, or interop with
 NIP-100 clients that order by `rank` breaks.
 
 **§24.4 Title on a confidential board is not a tag.** In confidential mode the
