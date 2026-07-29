@@ -676,8 +676,9 @@ var citationExceptions = map[string]string{
 	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
 		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
 		"the relay's addressable replacement contradicts; the func is declared at :178",
-	"newerThan|pkg/sync/nostrproject.go|256@decl552": "§4.5: newerThan is USED for board " +
-		"latest-wins ordering at nostrproject.go:256-258; it's declared at :552",
+	"newerThan|pkg/sync/nostrproject.go|256@decl572": "§4.5: newerThan is USED for board " +
+		"latest-wins ordering at nostrproject.go:256-258; it's declared at :572 (moved " +
+		"from :552 by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus)",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
 	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
@@ -795,9 +796,10 @@ var citationExceptions = map[string]string{
 	"handleWorkCreate|pkg/state/state.go|581@decl572": "§15.x: a detail range " +
 		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
 		"declaration is cited exactly at :556",
-	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
-		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
-		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
+	"itemFromCard|pkg/sync/nostrproject.go|584@decl582": "§4.6: the nanosecond " +
+		"multiplication step (:584-586) inside itemFromCard's body; itemFromCard's " +
+		"own declaration+body is cited exactly at :582 (§5.1, `:582-648`, moved from " +
+		"`:562-628` by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus)",
 	"itemIDForEvent|pkg/sync/nostrwire.go|622@decl618": "§9.x: a detail range " +
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
