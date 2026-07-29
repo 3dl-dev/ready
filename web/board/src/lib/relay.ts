@@ -18,6 +18,7 @@
 //     main.ts) rather than conclude the relay is broken.
 
 import type { NostrEvent } from "./nostrevent";
+import { dedupeExact } from "./nostrevent";
 
 export type RelayStatus = "connecting" | "open" | "eose" | "error" | "timeout";
 
@@ -252,8 +253,8 @@ function fetchFromOneRelay(
 
 /**
  * fetchEventsFromRelays queries every relay in `relays` in parallel, retrying
- * each independently up to `retries` times, and returns the de-duplicated
- * (by event id) union of every event seen before that relay's EOSE. A relay
+ * each independently up to `retries` times, and returns the union of every
+ * event seen before that relay's EOSE with EXACT duplicates collapsed. A relay
  * that never succeeds (blocked mixed content, unreachable, cold-start
  * timeout exhausted) is dropped silently from the result — it never makes
  * the whole call reject, per the ready-634 tolerate-unusable-relays
@@ -295,14 +296,19 @@ export async function fetchEventsFromRelays(
   });
 
   const settled = await Promise.allSettled(perRelay);
-  const byId = new Map<string, NostrEvent>();
+  // ready-dd5: this transport is UNVERIFIED — no signature has been checked
+  // yet — so it must not dedup on the self-declared event id. `byId.set(e.id,
+  // e)` let a forgery asserting a genuine event's id EVICT the genuine event
+  // (last write won), after which the fold rejected the forgery and the real
+  // event was simply gone. dedupeExact collapses byte-identical copies only
+  // (the same event served by two relays), so adversarial near-copies all
+  // survive to the fold, which verifies BEFORE recording an id as seen.
+  const collected: NostrEvent[] = [];
   let anySucceeded = false;
   for (const result of settled) {
     if (result.status === "fulfilled") {
       anySucceeded = true;
-      for (const e of result.value) {
-        if (e && typeof e.id === "string") byId.set(e.id, e);
-      }
+      for (const e of result.value) collected.push(e);
     }
   }
   if (!anySucceeded && relays.length > 0) {
@@ -311,5 +317,5 @@ export async function fetchEventsFromRelays(
       .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
     throw new Error(`relay: could not reach any relay: ${reasons.join("; ")}`);
   }
-  return Array.from(byId.values());
+  return dedupeExact(collected);
 }

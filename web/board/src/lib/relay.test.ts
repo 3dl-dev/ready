@@ -154,6 +154,36 @@ describe("fetchEventsFromRelays", () => {
     expect(events.map((e) => e.id).sort()).toEqual(["event-1", "event-2"]);
   });
 
+  it("ready-dd5: a forgery reusing a genuine id does NOT evict the genuine event", async () => {
+    // This transport has verified NOTHING — no signature is checked until the
+    // fold. Deduping on the self-declared id therefore let an untrusted relay
+    // DELETE a genuine event by asserting its id on a tampered copy (last write
+    // won the map). Both must survive to the fold, which verifies BEFORE it
+    // records an id as seen; only byte-identical copies may collapse.
+    FakeWebSocket.reset();
+    const promise = fetchEventsFromRelays(
+      ["wss://honest.example", "wss://hostile.example"],
+      { kinds: [30301] },
+      { webSocketCtor: FakeWebSocket as unknown as typeof WebSocket, retries: 0, timeoutMs: 5000 },
+    );
+    const [honest, hostile] = FakeWebSocket.instances;
+    const genuine = boardEvent("event-1");
+    const forged: NostrEvent = { ...genuine, tags: [["d", "event-1"], ["title", "tampered"]] };
+
+    honest.onopen?.();
+    honest.emitEvent(genuine);
+    honest.emitEose();
+
+    hostile.onopen?.();
+    hostile.emitEvent(forged);
+    hostile.emitEose();
+
+    const events = await promise;
+    expect(events).toContainEqual(genuine);
+    expect(events).toContainEqual(forged);
+    expect(events.filter((e) => e.id === "event-1")).toHaveLength(2);
+  });
+
   it("retries a relay that closes before EOSE and succeeds on the second attempt", async () => {
     FakeWebSocket.reset();
     const promise = fetchEventsFromRelays(
