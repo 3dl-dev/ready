@@ -175,6 +175,20 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 
 			sortByPriorityETA(items)
 
+			// ready-497: an identity-scoped view returning bare empty output is
+			// indistinguishable from a genuinely empty board. The repro that
+			// filed this item was `rd ready` (0 bytes, exit 0) vs `rd ready
+			// --for ""` (10 items) vs `rd list` (17 open items) -- silence read
+			// as "all caught up" when 17 items existed, just not for the caller.
+			// Emit the hint to STDERR, and do it BEFORE the jsonOutput branch
+			// returns, so every downstream shape (tree, --flat, piped bare-ID,
+			// --json) gets it identically -- stderr is a separate stream from
+			// whichever of those stdout contracts is in play, so this can never
+			// corrupt --json or piped machine consumption on either path.
+			if len(items) == 0 {
+				printIdentityScopeHint(viewName, forFilter, fullItems, filter, projectFilter, labelFilters)
+			}
+
 			if jsonOutput {
 				return outputItemsJSON(items)
 			}
@@ -237,6 +251,71 @@ func init() {
 	readyCmd.Flags().Bool("reconcile", false, "deprecated: reads auto-reconcile by default (flag kept as a no-op)")
 	_ = readyCmd.Flags().MarkHidden("reconcile")
 	rootCmd.AddCommand(readyCmd)
+}
+
+// identityBlindViewFilter returns viewName's Filter with identity scoping
+// removed -- same status/shape semantics, but not restricted to any one
+// party. For every named view EXCEPT my-work/delegated, the identity match
+// is layered on afterward in runReady (see the switch at the top of runReady
+// that scopes non-my-work/delegated views to forFilter's party), so the
+// Filter object itself (views.Named's return value) never restricted by
+// identity in the first place and is reused as-is. my-work/delegated are the
+// two views where identity is baked directly into the Filter (via
+// MyWorkFilterSet/DelegatedFilterSet's idset), so an identity-blind
+// equivalent has to be built separately here, matching each one's
+// non-identity shape (MyWorkFilterSet: idset[By] && !terminal;
+// DelegatedFilterSet: idset[For] && By set && By outside idset && active).
+func identityBlindViewFilter(viewName string, filter views.Filter) views.Filter {
+	switch viewName {
+	case views.ViewMyWork:
+		return func(item *state.Item) bool {
+			return item.By != "" && !state.IsTerminal(item)
+		}
+	case views.ViewDelegated:
+		return func(item *state.Item) bool {
+			return item.For != "" && item.By != "" && item.For != item.By && item.Status == state.StatusActive
+		}
+	default:
+		return filter
+	}
+}
+
+// printIdentityScopeHint writes a one-line stderr hint distinguishing "the
+// identity scope hid real work" (ready-497) from "the board is genuinely
+// empty". Only called when the final, fully-filtered item set is already
+// empty. It recomputes the SAME view, shaped the same way but with identity
+// scoping removed (identityBlindViewFilter), over fullItems -- the complete,
+// unfiltered project snapshot -- and re-applies the same project/label
+// filters actually in effect, so the only variable that differs from the
+// real computation is identity. If that recomputation is ALSO empty, the
+// board is genuinely empty for this view and nothing is printed (the
+// existing "nothing ready" / empty stdout behavior is unchanged). If it
+// finds items, the caller was about to report silence over a non-empty
+// board, so the hint names the identity in effect and how many items exist
+// outside its scope.
+//
+// forFilter == "" means no identity is actively narrowing the view (the
+// caller already asked for everything with --for ""), so there is nothing
+// to attribute the emptiness to and the hint does not fire.
+func printIdentityScopeHint(viewName, forFilter string, fullItems []*state.Item, filter views.Filter, projectFilter string, labelFilters []string) {
+	if forFilter == "" {
+		return
+	}
+	blind := identityBlindViewFilter(viewName, filter)
+	hidden := views.Apply(fullItems, blind)
+	hidden = filterByProject(hidden, projectFilter)
+	for _, atom := range labelFilters {
+		hidden = views.Apply(hidden, views.LabelFilter(atom))
+	}
+	if len(hidden) == 0 {
+		return
+	}
+	suggestion := `rd ready --for ""`
+	if viewName != views.ViewReady {
+		suggestion = fmt.Sprintf("rd ready --view %s --for \"\"", viewName)
+	}
+	fmt.Fprintf(os.Stderr, "0 items %s for %s. %d item(s) exist for other parties. Try: %s\n",
+		viewName, shortKey(forFilter), len(hidden), suggestion)
 }
 
 // filterByProject returns only items matching the given project, or all items if project is empty.
