@@ -120,12 +120,12 @@ func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
 	}
 
 	// A plain contributor attempting to grant a contributor must be rejected client-side.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0, "")
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleContributor, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer grant = %v, want an 'escalation cap' client-side rejection", err)
 	}
 	// And attempting to revoke must be rejected the same way.
-	err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0, "")
+	_, err = publishRoleGrant(grantee.PubKeyHex(), rdSync.RoleRevoked, "", 0, "")
 	if err == nil || !strings.Contains(err.Error(), "escalation cap") {
 		t.Fatalf("non-maintainer revoke = %v, want an 'escalation cap' client-side rejection", err)
 	}
@@ -148,14 +148,14 @@ func TestPublishRoleGrant_ClaimSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey b: %v", err)
 	}
-	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a", 0, claim); err != nil {
+	if _, err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a", 0, claim); err != nil {
 		t.Fatalf("first --claim grant should succeed: %v", err)
 	}
-	err = publishRoleGrant(b.PubKeyHex(), rdSync.RoleContributor, "b", 0, claim)
+	_, err = publishRoleGrant(b.PubKeyHex(), rdSync.RoleContributor, "b", 0, claim)
 	if err == nil || !strings.Contains(err.Error(), "already consumed") {
 		t.Fatalf("second grant reusing claim = %v, want 'already consumed' refusal", err)
 	}
-	if err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a2", 0, claim); err != nil {
+	if _, err := publishRoleGrant(a.PubKeyHex(), rdSync.RoleContributor, "a2", 0, claim); err != nil {
 		t.Fatalf("same-key re-grant under its own claim should succeed: %v", err)
 	}
 	assertNoDotCf(t)
