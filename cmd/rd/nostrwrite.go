@@ -264,6 +264,17 @@ func runDelegateNostr(itemID, to, reason string) error {
 		return fmt.Errorf("item %s is already %s", item.ID, item.Status)
 	}
 	item.By = to
+	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-500, generalizing ready-e0e):
+	// delegate only reassigns performer, so a currently-derived-blocked item must
+	// republish its own last authoritative status here — never the dep pass's
+	// blocked overlay itself, or status=blocked becomes the permanent
+	// status-authority winner once this event lands (the dep pass only ever ADDS
+	// blocked and nothing ever clears a written one). item.History is untouched by
+	// applyDepAndGateStatus, so its last entry's ToStatus is exactly the
+	// pre-overlay status.
+	if item.Status == state.StatusBlocked && len(item.History) > 0 {
+		item.Status = item.History[len(item.History)-1].ToStatus
+	}
 	if err := publishItemStatusChangeNostr(item, reason); err != nil {
 		return fmt.Errorf("nostr publish (delegate): %w", err)
 	}
@@ -441,6 +452,16 @@ func runUpdateNostr(itemID string, u nostrUpdateSpec) error {
 	}
 	if state.IsTerminal(item) && u.hasFieldUpdate {
 		return fmt.Errorf("item %s is already %s", item.ID, item.Status)
+	}
+	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-500, generalizing ready-e0e): unlike
+	// delegate, an explicit `--status blocked` has no legitimate resolved value to
+	// coerce to — it is the user directly requesting the one status this write path
+	// must never mint, so refuse outright rather than silently substituting
+	// something the caller didn't ask for. Without this guard the write would burn
+	// status=blocked in as the permanent status-authority winner (the dep pass only
+	// ever ADDS blocked and nothing ever clears a written one).
+	if u.hasStatusUpdate && u.statusTo == state.StatusBlocked {
+		return fmt.Errorf("status %q cannot be set directly on %s: it is derived from dependencies, not a write target (use 'rd dep add' to block, or close the blocker to unblock)", state.StatusBlocked, item.ID)
 	}
 
 	if u.hasFieldUpdate {

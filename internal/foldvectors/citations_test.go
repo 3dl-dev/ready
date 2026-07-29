@@ -683,12 +683,12 @@ var citationExceptions = map[string]string{
 	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
 		"`parseTimestamp` / `parseTimestampValue` (:324-354) spanning BOTH funcs' " +
 		"declarations; parseTimestampValue itself is declared at :339",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|566@decl155": "§20.6: CALL site inside " +
-		"runCreateNostr (moved from :553 to :566 by ready-ca3's parent-id " +
-		"validation block); publishItemFullCreateNostr is declared at :155",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|641@decl155": "§21.x: second CALL site, " +
-		"inside runEngageNostr (moved from :628 to :641 by ready-ca3); " +
-		"publishItemFullCreateNostr is declared at :155",
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|587@decl155": "§20.6: CALL site inside " +
+		"runCreateNostr (moved :553→:566 by ready-ca3, then :566→:587 by ready-500's " +
+		"delegate/update blocked-status guards); publishItemFullCreateNostr is declared at :155",
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|662@decl155": "§21.x: second CALL site, " +
+		"inside runEngageNostr (moved :628→:641 by ready-ca3, then :641→:662 by " +
+		"ready-500's guard insertions); publishItemFullCreateNostr is declared at :155",
 	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435@decl452": "§9.9: CALL site inside " +
 		"ProjectItems; applyDepAndGateStatus is declared at :452",
 	"applyDepAndGateStatus|pkg/sync/nostrproject.go|439@decl452": "§14.4: cites " +
@@ -802,45 +802,48 @@ var citationExceptions = map[string]string{
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
 		"(`:593-610`)",
-	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|634@decl621": "§27.x: the " +
-		"project-prefix assignment (:634, moved from :621 by ready-ca3) inside " +
-		"publishEngagedItemsNostr's body; its declaration is cited exactly at " +
-		":621 (§26.3, moved from :608)",
+	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|655@decl642": "§27.x: the " +
+		"project-prefix assignment (moved :621→:634 by ready-ca3, then :634→:655 " +
+		"by ready-500's guard insertions) inside publishEngagedItemsNostr's body; " +
+		"its declaration is cited exactly at :642 (§26.3, moved :608→:621→:642)",
 	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
 		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
 		"publishEvents itself is declared at :581",
 	"publishItemCardEditNostr|cmd/rd/nostr.go|412@decl392": "§18.10: the " +
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:406); " +
 		"its declaration+body is cited exactly at :389 (`:389-419`)",
-	"runApproveNostr|cmd/rd/nostrwrite.go|307@decl302": "§22.2 recap: a detail " +
-		"range (:304-309) inside runApproveNostr's body; its declaration+body is " +
-		"cited exactly at :299 (`:299-321`, and by §26.2's bare `:299`)",
+	"runApproveNostr|cmd/rd/nostrwrite.go|318@decl313": "§22.2 recap: a detail " +
+		"range (moved :304-309 → :318-323 by ready-ca3/ready-500 shifts) inside " +
+		"runApproveNostr's body; its declaration+body is cited exactly at :313 " +
+		"(`:313-335`, and by §26.2's bare `:313`)",
 	"runCloseNostr|cmd/rd/nostrwrite.go|250@decl237": "§20.5 recap: the implicit " +
 		"unblock call site (:247) inside runCloseNostr's body; its declaration is " +
 		"cited exactly by §26.2's bare `:234`",
-	"runCreateNostr|cmd/rd/nostrwrite.go|556@decl518": "§27.x: the `item.Project` " +
-		"assignment (:556, moved from :543 by ready-ca3's parent-id validation " +
-		"block) inside runCreateNostr's body; its declaration+body is cited " +
-		"exactly at :518 (§18.8, `:518-570`, moved from :510-557)",
-	"runDepAddNostr|cmd/rd/nostrwrite.go|354@decl353": "§21.1/§21.3 recap: the " +
-		"cross-board/read-trust guard (:351-353) one line into runDepAddNostr's " +
-		"body; its declaration is cited exactly by §26.2's bare `:350`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|442@decl433": "§20.4/§24.7 recap: the " +
-		"status-only-update detail range (:439-441); runUpdateNostr's declaration " +
-		"is cited exactly by §26.2's bare `:433`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|446@decl433": "§24.1 recap: the " +
-		"field-rewrite block (:443-479, extended to include the ready-b878 " +
-		"ParentID assignment and ready-ca3's parent-id validation, through :476); " +
-		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:433`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|476@decl433": "§16.x/§24.1 recap: the " +
-		"card-edit-publish detail line (:476, shifted +8 by ready-ca3's parent-id " +
-		"validation block, previously :468 shifted +3 by ready-b878's ParentID " +
-		"field block); runUpdateNostr's declaration is cited exactly by §26.2's " +
-		"bare `:433`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|481@decl433": "§20.4/§24.7 recap: the " +
-		"`Status=<statusTo>` assignment block (:481-492, moved from :473-484 by " +
-		"ready-ca3); runUpdateNostr's declaration is cited exactly by §26.2's " +
-		"bare `:433`",
+	"runCreateNostr|cmd/rd/nostrwrite.go|577@decl539": "§27.x: the `item.Project` " +
+		"assignment (moved :543→:556 by ready-ca3, then :556→:577 by ready-500's " +
+		"guard insertions) inside runCreateNostr's body; its declaration+body is " +
+		"cited exactly at :539 (§18.8, `:539-591`, moved from :518-570)",
+	"runDepAddNostr|cmd/rd/nostrwrite.go|365@decl364": "§21.1/§21.3 recap: the " +
+		"cross-board/read-trust guard (moved :351-353 → :365-367 by ready-500's " +
+		"guard insertions) one line into runDepAddNostr's body; its declaration is " +
+		"cited exactly by §26.2's bare `:364`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|453@decl444": "§20.4/§24.7 recap: the " +
+		"status-only-update detail range (moved :439-441 → :450-452 by ready-500's " +
+		"guard insertions); runUpdateNostr's declaration " +
+		"is cited exactly by §26.2's bare `:444`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|467@decl444": "§24.1 recap: the " +
+		"field-rewrite block (extended to include the ready-b878 ParentID " +
+		"assignment and ready-ca3's parent-id validation, then moved :443-479 → " +
+		":467-500 by ready-500's blocked-status guards); " +
+		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:444`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|497@decl444": "§16.x/§24.1 recap: the " +
+		"card-edit-publish detail line (moved :468→:476 by ready-ca3's parent-id " +
+		"validation block, then :476→:497 by ready-500's guard insertions); " +
+		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:444`",
+	"runUpdateNostr|cmd/rd/nostrwrite.go|502@decl444": "§20.4/§24.7 recap: the " +
+		"`Status=<statusTo>` assignment block (moved :473-484 → :481-492 by " +
+		"ready-ca3, then :481-492 → :502-513 by ready-500's blocked-status guards); " +
+		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:444`",
 }
 
 // TestNamedCitationsAnchorToRealDeclarations is ready-cee's done condition 2

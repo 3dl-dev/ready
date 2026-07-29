@@ -285,6 +285,78 @@ func TestNostrNative_DelegateGateApprove(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_DelegateOnBlockedItem_Recovers is ready-500's done-condition
+// test for the runDelegateNostr instance of the SAME defect class ready-e0e
+// fixed for reject (merged e9e8647): 'blocked' is a DERIVED status —
+// applyDepAndGateStatus's dep pass only ever ADDS it, never clears one that was
+// published verbatim. PROBE reproduced on origin/main before this fix: create
+// blocker + target, `rd dep add`, `rd delegate` the blocked target, close the
+// blocker => target stayed status=blocked PERMANENTLY (a control with no
+// intervening delegate recovered to inbox fine). runDelegateNostr used to
+// publish item.Status verbatim (whatever nostrResolveItem projected, including
+// the derived "blocked" overlay) via publishItemStatusChangeNostr — that event's
+// "status" tag becomes the new prevStatus floor on every future replay, and once
+// the blocker closes and the dep pass stops overriding, the floor IS "blocked"
+// forever. The fix substitutes the item's own last authoritative status (read
+// from item.History, which applyDepAndGateStatus never mutates) before
+// publishing whenever the resolved item is currently derived-blocked.
+//
+// This test advances PAST the write and PAST the blocker closing on purpose:
+// ready-e0e's own note records that the predecessor test for reject shipped
+// green over the live defect specifically because it stopped at the fold
+// immediately after the write, where a burned-in "blocked" and a live derived
+// "blocked" are indistinguishable — only closing the blocker exposes the
+// difference.
+func TestNostrNative_DelegateOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before delegate; want blocked", it.Status)
+	}
+
+	if err := runDelegateNostr(target, "atlas/worker-9", "routing"); err != nil {
+		t.Fatalf("delegate on a blocked item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("after delegate, By = %q; want atlas/worker-9", it.By)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after delegate, status = %q; want STILL blocked (delegate does not itself unblock)", it.Status)
+	}
+
+	// --- RECOVERY: close the shared blocker and prove the target is not
+	// permanently stuck. Stopping before this step is exactly how the
+	// predecessor bug class shipped green over a live defect.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — status burned in by delegate and never re-derived (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("recovery lost the delegate assignment: By = %q; want atlas/worker-9 still", it.By)
+	}
+	assertNoDotCf(t)
+}
+
 // TestNostrNative_ImplicitUnblock_UnresolvableIDWarnsInsteadOfSwallowing proves
 // publishImplicitUnblockNostrNative surfaces a resolve failure via
 // warnNostrPublishFailure instead of a bare `continue` (ready-c00 fix): a
@@ -372,6 +444,108 @@ func TestNostrNative_UpdateFieldsAndStatus(t *testing.T) {
 	it, _ := nostrResolveItem(id)
 	if it.Title != "New title" || it.Priority != "p0" || it.Status != state.StatusActive {
 		t.Fatalf("after update: title=%q priority=%q status=%q; want New title/p0/active", it.Title, it.Priority, it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_UpdateStatusBlocked_Refused is ready-500's done-condition test
+// for the runUpdateNostr instance of the blocked-is-derived-never-persisted
+// class: unlike delegate, an explicit `--status blocked` has no legitimate
+// resolved value to coerce to — it is the caller directly asking for the one
+// status this write path must never mint — so the guard refuses the call
+// outright instead of silently substituting something the caller didn't ask
+// for. Without the guard this write would burn status=blocked in as the
+// permanent status-authority winner exactly like the delegate/reject instances
+// (applyDepAndGateStatus's dep pass only ever ADDS blocked, never clears a
+// written one). This test advances past the (refused) write and past the
+// blocker closing, proving nothing was persisted to burn in.
+func TestNostrNative_UpdateStatusBlocked_Refused(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("target status = %q before update; want blocked", it.Status)
+	}
+
+	if err := runUpdateNostr(target, nostrUpdateSpec{statusTo: state.StatusBlocked, hasStatusUpdate: true}); err == nil {
+		t.Fatalf("update --status blocked must be refused, got nil error")
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after the refused update, status = %q; want unaffected (still blocked)", it.Status)
+	}
+
+	// --- RECOVERY: close the blocker and prove the refused call left nothing
+	// behind to burn in — the target must clear exactly like a control with no
+	// intervening write.
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed — the refused update must not have written anything (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its pre-block status)", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_UpdateFieldEditOnBlockedItem_Recovers proves the common,
+// legitimate case — a plain field edit (`rd update --title`, no status change)
+// on a currently-blocked item — never risks the derived-status-burn-in class
+// either: runUpdateNostr's field block republishes ONLY a card
+// (publishItemCardEditNostr, no accompanying NIP-34 status event), so the fold's
+// dep pass keeps sole ownership of the blocked/unblocked transition regardless
+// of what item.Status happened to read as at call time.
+func TestNostrNative_UpdateFieldEditOnBlockedItem_Recovers(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+
+	if err := runUpdateNostr(target, nostrUpdateSpec{title: "Retitled", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("field edit on a blocked item must succeed, got: %v", err)
+	}
+	it, _ := nostrResolveItem(target)
+	if it.Title != "Retitled" {
+		t.Fatalf("Title = %q; want Retitled", it.Title)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("after field edit, status = %q; want STILL blocked", it.Status)
+	}
+
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, _ = nostrResolveItem(target)
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("target still blocked after its blocker closed (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox", it.Status)
 	}
 	assertNoDotCf(t)
 }
