@@ -14,6 +14,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// isTTYStdout reports whether stdout is a terminal. Indirected through a var
+// (rather than calling isatty directly at each call site) for exactly one
+// reason: testability. go test's own stdout is never a real terminal --
+// piped through a test runner or a CI log, it always reports non-TTY -- so
+// without this indirection, readyCmd.RunE's TTY-only branches (the
+// printReadyTree/printItemTable choice, and the pipe-friendly bare-ID
+// fallback) could never be driven through RunE in-process at all; a test
+// could only ever exercise the non-TTY path. Tests override this var to
+// force either branch deterministically (see ready_tree_test.go).
+var isTTYStdout = func() bool {
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
 var readyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Show items needing attention now",
@@ -38,7 +51,13 @@ Example:
   rd ready --view my-work --json
   rd ready --for ""                show all items, not just mine
   rd ready --label bug             ready items tagged 'bug'
-  rd ready --label bug --label p0  ready items tagged both 'bug' AND 'p0'`,
+  rd ready --label bug --label p0  ready items tagged both 'bug' AND 'p0'
+  rd ready --flat                  the old flat list, no epic grouping
+
+The default (TTY) view groups ready items under their epic -- the topmost
+parent_id ancestor -- indented beneath it, each epic capped to a few children
+with a "N more" line past the cap. --flat prints the pre-ready-e88 flat list
+instead. --json and piped (non-TTY) output are unaffected either way.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewName, _ := cmd.Flags().GetString("view")
 		forFilter, _ := cmd.Flags().GetString("for")
@@ -46,6 +65,7 @@ Example:
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 		offlineFlag, _ := cmd.Flags().GetBool("offline")
+		flatFlag, _ := cmd.Flags().GetBool("flat")
 
 		// nostr-native default READ path (ready-6ef S-read): on an `rd init` project
 		// the session identity is the secp256k1 signer. The read spine resolves items
@@ -62,6 +82,15 @@ Example:
 			if err != nil {
 				return fmt.Errorf("loading items: %w", err)
 			}
+
+			// fullItems is the complete, unfiltered project snapshot (every status,
+			// every project) captured before any view/identity/label/scope filter
+			// narrows `items` below. The indented-tree render (printReadyTree) needs
+			// it to walk parent_id chains: an epic's ready descendant can sit behind
+			// a closed/terminal intermediate item, or belong to an epic this filter
+			// pass would otherwise exclude, and the tree must still resolve to the
+			// right ancestor. Read-only: never republished (ready-500 guard).
+			fullItems := items
 
 			// Apply view filter.
 			if viewName == "" {
@@ -151,7 +180,7 @@ Example:
 			}
 
 			if len(items) == 0 {
-				if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+				if isTTYStdout() {
 					fmt.Println("nothing ready")
 				}
 				return nil
@@ -159,8 +188,18 @@ Example:
 
 			// Pipe-friendly output: print bare IDs when stdout is not a TTY so
 			// scripts can do: for id in $(rd ready); do ...; done
-			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
-				printItemTable(items)
+			if isTTYStdout() {
+				// Owner ruling (ready-e88, 2026-07-29): the default human-facing
+				// `rd ready` view groups items under their epic (topmost parent_id
+				// ancestor) and indents children, with the pre-existing flat table
+				// kept behind --flat. Only the default "ready" view groups -- other
+				// named views (--view work/pending/my-work/etc.) are unaffected, and
+				// so is every non-TTY / --json path above and below this branch.
+				if viewName == views.ViewReady && !flatFlag {
+					printReadyTree(items, fullItems)
+				} else {
+					printItemTable(items)
+				}
 			} else {
 				for _, item := range items {
 					fmt.Println(item.ID)
@@ -194,6 +233,7 @@ func init() {
 	readyCmd.Flags().String("scope", "", "show only items the given grant-holder pubkey is authorized to claim")
 	readyCmd.Flags().StringArray("label", nil, "filter by label atom (repeatable, AND semantics)")
 	readyCmd.Flags().Bool("offline", false, "read local only — skip the automatic relay reconcile")
+	readyCmd.Flags().Bool("flat", false, "show the flat list without epic grouping (pre-ready-e88 behavior)")
 	readyCmd.Flags().Bool("reconcile", false, "deprecated: reads auto-reconcile by default (flag kept as a no-op)")
 	_ = readyCmd.Flags().MarkHidden("reconcile")
 	rootCmd.AddCommand(readyCmd)
@@ -213,16 +253,37 @@ func filterByProject(items []*state.Item, project string) []*state.Item {
 	return out
 }
 
-// sortByPriorityETA sorts items by priority (ascending) then ETA (ascending).
-// Used by ready, work, pending, focus, and gates views.
+// sortByPriorityETA sorts items by priority (ascending), then ETA (ascending),
+// then ID (ascending) as a final tiebreak. Used by ready, work, pending,
+// focus, and gates views.
+//
+// The ID tiebreak (ready-e88 rework, challenge 5) makes this a strict total
+// order over the input, and therefore deterministic regardless of the
+// slice's incoming order -- which matters because callers build that slice
+// from a nostr projection whose map iteration is itself nondeterministic
+// (board-fold-spec.md §15.7). Before this fix, two items sharing a priority
+// and ETA (or both empty, the common case for un-triaged items) sorted in
+// whatever order they happened to arrive in, so `rd ready`'s piped/--json
+// output could reorder between two runs of the SAME binary over the SAME
+// board with no state change in between -- observed directly: two live-board
+// runs differed in bare-ID order and in 6 --json fields (nested `blocks`
+// array order, itself sorted by iteration of a different unordered
+// collection upstream). sort.Slice's comparator was already correct given a
+// total order; it only lacked one (nothing broke the tie past ETA).
+// Switching to SliceStable is defense-in-depth on top of the ID tiebreak --
+// once the tiebreak makes every comparison unambiguous, input order can no
+// longer influence output order at all.
 func sortByPriorityETA(items []*state.Item) {
-	sort.Slice(items, func(i, j int) bool {
+	sort.SliceStable(items, func(i, j int) bool {
 		pi := priorityOrder(items[i].Priority)
 		pj := priorityOrder(items[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
-		return items[i].ETA < items[j].ETA
+		if items[i].ETA != items[j].ETA {
+			return items[i].ETA < items[j].ETA
+		}
+		return items[i].ID < items[j].ID
 	})
 }
 
@@ -289,4 +350,168 @@ func outputItemsJSON(items []*state.Item) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(items)
+}
+
+// maxChildrenPerEpic caps how many of an epic's ready children are printed
+// before the tree view collapses the remainder into a single "N more" line.
+// This is the actual line-count reduction the ready-e88 owner ruling
+// requires: an indented tree that prints every item is still one line per
+// item and fails the "one screen" outcome exactly like the flat list does.
+// Capping is what makes an epic with 20+ ready children collapse to a
+// handful of lines instead of 20+.
+const maxChildrenPerEpic = 5
+
+// headerThreshold is the smallest ready-children-under-an-epic count for
+// which printing an epic header is not itself a regression against the flat
+// list (ready-e88 rework, challenge 4 -- "small epics render longer than
+// flat"). Printing a header costs 1 line; the cap+"more" line costs another
+// 1 line once the group exceeds maxChildrenPerEpic. So for a group of N
+// ready children the header form costs:
+//
+//	N <= maxChildrenPerEpic:  1 (header) + N                      = N+1
+//	N >  maxChildrenPerEpic:  1 (header) + maxChildrenPerEpic + 1 = maxChildrenPerEpic+2
+//
+// The header form only breaks even with (or beats) the flat N-line cost
+// once maxChildrenPerEpic+2 <= N, i.e. N >= maxChildrenPerEpic+2 -- one MORE
+// than "exceeds the cap" would naively suggest, because collapsing exactly
+// one item into a "+1 more" line still costs a line to say so. Any group at
+// or under this threshold is inlined instead (see printReadyTree): its rows
+// print with no header at all, so its contribution to total line count is
+// exactly what the flat list would have used for the same items -- never
+// more. This is what closes the "many small epics" gap: a board of many
+// epics each with 2-3 ready children renders identically to the flat list
+// instead of costing +1 line per epic.
+const headerThreshold = maxChildrenPerEpic + 2
+
+// readyGroup is one epic's worth of ready items in the indented tree: the
+// root item (the topmost parent_id ancestor reachable from any member) and
+// the ready items that belong to it.
+type readyGroup struct {
+	root     *state.Item
+	children []*state.Item
+}
+
+// findReadyRoot walks item's parent_id chain upward through byID -- which
+// must index items of EVERY status, not just ready ones, because an
+// ancestor partway up the chain can be closed/terminal and is still a valid
+// link (parent_id records structure, not liveness; ready-500's derived-
+// status guard is about writes, not this read-only walk).
+//
+// The walk stops, returning the last resolvable item, when:
+//   - item.ParentID == "" (a genuine root / an orphan with no parent at all,
+//     both present on the live board today), or
+//   - item.ParentID does not resolve in byID (a dangling pointer -- none
+//     exist on the current board, per ready-e88's own measurement, but the
+//     walk must not panic if one appears), or
+//   - the chain revisits an item already seen (a cycle -- the board is
+//     verified acyclic today, but this must never hang).
+func findReadyRoot(item *state.Item, byID map[string]*state.Item) *state.Item {
+	cur := item
+	seen := map[string]bool{cur.ID: true}
+	for cur.ParentID != "" {
+		parent, ok := byID[cur.ParentID]
+		if !ok || seen[parent.ID] {
+			break
+		}
+		seen[parent.ID] = true
+		cur = parent
+	}
+	return cur
+}
+
+// buildReadyGroups groups ready items by their epic (findReadyRoot's
+// result), preserving first-appearance order in items -- which is already
+// priority/ETA sorted by the time this runs, so the highest-priority epic's
+// group leads. byID must cover every item on the board, all statuses (see
+// findReadyRoot).
+func buildReadyGroups(items []*state.Item, byID map[string]*state.Item) []*readyGroup {
+	order := make([]string, 0, len(items))
+	groups := make(map[string]*readyGroup, len(items))
+	for _, item := range items {
+		root := findReadyRoot(item, byID)
+		g, ok := groups[root.ID]
+		if !ok {
+			g = &readyGroup{root: root}
+			groups[root.ID] = g
+			order = append(order, root.ID)
+		}
+		g.children = append(g.children, item)
+	}
+	out := make([]*readyGroup, 0, len(order))
+	for _, id := range order {
+		out = append(out, groups[id])
+	}
+	return out
+}
+
+// formatItemRow formats one item as a single table row -- the same columns
+// printItemTable uses (ID, priority, status, ETA, title with a labels
+// suffix) -- prefixed with indent, so the tree view can nest child rows
+// under an epic header while the flat table keeps its original 2-space lead.
+func formatItemRow(item *state.Item, indent string) string {
+	eta := formatETA(item.ETA)
+	title := item.Title
+	if len(item.Labels) > 0 {
+		title = title + "  [" + strings.Join(item.Labels, ",") + "]"
+	}
+	return fmt.Sprintf("%s%-16s  %-8s  %-10s  %-10s  %s",
+		indent, item.ID, item.Priority, item.Status, eta, title)
+}
+
+// printReadyTree renders ready items grouped under their epic, indented,
+// each epic capped at maxChildrenPerEpic children with a "N more" line past
+// the cap -- see maxChildrenPerEpic's doc for why the cap (not the grouping
+// or the indentation) is what actually shortens the output, and
+// headerThreshold's doc for why small groups skip the header entirely.
+//
+// A ready item's own root can itself be ready (an unblocked epic that is
+// also directly workable -- ready-e88 rework, challenge 3), not just a
+// closed/blocked aggregator. displayChildren excludes the root from the
+// rows nested under its own header so it is never printed twice (once as
+// the header, again as a child row identical to it), and the "(N ready)"
+// header count reflects only the rows shown/collapsed below the header --
+// consistent with the meaning that count has always had for the ordinary
+// case where the root itself is never ready.
+func printReadyTree(items []*state.Item, allItems []*state.Item) {
+	byID := make(map[string]*state.Item, len(allItems))
+	for _, it := range allItems {
+		byID[it.ID] = it
+	}
+	for _, g := range buildReadyGroups(items, byID) {
+		displayChildren := make([]*state.Item, 0, len(g.children))
+		for _, c := range g.children {
+			if c.ID == g.root.ID {
+				continue
+			}
+			displayChildren = append(displayChildren, c)
+		}
+
+		// Inline (no epic header) whenever a header can't beat the flat list
+		// for this group's items: a true orphan / a ready root with no other
+		// ready children (displayChildren empty -- the group is just the root
+		// itself), or any group at or under headerThreshold (challenge 4).
+		// Printing every item in g.children with no header/cap/more bookkeeping
+		// reproduces exactly what the flat list would have printed for this
+		// same item set -- so this branch can never cost more lines than flat.
+		if len(displayChildren) < headerThreshold {
+			for _, c := range g.children {
+				fmt.Println(formatItemRow(c, "  "))
+			}
+			continue
+		}
+
+		fmt.Printf("%s  (%d ready)  %s\n", g.root.ID, len(displayChildren), g.root.Title)
+		shown := displayChildren
+		more := 0
+		if len(shown) > maxChildrenPerEpic {
+			more = len(shown) - maxChildrenPerEpic
+			shown = shown[:maxChildrenPerEpic]
+		}
+		for _, item := range shown {
+			fmt.Println(formatItemRow(item, "    "))
+		}
+		if more > 0 {
+			fmt.Printf("    … +%d more (rd dep tree %s / rd ready --flat for the full list)\n", more, g.root.ID)
+		}
+	}
 }

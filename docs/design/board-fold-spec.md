@@ -570,7 +570,7 @@ affects the fold or the filter result.
 
 **§10.5 Query is client-side.** `rd list --label` / `rd ready --label` apply
 `views.LabelFilter` over the PROJECTED labels with AND semantics
-(`cmd/rd/list.go:93`, `cmd/rd/ready.go:122`). No `#l` filter is pushed to a relay,
+(`cmd/rd/list.go:93`, `cmd/rd/ready.go:151`). No `#l` filter is pushed to a relay,
 which is why tokenization needs no relay-side cooperation (frozen envelope §7).
 
 ---
@@ -800,7 +800,7 @@ form (`:47`), so `rd focus <type>` cannot go through `Named` (it calls
 **§13.3 `ReadyFilter()`** — the default column. An item is READY iff: NOT terminal
 (`pkg/views/views.go:61-63`), NOT blocked (`:64-66`), and status is not
 `scheduled` (`:67-69`). **ETA is explicitly NOT a filter** — it sorts, it does not
-exclude (`:53-59`). Consumed by `rd ready` (`cmd/rd/ready.go:90-95`) and by
+exclude (`:53-59`). Consumed by `rd ready` (`cmd/rd/ready.go:119-124`) and by
 `rd status`'s actionable count (`cmd/rd/status.go:187`).
 
 **§13.4 `WorkFilter()`** — `Status == active`, nothing else
@@ -850,20 +850,21 @@ Consumed by `rd focus` (`cmd/rd/focus.go:31`).
 **§13.12 `LabelFilter(atom)`** — exact match of `atom` against a member of
 `Item.Labels`; no substring, no glob (`pkg/views/views.go:202-211`). Multiple
 atoms are AND-composed by the CALLER, one `Apply` per atom
-(`cmd/rd/ready.go:120-123`, `cmd/rd/list.go:90-94`).
+(`cmd/rd/ready.go:149-152`, `cmd/rd/list.go:90-94`).
 
 **§13.13 Composition at the CLI (informative, but load-bearing for parity).**
-`rd ready` applies, in order: the view filter (`cmd/rd/ready.go:95`); for
+`rd ready` applies, in order: the view filter (`cmd/rd/ready.go:124`); for
 non-identity views, a party-scope filter `idset[For] || idset[By]` when `--for` is
-non-empty (`:104-115`); a project filter (`:117`); then one `LabelFilter` per
-`--label` (`:120-123`). `rd ready --for ""` disables the party scope entirely.
+non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
+`--label` (`:149-152`). `rd ready --for ""` disables the party scope entirely.
 
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
-(`cmd/rd/nostr.go:921-925`) and then sorts — by priority then ETA for
-ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:218-227`),
-by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Only the latter is
-a total order. See §15.7.
+(`cmd/rd/nostr.go:921-925`) and then sorts — by priority, then ETA, then ID for
+ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:276-288`),
+by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
+total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
+rework added the ID tie-break).
 
 ---
 
@@ -978,7 +979,7 @@ removed from the lattice and both predicates, (b) a status `rd defer` SHOULD set
 or (c) reserved for an external client? A conformance vector cannot cover the
 branch until this is answered. Related: `ReadyFilter`'s doc comment says "not
 scheduled (pending a future date)" while `rd ready`'s help text still claims
-"ETA is within the next 4 hours" (`cmd/rd/ready.go:25`), which §13.3 shows is
+"ETA is within the next 4 hours" (`cmd/rd/ready.go:38`), which §13.3 shows is
 false.
 
 **§15.2 Cross-board deps: non-blocking, but silently.** §8.9. The item spec for
@@ -1026,14 +1027,23 @@ browser client that builds the filter once and re-applies it) will silently use 
 stale clock. **Question:** move the clock read inside the closure, or document the
 construct-per-use contract as normative?
 
-**§15.7 `sortByPriorityETA` is not a total order.** §13.14. `sort.Slice` is
-unstable and the comparator ties on equal `(priority, ETA)`
-(`cmd/rd/ready.go:218-227`), so two items with the same priority and the same ETA
-can render in either order across runs — the input slice already comes from
-nondeterministic map iteration (`cmd/rd/nostr.go:921-925`). `rd list` does not have
-this problem (it tie-breaks on ID, `cmd/rd/list.go:103-110`). **Question:** add an
-ID tie-break to `sortByPriorityETA`? A conformance suite that compares rendered
-output MUST NOT assert on `rd ready` ordering until it has one.
+**§15.7 `sortByPriorityETA` is not a total order. RESOLVED (ready-e88 rework).**
+§13.14. The comparator used to tie on equal `(priority, ETA)`, so two items
+sharing both (the common case for un-triaged items, both empty) rendered in
+either order across runs — the input slice comes from nondeterministic map
+iteration (`cmd/rd/nostr.go:921-925`), and this was observed directly: an
+adversary ran the same locally-built binary twice against the same live
+board and got differing piped bare-ID order and 6 differing `--json` fields
+(nested `blocks` array order). Fixed by adding an ID tie-break — mirroring
+`rd list`'s existing tie-break on ID (`cmd/rd/list.go:103-110`) — and
+switching `sort.Slice` to `sort.SliceStable` as defense-in-depth on top of it
+(`sortByPriorityETA`, `cmd/rd/ready.go:276-288`). With a full total
+order over `(priority, ETA, ID)`, output order is now fully determined by the
+item set, not by input order, closing the "MUST NOT assert on ordering"
+caveat below — a conformance suite MAY now assert on `rd ready` ordering.
+Covered by `TestSortByPriorityETA_DeterministicTiebreak`
+(`cmd/rd/ready_runE_test.go`), which sorts the same item set from two
+different starting orders and asserts identical output order both times.
 
 **§15.8 The frozen envelope spec's line citations have drifted.** Frozen §1 cites
 `BuildCardEvent` at `pkg/sync/nostrwire.go:237-310` and §2 cites
@@ -2023,7 +2033,7 @@ Until ruled, a conformance vector MUST NOT assert that any label is rejected.
 `CardSpecFromItem` (`pkg/sync/nostrmigrate.go:106-127`) has no `Project` field and
 `BuildCardEvent` emits no such tag — so the value is dropped on the first
 publish and the fold always projects `Project=""`. The `--project` filter
-(`cmd/rd/ready.go:117`) therefore matches nothing on a nostr project.
+(`cmd/rd/ready.go:146`) therefore matches nothing on a nostr project.
 **Question:** add a `project` card tag, or delete the flag and the field from the
 nostr surface? (This is distinct from §5.3's `CampfireID`, which is deliberately
 never set.)
