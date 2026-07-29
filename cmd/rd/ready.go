@@ -176,9 +176,15 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 				}
 				allowed, note := nostrScopeForKey(scopeKey)
 				if !allowed {
-					if !jsonOutput {
-						fmt.Fprintln(os.Stderr, note)
-					}
+					// Stderr is a separate stream from stdout, so this note is
+					// safe to print unconditionally -- including in --json mode,
+					// where stdout must stay a clean JSON document but the
+					// diagnostic still needs to reach the user (ready-497
+					// rework #1: the old `if !jsonOutput` guard here made the
+					// --json path fully silent on a denied scope, since
+					// printIdentityScopeHint also defers to this note via
+					// scopeGateDenied and never fires itself).
+					fmt.Fprintln(os.Stderr, note)
 					items = nil
 					scopeGateDenied = true
 				}

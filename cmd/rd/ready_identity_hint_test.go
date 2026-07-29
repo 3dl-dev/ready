@@ -387,6 +387,133 @@ func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenScopeGateDenies(t *testing.T)
 	}
 }
 
+// TestReadyCmd_RunE_ScopeGateDenialNote_FiresInJSONMode covers ready-497
+// rework problem 1 (round 2): the scope gate's denial note used to print
+// only `if !jsonOutput`, and printIdentityScopeHint defers to that note via
+// scopeGateDenied and never fires itself -- so on the --json path a denied
+// --scope key produced `[]` on stdout and NOTHING on stderr: a brand new
+// fully-silent empty result, on the exact class of defect this item exists
+// to eliminate. Same fixture as
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenScopeGateDenies, but with
+// jsonOutput=true. Regression coverage: reintroducing `if !jsonOutput` around
+// the `fmt.Fprintln(os.Stderr, note)` call in ready.go turns this test red
+// (stderr goes empty while stdout stays `[]`).
+func TestReadyCmd_RunE_ScopeGateDenialNote_FiresInJSONMode(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return false }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	dir := setupNostrProjectWithItems(t, "hintproj-scope-deny-json", nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	ownHex := k.PubKeyHex()
+	item := &state.Item{ID: "hintproj-scope-deny-json-1", Status: "active", Priority: "p2", Title: "Mine", For: ownHex, By: ownHex}
+	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
+		t.Fatalf("publish own item: %v", err)
+	}
+	foreign := freshKeyHex(t)
+
+	defer resetReadyRunFlags(t)()
+	defer setForFilter(t, ownHex)()
+	if err := readyCmd.Flags().Set("scope", foreign); err != nil {
+		t.Fatalf("setting --scope=%q: %v", foreign, err)
+	}
+	defer func() {
+		if err := readyCmd.Flags().Set("scope", ""); err != nil {
+			t.Fatalf("resetting --scope: %v", err)
+		}
+	}()
+
+	// Set AFTER all fixture setup: setupNostrProjectWithItems (via
+	// setupNostrCmdTest) saves/restores jsonOutput around its OWN default of
+	// false, so setting it earlier gets silently clobbered back to false
+	// before RunE ever runs (caught the hard way -- see this item's
+	// test_decisions).
+	jsonOutput = true
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	var decoded []*state.Item
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		t.Fatalf("stdout must stay valid JSON in --json mode, got %q: %v", stdout, err)
+	}
+	if len(decoded) != 0 {
+		t.Errorf("expected an empty JSON array on stdout, got %d items", len(decoded))
+	}
+	if strings.TrimSpace(stderr) == "" {
+		t.Error("expected the scope gate's denial note on stderr even in --json mode -- got NOTHING (the exact silent-empty-result defect this item exists to eliminate)")
+	}
+	if !strings.Contains(stderr, "not a granted identity") {
+		t.Errorf("expected the scope gate's own denial note (the actual cause) to be printed, got %q", stderr)
+	}
+	if strings.Contains(stderr, "exist for other parties") {
+		t.Errorf("expected NO identity-scope hint when the --scope gate (not identity) zeroed the result, got %q", stderr)
+	}
+}
+
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenProjectHidesOwnItem covers
+// ready-497 rework problem 2: printIdentityScopeHint's recompute re-applies
+// filterByProject over `hidden` specifically so that a --project filter --
+// not identity -- hiding the caller's OWN item does not get misreported as
+// "items exist for other parties".
+//
+// This is deliberately a SEPARATE test from
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenLabelHidesOwnItem, which only
+// drives --label. The prior mutation proof deleted the
+// `filterByProject(hidden, projectFilter)` line and the LabelFilter loop
+// TOGETHER, which only shows at least one of the two matters -- deleting
+// ONLY the filterByProject line left the whole cmd/rd suite green, since no
+// test exercised --project alone. --project is a real user-facing flag
+// (readyCmd's --project), so this closes that gap: mutation tested by
+// deleting ONLY `hidden = filterByProject(hidden, projectFilter)` from
+// printIdentityScopeHint (leaving the label loop intact) -- confirmed this
+// test alone turns red (the fixture's item, which IS for the caller, counts
+// as "hidden" simply because it doesn't carry the requested --project), then
+// restored.
+func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenProjectHidesOwnItem(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	dir := setupNostrProjectWithItems(t, "hintproj-project-own", nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	ownHex := k.PubKeyHex()
+	item := &state.Item{ID: "hintproj-project-own-1", Status: "inbox", Priority: "p2", Title: "Mine, other project", For: ownHex, By: ownHex, Project: "project-a"}
+	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
+		t.Fatalf("publish own item: %v", err)
+	}
+
+	defer resetReadyRunFlags(t)()
+	defer setForFilter(t, ownHex)()
+	if err := readyCmd.Flags().Set("project", "project-b"); err != nil {
+		t.Fatalf("setting --project=%q: %v", "project-b", err)
+	}
+	defer func() {
+		if err := readyCmd.Flags().Set("project", ""); err != nil {
+			t.Fatalf("resetting --project: %v", err)
+		}
+	}()
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	if strings.TrimSpace(stdout) != "nothing ready" {
+		t.Errorf("expected stdout %q, got %q", "nothing ready", stdout)
+	}
+	if strings.Contains(stderr, "exist for other parties") {
+		t.Errorf("expected NO identity-scope hint when a --project filter (not identity) hid the caller's OWN item, got %q", stderr)
+	}
+}
+
 // TestIdentityBlindViewFilter_MyWork_DelegatedShapes unit-tests the two
 // identity-baked views directly: MyWorkFilterSet/DelegatedFilterSet embed
 // identity restriction INSIDE the Filter object itself (unlike every other
