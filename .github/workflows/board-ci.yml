@@ -16,12 +16,31 @@ name: Board CI
 # it depends on fails, which doesn't remove the coupling — it just moves
 # where the deploy stalls. Gating on the PR removes the failure mode
 # entirely: broken board code never reaches main.)
+# ready-e0e / ready-816: the path filter below MUST include everything the
+# board's conformance vectors depend on, not just web/board itself. The board
+# has a SECOND fold implementation, and testdata/fold.vectors.json is the
+# shared corpus both it and internal/foldvectors replay — that corpus is what
+# keeps the two folds in lockstep.
+#
+# When the filter was 'web/board/**' only, a Go-side change that widened
+# views.GatesFilter and regenerated the shared corpus (e9e8647) triggered no
+# board run, so gate_fields_persist_under_blocking was RED on main for SEVEN
+# merges before anything ran it — the vector did its job and nothing executed
+# it. Regenerating the corpus from the Go side must run the TS side that
+# replays it, or the divergence the vectors exist to catch merges green.
 on:
   pull_request:
     paths:
       - 'web/board/**'
       - 'web/.nvmrc'
       - '.github/workflows/board-ci.yml'
+      - 'testdata/fold.vectors.json'
+      - 'testdata/write.vectors.json'
+      - 'internal/foldvectors/**'
+      - 'pkg/sync/**'
+      - 'pkg/views/**'
+      - 'pkg/state/**'
+      - 'docs/design/board-fold-spec.md'
 
 jobs:
   build:
