@@ -202,6 +202,18 @@ func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenGenuinelyEmpty(t *testing.T) 
 // already asked to see everyone's work (`rd ready --for ""`), so there is no
 // identity to blame emptiness on and the hint must not fire even if other
 // filters (label/project) are what zeroed the result.
+//
+// NOTE (ready-497 rework): this test alone does NOT prove the `forFilter ==
+// ""` guard does anything -- the --label atom it applies is re-applied
+// inside printIdentityScopeHint's own recompute (see the loop over
+// labelFilters there), which zeroes `hidden` and suppresses the hint via
+// len(hidden)==0 regardless of whether the guard exists. Deleting the guard
+// and running `go test ./cmd/rd/... -run IdentityScopeHint -count=1` still
+// passes this test. It is kept because the behavior it asserts (no hint on
+// `--for ""`) is still real and worth pinning, but the guard's actual
+// necessity is proven by
+// TestReadyCmd_RunE_IdentityScopeHint_GuardNecessary_MyWorkExplicitForEmpty
+// below, where the divergence is NOT self-cancelling.
 func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenForExplicitlyEmpty(t *testing.T) {
 	origTTY := isTTYStdout
 	defer func() { isTTYStdout = origTTY }()
@@ -224,6 +236,154 @@ func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenForExplicitlyEmpty(t *testing
 	}
 	if strings.Contains(stderr, "exist for other parties") {
 		t.Errorf("expected NO identity-scope hint when --for \"\" was explicit, got %q", stderr)
+	}
+}
+
+// TestReadyCmd_RunE_IdentityScopeHint_GuardNecessary_MyWorkExplicitForEmpty
+// is the load-bearing proof that printIdentityScopeHint's `forFilter == ""`
+// guard actually does something (ready-497 rework, problem 1: the sibling
+// test above is inert because its label-filter divergence self-cancels
+// inside the recompute).
+//
+// --view my-work with --for "" explicit is the one place the divergence does
+// NOT self-cancel: MyWorkFilterSet(idset) with an empty idset (forFilter=="")
+// always returns false (see pkg/views.MyWorkFilterSet), so the REAL
+// computation is unconditionally empty regardless of what's on the board.
+// But identityBlindViewFilter("my-work", ...) builds a SEPARATE predicate
+// (item.By != "" && !terminal) that ignores identity/idset entirely -- so
+// the recompute over fullItems finds the fixture's assigned item even though
+// the real computation never could have. Without the guard, that recompute
+// alone would make the hint fire. Verified by mutation: commenting out the
+// `if forFilter == "" { return }` guard in printIdentityScopeHint and
+// re-running
+// `go test ./cmd/rd/... -run TestReadyCmd_RunE_IdentityScopeHint_GuardNecessary -count=1`
+// turns this test red (stderr contains "exist for other parties"); restoring
+// the guard turns it green again.
+func TestReadyCmd_RunE_IdentityScopeHint_GuardNecessary_MyWorkExplicitForEmpty(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	items := []*state.Item{
+		{ID: "myworkproj-assigned-1", Status: "active", Priority: "p2", Title: "Assigned to someone", By: "someone-else@test"},
+	}
+	setupNostrProjectWithItems(t, "myworkproj-explicit-blank", items)
+
+	defer resetReadyRunFlags(t)()
+	if err := readyCmd.Flags().Set("view", "my-work"); err != nil {
+		t.Fatalf("setting --view=my-work: %v", err)
+	}
+	defer setForFilter(t, "")()
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	if strings.TrimSpace(stdout) != "nothing ready" {
+		t.Errorf("expected stdout %q, got %q", "nothing ready", stdout)
+	}
+	if strings.Contains(stderr, "exist for other parties") {
+		t.Errorf("expected NO identity-scope hint for --view my-work --for \"\" (caller explicitly asked for no identity scoping, nothing to blame on identity), got %q", stderr)
+	}
+}
+
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenLabelHidesOwnItem covers
+// ready-497 rework problem 2: printIdentityScopeHint's recompute re-applies
+// filterByProject and the LabelFilter loop over `hidden` specifically so
+// that a project/label filter -- not identity -- hiding the caller's OWN
+// item does not get misreported as "items exist for other parties". Mutation
+// tested: deleting the filterByProject line and the LabelFilter loop from
+// printIdentityScopeHint (leaving `hidden` un-reapplied) turns this test red
+// -- the fixture's item, which IS for the caller, would then count as
+// "hidden" simply because it doesn't carry the requested label.
+func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenLabelHidesOwnItem(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	dir := setupNostrProjectWithItems(t, "hintproj-label-own", nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	ownHex := k.PubKeyHex()
+	item := &state.Item{ID: "hintproj-label-own-1", Status: "inbox", Priority: "p2", Title: "Mine, no matching label", For: ownHex, By: ownHex}
+	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
+		t.Fatalf("publish own item: %v", err)
+	}
+
+	defer resetReadyRunFlags(t)()
+	defer setForFilter(t, ownHex)()
+	defer resetReadyLabelFlag(t, []string{"no-such-label-xyz"})()
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	if strings.TrimSpace(stdout) != "nothing ready" {
+		t.Errorf("expected stdout %q, got %q", "nothing ready", stdout)
+	}
+	if strings.Contains(stderr, "exist for other parties") {
+		t.Errorf("expected NO identity-scope hint when a LABEL filter (not identity) hid the caller's OWN item, got %q", stderr)
+	}
+}
+
+// TestReadyCmd_RunE_IdentityScopeHint_SilentWhenScopeGateDenies is a live
+// repro of ready-497 rework problem 3: one item with For==By==the session's
+// own pubkey, --for set to that pubkey, and --scope set to an ungranted
+// 64-hex key. The `--scope` gate (nostrScopeForKey) zeroes `items` AFTER
+// every filter printIdentityScopeHint's recompute reproduces (view/project/
+// label), so the recompute cannot see it and would otherwise find the
+// caller's own item via the identity-blind pass and misreport the scope
+// gate's emptiness as identity scope hiding work. The scope gate already
+// prints its own note (asserted below) naming the true cause; the identity
+// hint must stay silent on top of it. Mutation tested: removing the
+// `scopeGateDenied` plumbing/guard from ready.go turns this test red -- the
+// identity hint fires ("... exist for other parties") even though identity
+// was never the reason.
+func TestReadyCmd_RunE_IdentityScopeHint_SilentWhenScopeGateDenies(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	dir := setupNostrProjectWithItems(t, "hintproj-scope-deny", nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	ownHex := k.PubKeyHex()
+	item := &state.Item{ID: "hintproj-scope-deny-1", Status: "active", Priority: "p2", Title: "Mine", For: ownHex, By: ownHex}
+	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
+		t.Fatalf("publish own item: %v", err)
+	}
+	foreign := freshKeyHex(t)
+
+	defer resetReadyRunFlags(t)()
+	defer setForFilter(t, ownHex)()
+	if err := readyCmd.Flags().Set("scope", foreign); err != nil {
+		t.Fatalf("setting --scope=%q: %v", foreign, err)
+	}
+	defer func() {
+		if err := readyCmd.Flags().Set("scope", ""); err != nil {
+			t.Fatalf("resetting --scope: %v", err)
+		}
+	}()
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	if strings.TrimSpace(stdout) != "nothing ready" {
+		t.Errorf("expected stdout %q, got %q", "nothing ready", stdout)
+	}
+	if strings.Contains(stderr, "exist for other parties") {
+		t.Errorf("expected NO identity-scope hint when the --scope gate (not identity) zeroed the result, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "not a granted identity") {
+		t.Errorf("expected the scope gate's own denial note (the actual cause) to be printed, got %q", stderr)
 	}
 }
 

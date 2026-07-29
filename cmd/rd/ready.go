@@ -160,6 +160,16 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 			// grant-holder is authorized to claim, derived from the signed
 			// kind-39301 role-grants (ready-cb6 I7). The board owner is always
 			// allowed; otherwise the key needs a live contributor/maintainer grant.
+			//
+			// scopeGateDenied (ready-497 rework) records whether THIS gate is what
+			// zeroed `items`. printIdentityScopeHint's recompute re-derives every
+			// other filter that ran above it (view, project, label) over fullItems,
+			// but it cannot re-derive this one -- nostrScopeForKey depends on the
+			// grant-holder key, which the identity-blind recompute has no notion
+			// of. Left unguarded, a denied scope key would make the hint claim
+			// identity scope hid the board when the true, already-reported cause
+			// was the scope gate (`note`, printed just below).
+			scopeGateDenied := false
 			if scopeKey != "" {
 				if len(scopeKey) != 64 || !isHex(scopeKey) {
 					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
@@ -170,6 +180,7 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 						fmt.Fprintln(os.Stderr, note)
 					}
 					items = nil
+					scopeGateDenied = true
 				}
 			}
 
@@ -186,7 +197,7 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 			// whichever of those stdout contracts is in play, so this can never
 			// corrupt --json or piped machine consumption on either path.
 			if len(items) == 0 {
-				printIdentityScopeHint(viewName, forFilter, fullItems, filter, projectFilter, labelFilters)
+				printIdentityScopeHint(viewName, forFilter, fullItems, filter, projectFilter, labelFilters, scopeGateDenied)
 			}
 
 			if jsonOutput {
@@ -297,8 +308,23 @@ func identityBlindViewFilter(viewName string, filter views.Filter) views.Filter 
 // forFilter == "" means no identity is actively narrowing the view (the
 // caller already asked for everything with --for ""), so there is nothing
 // to attribute the emptiness to and the hint does not fire.
-func printIdentityScopeHint(viewName, forFilter string, fullItems []*state.Item, filter views.Filter, projectFilter string, labelFilters []string) {
+//
+// scopeDenied reports whether the --scope gate (nostrScopeForKey, applied by
+// the caller AFTER every filter this function reproduces) is what zeroed the
+// real item set. That gate has no identity-blind equivalent here -- the
+// recompute below has no notion of a grant-holder key -- so if the scope
+// gate is the reason items is empty, this function cannot tell whether
+// identity ALSO would have hidden something and must not guess. The caller
+// already printed the scope denial's own note, which names the real cause;
+// emitting the identity hint on top of it would misattribute an unrelated
+// gate to identity scope (ready-497 rework, live-run false positive: one
+// item For==By==self, --for self, --scope an ungranted key -- the hint fired
+// blaming identity when the scope gate was the actual and only cause).
+func printIdentityScopeHint(viewName, forFilter string, fullItems []*state.Item, filter views.Filter, projectFilter string, labelFilters []string, scopeDenied bool) {
 	if forFilter == "" {
+		return
+	}
+	if scopeDenied {
 		return
 	}
 	blind := identityBlindViewFilter(viewName, filter)
