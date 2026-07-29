@@ -1058,14 +1058,15 @@ already-trusted key — is dropped at the fold gate
 (`pkg/sync/nostrproject.go:283,293`) and contributes neither status nor history.
 Severity was cross-application collision / blast-radius, not a remote-write
 path: exploitation required a signature from an already-trusted pubkey.
-**Outstanding conflict (not resolved by ready-816):** `internal/foldvectors`'s
-`status_kind_1633_folds_like_any_status` vector (`vStatusKind1633`,
-`internal/foldvectors/cases_core.go:611-657`) still pins the PRE-ready-816
-behavior (kind 1633 folding like any status) and fails against this fix.
-Retiring or rewriting that vector — and any citation/exception-count
-consequences in `internal/foldvectors/citations_test.go` — is a decision for
-whoever owns the fold-vector suite, deliberately left unmade here; see the
-ready-816 escalation.
+**Vector rewritten (ready-816 orchestrator ruling, escalation resolved):**
+`internal/foldvectors`'s `status_kind_1633_folds_like_any_status` vector
+(`vStatusKind1633`, `internal/foldvectors/cases_core.go`) formerly pinned the
+PRE-ready-816 behavior (kind 1633 folding like any status). It has been
+rewritten IN PLACE — same name, same `build.go` slot — to assert the corrected
+outcome: the item stays `inbox` and gains no history entry. The rewrite is a
+strengthening, not a weakening: the vector still discriminates, it now
+discriminates in the correct direction, and it fails if `isStatusKind` regresses
+to the old 1630-1633 range test.
 
 **§15.5 `Gate` survives on terminal items.** §9.5. The terminal branch clears
 `WaitingOn`, `WaitingType`, `WaitingSince` and `GateMsgID` but NOT `Gate`
