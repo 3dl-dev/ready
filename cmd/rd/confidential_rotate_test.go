@@ -657,12 +657,17 @@ func TestConfidentialRotateCmdOutputStatesWhatItDoesNotDo(t *testing.T) {
 		"--with-key",         // the previously-minted links
 		"BEFORE this rotation keep working",
 		"cannot recall what the leaked key could already read",
-		// The relay-replacement consequence (ready-44b): addressable grants mean
-		// the old epoch's grants stop being SERVED, even though every existing
-		// local log keeps them. An operator seeding a new machine after a
-		// rotation has to know this.
-		"does NOT keep the old epoch's grants on relays",
-		"ready-44b",
+		// The relay-retention statement. This used to be a WARNING — addressable
+		// grants shared one slot per grantee, so a rotation stopped the old
+		// epoch's grants being served and an operator seeding a new machine had
+		// to be told. ready-889 gave CEK-bearing grants a slot per epoch, so the
+		// statement inverted: the output must now say the old epochs SURVIVE,
+		// because an operator who still believes the old warning will keep
+		// hand-seeding machines from an existing log for no reason.
+		"does NOT drop the old epoch's grants from relays",
+		"(board, grantee, EPOCH)",
+		"still reads pre-rotation cards",
+		"ready-889",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rotate output does not state %q.\n--- output ---\n%s", want, out)
