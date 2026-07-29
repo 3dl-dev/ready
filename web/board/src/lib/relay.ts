@@ -38,6 +38,13 @@ export interface NostrFilter {
    * working unchanged (envelope spec §0). */
   ["#a"]?: string[];
   ["#p"]?: string[];
+  since?: number;
+  /** Upper bound (inclusive) on created_at. Callers do not set this: it is the
+   * paging cursor fetchFromOneRelay walks backwards (see PAGING below). */
+  until?: number;
+  /** "Give me at most N" — a BOUNDED SAMPLE. Setting it disables paging (see
+   * PAGING below), so a caller that wants every matching event must leave it
+   * unset. No caller in this app sets it today. */
   limit?: number;
 }
 
@@ -55,6 +62,10 @@ export interface FetchEventsOptions {
    * what makes relay.test.ts hermetic: no real network, no real browser
    * WebSocket global required in the Vitest/Node environment. */
   webSocketCtor?: typeof WebSocket;
+  /** Hard stop on the `until` walk (default 200). A backstop against a relay
+   * that answers every page with the same events, NOT a tuning knob: the walk
+   * normally terminates on its own the first time a page adds nothing new. */
+  maxPages?: number;
   onStatus?: (e: RelayStatusEvent) => void;
 }
 
@@ -68,23 +79,74 @@ function randomSubId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** fetchFromOneRelay resolves with the events seen before EOSE, or rejects on
- * error/timeout/close-before-eose. Never throws synchronously. */
+const DEFAULT_MAX_PAGES = 200;
+
+/**
+ * fetchFromOneRelay resolves with every event this relay serves for `filter`,
+ * or rejects on error/timeout/close-before-EOSE/CLOSED. Never throws
+ * synchronously.
+ *
+ * PAGING (ready-5c5). A single REQ does NOT return "all matching events" — it
+ * returns at most as many as the relay's own cap allows, whether or not the
+ * client asked for a limit, and NIP-01 gives the client no way to learn that
+ * cap. Measured on wss://relay.3dl.network 2026-07-29:
+ *
+ *     REQ {kinds:[30302]}                -> exactly 500 events
+ *     REQ {kinds:[30302], limit:5000}    -> CLOSED "requested limit 5000
+ *                                           exceeds this relay's max of 500"
+ *     the same filter walked with `until` -> 5648 events over 13 REQs
+ *
+ * So an unpaged REQ returned 8.8% of the matching events and said nothing
+ * about it. That is silent, unbounded data loss for any query broad enough to
+ * reach the cap — which the kind-scoped discovery queries in ../main.ts are.
+ *
+ * The walk therefore:
+ *   - sends NO `limit` of its own. The cap is the relay's business and asking
+ *     for more than it allows is a CLOSED, not a bigger page. Letting the relay
+ *     clamp is the only cap-agnostic option.
+ *   - moves `until` back to the oldest created_at of the page just received.
+ *     `until` is INCLUSIVE, so each page re-serves the events sitting exactly
+ *     on the boundary; they are de-duplicated by id.
+ *   - stops the first time a page contributes NO new id. That is the only
+ *     termination signal available: "page smaller than requested" cannot be
+ *     used when no limit was requested, and a relay that clamps to a cap below
+ *     what we asked for would trip it falsely.
+ *
+ * Cost of that rule is one extra REQ at the end of every walk (the page that
+ * proves there is nothing older). It rides the SAME socket — one connection
+ * per relay per attempt, N REQ/CLOSE frames on it — so the extra page is one
+ * round trip, not one more TLS handshake.
+ *
+ * KNOWN LIMIT: if more events share one created_at than the relay's cap, the
+ * cursor cannot advance past that second and the walk stops there rather than
+ * looping forever. Escaping it needs `since`-side bisection, which no query in
+ * this app is anywhere near needing (the whole relay holds ~100 authority
+ * events).
+ *
+ * A caller that sets `filter.limit` is asking for a bounded sample, not for
+ * everything, so paging is disabled for it and exactly one REQ is sent.
+ */
 function fetchFromOneRelay(
   relay: string,
   filter: NostrFilter,
   timeoutMs: number,
   WS: typeof WebSocket,
+  maxPages: number,
 ): Promise<NostrEvent[]> {
   return new Promise((resolve, reject) => {
-    const subId = randomSubId();
-    const events: NostrEvent[] = [];
+    const collected = new Map<string, NostrEvent>();
+    const paging = filter.limit === undefined;
+    let until = filter.until;
+    let pages = 0;
+    let subId = "";
+    let pageEvents: NostrEvent[] = [];
     let settled = false;
     let ws: WebSocket;
 
-    const timer = setTimeout(() => {
+    let timer = setTimeout(expire, timeoutMs);
+    function expire(): void {
       finish(() => reject(new Error(`relay ${relay}: timed out after ${timeoutMs}ms`)));
-    }, timeoutMs);
+    }
 
     function finish(action: () => void): void {
       if (settled) return;
@@ -98,6 +160,49 @@ function fetchFromOneRelay(
       action();
     }
 
+    function sendPage(): void {
+      pages++;
+      subId = randomSubId();
+      pageEvents = [];
+      const req: NostrFilter = { ...filter };
+      if (until !== undefined) req.until = until;
+      // The timeout is PER PAGE: a relay that keeps answering is making
+      // progress and must not be killed by a clock that started at connect.
+      clearTimeout(timer);
+      timer = setTimeout(expire, timeoutMs);
+      try {
+        ws.send(JSON.stringify(["REQ", subId, req]));
+      } catch (err) {
+        finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+      }
+    }
+
+    function onEose(): void {
+      // Close this subscription before opening the next one on the same socket,
+      // so the relay is not left holding N live subs for one walk.
+      try {
+        ws.send(JSON.stringify(["CLOSE", subId]));
+      } catch {
+        /* best effort — the walk is about to end anyway if the socket is gone */
+      }
+      let added = 0;
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const e of pageEvents) {
+        if (!e || typeof e.id !== "string") continue;
+        if (!collected.has(e.id)) {
+          collected.set(e.id, e);
+          added++;
+        }
+        if (typeof e.created_at === "number" && e.created_at < oldest) oldest = e.created_at;
+      }
+      if (!paging || added === 0 || oldest === Number.POSITIVE_INFINITY || pages >= maxPages) {
+        finish(() => resolve(Array.from(collected.values())));
+        return;
+      }
+      until = oldest;
+      sendPage();
+    }
+
     try {
       ws = new WS(relay);
     } catch (err) {
@@ -107,11 +212,7 @@ function fetchFromOneRelay(
     }
 
     ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify(["REQ", subId, filter]));
-      } catch (err) {
-        finish(() => reject(err instanceof Error ? err : new Error(String(err))));
-      }
+      sendPage();
     };
 
     ws.onerror = () => {
@@ -132,12 +233,19 @@ function fetchFromOneRelay(
       if (!Array.isArray(parsed) || parsed.length === 0) return;
       const [type, ...rest] = parsed as [string, ...unknown[]];
       if (type === "EVENT" && rest[0] === subId) {
-        events.push(rest[1] as NostrEvent);
+        pageEvents.push(rest[1] as NostrEvent);
       } else if (type === "EOSE" && rest[0] === subId) {
-        finish(() => resolve(events));
+        onEose();
+      } else if (type === "CLOSED" && rest[0] === subId) {
+        // A refused subscription must fail FAST and loudly. Ignoring it (the
+        // pre-ready-5c5 behaviour) meant waiting out the full per-attempt
+        // timeout for an answer the relay had already declined to give —
+        // wss://relay.3dl.network answers an over-cap `limit` with exactly
+        // this frame.
+        const detail = typeof rest[1] === "string" ? rest[1] : JSON.stringify(rest[1] ?? "");
+        finish(() => reject(new Error(`relay ${relay}: subscription closed: ${detail}`)));
       }
-      // CLOSED / NOTICE / other frame types are ignored — a relay that sends
-      // CLOSED instead of EOSE will still hit ws.onclose above and reject.
+      // NOTICE / other frame types are still ignored.
     };
   });
 }
@@ -159,6 +267,7 @@ export async function fetchEventsFromRelays(
 ): Promise<NostrEvent[]> {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const retries = opts.retries ?? 1;
+  const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
   const WS = opts.webSocketCtor ?? (globalThis as unknown as { WebSocket?: typeof WebSocket }).WebSocket;
   if (!WS) {
     throw new Error("relay: no WebSocket implementation available");
@@ -169,7 +278,7 @@ export async function fetchEventsFromRelays(
     for (let attempt = 0; attempt <= retries; attempt++) {
       opts.onStatus?.({ relay, status: attempt === 0 ? "connecting" : "connecting", attempt });
       try {
-        const events = await fetchFromOneRelay(relay, filter, timeoutMs, WS);
+        const events = await fetchFromOneRelay(relay, filter, timeoutMs, WS, maxPages);
         opts.onStatus?.({ relay, status: "eose", attempt });
         return events;
       } catch (err) {

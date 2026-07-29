@@ -50,6 +50,11 @@ import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord } from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
 import { neverUnwraps } from "./lib/keyunwrap";
+import {
+  makeNip01Relay,
+  type Nip01RelayConfig,
+  type Nip01RelayHandle,
+} from "./lib/nip01relay.fixtures";
 import type { NostrEvent } from "./lib/nostrevent";
 import {
   OWNER,
@@ -167,7 +172,12 @@ class FakeRelayWebSocket {
   }
 
   send(data: string): void {
-    const [, subId] = JSON.parse(data) as [string, string, unknown];
+    const [type, subId] = JSON.parse(data) as [string, string, unknown];
+    // ready-5c5: answer REQ and ONLY REQ. relay.ts's `until` walk now sends a
+    // CLOSE after each page's EOSE, and a stub that replays its script for
+    // every frame type answers that CLOSE with another EOSE, which starts
+    // another page, forever.
+    if (type !== "REQ") return;
     queueMicrotask(() => {
       // Note: the scripted events are replayed WITHOUT applying the REQ
       // filter — a hostile relay is under no obligation to honour it.
@@ -225,6 +235,40 @@ function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
 }
 
 /**
+ * Same seam as injectedDeps, but wired to a relay that HONOURS the REQ filter
+ * it is sent (nip01relay.fixtures.ts) instead of one that ignores it.
+ *
+ * ready-5c5: this is the seam that can tell a correct filter from one that
+ * matches nothing. injectedDeps' FakeRelayWebSocket structurally cannot — it
+ * replays its whole script for any filter, so every "the page rendered board X"
+ * assertion driven by it is really an assertion that main.ts sent SOME filter.
+ */
+function injectedHonouringDeps(
+  config: Nip01RelayConfig,
+  capture: Capture,
+): { deps: BoardDeps; handle: Nip01RelayHandle } {
+  const { ctor, handle } = makeNip01Relay(config);
+  return {
+    handle,
+    deps: {
+      keyUnwrapper: () => neverUnwraps,
+      loadRelays: async () => [CONFIG_RELAY],
+      fetchEvents: async (relays, filter, opts) => {
+        capture.filters.push(filter);
+        const events = await fetchEventsFromRelays(relays, filter, {
+          ...opts,
+          webSocketCtor: ctor,
+          retries: 0,
+          timeoutMs: 2000,
+        });
+        if (capture.snapshot.length === 0) capture.snapshot = events;
+        return events;
+      },
+    },
+  };
+}
+
+/**
  * expectItemFetchesScopedToRenderedBoards asserts that every query AFTER the
  * board-discovery one is a per-board item fetch (ready-bad) whose "#a" scope
  * names a board that actually survived signature verification and reached the
@@ -235,7 +279,12 @@ function injectedDeps(served: NostrEvent[], capture: Capture): BoardDeps {
  */
 function expectItemFetchesScopedToRenderedBoards(capture: Capture, root: HTMLElement): void {
   const rendered = new Set(renderedBoards(root).map((b) => b.coord));
-  for (const f of capture.filters.slice(1)) {
+  // ready-5c5: identified by KIND, not by position. The authority round is no
+  // longer always one REQ (a single-board link needs two — see the
+  // single-board case), so "everything after the first" would now sweep an
+  // authority REQ into this check.
+  const itemFetches = capture.filters.filter((f) => f.kinds?.includes(30302));
+  for (const f of itemFetches) {
     const scope = f["#a"];
     expect(scope, `item fetch ${JSON.stringify(f)} is not #a-scoped`).toBeDefined();
     for (const coord of scope ?? []) {
@@ -363,7 +412,11 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // ready-c4b: the authority REQ carries the 39301 role grants alongside
       // the 30301 boards, because a confidential board's read key rides inside
       // an owner-signed grant and both must come from ONE snapshot.
-      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [identity.pubkey] });
+      // ready-5c5: kind-scoped only, no `authors` — a relay's author index is
+      // free to under-return (measured on wss://relay.3dl.network), so
+      // ownership is enforced client-side by discoverOwnerBoards instead of
+      // trusted to the wire filter.
+      expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
       // ready-bad: every later query is a per-board item fetch, and each must be
       // #a-scoped to a board that SURVIVED verification. Stronger than the old
       // exact-match: it also forbids an item fetch leaking to a board the
@@ -423,6 +476,7 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         expectedIdentityLine(identity.pubkey, signing),
       );
     });
+
   });
 
   describe("single-board link (fragment.kind === 'board')", () => {
@@ -439,12 +493,21 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       // LINK_RELAY and CONFIG_RELAY are different URLs, so this distinguishes
       // the two relay sources — the link's list wins when it is non-empty.
       expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
-      // The link's coordinate, not the viewer's key, names the author here.
       // ready-c4b added the 39301 role grants to the authority REQ (a
       // confidential board's read key rides inside an owner-signed grant);
       // ready-bad added the per-board item REQ, scoped by board coordinate.
+      // ready-5c5: the authority snapshot is now TWO REQs, neither carrying
+      // `authors` (a relay's author index under-returns — measured on
+      // wss://relay.3dl.network). They differ because the two authority kinds
+      // are addressed by different tags: the 30301 definition by its own "d",
+      // each 39301 grant by the "a" board coordinate it names. A single
+      // `#a`-scoped AUTHORITY_KINDS filter — which is what this line asserted
+      // before — ANDs those conditions and therefore matches NO board
+      // definition at all, which is how the first attempt at this item shipped
+      // a page that rendered "No boards" against the live relay.
       expect(capture.filters).toEqual([
-        { kinds: [30301, 39301], authors: [OWNER] },
+        { kinds: [30301], "#d": ["alpha"] },
+        { kinds: [39301], "#a": [boardCoord(OWNER, "alpha")] },
         { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [boardCoord(OWNER, "alpha")] },
       ]);
       expectItemFetchesScopedToRenderedBoards(capture, root);
@@ -590,8 +653,10 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
 
     await afterLogin(root, stranger, { kind: "none" }, deps);
 
-    // The REQ carried STRANGER's key — main.ts asked for its own boards.
-    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301], authors: [STRANGER] });
+    // ready-5c5: the REQ is kind-scoped only (no `authors`) — STRANGER's key
+    // is enforced client-side, by discoverOwnerBoards' owner check below, not
+    // by the wire filter.
+    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
     expectItemFetchesScopedToRenderedBoards(capture, root);
     // ANTI-VACUITY: the relay ignored that filter and served everything, so
     // the genuine boards really were in front of main.ts when it rendered.
@@ -606,6 +671,185 @@ describe("afterLogin — the follow target is the logged-in key, not the relay's
     expect(root.querySelector("p.identity")?.textContent).toBe(
       expectedIdentityLine(STRANGER, true),
     );
+  });
+});
+
+/**
+ * ready-5c5 — EVERY discovery query, against a relay that HONOURS NIP-01.
+ *
+ * The first attempt at this item passed 531 tests and rendered "No boards"
+ * against wss://relay.3dl.network, for three separate reasons. Each has a case
+ * below, and each case is driven by makeNip01Relay — a relay that applies the
+ * filter — because the filter-ignoring fakes used everywhere else in this file
+ * cannot fail on any of them:
+ *
+ *   1. WRONG TAG. The single-board query was `{kinds:[30301,39301],
+ *      "#a":[coord]}`. Within a NIP-01 filter every condition ANDs, and a
+ *      kind-30301 board definition has NO "a" tag (BuildBoardEvent emits d,
+ *      title, optional archived, optional p). So it matched grants and zero
+ *      definitions.
+ *   2. UNPROVEN QUERIES. Only the own-boards query was ever exercised
+ *      red-first. There is one case per query here — own-boards, portfolio,
+ *      single-board — so no query rides on another's proof.
+ *   3. TRUNCATION. Dropping `authors` widened the discovery REQ from one
+ *      author's events to every author's, and a relay caps one REQ regardless
+ *      of what the client asked for. maxLimit below is that cap.
+ *
+ * ANTI-VACUITY runs through all of it: each case asserts, against the SAME
+ * relay instance, that the pre-fix filter really does come back wrong. A
+ * negative fixture nobody proves is discriminating is how the first attempt
+ * shipped.
+ */
+describe("ready-5c5: discovery against a relay that HONOURS the REQ filter", () => {
+  const ownerIdentity: Identity = {
+    pubkey: OWNER,
+    auth: authTransition({ type: "login", method: "extension" }),
+  };
+  const ALPHA = boardCoord(OWNER, "alpha");
+  const ALL_THREE = [
+    { title: "Alpha Board", coord: boardCoord(OWNER, "alpha") },
+    { title: "Beta Board", coord: boardCoord(OWNER, "beta") },
+    { title: "Gamma Board", coord: boardCoord(OWNER, "gamma") },
+  ];
+
+  /** Runs one REQ straight at a relay built from the same config, so a case can
+   * assert what a DIFFERENT (e.g. the pre-fix) filter would have returned. This
+   * is what makes each fixture provably discriminating rather than assumed to
+   * be. */
+  async function ask(config: Nip01RelayConfig, filter: NostrFilter): Promise<NostrEvent[]> {
+    const { ctor } = makeNip01Relay(config);
+    return fetchEventsFromRelays([CONFIG_RELAY], filter, {
+      webSocketCtor: ctor,
+      retries: 0,
+      timeoutMs: 2000,
+    });
+  }
+
+  it("GUARD: this relay really does apply tag filters, and the pre-fix `#a` filter really does miss every board definition", async () => {
+    // If this guard fails, every case below is meaningless — that is precisely
+    // the state the first attempt shipped in.
+    const config: Nip01RelayConfig = { events: [alpha, beta, gamma] };
+
+    // The filter main.ts USED to send for a single-board link.
+    const preFix = await ask(config, { kinds: [30301, 39301], "#a": [ALPHA] });
+    expect(preFix).toEqual([]);
+
+    // The filter it sends now — the board's own "d".
+    const postFix = await ask(config, { kinds: [30301], "#d": ["alpha"] });
+    expect(postFix.map((e) => e.id)).toEqual([alpha.id]);
+
+    // And the relay is not simply answering nothing: kind-only sees all three.
+    const kindOnly = await ask(config, { kinds: [30301, 39301] });
+    expect(kindOnly.map((e) => e.id).sort()).toEqual([alpha.id, beta.id, gamma.id].sort());
+  });
+
+  it("QUERY 1/3 own-boards: renders all three boards though the relay's author index holds only two", async () => {
+    // The measured production shape: a paged {kinds:[30301], authors:[owner]}
+    // REQ served 42 of an owner's 56 boards; a paged {kinds:[30301]} REQ, same
+    // relay same run, served all 56. Here the author index holds alpha+beta and
+    // "loses" gamma.
+    const config: Nip01RelayConfig = { events: [alpha, beta, gamma], authorIndex: [alpha, beta] };
+
+    // ANTI-VACUITY, this exact relay config: the pre-fix filter is genuinely
+    // lossy against it, so the render below is not something any filter would
+    // have produced.
+    const preFix = await ask(config, { kinds: [30301, 39301], authors: [OWNER] });
+    expect(preFix.map((e) => e.id).sort()).toEqual([alpha.id, beta.id].sort());
+
+    const { deps, handle } = injectedHonouringDeps(config, capture);
+    await afterLogin(root, ownerIdentity, { kind: "none" }, deps);
+
+    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
+    expect(handle.requests[0]?.authors).toBeUndefined();
+    expect(renderedBoards(root)).toEqual(ALL_THREE);
+  });
+
+  it("QUERY 2/3 portfolio: renders all three boards though the relay's author index holds only two", async () => {
+    const config: Nip01RelayConfig = { events: [alpha, beta, gamma], authorIndex: [alpha, beta] };
+
+    const preFix = await ask(config, { kinds: [30301, 39301], authors: [OWNER] });
+    expect(preFix.map((e) => e.id).sort()).toEqual([alpha.id, beta.id].sort());
+
+    const { deps, handle } = injectedHonouringDeps(config, capture);
+    await afterLogin(
+      root,
+      ownerIdentity,
+      { kind: "portfolio", relays: [], viewer: OWNER },
+      deps,
+    );
+
+    expect(capture.filters[0]).toEqual({ kinds: [30301, 39301] });
+    expect(handle.requests[0]?.authors).toBeUndefined();
+    expect(renderedBoards(root)).toEqual(ALL_THREE);
+  });
+
+  it("QUERY 3/3 single-board: renders the board the link names — the query the `#a` regression zeroed out", async () => {
+    // THE REGRESSION. Against this relay the pre-fix `#a`-scoped
+    // AUTHORITY_KINDS filter returns nothing at all (asserted in the GUARD
+    // above), so the page rendered "No boards" — which is what the live relay
+    // did, and what no filter-ignoring fixture could ever show.
+    const config: Nip01RelayConfig = { events: [alpha, beta, gamma], authorIndex: [alpha, beta] };
+
+    const { deps, handle } = injectedHonouringDeps(config, capture);
+    await afterLogin(root, ownerIdentity, { kind: "board", board: ALPHA, relays: [] }, deps);
+
+    // Two authority REQs, because the two kinds hang off different tags, and
+    // NEITHER carries `authors`.
+    expect(capture.filters.slice(0, 2)).toEqual([
+      { kinds: [30301], "#d": ["alpha"] },
+      { kinds: [39301], "#a": [ALPHA] },
+    ]);
+    for (const req of handle.requests) expect(req.authors).toBeUndefined();
+
+    expect(renderedBoards(root)).toEqual([{ title: "Alpha Board", coord: ALPHA }]);
+    expect(root.textContent).not.toContain("No boards found.");
+  });
+
+  it("QUERY 3/3 single-board: still refuses a coordinate whose only matching event is forged", async () => {
+    // The `#d` filter matches forgedSig ("evil"), so the relay really does
+    // serve it — only the schnorr check keeps it off the page. Dropping
+    // `authors` from the wire filter must not have moved that check.
+    const config: Nip01RelayConfig = { events: [forgedSig, impersonator, delta, alpha] };
+    const { deps } = injectedHonouringDeps(config, capture);
+
+    await afterLogin(
+      root,
+      ownerIdentity,
+      { kind: "board", board: boardCoord(OWNER, "evil"), relays: [] },
+      deps,
+    );
+
+    expect(capture.snapshot.map((e) => e.id)).toEqual([forgedSig.id]);
+    expect(renderedBoards(root)).toEqual([]);
+    expect(root.textContent).toContain("No boards found.");
+    expectNoForgedContent(root);
+  });
+
+  it("TRUNCATION: renders all three boards from a relay that caps ONE REQ at two events", async () => {
+    // Widening the discovery filter from `authors:[owner]` to kind-only is only
+    // safe if the client pages. Measured: wss://relay.3dl.network answers an
+    // unbounded {kinds:[30302]} REQ with exactly 500 of the 5648 events it
+    // holds, and says nothing about the other 5148. maxLimit: 2 is that cap,
+    // shrunk to fixture size.
+    const config: Nip01RelayConfig = { events: [alpha, beta, gamma], maxLimit: 2 };
+
+    // ANTI-VACUITY: one unpaged REQ against this relay really does truncate.
+    const oneShot = await ask(config, { kinds: [30301, 39301], limit: 2 });
+    expect(oneShot).toHaveLength(2);
+
+    const { deps, handle } = injectedHonouringDeps(config, capture);
+    await afterLogin(root, ownerIdentity, { kind: "none" }, deps);
+
+    expect(renderedBoards(root)).toEqual(ALL_THREE);
+    // It got there by WALKING: more than one REQ, and every REQ after the first
+    // carries an `until` cursor strictly older than the one before it.
+    const discovery = handle.requests.filter((f) => f.kinds?.includes(30301));
+    expect(discovery.length).toBeGreaterThan(1);
+    expect(discovery[0]?.until).toBeUndefined();
+    for (let i = 1; i < discovery.length; i++) {
+      expect(discovery[i]?.until).toBeDefined();
+      if (i > 1) expect(discovery[i]!.until!).toBeLessThan(discovery[i - 1]!.until!);
+    }
   });
 });
 
