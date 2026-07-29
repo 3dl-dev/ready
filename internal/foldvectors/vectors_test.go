@@ -155,6 +155,14 @@ func TestNegativeVectorsPresent(t *testing.T) {
 		"labels_freeform_no_validation",
 		"dep_unresolvable_and_cross_board_dropped_silently",
 		"status_from_non_authority_ignored",
+		// ready-ce8's four proven coverage holes. Named here so a regeneration
+		// that silently drops one restores the hole loudly instead of quietly.
+		"grant_cap_only_owner_grants_maintainer",
+		"grant_cap_contributor_may_not_delegate",
+		"grant_cap_owner_is_irrevocable",
+		"grant_cap_peer_maintainer_protected",
+		"revoke_boundary_excludes_the_revoke_instant",
+		"grant_level_two_confers_status_authority",
 	}
 	for _, name := range required {
 		if _, ok := byName[name]; !ok {
@@ -214,6 +222,62 @@ func TestNegativeVectorsPresent(t *testing.T) {
 		}
 		if enforced.Options.Trusted == nil || disabled.Options.Trusted != nil {
 			t.Error("read-trust pair must differ exactly in whether the allowlist is enforced")
+		}
+	}
+}
+
+// grantAuthorityVectors are ready-ce8's vectors: the ones whose whole purpose is
+// to make a grant-authority mutation observable.
+var grantAuthorityVectors = []string{
+	"grant_cap_only_owner_grants_maintainer",
+	"grant_cap_contributor_may_not_delegate",
+	"grant_cap_owner_is_irrevocable",
+	"grant_cap_peer_maintainer_protected",
+	"revoke_boundary_excludes_the_revoke_instant",
+	"grant_level_two_confers_status_authority",
+}
+
+// TestGrantAuthorityVectorsRunWithTheGatesEnabled is ready-ce8's structural
+// guard, and it generalizes the defect the item was filed for.
+//
+// The four holes ready-3759's audit proved were not "the assertion is too weak".
+// They were "the gate that enforces the property is INERT in the option shape
+// every vector uses", so the property was never on the code path being asserted.
+// The two options that switch grant authority on or off wholesale are:
+//
+//	options.trusted == null   -> §3.4 read-trust disabled entirely, so an
+//	                             ignored grant and an honoured one both admit
+//	                             their grantee and the escalation cap is
+//	                             unobservable.
+//	options.pinned_board == "" -> §12/§3.5/§6.2 all inert: ProjectItems derives
+//	                             NO levels and NO until map at all, so the cap,
+//	                             the revocation boundary and the grant-derived
+//	                             maintainer fold are not merely unasserted, they
+//	                             do not RUN.
+//
+// A future edit that flips either option on one of these vectors would leave it
+// passing — green, and proving nothing, which is the exact failure mode this
+// item exists to make impossible. So the option shape is asserted as part of the
+// contract, not left as a property of whoever authored the fixture.
+func TestGrantAuthorityVectorsRunWithTheGatesEnabled(t *testing.T) {
+	f := load(t)
+	byName := map[string]foldvectors.Vector{}
+	for _, v := range f.Vectors {
+		byName[v.Name] = v
+	}
+	for _, name := range grantAuthorityVectors {
+		v, ok := byName[name]
+		if !ok {
+			t.Errorf("grant-authority vector %q is missing", name)
+			continue
+		}
+		if v.Options.Trusted == nil {
+			t.Errorf("%s: options.trusted is null, which DISABLES the §3.4 read-trust gate — "+
+				"this vector's expectation would then hold with grant authority switched off", name)
+		}
+		if v.Options.PinnedBoard == "" {
+			t.Errorf("%s: options.pinned_board is empty, so ProjectItems derives no levels and no "+
+				"until map at all (§12, §3.5, §6.2 inert) — the property this vector pins would not run", name)
 		}
 	}
 }

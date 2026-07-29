@@ -538,9 +538,24 @@ func tagValues(e *nostr.Event, name string) []string {
 	return out
 }
 
-// isStatusKind reports whether a kind is one of the NIP-34 status kinds.
+// isStatusKind reports whether a kind is one of the NIP-34 status kinds rd itself
+// WRITES and folds authoritatively: 1630/1631/1632. This is an ALLOWLIST, not a
+// range test (ready-816): KindStatusDraft (1633) sits inside the NIP-34 1630-1633
+// range but rd never emits it (see KindStatusDraft's doc comment) and status
+// authority is app-defined, not relay-defined — accepting an rd-unowned kind here
+// would let a foreign client (or a future NIP claiming 1633, or any OTHER kind an
+// already-trusted signer's other tooling happens to publish) mutate rd item state
+// under the same trusted pubkey. The read-side trust gate (ProjectOptions.Trusted /
+// board-maintainer authority) only checks WHO signed; this is the second, narrower
+// gate on WHICH KIND, and it must stay an explicit set so widening it is always a
+// deliberate, visible diff — never a side effect of KindStatusDraft moving.
 func isStatusKind(kind int) bool {
-	return kind >= KindStatusOpen && kind <= KindStatusDraft
+	switch kind {
+	case KindStatusOpen, KindStatusResolved, KindStatusClosed:
+		return true
+	default:
+		return false
+	}
 }
 
 // DriftScope returns the CAUSAL-CHAIN key an event belongs to, for per-scope
