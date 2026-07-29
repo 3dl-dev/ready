@@ -212,7 +212,7 @@ func init() {
 	createCmd.Flags().String("level", "", "level: epic, task, subtask")
 	createCmd.Flags().String("by", "", "who will do the work")
 	createCmd.Flags().String("project", "", "project name")
-	createCmd.Flags().String("parent-id", "", "parent item ID")
+	createCmd.Flags().String("parent-id", "", "parent item ID; must name an existing item, or use 'none' for no parent")
 	createCmd.Flags().String("eta", "", "ETA in RFC3339 format (default: derived from priority)")
 	createCmd.Flags().String("due", "", "hard deadline in RFC3339 format")
 	createCmd.Flags().String("description", "", "")

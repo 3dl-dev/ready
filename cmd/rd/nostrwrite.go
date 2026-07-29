@@ -463,7 +463,15 @@ func runUpdateNostr(itemID string, u nostrUpdateSpec) error {
 			item.Level = u.level
 		}
 		if u.parentID != "" {
-			item.ParentID = u.parentID
+			existing, err := nostrExistingIDs()
+			if err != nil {
+				return err
+			}
+			resolved, err := resolveParentIDField(u.parentID, existing)
+			if err != nil {
+				return err
+			}
+			item.ParentID = resolved
 		}
 		if err := publishItemCardEditNostr(item); err != nil {
 			return fmt.Errorf("nostr publish (update fields): %w", err)
@@ -534,6 +542,11 @@ func runCreateNostr(dir string, c nostrCreateSpec) (string, error) {
 		return "", fmt.Errorf("item %q already exists", id)
 	}
 
+	parentID, err := resolveParentIDField(c.parentID, existing)
+	if err != nil {
+		return "", err
+	}
+
 	item := &state.Item{
 		ID:       id,
 		Title:    c.title,
@@ -547,7 +560,7 @@ func runCreateNostr(dir string, c nostrCreateSpec) (string, error) {
 		Status:   state.StatusInbox,
 		ETA:      c.eta,
 		Due:      c.due,
-		ParentID: c.parentID,
+		ParentID: parentID,
 		Labels:   c.labels,
 	}
 	if err := publishItemFullCreateNostr(dir, self, item); err != nil {

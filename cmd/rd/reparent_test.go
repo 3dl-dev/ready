@@ -280,3 +280,289 @@ func TestNostrNative_Reparent_SelfParentRejected(t *testing.T) {
 	}
 	assertNoDotCf(t)
 }
+
+// ready-ca3: the opus adversary on ready-b878/PR#159 found three input-handling
+// gaps in --parent-id, reported rather than absorbed into that PR: (a) an
+// unknown --parent-id was accepted SILENTLY, leaving the item orphaned worse
+// than before while ready-8da's ParentID-based orphan metric read it as
+// "adopted"; (b) --parent-id none stored the literal string "none", printing
+// as `Parent:   none` — visually identical to no parent; (c) there was no way
+// to clear a parent at all. The tests below prove the fix: unknown ids are
+// rejected by name, the orphan count provably does not move on a rejected
+// reparent, "none" clears instead of storing verbatim, and rd create
+// validates identically to rd update.
+
+// TestNostrNative_Update_UnknownParentIDRejected is ready-ca3(a): a
+// --parent-id naming an item that does not exist in the LIVE nostr projection
+// must be rejected with an error naming the missing id, not silently accepted.
+func TestNostrNative_Update_UnknownParentIDRejected(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	orphan, err := runCreateNostr(dir, nostrCreateSpec{title: "Orphan", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create orphan: %v", err)
+	}
+
+	const typoedEpicID = "ready-doesnotexist"
+	err = runUpdateNostr(orphan, nostrUpdateSpec{parentID: typoedEpicID, hasFieldUpdate: true})
+	if err == nil {
+		t.Fatalf("expected an error reparenting to a nonexistent id %q, got nil", typoedEpicID)
+	}
+	if !containsStr(err.Error(), typoedEpicID) {
+		t.Fatalf("error %q does not name the missing id %q", err.Error(), typoedEpicID)
+	}
+
+	// The rejected update must not have written anything: ParentID stays empty,
+	// not the unknown id.
+	it, err := nostrResolveItem(orphan)
+	if err != nil {
+		t.Fatalf("resolve after rejected reparent: %v", err)
+	}
+	if it.ParentID != "" {
+		t.Fatalf("ParentID after a rejected reparent = %q; want empty — the write must not have happened", it.ParentID)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_Update_UnknownParentIDDoesNotMoveOrphanCount is the actual
+// point of ready-ca3(a) made concrete, mirroring
+// TestNostrNative_Reparent_DrivesOrphanCountMetric's real-adoption case: a
+// typo'd --parent-id must leave the ParentID-based orphan count (ready-8da's
+// done condition) EXACTLY where it was — not improved, not worsened. Before
+// the fix, the typo'd id was stored verbatim, which DID move (improve) the
+// metric while actually leaving the item orphaned worse than before (pointing
+// at nothing instead of "").
+func TestNostrNative_Update_UnknownParentIDDoesNotMoveOrphanCount(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	orphanCount := func() int {
+		_, byID, err := nostrProjectAllItems()
+		if err != nil {
+			t.Fatalf("nostrProjectAllItems: %v", err)
+		}
+		n := 0
+		for _, it := range byID {
+			if it.ParentID == "" {
+				n++
+			}
+		}
+		return n
+	}
+
+	a, err := runCreateNostr(dir, nostrCreateSpec{title: "A", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	before := orphanCount()
+	if before != 1 {
+		t.Fatalf("orphan count before any reparent = %d; want 1", before)
+	}
+
+	if err := runUpdateNostr(a, nostrUpdateSpec{parentID: "ready-nonexistent-epic", hasFieldUpdate: true}); err == nil {
+		t.Fatalf("expected the reparent to a nonexistent parent to be rejected, got nil error")
+	}
+
+	after := orphanCount()
+	if after != before {
+		t.Fatalf("orphan count after a REJECTED reparent = %d; want unchanged at %d — a typo must not move the metric", after, before)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_Update_ParentIDNoneClearsParent is ready-ca3(b)+(c): "none"
+// (case-insensitive, whitespace-trimmed) is the documented spelling that
+// clears ParentID back to "" (orphan) rather than being stored as a literal
+// dangling string. The clear survives a re-fold (a fresh log replay), proving
+// it is a real card-only field edit and not just an in-memory mutation.
+func TestNostrNative_Update_ParentIDNoneClearsParent(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	epic, err := runCreateNostr(dir, nostrCreateSpec{title: "Epic", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	child, err := runCreateNostr(dir, nostrCreateSpec{title: "Child", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	if err := runUpdateNostr(child, nostrUpdateSpec{parentID: epic, hasFieldUpdate: true}); err != nil {
+		t.Fatalf("reparent under epic: %v", err)
+	}
+	it, err := nostrResolveItem(child)
+	if err != nil {
+		t.Fatalf("resolve after reparent: %v", err)
+	}
+	if it.ParentID != epic {
+		t.Fatalf("ParentID after reparent = %q; want %q (test setup)", it.ParentID, epic)
+	}
+
+	// Clear it: whitespace and case variants of the sentinel must all work.
+	for _, spelling := range []string{"none", "NONE", " None "} {
+		if err := runUpdateNostr(child, nostrUpdateSpec{parentID: spelling, hasFieldUpdate: true}); err != nil {
+			t.Fatalf("clear parent with spelling %q: %v", spelling, err)
+		}
+		it, err := nostrResolveItem(child)
+		if err != nil {
+			t.Fatalf("resolve after clearing with spelling %q: %v", spelling, err)
+		}
+		if it.ParentID != "" {
+			t.Fatalf("ParentID after --parent-id %q = %q; want empty (cleared), NOT the literal sentinel string", spelling, it.ParentID)
+		}
+		// Re-parent for the next spelling in the loop.
+		if err := runUpdateNostr(child, nostrUpdateSpec{parentID: epic, hasFieldUpdate: true}); err != nil {
+			t.Fatalf("re-reparent before next spelling: %v", err)
+		}
+	}
+
+	// Final clear, then prove it survives a FRESH fold (separate
+	// nostrProjectAllItems call, replaying the whole log from disk), not just
+	// the in-process item the write call touched.
+	if err := runUpdateNostr(child, nostrUpdateSpec{parentID: "none", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("final clear: %v", err)
+	}
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("re-fold: %v", err)
+	}
+	refolded, ok := byID[child]
+	if !ok {
+		t.Fatalf("re-fold: item %s not found", child)
+	}
+	if refolded.ParentID != "" {
+		t.Fatalf("ParentID after clearing + re-fold = %q; want empty — the clear must persist, not just live in-memory", refolded.ParentID)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_Update_ParentIDNoneRejectedAsLiteral is the counterpart to
+// the clear test: prove the literal string "none" is NEVER visible as a
+// stored ParentID anywhere an item resolves — the one behavior ready-ca3(b)
+// explicitly forbids, since `rd show` printing `Parent:   none` was
+// indistinguishable from having no parent while actually being a dangling
+// pointer to a nonexistent item.
+func TestNostrNative_Update_ParentIDNoneRejectedAsLiteral(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	orphan, err := runCreateNostr(dir, nostrCreateSpec{title: "Orphan", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runUpdateNostr(orphan, nostrUpdateSpec{parentID: "none", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("update --parent-id none: %v", err)
+	}
+	it, err := nostrResolveItem(orphan)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if it.ParentID == "none" {
+		t.Fatalf("ParentID stored the literal string %q — ready-ca3(b)'s exact defect: this reads identically to no parent in `rd show` while being a dangling pointer", it.ParentID)
+	}
+	if it.ParentID != "" {
+		t.Fatalf("ParentID after --parent-id none = %q; want empty", it.ParentID)
+	}
+}
+
+// TestNostrNative_Create_UnknownParentIDRejected is the parity half of
+// ready-ca3's done condition: `rd create --parent-id` must validate IDENTICALLY
+// to `rd update --parent-id`, not diverge (before this fix, create performed
+// no validation at all — cmd/rd/create.go's parentID flowed straight into the
+// item struct).
+func TestNostrNative_Create_UnknownParentIDRejected(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	const typoedEpicID = "ready-doesnotexist"
+	id, err := runCreateNostr(dir, nostrCreateSpec{title: "Child", itemType: "task", priority: "p2", parentID: typoedEpicID})
+	if err == nil {
+		t.Fatalf("expected create with a nonexistent --parent-id to be rejected, got id %q", id)
+	}
+	if !containsStr(err.Error(), typoedEpicID) {
+		t.Fatalf("error %q does not name the missing id %q", err.Error(), typoedEpicID)
+	}
+}
+
+// TestNostrNative_Create_ParentIDNoneMeansNoParent proves rd create treats the
+// same "none" sentinel the same way rd update does: no parent, not a literal
+// stored string — the two commands agree instead of diverging.
+func TestNostrNative_Create_ParentIDNoneMeansNoParent(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	id, err := runCreateNostr(dir, nostrCreateSpec{title: "Solo", itemType: "task", priority: "p2", parentID: "none"})
+	if err != nil {
+		t.Fatalf("create with --parent-id none: %v", err)
+	}
+	it, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if it.ParentID != "" {
+		t.Fatalf("ParentID after create --parent-id none = %q; want empty, matching rd update's clear semantics", it.ParentID)
+	}
+}
+
+// TestNostrNative_Create_ValidParentIDAccepted is the create-side positive
+// case matching TestNostrNative_Reparent_ParentIDSurvivesRefold: a
+// --parent-id naming a real, existing item is stored and survives a re-fold.
+func TestNostrNative_Create_ValidParentIDAccepted(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	epic, err := runCreateNostr(dir, nostrCreateSpec{title: "Epic", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	child, err := runCreateNostr(dir, nostrCreateSpec{title: "Child", itemType: "task", priority: "p2", parentID: epic})
+	if err != nil {
+		t.Fatalf("create child under valid parent %q: %v", epic, err)
+	}
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("re-fold: %v", err)
+	}
+	refolded, ok := byID[child]
+	if !ok {
+		t.Fatalf("re-fold: item %s not found", child)
+	}
+	if refolded.ParentID != epic {
+		t.Fatalf("ParentID after create + re-fold = %q; want %q", refolded.ParentID, epic)
+	}
+}
+
+// TestNostrNative_UpdateCmd_UnknownParentIDRejected runs the REAL updateCmd
+// (not a mirrored copy of the validation), the same style as
+// TestNostrNative_Reparent_SelfParentRejected, so this test rots if the CLI
+// wiring to runUpdateNostr / nostrUpdateSpec.parentID is ever broken, not just
+// if a copy of the check drifts.
+func TestNostrNative_UpdateCmd_UnknownParentIDRejected(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	orphan, err := runCreateNostr(dir, nostrCreateSpec{title: "Orphan", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rootCmd.SetArgs([]string{"update", orphan, "--parent-id", "ready-nonexistent"})
+	err = rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected an error updating --parent-id to a nonexistent id via the real CLI, got nil")
+	}
+	if !containsStr(err.Error(), "ready-nonexistent") {
+		t.Fatalf("expected the missing id named in the error, got: %v", err)
+	}
+
+	it, err := nostrResolveItem(orphan)
+	if err != nil {
+		t.Fatalf("resolve after rejected CLI update: %v", err)
+	}
+	if it.ParentID != "" {
+		t.Fatalf("ParentID after a rejected CLI reparent = %q; want empty", it.ParentID)
+	}
+	assertNoDotCf(t)
+}

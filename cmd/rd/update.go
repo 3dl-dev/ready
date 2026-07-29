@@ -24,7 +24,8 @@ Examples:
   rd update ready-a1b --title "New title" --context "Updated context"
   rd update ready-a1b --status waiting --waiting-on "vendor quote" --waiting-type vendor
   rd update ready-a1b --waiting-on "design review" --waiting-type person
-  rd update ready-a1b --parent-id ready-epic1   # adopt an existing item into an epic`,
+  rd update ready-a1b --parent-id ready-epic1   # adopt an existing item into an epic
+  rd update ready-a1b --parent-id none          # clear the parent (un-parent, back to orphan)`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Helpful redirect for --blocks (agents may try bd-style dep wiring via update).
@@ -113,7 +114,7 @@ func init() {
 	updateCmd.Flags().String("eta", "", "ETA in RFC3339 format")
 	updateCmd.Flags().String("due", "", "hard deadline in RFC3339 format")
 	updateCmd.Flags().String("level", "", "level: epic, task, subtask")
-	updateCmd.Flags().String("parent-id", "", "reparent: new parent item ID (adopt an existing item into an epic)")
+	updateCmd.Flags().String("parent-id", "", "reparent: new parent item ID (adopt an existing item into an epic); must name an existing item, or use 'none' to clear the parent")
 	updateCmd.Flags().String("status", "", "status: inbox, active, scheduled, waiting, done, cancelled, failed")
 	updateCmd.Flags().String("waiting-on", "", "what we are waiting on (auto-sets status=waiting if no --status given)")
 	updateCmd.Flags().String("waiting-type", "", "waiting type: person, vendor, client, date, event, external, agent, gate")
