@@ -105,6 +105,62 @@ func buildDepFixtureProject(t *testing.T, projectName, blockerID string, n int) 
 	setupNostrProjectWithItems(t, projectName, items)
 }
 
+// buildMultiReadyDepFixtureProject publishes len(hubIDs) independent "hub"
+// items, all tied on priority (p2) and ETA (empty) -- the case that is only
+// deterministic because of the ID tiebreak in sortByPriorityETA, not by
+// accident -- and each carrying MULTI-EDGE dependencies on both sides:
+//
+//   - BlockedBy: two SHARED, already-terminal (done) blocker items. Per
+//     applyDepAndGateStatus (pkg/sync/nostrproject.go), `blocked.Status` is
+//     only promoted to StatusBlocked when the blocker is non-terminal, so a
+//     done blocker never blocks -- every hub stays in the READY set despite
+//     declaring 2 dependency edges each (2*len(hubIDs) edges total funnel
+//     through the same map-range-built `edges` slice the ready-f5f/ready-e12
+//     sort.Slice fix sorts).
+//   - Blocks: two per-hub blockee children, each declaring
+//     BlockedBy: []string{hub.ID}. Their sole blocker (the hub) is
+//     non-terminal, so THEY get promoted to StatusBlocked and never appear in
+//     the ready set themselves -- they exist only to populate their hub's
+//     Blocks array with 2 entries, exercising the same edges-sort code path
+//     from the other direction.
+//
+// No hub has a ParentID, so buildReadyGroups (cmd/rd/ready.go) gives each hub
+// its own single-item group: displayChildren is empty for every group (always
+// under headerThreshold), so printReadyTree's INLINE branch prints every hub
+// as its own uncapped row -- unlike buildDepFixtureProject/
+// buildTreeShapedProject's header-form case, where only the top
+// maxChildrenPerEpic survive to the page. Every hub's relative order is
+// therefore visible, unsuppressed, in the rendered tree-view text.
+func buildMultiReadyDepFixtureProject(t *testing.T, projectName string, hubIDs []string) {
+	t.Helper()
+	const doneA, doneB = "runE-detTree-doneA", "runE-detTree-doneB"
+	items := []*state.Item{
+		{ID: doneA, Status: state.StatusDone, Priority: "p2", Title: "Done blocker A", For: "agent@test"},
+		{ID: doneB, Status: state.StatusDone, Priority: "p2", Title: "Done blocker B", For: "agent@test"},
+	}
+	for _, id := range hubIDs {
+		items = append(items, &state.Item{
+			ID:        id,
+			Status:    "inbox",
+			Priority:  "p2",
+			Title:     "Hub",
+			For:       "agent@test",
+			BlockedBy: []string{doneA, doneB},
+		})
+		for i := 0; i < 2; i++ {
+			items = append(items, &state.Item{
+				ID:        fmt.Sprintf("%s-blockee-%02d", id, i),
+				Status:    "inbox",
+				Priority:  "p2",
+				Title:     "Blockee",
+				For:       "agent@test",
+				BlockedBy: []string{id},
+			})
+		}
+	}
+	setupNostrProjectWithItems(t, projectName, items)
+}
+
 // TestReadyCmd_RunE_TTY_PrintsGroupedTree is the headline test for challenge
 // 1: it forces the TTY branch and asserts the OUTPUT SHAPE that only
 // printReadyTree produces (a collapsed line count below the flat item
@@ -429,19 +485,38 @@ func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges(t *testing.T) {
 	}
 }
 
-// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView is ready-f5f REWORK
-// clause 3: the two tests above both set jsonOutput=true, so RunE returns at
-// the --json branch (ready.go) BEFORE reaching
+// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView is ready-f5f REWORK 2
+// clause 1's replacement: the prior version of this test (buildDepFixtureProject,
+// one blocker + 6 blockees) reduced the READY set to exactly one item -- the
+// blocker -- because all 6 blockees are promoted to StatusBlocked. A single
+// ready item is a SINGLE PRINTED LINE with nothing to reorder, and
+// printReadyTree/formatItemRow (cmd/rd/ready.go) never render Blocks/BlockedBy
+// at all, so that fixture gated nothing: the adversary confirmed it passes
+// 5/5 with the ready-f5f/ready-e12 edges sort.Slice removed, AND passes with
+// sortByPriorityETA's ID tiebreak + SliceStable reverted. This replacement
+// uses buildMultiReadyDepFixtureProject: len(hubIDs) READY hubs (not one),
+// tied on priority/ETA so ORDER is resolved only by the ID tiebreak, each
+// carrying 2 BlockedBy + 2 Blocks edges (multi-edge on both sides, exercising
+// applyDepAndGateStatus's map-range-built `edges` slice) while staying ready.
+// No hub has a parent, so every hub is printed as its own uncapped row --
+// their relative order is the exact nondeterministic content this path can
+// render, with nothing capped or omitted.
 //
-//	if viewName == views.ViewReady && !flatFlag { printReadyTree(...) }
-//
-// -- the branch that produces the actual DEFAULT human-facing output as of
-// ready-e88. isTTYStdout is forced true in those tests, but that flag has no
-// effect once RunE has already returned via the jsonOutput branch. This test
-// forces jsonOutput=false (and isTTYStdout=true) so RunE falls through to
-// printReadyTree, and re-runs the byte-identical assertion end to end
-// against that path, over the SAME dep-carrying fixture used above so the
-// tree-render path is checked against the same edge-ordering hazard.
+// VERIFIED regression check (both fixes reachable from THIS test, each
+// checked independently by reverting it alone and re-running):
+//   - sortByPriorityETA's ID tiebreak removed + sort.SliceStable reverted to
+//     sort.Slice: this test FAILS (divergent hub order across the 25 runs) --
+//     confirmed locally, see this item's test_decisions for the exact
+//     command/output.
+//   - the ready-f5f/ready-e12 sort.Slice(edges, ...) call removed from
+//     applyDepAndGateStatus: this test still PASSES. This is not a gap in
+//     THIS test -- it is a structural fact about printReadyTree, which never
+//     reads Blocks/BlockedBy, so no fixture reachable through this render
+//     path can observe that defect. TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges
+//     above (the --json path, the only path that serializes Blocks/BlockedBy)
+//     is what actually gates the edges-sort fix, and IS confirmed to fail
+//     when that sort is removed -- see its own doc comment. Confirmed both
+//     ways locally; see this item's test_decisions.
 func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView(t *testing.T) {
 	origDebug := debugOutput
 	defer func() { debugOutput = origDebug }()
@@ -453,7 +528,12 @@ func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView(t *testing.T) {
 	defer func() { isTTYStdout = origTTY }()
 	isTTYStdout = func() bool { return true }
 
-	buildDepFixtureProject(t, "runeproject-detTree", "runE-detTree-blocker", 6)
+	hubIDs := []string{
+		"runE-detTree-hub-a", "runE-detTree-hub-b", "runE-detTree-hub-c",
+		"runE-detTree-hub-d", "runE-detTree-hub-e", "runE-detTree-hub-f",
+		"runE-detTree-hub-g", "runE-detTree-hub-h",
+	}
+	buildMultiReadyDepFixtureProject(t, "runeproject-detTree", hubIDs)
 	jsonOutput = false
 	defer resetReadyRunFlags(t)()
 
@@ -466,8 +546,14 @@ func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView(t *testing.T) {
 		})
 		if i == 0 {
 			first = output
-			if !strings.Contains(output, "runE-detTree-blocker") {
-				t.Fatalf("run 0: expected the blocker's tree-rendered line, got:\n%s", output)
+			lines := countNonEmptyLines(output)
+			if lines != len(hubIDs) {
+				t.Fatalf("run 0: expected %d uncapped hub rows (each hub is its own group, no header), got %d:\n%s", len(hubIDs), lines, output)
+			}
+			for _, id := range hubIDs {
+				if !strings.Contains(output, id) {
+					t.Fatalf("run 0: expected hub %q's tree-rendered row, got:\n%s", id, output)
+				}
 			}
 			continue
 		}

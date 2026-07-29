@@ -275,25 +275,25 @@ card's tags and content onto `*state.Item`:
 
 | Item field | Source | Cite |
 |---|---|---|
-| `ID` | `d` tag | `:563` |
-| `MsgID` | the card's own **event id** | `:568` |
-| `Title` | `title` tag (absent when confidential) | `:569` |
-| `Status` | `s` tag | `:570` |
-| `Priority` | `priority` tag, falling back to `rank` | `:571` |
-| `Type` | `itype` tag | `:572` |
-| `Context` / `Description` | `Content` (both set to the same value) | `:573-574` |
-| `CreatedAt` / `UpdatedAt` | `created_at * 1e9` | `:575-576` |
-| `BlockedBy` | **raw** `i` tags, unvalidated (staging; see §8.1) | `:579` |
-| `Gate` | `gate` tag | `:580` |
-| `WaitingType` | `waiting_type` tag | `:581` |
-| `WaitingOn` | `waiting_on` tag (absent when confidential) | `:582` |
-| `Labels` | all `l` tags, in tag order | `:583` |
-| `ETA` | `eta` tag | `:584` |
-| `Level` | `level` tag | `:588` |
-| `For` | `for` tag | `:589` |
-| `ParentID` | `parent` tag | `:590` |
-| `Due` | `due` tag | `:591` |
-| `By` | `p` tag, only when non-empty | `:593-595` |
+| `ID` | `d` tag | `:583` |
+| `MsgID` | the card's own **event id** | `:588` |
+| `Title` | `title` tag (absent when confidential) | `:589` |
+| `Status` | `s` tag | `:590` |
+| `Priority` | `priority` tag, falling back to `rank` | `:591` |
+| `Type` | `itype` tag | `:592` |
+| `Context` / `Description` | `Content` (both set to the same value) | `:593-594` |
+| `CreatedAt` / `UpdatedAt` | `created_at * 1e9` | `:595-596` |
+| `BlockedBy` | **raw** `i` tags, unvalidated (staging; see §8.1) | `:599` |
+| `Gate` | `gate` tag | `:600` |
+| `WaitingType` | `waiting_type` tag | `:601` |
+| `WaitingOn` | `waiting_on` tag (absent when confidential) | `:602` |
+| `Labels` | all `l` tags, in tag order | `:603` |
+| `ETA` | `eta` tag | `:604` |
+| `Level` | `level` tag | `:608` |
+| `For` | `for` tag | `:609` |
+| `ParentID` | `parent` tag | `:610` |
+| `Due` | `due` tag | `:611` |
+| `By` | `p` tag, only when non-empty | `:613-615` |
 
 **§5.2** A missing tag projects to the zero value — this is the backward-compat
 rule for cards written before a tag existed (`pkg/sync/nostrproject.go:605-611`).
