@@ -72,6 +72,95 @@ func buildTreeShapedProject(t *testing.T, projectName, rootID string, n int) {
 	setupNostrProjectWithItems(t, projectName, items)
 }
 
+// buildDepFixtureProject publishes one ready blocker item plus n blockee
+// items that each declare a single dependency on the blocker (BlockedBy:
+// []string{blockerID}), returning the project dir. Every blockee ties on
+// priority/ETA/created_at with its siblings, but that is not what this
+// fixture targets: applyDepAndGateStatus (pkg/sync/nostrproject.go) builds
+// its edges slice by ranging over the items MAP, so with n>=2 blockees the
+// blocker ends up with 2+ Blocks entries whose ORDER depends on that
+// randomized map-iteration order, not on the input event set -- a defect
+// buildTreeShapedProject's parent_id-only fixture (no dependency edges at
+// all) structurally cannot expose, because with zero edges there is nothing
+// for applyDepAndGateStatus's map-order-derived edges slice to reorder.
+// Applying the deps promotes every blockee to StatusBlocked (the blocker is
+// non-terminal), so the READY view surfaces exactly one item -- the
+// blocker -- and its "blocks" JSON field is the exact array this fixture
+// exists to pin down.
+func buildDepFixtureProject(t *testing.T, projectName, blockerID string, n int) {
+	t.Helper()
+	items := []*state.Item{
+		{ID: blockerID, Status: "inbox", Priority: "p2", Title: "Blocker", For: "agent@test"},
+	}
+	for i := 0; i < n; i++ {
+		items = append(items, &state.Item{
+			ID:        fmt.Sprintf("%s-blockee-%02d", blockerID, i),
+			Status:    "inbox",
+			Priority:  "p2",
+			Title:     "Blockee",
+			For:       "agent@test",
+			BlockedBy: []string{blockerID},
+		})
+	}
+	setupNostrProjectWithItems(t, projectName, items)
+}
+
+// buildMultiReadyDepFixtureProject publishes len(hubIDs) independent "hub"
+// items, all tied on priority (p2) and ETA (empty) -- the case that is only
+// deterministic because of the ID tiebreak in sortByPriorityETA, not by
+// accident -- and each carrying MULTI-EDGE dependencies on both sides:
+//
+//   - BlockedBy: two SHARED, already-terminal (done) blocker items. Per
+//     applyDepAndGateStatus (pkg/sync/nostrproject.go), `blocked.Status` is
+//     only promoted to StatusBlocked when the blocker is non-terminal, so a
+//     done blocker never blocks -- every hub stays in the READY set despite
+//     declaring 2 dependency edges each (2*len(hubIDs) edges total funnel
+//     through the same map-range-built `edges` slice the ready-f5f/ready-e12
+//     sort.Slice fix sorts).
+//   - Blocks: two per-hub blockee children, each declaring
+//     BlockedBy: []string{hub.ID}. Their sole blocker (the hub) is
+//     non-terminal, so THEY get promoted to StatusBlocked and never appear in
+//     the ready set themselves -- they exist only to populate their hub's
+//     Blocks array with 2 entries, exercising the same edges-sort code path
+//     from the other direction.
+//
+// No hub has a ParentID, so buildReadyGroups (cmd/rd/ready.go) gives each hub
+// its own single-item group: displayChildren is empty for every group (always
+// under headerThreshold), so printReadyTree's INLINE branch prints every hub
+// as its own uncapped row -- unlike buildDepFixtureProject/
+// buildTreeShapedProject's header-form case, where only the top
+// maxChildrenPerEpic survive to the page. Every hub's relative order is
+// therefore visible, unsuppressed, in the rendered tree-view text.
+func buildMultiReadyDepFixtureProject(t *testing.T, projectName string, hubIDs []string) {
+	t.Helper()
+	const doneA, doneB = "runE-detTree-doneA", "runE-detTree-doneB"
+	items := []*state.Item{
+		{ID: doneA, Status: state.StatusDone, Priority: "p2", Title: "Done blocker A", For: "agent@test"},
+		{ID: doneB, Status: state.StatusDone, Priority: "p2", Title: "Done blocker B", For: "agent@test"},
+	}
+	for _, id := range hubIDs {
+		items = append(items, &state.Item{
+			ID:        id,
+			Status:    "inbox",
+			Priority:  "p2",
+			Title:     "Hub",
+			For:       "agent@test",
+			BlockedBy: []string{doneA, doneB},
+		})
+		for i := 0; i < 2; i++ {
+			items = append(items, &state.Item{
+				ID:        fmt.Sprintf("%s-blockee-%02d", id, i),
+				Status:    "inbox",
+				Priority:  "p2",
+				Title:     "Blockee",
+				For:       "agent@test",
+				BlockedBy: []string{id},
+			})
+		}
+	}
+	setupNostrProjectWithItems(t, projectName, items)
+}
+
 // TestReadyCmd_RunE_TTY_PrintsGroupedTree is the headline test for challenge
 // 1: it forces the TTY branch and asserts the OUTPUT SHAPE that only
 // printReadyTree produces (a collapsed line count below the flat item
@@ -255,5 +344,221 @@ func TestSortByPriorityETA_DeterministicTiebreak(t *testing.T) {
 	}
 	if strings.Join(gotB, ",") != strings.Join(want, ",") {
 		t.Fatalf("sorted order from input order B (different starting order, same item set): got %v, want %v -- sort must be deterministic regardless of input order", gotB, want)
+	}
+}
+
+// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns is the ready-f5f done-condition
+// clause 1 test: it runs the SAME event set through the real ready view
+// (readyCmd.RunE, end to end -- nostr log read -> rdSync.ProjectItems fold ->
+// sortByPriorityETA -> JSON encode) readyRunCount (>=20) times against ONE
+// already-published project, and asserts every run's raw output is
+// byte-identical to the first.
+//
+// This does NOT construct a []*state.Item by hand and sort it (that is what
+// TestSortByPriorityETA_DeterministicTiebreak above already covers, and per
+// this item's done condition, unit-testing the comparator alone is not
+// sufficient). It goes through nostrProjectAllItems's real
+// `for _, it := range byID { items = append(items, it) }` loop
+// (cmd/rd/nostr.go), where byID is a map[string]*state.Item -- Go's
+// documented map-iteration randomization applies PER range clause, not just
+// per process, so calling the full RunE pipeline N times in the SAME test
+// binary run genuinely re-randomizes the pre-sort slice order each time. A
+// single execution (or a two-orders-by-hand test) cannot exercise that: only
+// repeated real derivations can. All 20 children below share priority (p2)
+// and ETA (empty), so every one of them ties past both fields and lands on
+// the ID tiebreak -- the exact case that was unstable before ready-e88.
+//
+// VERIFIED regression check: reverting sortByPriorityETA's comparator to drop
+// the `return items[i].ID < items[j].ID` tiebreak line (leaving ties
+// unresolved) and switching sort.SliceStable back to sort.Slice makes this
+// test flake/fail (divergent order across runs) -- confirmed by running it
+// with that reversion locally; see this item's test_decisions for the exact
+// command and result.
+const readyRunCount = 25
+
+func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+
+	// 20 children, all tied on priority (p2) and ETA (empty) -- the worst
+	// case for the comparator, and the case that was flaky pre-ready-e88.
+	buildTreeShapedProject(t, "runeproject-detN", "runE-detN-epic", 20)
+	jsonOutput = true
+	defer resetReadyRunFlags(t)()
+
+	var first string
+	for i := 0; i < readyRunCount; i++ {
+		output := captureStdoutPipe(t, func() {
+			if err := readyCmd.RunE(readyCmd, []string{}); err != nil {
+				t.Fatalf("readyCmd.RunE (run %d): %v", i, err)
+			}
+		})
+		if i == 0 {
+			first = output
+			var decoded []map[string]interface{}
+			if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+				t.Fatalf("run 0 output is not valid JSON: %v\noutput:\n%s", err, output)
+			}
+			if len(decoded) != 20 {
+				t.Fatalf("run 0: expected 20 ready children, got %d:\n%s", len(decoded), output)
+			}
+			continue
+		}
+		if output != first {
+			t.Fatalf("run %d diverged from run 0's output -- ready view is not byte-identical across repeated runs of the same event set:\nrun 0:\n%s\nrun %d:\n%s", i, first, i, output)
+		}
+	}
+}
+
+// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges is ready-f5f REWORK
+// clause 1: TestReadyCmd_RunE_ByteIdenticalAcrossNRuns above only proves item
+// ORDER is deterministic -- its fixture (buildTreeShapedProject) carries no
+// dependency edges at all, so it structurally cannot exercise
+// applyDepAndGateStatus's edges slice, which is built from a MAP RANGE over
+// items (pkg/sync/nostrproject.go) and therefore reorders any item's
+// Blocks/BlockedBy array nondeterministically once it has 2+ edges. This
+// test runs the SAME dep-carrying event set (one ready blocker, 6 blockees,
+// buildDepFixtureProject) through the real end-to-end pipeline N times and
+// asserts byte-identical --json output, including the blocker's "blocks"
+// array -- the exact field the adversary reproduced failing 5-of-5 pre-fix.
+//
+// VERIFIED regression check: with the sort.Slice(edges, ...) call removed
+// from applyDepAndGateStatus (reverting to the unsorted map-range order),
+// this test fails/flakes across repeated runs (divergent "blocks" element
+// order) -- confirmed locally; see this item's test_decisions for the exact
+// command and result.
+func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+
+	const blockerID = "runE-detDep-blocker"
+	buildDepFixtureProject(t, "runeproject-detDep", blockerID, 6)
+	jsonOutput = true
+	defer resetReadyRunFlags(t)()
+
+	var first string
+	for i := 0; i < readyRunCount; i++ {
+		output := captureStdoutPipe(t, func() {
+			if err := readyCmd.RunE(readyCmd, []string{}); err != nil {
+				t.Fatalf("readyCmd.RunE (run %d): %v", i, err)
+			}
+		})
+		if i == 0 {
+			first = output
+			var decoded []map[string]interface{}
+			if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+				t.Fatalf("run 0 output is not valid JSON: %v\noutput:\n%s", err, output)
+			}
+			// All 6 blockees are promoted to StatusBlocked by their declared dep
+			// on the (non-terminal) blocker, so the ready set is exactly the
+			// blocker itself.
+			if len(decoded) != 1 {
+				t.Fatalf("run 0: expected exactly 1 ready item (the blocker; blockees should be blocked), got %d:\n%s", len(decoded), output)
+			}
+			id, _ := decoded[0]["id"].(string)
+			if id != blockerID {
+				t.Fatalf("run 0: expected ready item %q, got %q", blockerID, id)
+			}
+			blocks, _ := decoded[0]["blocks"].([]interface{})
+			if len(blocks) != 6 {
+				t.Fatalf("run 0: expected blocker's \"blocks\" array to have 6 entries, got %d: %v", len(blocks), blocks)
+			}
+			continue
+		}
+		if output != first {
+			t.Fatalf("run %d diverged from run 0's output -- a dep-carrying ready view is not byte-identical across repeated runs of the same event set (blocker's \"blocks\" array order is unstable):\nrun 0:\n%s\nrun %d:\n%s", i, first, i, output)
+		}
+	}
+}
+
+// TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView is ready-f5f REWORK 2
+// clause 1's replacement: the prior version of this test (buildDepFixtureProject,
+// one blocker + 6 blockees) reduced the READY set to exactly one item -- the
+// blocker -- because all 6 blockees are promoted to StatusBlocked. A single
+// ready item is a SINGLE PRINTED LINE with nothing to reorder, and
+// printReadyTree/formatItemRow (cmd/rd/ready.go) never render Blocks/BlockedBy
+// at all, so that fixture gated nothing: the adversary confirmed it passes
+// 5/5 with the ready-f5f/ready-e12 edges sort.Slice removed, AND passes with
+// sortByPriorityETA's ID tiebreak + SliceStable reverted. This replacement
+// uses buildMultiReadyDepFixtureProject: len(hubIDs) READY hubs (not one),
+// tied on priority/ETA so ORDER is resolved only by the ID tiebreak, each
+// carrying 2 BlockedBy + 2 Blocks edges (multi-edge on both sides, exercising
+// applyDepAndGateStatus's map-range-built `edges` slice) while staying ready.
+// No hub has a parent, so every hub is printed as its own uncapped row --
+// their relative order is the exact nondeterministic content this path can
+// render, with nothing capped or omitted.
+//
+// VERIFIED regression check (both fixes reachable from THIS test, each
+// checked independently by reverting it alone and re-running):
+//   - sortByPriorityETA's ID tiebreak removed + sort.SliceStable reverted to
+//     sort.Slice: this test FAILS (divergent hub order across the 25 runs) --
+//     confirmed locally, see this item's test_decisions for the exact
+//     command/output.
+//   - the ready-f5f/ready-e12 sort.Slice(edges, ...) call removed from
+//     applyDepAndGateStatus: this test still PASSES. This is not a gap in
+//     THIS test -- it is a structural fact about printReadyTree, which never
+//     reads Blocks/BlockedBy, so no fixture reachable through this render
+//     path can observe that defect. TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_WithDepEdges
+//     above (the --json path, the only path that serializes Blocks/BlockedBy)
+//     is what actually gates the edges-sort fix, and IS confirmed to fail
+//     when that sort is removed -- see its own doc comment. Confirmed both
+//     ways locally; see this item's test_decisions.
+func TestReadyCmd_RunE_ByteIdenticalAcrossNRuns_TreeView(t *testing.T) {
+	origDebug := debugOutput
+	defer func() { debugOutput = origDebug }()
+	debugOutput = false
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+
+	hubIDs := []string{
+		"runE-detTree-hub-a", "runE-detTree-hub-b", "runE-detTree-hub-c",
+		"runE-detTree-hub-d", "runE-detTree-hub-e", "runE-detTree-hub-f",
+		"runE-detTree-hub-g", "runE-detTree-hub-h",
+	}
+	buildMultiReadyDepFixtureProject(t, "runeproject-detTree", hubIDs)
+	jsonOutput = false
+	defer resetReadyRunFlags(t)()
+
+	var first string
+	for i := 0; i < readyRunCount; i++ {
+		output := captureStdoutPipe(t, func() {
+			if err := readyCmd.RunE(readyCmd, []string{}); err != nil {
+				t.Fatalf("readyCmd.RunE (run %d): %v", i, err)
+			}
+		})
+		if i == 0 {
+			first = output
+			lines := countNonEmptyLines(output)
+			if lines != len(hubIDs) {
+				t.Fatalf("run 0: expected %d uncapped hub rows (each hub is its own group, no header), got %d:\n%s", len(hubIDs), lines, output)
+			}
+			for _, id := range hubIDs {
+				if !strings.Contains(output, id) {
+					t.Fatalf("run 0: expected hub %q's tree-rendered row, got:\n%s", id, output)
+				}
+			}
+			continue
+		}
+		if output != first {
+			t.Fatalf("run %d diverged from run 0's tree-view output -- printReadyTree is not byte-identical across repeated runs of the same event set:\nrun 0:\n%s\nrun %d:\n%s", i, first, i, output)
+		}
 	}
 }
