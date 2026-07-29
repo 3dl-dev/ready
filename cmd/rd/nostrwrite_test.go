@@ -1345,7 +1345,7 @@ func TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf(t *testing.T) {
 // across test runs with a freshly generated key -- and the put can silently
 // lose, which was observed directly: 4/10 runs failed with the ORIGINAL
 // (unreverted) production code before this sleep was added. That is a real,
-// separate latent bug in nostrPutCmd (tracked as ready-e5d, out of scope for
+// separate latent bug in nostrPutCmd (tracked as ready-c52, out of scope for
 // THIS item's CreatedAt-carry fix), not a flaw in the assertion below -- the
 // sleep below only forces the put into a strictly later second so the
 // created_at comparison (not the id tie-break) decides the winner, making
