@@ -184,7 +184,7 @@ func (b *builder) vTrustGateDisabledAdmitsAnyone() error {
 	}
 	items, err := itemsJSON(&state.Item{
 		ID: "ready-v25", MsgID: hostileCard.ID, Title: "hostile takeover", Type: "bug", Priority: "p3",
-		Status: state.StatusDone, CreatedAt: nanos(t0 + 100), UpdatedAt: nanos(t0 + 200),
+		Status: state.StatusDone, CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 200),
 		History: []state.HistoryEntry{
 			{Timestamp: rfc(t0 + 200), FromStatus: "", ToStatus: state.StatusDone, ChangedBy: b.outsiderPub, Note: "closing your item"},
 		},
@@ -199,7 +199,10 @@ func (b *builder) vTrustGateDisabledAdmitsAnyone() error {
 			"pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card " +
 			"now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status " +
 			"event authoritative: full state takeover. This is what the enforced gate prevents. " +
-			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set).",
+			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). Even so, " +
+			"CreatedAt (ready-4ec) still reads the genuine card's original t0 — it is the MINIMUM created_at " +
+			"over every admitted event for the item, so the takeover changes who currently authors the " +
+			"content but not when the item's chain began.",
 		Options: Options{Trusted: nil},
 		Events:  []*nostr.Event{genuine, hostileCard, hostileStatus},
 		Expect:  Expect{Items: items, Views: vw(nil)},

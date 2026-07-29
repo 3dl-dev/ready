@@ -163,6 +163,21 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	// Winning card per item, and the ordered list of authoritative status events.
 	winningCard := map[string]*nostr.Event{}
 	statusEvents := map[string][]*nostr.Event{}
+	// firstSeen tracks the EARLIEST created_at (seconds) across every card/status
+	// event admitted for an item id (ready-4ec). itemFromCard derives item.CreatedAt
+	// from the WINNING card's OWN created_at, but every mutation path (update,
+	// close, cancel, delegate, gate, approve, dep add) republishes the 30302 card
+	// with a FRESH created_at — required so nostrNextCreatedAt's monotonic bump lets
+	// the replacement win the latest-wins fold — which resets that reading to
+	// publish time on every touch. The log is append-only (nostrlog.go: "the local
+	// log is the source of truth... fully rebuildable by replaying this log"), so
+	// every past revision of the card, plus every status event, is STILL present in
+	// `events` even though only the newest card counts for CURRENT state. The
+	// minimum created_at over that admitted set is the item's TRUE creation time —
+	// distinct from UpdatedAt (already correctly the MAX over status events, set
+	// below) — recovered without a new persisted field or any change to what gets
+	// signed/published.
+	firstSeen := map[string]int64{}
 	// STATUS-AUTHORITY source (ready-b57): board maintainers keyed by board
 	// coordinate "30301:<boardAuthor>:<boardD>". Populated from the 30301 board
 	// events in this SAME event set (trusted + verified). The board AUTHOR is an
@@ -284,6 +299,9 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			continue
 		}
 		seen[e.ID] = true
+		if cur, ok := firstSeen[itemID]; !ok || e.CreatedAt < cur {
+			firstSeen[itemID] = e.CreatedAt
+		}
 		switch {
 		case e.Kind == KindCard:
 			cur, ok := winningCard[itemID]
@@ -325,6 +343,14 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	for itemID, card := range winningCard {
 		author := card.PubKey
 		item := itemFromCard(card, opts.Decryptor)
+		// TRUE CREATION TIME (ready-4ec): itemFromCard set item.CreatedAt from the
+		// WINNING card's own created_at (publish time of the LATEST revision).
+		// Overwrite it with the earliest created_at seen anywhere in this item's
+		// admitted card/status chain, so a mutation that republishes the card no
+		// longer resets how old the item looks. firstSeen[itemID] is always present
+		// here: the winning card itself was folded into firstSeen in the same loop
+		// pass that populated winningCard.
+		item.CreatedAt = firstSeen[itemID] * int64(time.Second)
 
 		// STATUS-AUTHORITY SET (ready-b57): who — besides the item author — may author
 		// an authoritative status transition on THIS item. It is the maintainers of the

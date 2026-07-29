@@ -279,7 +279,7 @@
         "4.1",
         "4.3"
       ],
-      "note": "Two cards for one item; the greater created_at wins even though it appears FIRST in the log. Note CreatedAt tracks the WINNING card, not the first-ever card (§5.1).",
+      "note": "Two cards for one item; the greater created_at wins the CONTENT contest even though it appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec) is the MINIMUM created_at over every admitted card/status event for the item, not the winning card's own timestamp, so it tracks the first-ever card and does not reset when a later republish wins content (§5.1). UpdatedAt still tracks the winning card/latest status event.",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -372,7 +372,7 @@
         "items": [
           {
             "context": "second write",
-            "created_at": "1700000100000000000",
+            "created_at": "1700000000000000000",
             "description": "second write",
             "for": "",
             "id": "ready-v03",
@@ -3819,7 +3819,7 @@
         "4.1",
         "6.4"
       ],
-      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set).",
+      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). Even so, CreatedAt (ready-4ec) still reads the genuine card's original t0 — it is the MINIMUM created_at over every admitted event for the item, so the takeover changes who currently authors the content but not when the item's chain began.",
       "options": {
         "trusted": null,
         "maintainers": null,
@@ -3935,7 +3935,7 @@
       "expect": {
         "items": [
           {
-            "created_at": "1700000100000000000",
+            "created_at": "1700000000000000000",
             "for": "",
             "history": [
               {

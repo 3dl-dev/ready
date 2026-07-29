@@ -140,7 +140,7 @@ func (b *builder) vCardLatestWins() error {
 		ID: "ready-v03", MsgID: newer.ID, Title: "newer",
 		Context: "second write", Description: "second write",
 		Type: "task", Priority: "p1", Status: state.StatusActive,
-		CreatedAt: nanos(t0 + 100), UpdatedAt: nanos(t0 + 100),
+		CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 100),
 	})
 	if err != nil {
 		return err
@@ -148,8 +148,11 @@ func (b *builder) vCardLatestWins() error {
 	return b.add(Vector{
 		Name:        "card_latest_wins_created_at",
 		SpecClauses: []string{"4.1", "4.3"},
-		Note: "Two cards for one item; the greater created_at wins even though it appears FIRST in the " +
-			"log. Note CreatedAt tracks the WINNING card, not the first-ever card (§5.1).",
+		Note: "Two cards for one item; the greater created_at wins the CONTENT contest even though it " +
+			"appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec) is the MINIMUM created_at over " +
+			"every admitted card/status event for the item, not the winning card's own timestamp, so it " +
+			"tracks the first-ever card and does not reset when a later republish wins content (§5.1). " +
+			"UpdatedAt still tracks the winning card/latest status event.",
 		Options: Options{Trusted: trust(b.ownerPub)},
 		Events:  []*nostr.Event{newer, older},
 		Expect: Expect{

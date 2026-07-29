@@ -170,6 +170,87 @@ func TestProjection_StaleReplayDoesNotResurrect(t *testing.T) {
 	}
 }
 
+// TestProjection_CreatedAtSurvivesMutation is the ready-4ec regression: an item's
+// creation time must survive EVERY republish of its 30302 card (update, close,
+// cancel, delegate, gate, approve, dep add all funnel through the same
+// card-republish + status-event mechanics this test exercises), while its
+// last-modified time (UpdatedAt) keeps advancing. Before the fix, itemFromCard
+// read CreatedAt straight off the WINNING card's own created_at — which a
+// republish resets to publish time by design (nostrNextCreatedAt's monotonic
+// bump requires a fresh created_at so the replacement wins latest-wins) — so
+// every mutation made the item look brand new.
+func TestProjection_CreatedAtSurvivesMutation(t *testing.T) {
+	k := testKey(t)
+	itemID := "ready-created-1"
+	opts := ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}}
+
+	// t=1000: genesis create (inbox).
+	c0, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v0", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 1000)
+	s0, _ := BuildStatusEvent(k, itemID, state.StatusInbox, c0.ID, "", 1000)
+
+	items := ProjectItems([]*nostr.Event{c0, s0}, opts)
+	it, ok := items[itemID]
+	if !ok {
+		t.Fatalf("item %s not projected after genesis", itemID)
+	}
+	wantCreated := int64(1000) * int64(time.Second)
+	if it.CreatedAt != wantCreated {
+		t.Fatalf("genesis CreatedAt = %d, want %d", it.CreatedAt, wantCreated)
+	}
+	if it.UpdatedAt != wantCreated {
+		t.Fatalf("genesis UpdatedAt = %d, want %d", it.UpdatedAt, wantCreated)
+	}
+
+	// t=2000: a card edit republishes the card (e.g. `rd update`, `rd dep add`, a
+	// re-parent) — a plain card-only mutation, no new status event.
+	c1, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusInbox, Priority: "p1", BoardD: "ready"}, 2000)
+
+	// t=3000: claim (active) — card republish + authoritative status event, the
+	// same mechanics `rd claim`/`rd delegate` use.
+	c2, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusActive, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready"}, 3000)
+	s1, _ := BuildStatusEvent(k, itemID, state.StatusActive, c2.ID, "claimed", 3000)
+
+	// t=4000: close (done) — the same mechanics `rd done`/`rd cancel`/`rd fail`
+	// use: republish the card AND emit a terminal status event.
+	c3, _ := BuildCardEvent(k, CardSpec{ItemID: itemID, Title: "v1 edited", Status: state.StatusDone, Priority: "p1", Assignee: k.PubKeyHex(), BoardD: "ready"}, 4000)
+	s2, _ := BuildStatusEvent(k, itemID, state.StatusDone, c3.ID, "shipped", 4000)
+
+	all := []*nostr.Event{c0, s0, c1, c2, s1, c3, s2}
+	items = ProjectItems(all, opts)
+	it, ok = items[itemID]
+	if !ok {
+		t.Fatalf("item %s not projected after mutations", itemID)
+	}
+	if it.CreatedAt != wantCreated {
+		t.Errorf("CreatedAt after 3 republishes = %d, want unchanged genesis value %d (ready-4ec regression)", it.CreatedAt, wantCreated)
+	}
+	wantUpdated := int64(4000) * int64(time.Second)
+	if it.UpdatedAt != wantUpdated {
+		t.Errorf("UpdatedAt = %d, want %d (last-modified must still advance)", it.UpdatedAt, wantUpdated)
+	}
+	if it.CreatedAt == it.UpdatedAt {
+		t.Errorf("CreatedAt and UpdatedAt collapsed to the same value %d — creation time is not distinguishable from last-modified", it.CreatedAt)
+	}
+	if it.Status != state.StatusDone {
+		t.Fatalf("status = %q, want done (mutation sequence sanity check)", it.Status)
+	}
+
+	// Convergence: the fix must not depend on append order — every permutation of
+	// the same event set must recover the identical CreatedAt/UpdatedAt.
+	for seed := int64(0); seed < 50; seed++ {
+		got := ProjectItems(permute(all, seed), opts)[itemID]
+		if got == nil {
+			t.Fatalf("seed=%d: item missing after permutation", seed)
+		}
+		if got.CreatedAt != wantCreated {
+			t.Fatalf("seed=%d: CreatedAt = %d, want %d", seed, got.CreatedAt, wantCreated)
+		}
+		if got.UpdatedAt != wantUpdated {
+			t.Fatalf("seed=%d: UpdatedAt = %d, want %d", seed, got.UpdatedAt, wantUpdated)
+		}
+	}
+}
+
 // TestAppendUnique_RejectsFarFuture proves the created_at skew bound at INGESTION
 // (point c): an event stamped far in the future is rejected by AppendUnique and
 // never reaches the local authoritative log, while an in-window event is admitted.

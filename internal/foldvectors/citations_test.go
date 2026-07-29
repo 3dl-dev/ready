@@ -676,8 +676,9 @@ var citationExceptions = map[string]string{
 	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
 		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
 		"the relay's addressable replacement contradicts; the func is declared at :178",
-	"newerThan|pkg/sync/nostrproject.go|256@decl552": "§4.5: newerThan is USED for board " +
-		"latest-wins ordering at nostrproject.go:256-258; it's declared at :552",
+	"newerThan|pkg/sync/nostrproject.go|271@decl578": "§4.5: newerThan is USED for board " +
+		"latest-wins ordering at nostrproject.go:271-273 (shifted from :256-258 by " +
+		"ready-4ec's firstSeen tracking); it's declared at :578",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
 	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
@@ -689,14 +690,17 @@ var citationExceptions = map[string]string{
 	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|641@decl155": "§21.x: second CALL site, " +
 		"inside runEngageNostr (moved from :628 to :641 by ready-ca3); " +
 		"publishItemFullCreateNostr is declared at :155",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|435@decl452": "§9.9: CALL site inside " +
-		"ProjectItems; applyDepAndGateStatus is declared at :452",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|439@decl452": "§14.4: cites " +
-		"applyDepAndGateStatus's OWN 13-line doc comment (:439-451), not its body; " +
-		"the func itself is declared at :452",
-	"grantTrusts|pkg/sync/nostrproject.go|235@decl135": "§3.4/§25.4: CALL site inside " +
-		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:235-237) and " +
-		"§25.4's restatement); grantTrusts itself is declared at :135",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|461@decl478": "§9.9: CALL site inside " +
+		"ProjectItems (shifted from :435 by ready-4ec's firstSeen tracking); " +
+		"applyDepAndGateStatus is declared at :478",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|465@decl478": "§14.4: cites " +
+		"applyDepAndGateStatus's OWN 13-line doc comment (:465-477, shifted from " +
+		":439-451 by ready-4ec's firstSeen tracking), not its body; the func itself " +
+		"is declared at :478",
+	"grantTrusts|pkg/sync/nostrproject.go|250@decl135": "§3.4/§25.4: CALL site inside " +
+		"the read-trust gate (both `grantTrusts(levels, e.PubKey)` (:250-252, " +
+		"shifted from :235-237 by ready-4ec's firstSeen tracking) and §25.4's " +
+		"restatement); grantTrusts itself is declared at :135",
 	"newerGrant|pkg/sync/rolegrant.go|525@decl643": "§4.4: CALL site — the ascending sort " +
 		"is expressed as `newerGrant(grants[j], grants[i])` (:487-489); newerGrant itself " +
 		"is declared at :605",
@@ -782,10 +786,11 @@ var citationExceptions = map[string]string{
 	"ReadyFilter|pkg/views/views.go|67@decl60": "§13.3/§15.1: the " +
 		"not-`scheduled` conjunct (:67-69); ReadyFilter is never cited at its " +
 		"own declaration line (:60) — only via its per-conjunct detail lines",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|453@decl452": "§8.1: the " +
-		"BlockedBy drain-and-rebuild step (:453-460) inside applyDepAndGateStatus's " +
-		"body; its declaration is at :452 (a separate call-site exception already " +
-		"covers :435, a doc-comment exception already covers :439)",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|479@decl478": "§8.1: the " +
+		"BlockedBy drain-and-rebuild step (:479-486, shifted from :453-460 by " +
+		"ready-4ec's firstSeen tracking) inside applyDepAndGateStatus's body; its " +
+		"declaration is at :478 (a separate call-site exception already covers " +
+		":461, a doc-comment exception already covers :465)",
 	"boardConfidentialEnvelope|cmd/rd/confidential.go|156@decl85": "§11.10: the " +
 		"epoch-1 bootstrap step (:139-159) inside boardConfidentialEnvelope's body; " +
 		"its declaration is at :85 (a separate doc-comment exception already covers :83)",
@@ -795,9 +800,10 @@ var citationExceptions = map[string]string{
 	"handleWorkCreate|pkg/state/state.go|581@decl572": "§15.x: a detail range " +
 		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
 		"declaration is cited exactly at :556",
-	"itemFromCard|pkg/sync/nostrproject.go|564@decl562": "§4.6: the nanosecond " +
-		"multiplication step (:564-566) inside itemFromCard's body; itemFromCard's " +
-		"own declaration+body is cited exactly at :562 (§5.1, `:562-623`)",
+	"itemFromCard|pkg/sync/nostrproject.go|590@decl588": "§4.6: the nanosecond " +
+		"multiplication step (:590-592, shifted from :564-566 by ready-4ec's " +
+		"firstSeen tracking) inside itemFromCard's body; itemFromCard's own " +
+		"declaration+body is cited exactly at :588 (§5.1, `:588-654`)",
 	"itemIDForEvent|pkg/sync/nostrwire.go|622@decl618": "§9.x: a detail range " +
 		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
 		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
