@@ -46,7 +46,7 @@ import {
   type RelayStatusEvent,
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
-import { discoverOwnerBoards, parseBoardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
+import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard } from "./lib/boarddiscovery";
 import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 import type { EncryptedBoardSet } from "./lib/envelope";
@@ -101,7 +101,21 @@ export const defaultDeps: BoardDeps = {
  * them". Splitting it would mean deriving a keyring from a second, later
  * snapshot that need not agree with the first.
  */
-const AUTHORITY_KINDS = [30301, KIND_ROLE_GRANT];
+const AUTHORITY_KINDS = [KIND_BOARD, KIND_ROLE_GRANT];
+
+/** dedupeById merges event lists from separate REQs into one snapshot. The
+ * single-board path (ready-5c5) needs two REQs — the two authority kinds hang
+ * off different tags — and a relay may legitimately serve the same event to
+ * both, so the snapshot handed to discoverOwnerBoards / deriveBoardKeyring is
+ * de-duplicated first: a grant replayed twice would otherwise be replayed twice
+ * by deriveLevels. */
+function dedupeById(events: NostrEvent[]): NostrEvent[] {
+  const byId = new Map<string, NostrEvent>();
+  for (const e of events) {
+    if (e && typeof e.id === "string") byId.set(e.id, e);
+  }
+  return Array.from(byId.values());
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -439,21 +453,33 @@ export async function afterLogin(
       const parsedCoord = parseBoardCoord(fragment.board);
       if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(fragment.board)}`);
       relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
-      // ready-5c5: query by the board's own "a" coordinate, NOT authors. A
-      // nostr relay's `authors` index is allowed to under-return (measured on
-      // wss://relay.3dl.network: a paged kind+authors REQ served 42 of an
-      // owner's 56 boards while a paged kind-only REQ, same relay, same run,
-      // served all 56). The coordinate is a tag on the event itself, not a
-      // secondary index a relay can maintain out of step with the event
-      // store, so this cannot silently drop a board the author index does.
-      // discoverOwnerBoards still schnorr-verifies every event and re-checks
-      // the owner client-side, so no security property is lost by dropping
-      // `authors` from the wire filter.
-      authorityEvents = await deps.fetchEvents(
-        relays,
-        { kinds: AUTHORITY_KINDS, ["#a"]: [fragment.board] },
-        { onStatus },
-      );
+      // ready-5c5: TWO REQs, because the two authority kinds are addressed by
+      // DIFFERENT tags and no single NIP-01 filter can name both. Within one
+      // filter every condition ANDs, so a `#a`-scoped AUTHORITY_KINDS REQ asks
+      // for "events of kind 30301 or 39301 that carry a=<coord>" — and a
+      // kind-30301 board definition carries NO "a" tag at all (its tags are d,
+      // title, optional archived, optional p — pkg/sync/nostrwire.go's
+      // BuildBoardEvent). Measured against wss://relay.3dl.network 2026-07-29:
+      // that filter returns the board's grants and ZERO board definitions, so
+      // the page rendered "No boards". Only a relay that IGNORES tag filters
+      // hides this, which is exactly what the old fixtures did.
+      //
+      // Neither REQ carries `authors`: a relay's author index is free to
+      // under-return (measured on the same relay, same day: a paged
+      // kind+authors REQ served 42 of an owner's 56 boards while a paged
+      // kind-only REQ served all 56). Ownership is enforced client-side —
+      // discoverOwnerBoards schnorr-verifies every candidate and drops any
+      // author outside `[parsedCoord.owner]`, and deriveLevels/
+      // deriveBoardKeyring do the same for grants (rolegrant.ts's
+      // `g.boardOwner !== boardAuthor` check and signerMayGrant) — so dropping
+      // `authors` from the wire filter loses no security property.
+      const [boardDefs, boardGrants] = await Promise.all([
+        // "d" is the addressable identifier ON the 30301 event itself.
+        deps.fetchEvents(relays, { kinds: [KIND_BOARD], ["#d"]: [parsedCoord.boardD] }, { onStatus }),
+        // "a" is the board coordinate ON each 39301 grant.
+        deps.fetchEvents(relays, { kinds: [KIND_ROLE_GRANT], ["#a"]: [fragment.board] }, { onStatus }),
+      ]);
+      authorityEvents = dedupeById([...boardDefs, ...boardGrants]);
       boards = discoverOwnerBoards(authorityEvents, [parsedCoord.owner], parsedCoord.boardD);
     } else if (fragment.kind === "portfolio") {
       // ready-4d9. The WHOLE portfolio: no boardD filter, so discovery returns
@@ -462,24 +488,31 @@ export async function afterLogin(
       // would miss a confidential board owned by someone else that this key was
       // granted read access to, and the link is carrying that board's key.
       //
-      // ready-5c5: no boardD is known ahead of time here, so an "#a" filter
-      // isn't available (unlike the single-board case above) — the query is
-      // kind-scoped only, NOT authors-scoped, because `authors` is exactly
-      // the filter measured to under-return on wss://relay.3dl.network.
-      // Owners are still enforced, just client-side: discoverOwnerBoards
-      // schnorr-verifies every kind-30301 and drops any whose author is not
-      // in this set, so a hostile or merely noisy relay cannot add a board
-      // here, and the keyring is still derived per board from owner-signed
-      // grants below.
+      // ready-5c5: no boardD is known ahead of time here, so neither a "#d"
+      // nor a "#a" filter is available (unlike the single-board case above) —
+      // the query is kind-scoped only, NOT authors-scoped, because `authors`
+      // is exactly the filter measured to under-return on
+      // wss://relay.3dl.network. Owners are still enforced, just client-side:
+      // discoverOwnerBoards schnorr-verifies every kind-30301 and drops any
+      // whose author is not in this set, so a hostile or merely noisy relay
+      // cannot add a board here, and the keyring is still derived per board
+      // from owner-signed grants below.
+      //
+      // Kind-only is BROAD — it asks for every author's 30301/39301, not one
+      // author's — and a relay caps what one REQ returns regardless of what
+      // the client asked for (measured: 500 on wss://relay.3dl.network). That
+      // is why relay.ts walks `until` backwards until a page adds nothing new;
+      // without it this widened filter would trade an under-returning author
+      // index for a silently truncated first page.
       relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
       const owners = [...new Set([identity.pubkey, ...keyOwners(fragment.keys)])];
       authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS }, { onStatus });
       boards = discoverOwnerBoards(authorityEvents, owners);
     } else {
       // fragment.kind === "none": own-boards discovery (ready-dbf done condition 3).
-      // ready-5c5: kind-scoped only, see the portfolio branch's comment above —
-      // this is the exact query the veracity finding measured under-returning
-      // 14 of 56 boards via `authors`.
+      // ready-5c5: kind-scoped only AND paged, see the portfolio branch's
+      // comment above — this is the exact query the veracity finding measured
+      // under-returning 14 of 56 boards via `authors`.
       relays = await deps.loadRelays();
       authorityEvents = await deps.fetchEvents(relays, { kinds: AUTHORITY_KINDS }, { onStatus });
       boards = discoverOwnerBoards(authorityEvents, [identity.pubkey]);
