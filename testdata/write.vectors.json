@@ -52,9 +52,9 @@
       "post_fold": {"id": "wv-dep-blocked", "status": "blocked", "blocked_by": ["wv-dep-blocker"]}
     },
     {
-      "name": "known_gap_dep_remove_persists_derived_blocked_status",
+      "name": "dep_remove_never_persists_derived_blocked_status",
       "spec_clauses": ["21.1", "21.5", "27.7", "25.6"],
-      "note": "rd dep remove strips the blocker id and republishes the same single card -- no status event, matching dep add's SS21.5 shape. ANOTHER INSTANCE of the SS27.7 known gap (see known_gap_card_edit_persists_derived_blocked_status for the full citation): at the moment dep_remove resolves the item, it is STILL derived-blocked (the removal has not published yet), so the card this very op emits carries s=blocked verbatim -- a stale snapshot of the status the write is in the middle of retiring. post_fold proves it is harmless HERE: the item's authoritative status-event chain never carried 'blocked' (SS6.10 overrides the stale card tag), so the fold correctly lands back on the pre-block status once the edge is gone.",
+      "note": "RESOLVED (ready-500, was known_gap_dep_remove_persists_derived_blocked_status -- board-fold-spec.md SS27.7 is now RESOLVED, not an open question). rd dep remove strips the blocker id and republishes the same single card -- no status event, matching dep add's SS21.5 shape. At the moment dep_remove resolves the item, it is STILL derived-blocked (the removal has not published yet): a NAIVE card-only edit would copy that verbatim into s=blocked, an AUTHORED-looking tag SS25.6 says no write path should ever emit. publishItemCardEditNostr now overrides card.Status with rdSync.NonDerivedStatus(item) before publishing, which walks the item's authoritative history back past the derived value and republishes the real pre-block status (s=inbox here) instead -- the wire no longer carries a value no writer intended, closing the SS27.7 gap for THIS call site (every REPUBLISH hook routes through the same guard, pkg/sync/nostrmigrate.go).",
       "op": "dep_remove",
       "seed": {"id": "wv-dep-rm-target", "title": "Was blocked", "type": "task", "priority": "p2", "status": "inbox", "blocked_by": ["wv-dep-rm-blocker"]},
       "extra_seeds": [
@@ -62,7 +62,7 @@
       ],
       "args": {"blocker_id": "wv-dep-rm-blocker"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-dep-rm-target"], ["title", "Was blocked"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-dep-rm-target"], ["title", "Was blocked"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-dep-rm-target", "status": "inbox", "blocked_by": []}
     },
@@ -246,9 +246,9 @@
       "post_fold": {"id": "wv-update-status", "status": "waiting", "waiting_type": "vendor"}
     },
     {
-      "name": "known_gap_card_edit_persists_derived_blocked_status",
+      "name": "card_edit_never_persists_derived_blocked_status",
       "spec_clauses": ["27.7", "25.6"],
-      "note": "KNOWN GAP, PINNED NOT BLESSED (board-fold-spec.md SS27.7, an UNRESOLVED open question -- ready-1bf's own DONE CONDITION 3 recorded rather than fixed this, and this item (ready-bc5) is FORBIDDEN from changing writer behaviour to close it). A card-only edit's CardSpec is built by CardSpecFromItem from whatever nostrResolveItem currently projects, and Status is copied verbatim -- with no special case for 'this value is fold-derived, not authored'. Once a live non-terminal blocker has made an item's projected Status=blocked, the NEXT card-only edit (label add, here) republishes the card with s=blocked, an AUTHORED-looking tag SS25.6 says no write path should ever emit. Per SS27.7 this is harmless to RD'S OWN projection while an authoritative status event still overrides it (SS6.10) and while the blocking derivation still holds -- post_fold proves exactly that half: rd's own fold still lands on the correct answer. What it is NOT harmless to is a generic NIP-100 client that reads the card's s tag directly, per SS27.7's own text. ready-bc5 files a new item citing this vector's discovery; see that item for the open question's disposition.",
+      "note": "RESOLVED (ready-500, was known_gap_card_edit_persists_derived_blocked_status -- board-fold-spec.md SS27.7 is now RESOLVED, not an open question; ready-1bf's DONE CONDITION 3 deferred a fix, ready-500 is that fix). A card-only edit's CardSpec used to be built by CardSpecFromItem from whatever nostrResolveItem currently projects, with Status copied verbatim -- no special case for 'this value is fold-derived, not authored'. Once a live non-terminal blocker made an item's projected Status=blocked, the next card-only edit (label add, here) would republish the card with s=blocked, an AUTHORED-looking tag SS25.6 says no write path should ever emit -- and unlike the SS6.10/post_fold-only mitigation this used to rely on, that stale tag becomes a PERMANENT floor once an actual status-change hook (delegate, publish) reads the card's own s tag as its authoritative fallback with no non-blocked history to recover. publishItemCardEditNostr now overrides card.Status with rdSync.NonDerivedStatus(item) before publishing (pkg/sync/nostrmigrate.go), so this label-add republishes s=inbox (the item's real pre-block status) instead of the derived value -- correct for RD'S OWN fold AND for a generic NIP-100 client reading the card's s tag directly, closing the gap SS27.7 used to name.",
       "op": "label_add",
       "seed": {"id": "wv-knowngap-target", "title": "Gap target", "type": "task", "priority": "p2", "status": "inbox", "blocked_by": ["wv-knowngap-blocker"]},
       "extra_seeds": [
@@ -256,7 +256,7 @@
       ],
       "args": {"label": "bug"},
       "events": [
-        {"kind": 30302, "tags": [["d", "wv-knowngap-target"], ["title", "Gap target"], ["a", "30301:{{owner}}:project"], ["s", "blocked"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["i", "wv-knowngap-blocker"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
+        {"kind": 30302, "tags": [["d", "wv-knowngap-target"], ["title", "Gap target"], ["a", "30301:{{owner}}:project"], ["s", "inbox"], ["rank", "p2"], ["priority", "p2"], ["itype", "task"], ["i", "wv-knowngap-blocker"], ["l", "bug"], ["for", "{{owner}}"]], "content": {"mode": "empty"}}
       ],
       "post_fold": {"id": "wv-knowngap-target", "status": "blocked", "labels": ["bug"], "blocked_by": ["wv-knowngap-blocker"]}
     },
