@@ -38,7 +38,13 @@ Example:
   rd ready --view my-work --json
   rd ready --for ""                show all items, not just mine
   rd ready --label bug             ready items tagged 'bug'
-  rd ready --label bug --label p0  ready items tagged both 'bug' AND 'p0'`,
+  rd ready --label bug --label p0  ready items tagged both 'bug' AND 'p0'
+  rd ready --flat                  the old flat list, no epic grouping
+
+The default (TTY) view groups ready items under their epic -- the topmost
+parent_id ancestor -- indented beneath it, each epic capped to a few children
+with a "N more" line past the cap. --flat prints the pre-ready-e88 flat list
+instead. --json and piped (non-TTY) output are unaffected either way.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewName, _ := cmd.Flags().GetString("view")
 		forFilter, _ := cmd.Flags().GetString("for")
@@ -46,6 +52,7 @@ Example:
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
 		offlineFlag, _ := cmd.Flags().GetBool("offline")
+		flatFlag, _ := cmd.Flags().GetBool("flat")
 
 		// nostr-native default READ path (ready-6ef S-read): on an `rd init` project
 		// the session identity is the secp256k1 signer. The read spine resolves items
@@ -62,6 +69,15 @@ Example:
 			if err != nil {
 				return fmt.Errorf("loading items: %w", err)
 			}
+
+			// fullItems is the complete, unfiltered project snapshot (every status,
+			// every project) captured before any view/identity/label/scope filter
+			// narrows `items` below. The indented-tree render (printReadyTree) needs
+			// it to walk parent_id chains: an epic's ready descendant can sit behind
+			// a closed/terminal intermediate item, or belong to an epic this filter
+			// pass would otherwise exclude, and the tree must still resolve to the
+			// right ancestor. Read-only: never republished (ready-500 guard).
+			fullItems := items
 
 			// Apply view filter.
 			if viewName == "" {
@@ -160,7 +176,17 @@ Example:
 			// Pipe-friendly output: print bare IDs when stdout is not a TTY so
 			// scripts can do: for id in $(rd ready); do ...; done
 			if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
-				printItemTable(items)
+				// Owner ruling (ready-e88, 2026-07-29): the default human-facing
+				// `rd ready` view groups items under their epic (topmost parent_id
+				// ancestor) and indents children, with the pre-existing flat table
+				// kept behind --flat. Only the default "ready" view groups -- other
+				// named views (--view work/pending/my-work/etc.) are unaffected, and
+				// so is every non-TTY / --json path above and below this branch.
+				if viewName == views.ViewReady && !flatFlag {
+					printReadyTree(items, fullItems)
+				} else {
+					printItemTable(items)
+				}
 			} else {
 				for _, item := range items {
 					fmt.Println(item.ID)
@@ -194,6 +220,7 @@ func init() {
 	readyCmd.Flags().String("scope", "", "show only items the given grant-holder pubkey is authorized to claim")
 	readyCmd.Flags().StringArray("label", nil, "filter by label atom (repeatable, AND semantics)")
 	readyCmd.Flags().Bool("offline", false, "read local only — skip the automatic relay reconcile")
+	readyCmd.Flags().Bool("flat", false, "show the flat list without epic grouping (pre-ready-e88 behavior)")
 	readyCmd.Flags().Bool("reconcile", false, "deprecated: reads auto-reconcile by default (flag kept as a no-op)")
 	_ = readyCmd.Flags().MarkHidden("reconcile")
 	rootCmd.AddCommand(readyCmd)
@@ -289,4 +316,123 @@ func outputItemsJSON(items []*state.Item) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(items)
+}
+
+// maxChildrenPerEpic caps how many of an epic's ready children are printed
+// before the tree view collapses the remainder into a single "N more" line.
+// This is the actual line-count reduction the ready-e88 owner ruling
+// requires: an indented tree that prints every item is still one line per
+// item and fails the "one screen" outcome exactly like the flat list does.
+// Capping is what makes an epic with 20+ ready children collapse to a
+// handful of lines instead of 20+.
+const maxChildrenPerEpic = 5
+
+// readyGroup is one epic's worth of ready items in the indented tree: the
+// root item (the topmost parent_id ancestor reachable from any member) and
+// the ready items that belong to it.
+type readyGroup struct {
+	root     *state.Item
+	children []*state.Item
+}
+
+// findReadyRoot walks item's parent_id chain upward through byID -- which
+// must index items of EVERY status, not just ready ones, because an
+// ancestor partway up the chain can be closed/terminal and is still a valid
+// link (parent_id records structure, not liveness; ready-500's derived-
+// status guard is about writes, not this read-only walk).
+//
+// The walk stops, returning the last resolvable item, when:
+//   - item.ParentID == "" (a genuine root / an orphan with no parent at all,
+//     both present on the live board today), or
+//   - item.ParentID does not resolve in byID (a dangling pointer -- none
+//     exist on the current board, per ready-e88's own measurement, but the
+//     walk must not panic if one appears), or
+//   - the chain revisits an item already seen (a cycle -- the board is
+//     verified acyclic today, but this must never hang).
+func findReadyRoot(item *state.Item, byID map[string]*state.Item) *state.Item {
+	cur := item
+	seen := map[string]bool{cur.ID: true}
+	for cur.ParentID != "" {
+		parent, ok := byID[cur.ParentID]
+		if !ok || seen[parent.ID] {
+			break
+		}
+		seen[parent.ID] = true
+		cur = parent
+	}
+	return cur
+}
+
+// buildReadyGroups groups ready items by their epic (findReadyRoot's
+// result), preserving first-appearance order in items -- which is already
+// priority/ETA sorted by the time this runs, so the highest-priority epic's
+// group leads. byID must cover every item on the board, all statuses (see
+// findReadyRoot).
+func buildReadyGroups(items []*state.Item, byID map[string]*state.Item) []*readyGroup {
+	order := make([]string, 0, len(items))
+	groups := make(map[string]*readyGroup, len(items))
+	for _, item := range items {
+		root := findReadyRoot(item, byID)
+		g, ok := groups[root.ID]
+		if !ok {
+			g = &readyGroup{root: root}
+			groups[root.ID] = g
+			order = append(order, root.ID)
+		}
+		g.children = append(g.children, item)
+	}
+	out := make([]*readyGroup, 0, len(order))
+	for _, id := range order {
+		out = append(out, groups[id])
+	}
+	return out
+}
+
+// formatItemRow formats one item as a single table row -- the same columns
+// printItemTable uses (ID, priority, status, ETA, title with a labels
+// suffix) -- prefixed with indent, so the tree view can nest child rows
+// under an epic header while the flat table keeps its original 2-space lead.
+func formatItemRow(item *state.Item, indent string) string {
+	eta := formatETA(item.ETA)
+	title := item.Title
+	if len(item.Labels) > 0 {
+		title = title + "  [" + strings.Join(item.Labels, ",") + "]"
+	}
+	return fmt.Sprintf("%s%-16s  %-8s  %-10s  %-10s  %s",
+		indent, item.ID, item.Priority, item.Status, eta, title)
+}
+
+// printReadyTree renders ready items grouped under their epic, indented,
+// each epic capped at maxChildrenPerEpic children with a "N more" line past
+// the cap -- see maxChildrenPerEpic's doc for why the cap (not the grouping
+// or the indentation) is what actually shortens the output.
+//
+// A group whose only member IS its own root -- a true orphan (no parent_id
+// at all) or a dangling-pointer fallback, both handled identically by
+// findReadyRoot -- has nothing to nest it under, so it renders as one plain
+// row with no epic header (a header would just repeat the same line).
+func printReadyTree(items []*state.Item, allItems []*state.Item) {
+	byID := make(map[string]*state.Item, len(allItems))
+	for _, it := range allItems {
+		byID[it.ID] = it
+	}
+	for _, g := range buildReadyGroups(items, byID) {
+		if len(g.children) == 1 && g.children[0].ID == g.root.ID {
+			fmt.Println(formatItemRow(g.children[0], "  "))
+			continue
+		}
+		fmt.Printf("%s  (%d ready)  %s\n", g.root.ID, len(g.children), g.root.Title)
+		shown := g.children
+		more := 0
+		if len(shown) > maxChildrenPerEpic {
+			more = len(shown) - maxChildrenPerEpic
+			shown = shown[:maxChildrenPerEpic]
+		}
+		for _, item := range shown {
+			fmt.Println(formatItemRow(item, "    "))
+		}
+		if more > 0 {
+			fmt.Printf("    … +%d more (rd dep tree %s / rd ready --flat for the full list)\n", more, g.root.ID)
+		}
+	}
 }
