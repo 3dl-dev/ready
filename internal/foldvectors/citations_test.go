@@ -807,9 +807,12 @@ var citationExceptions = map[string]string{
 		"ready-500's first guard-insertion round, then :655→:660 by ready-500's " +
 		"rework round) inside publishEngagedItemsNostr's body; its declaration is " +
 		"cited exactly at :647 (§26.3, moved :608→:621→:642→:647)",
-	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
-		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
-		"publishEvents itself is declared at :581",
+	"publishEvents|pkg/sync/nostroutbound.go|588@decl587": "§16.8: the " +
+		"`guardReservedBoard` call site one line into publishEvents's body (:588, " +
+		"moved from :587 by ready-c3e's REWORK, which restructured the " +
+		"oversized-event handling — splitOversized is now called at phase 2, not " +
+		"a guardEventSizes call at the top of the body); publishEvents itself is " +
+		"declared at :587 (moved from :586)",
 	"publishItemCardEditNostr|cmd/rd/nostr.go|428@decl399": "§18.10: the " +
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:428, " +
 		"moved from :406 by ready-500's rework-round guard insertion); its " +

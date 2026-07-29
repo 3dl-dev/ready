@@ -430,9 +430,9 @@ func TestFlushNostrPending_DeadLettersPermanentKeepsTransient(t *testing.T) {
 	dir := t.TempDir()
 	pending, rejected := readyPaths(dir)
 
-	evBad := signedEvent(t, k, "bad")     // permanent -> dead-letter
-	evGood := signedEvent(t, k, "ok")     // accepted  -> drop
-	evDrop := signedEvent(t, k, "drop")   // transient -> keep
+	evBad := signedEvent(t, k, "bad")   // permanent -> dead-letter
+	evGood := signedEvent(t, k, "ok")   // accepted  -> drop
+	evDrop := signedEvent(t, k, "drop") // transient -> keep
 	// Seed the pending buffer with the poisoned record at the HEAD.
 	for _, e := range []*nostr.Event{evBad, evGood, evDrop} {
 		if err := appendPendingEvent(pending, e); err != nil {
@@ -457,4 +457,250 @@ func TestFlushNostrPending_DeadLettersPermanentKeepsTransient(t *testing.T) {
 	if !fileHasID(t, pending, evDrop.ID) {
 		t.Errorf("transient record should remain in pending.jsonl for the next flush")
 	}
+}
+
+// countIDOccurrences counts how many lines/records in the JSONL file at path
+// contain id — used to detect duplicate dead-letter records, not just presence.
+func countIDOccurrences(t *testing.T, path, id string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return strings.Count(string(data), id)
+}
+
+// TestRelayPublish_PermanentReject_DeadLetterDoesNotGrowOnRepeat is ready-c3e
+// finding (2)'s regression guard for the PER-EVENT dial transport
+// (relayPublish, driven by PublishEvents — the live single-mutation write
+// path). `rd relay repair` re-measures a relay's gap every round (5 by
+// default, relayRepairCmd's --rounds) and republishes exactly that gap; for a
+// PERMANENTLY rejected event the gap can never close, so the identical event
+// was re-sent and re-dead-lettered on EVERY round of EVERY repair invocation —
+// ground truth on two real projects, re-measured directly against each
+// project's on-disk nostr-rejected.jsonl: 3dl's reached 12,261,702 bytes for
+// 8 DISTINCT oversized event ids across 2 stale coordinates (3dl-7e0, 3dl-ece
+// — NOT "2 distinct events", an earlier restatement's conflation of event
+// count with coordinate count), galtrader's reached 3,599,901 bytes for 1
+// distinct event at 1 coordinate. Publishing the identical already-dead-
+// lettered event again must add ZERO new dead-letter records — the file is
+// bounded by the number of DISTINCT permanently-rejected events, not by how
+// many times a repair loop rediscovers the same one.
+//
+// This test alone does not cover `rd relay repair`'s ACTUAL transport — see
+// TestRelayPublishBatch_PermanentReject_DeadLetterDoesNotGrowOnRepeat below
+// for the batched-connection path (relayPublishBatch / PublishBoardDelta /
+// GuardedPublishMany) that `rd relay repair` really drives, and which is what
+// produced the 12MB/3.6MB files above.
+func TestRelayPublish_PermanentReject_DeadLetterDoesNotGrowOnRepeat(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, rejected := readyPaths(dir)
+	pub := &Publisher{
+		Key:         k,
+		Log:         NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile)),
+		WriteRelays: []string{fixedRelay(t, false, "invalid: event is 999999 bytes, exceeds this relay's max of 65536 bytes (64KiB, strfry default)", false)},
+		PendingPath: pending,
+		Timeout:     3 * time.Second,
+	}
+	ev := signedEvent(t, k, "oversized-payload")
+
+	const rounds = 5 // mirrors relayRepairCmd's default --rounds
+	for i := 0; i < rounds; i++ {
+		if _, err := pub.PublishEvents(context.Background(), []*nostr.Event{ev}); err != nil {
+			t.Fatalf("round %d: PublishEvents: %v", i, err)
+		}
+	}
+	if got := countIDOccurrences(t, rejected, ev.ID); got != 1 {
+		t.Errorf("dead-letter file has %d record(s) for the same permanently-rejected event after %d repair rounds, want exactly 1 (unbounded growth, ready-c3e)", got, rounds)
+	}
+}
+
+// TestRelayPublishBatch_PermanentReject_DeadLetterDoesNotGrowOnRepeat is
+// ready-c3e finding (2)'s regression guard for the transport `rd relay
+// repair` ACTUALLY drives: PublishBoardDelta -> relayPublishBatch ->
+// GuardedPublishMany, ONE websocket connection for the whole gap, not one
+// dial per event (ready-260). This is the path that produced the real 12MB/
+// 3.6MB dead-letter files — TestRelayPublish_PermanentReject_
+// DeadLetterDoesNotGrowOnRepeat above exercises PublishEvents/relayPublish
+// instead, which never touches relayPublishBatch or GuardedPublishMany at
+// all, so it could pass while the actual repair-loop transport still grew the
+// file without bound.
+//
+// storeRelay (boardbackfill_test.go) is reused here specifically because it
+// holds a PERSISTENT connection per dial and answers every EVENT frame with
+// its rejectAll message — the same shape `rd relay repair`'s real target
+// relay used (a single connection, one OK per EVENT, the same "invalid: ...
+// exceeds this relay's max" message every time).
+func TestRelayPublishBatch_PermanentReject_DeadLetterDoesNotGrowOnRepeat(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, rejected := readyPaths(dir)
+	sr := newStoreRelay(t)
+	sr.rejectAll = "invalid: event is 999999 bytes, exceeds this relay's max of 65536 bytes (64KiB, strfry default)"
+	pub := &Publisher{
+		Key:         k,
+		Log:         NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile)),
+		WriteRelays: []string{sr.url},
+		PendingPath: pending,
+		Timeout:     3 * time.Second,
+	}
+	ev := signedEvent(t, k, "oversized-payload")
+
+	const rounds = 5 // mirrors relayRepairCmd's default --rounds
+	for i := 0; i < rounds; i++ {
+		var res PublishResult
+		pub.relayPublishBatch(context.Background(), &res, []*nostr.Event{ev})
+	}
+	if got := countIDOccurrences(t, rejected, ev.ID); got != 1 {
+		t.Errorf("dead-letter file has %d record(s) for the same permanently-rejected event after %d relayPublishBatch (rd relay repair's real transport) rounds, want exactly 1 (unbounded growth, ready-c3e)", got, rounds)
+	}
+}
+
+// TestDeadLetterHasEvent_SkipsMalformedRecords is ready-c3e finding (4)'s
+// regression guard: deadLetterHasEvent must not FAIL OPEN on a single
+// malformed or torn record. appendRejectedEvent's own doc states the file is
+// at-least-once (a crash mid-append can leave a torn line) — that is an
+// ANTICIPATED on-disk state, not a hypothetical, so a corrupt line must never
+// disable dedup for every record scanned after it. This directly exercises
+// deadLetterHasEvent (not through a Publisher), so each shape of corruption is
+// isolated.
+//
+// TWO CORRUPTION SHAPES are covered, deliberately kept distinct (rework 2):
+//
+//  1. A cleanly newline-terminated malformed line (writeLines' `corrupt`
+//     constant, on its own line) — a plausible shape for a manually-edited or
+//     truncated-and-newline-patched file, still worth guarding.
+//
+//  2. THE SHAPE appendRejectedEvent's doc ACTUALLY ANTICIPATES: a crash
+//     mid-`f.Write(json+'\n')` leaves a TORN prefix with NO trailing
+//     newline, so the next call's record lands on the exact same physical
+//     line with no delimiter between them — mergedLine below builds this
+//     shape directly (torn bytes + a complete record's bytes + one '\n',
+//     never two). The first version of this fix (ready-c3e finding 4, before
+//     rework 2) only tested shape 1: every fixture here used writeLines,
+//     which always inserts a '\n' after each fragment, so no fixture ever
+//     produced a torn/merged single line — the exact shape this function's
+//     doc claims to tolerate was never exercised. Fixed by recordsInLine's
+//     embedded-'{' recovery scan (relayclass.go).
+func TestDeadLetterHasEvent_SkipsMalformedRecords(t *testing.T) {
+	k := testKey(t)
+	target := signedEvent(t, k, "target-event")
+	other := signedEvent(t, k, "some-other-event")
+	targetLine, err := json.Marshal(RejectedRecord{Event: target, Reason: "invalid: too big"})
+	if err != nil {
+		t.Fatalf("marshal target record: %v", err)
+	}
+	otherLine, err := json.Marshal(RejectedRecord{Event: other, Reason: "invalid: too big"})
+	if err != nil {
+		t.Fatalf("marshal other record: %v", err)
+	}
+	const corrupt = `{"event":{"id":"deadbeef", "content": UNTERMINATED`
+
+	writeLines := func(t *testing.T, lines ...string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "nostr-rejected.jsonl")
+		var buf strings.Builder
+		for _, l := range lines {
+			buf.WriteString(l)
+			buf.WriteString("\n")
+		}
+		if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return path
+	}
+
+	t.Run("corrupt line AFTER the target still finds it", func(t *testing.T) {
+		path := writeLines(t, string(targetLine), corrupt)
+		if !deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent missed a record that comes before a corrupt line")
+		}
+	})
+
+	t.Run("corrupt line BEFORE the target must NOT fail open (the bug)", func(t *testing.T) {
+		path := writeLines(t, corrupt, string(targetLine))
+		if !deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent returned false because of a malformed record BEFORE the target — " +
+				"failing open here silently disables dedup for every record after the first corrupt line, " +
+				"restoring ready-c3e's unbounded dead-letter growth")
+		}
+	})
+
+	t.Run("corrupt line between two good non-matching records", func(t *testing.T) {
+		path := writeLines(t, string(otherLine), corrupt, string(targetLine))
+		if !deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent missed the target past a corrupt line sandwiched between good records")
+		}
+	})
+
+	t.Run("target genuinely absent, only corrupt/other records", func(t *testing.T) {
+		path := writeLines(t, string(otherLine), corrupt)
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for an id that was never recorded")
+		}
+	})
+
+	t.Run("file does not exist", func(t *testing.T) {
+		if deadLetterHasEvent(filepath.Join(t.TempDir(), "does-not-exist.jsonl"), target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for a nonexistent file")
+		}
+	})
+
+	t.Run("only corrupt lines, no valid records at all", func(t *testing.T) {
+		path := writeLines(t, corrupt, corrupt)
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true when the file has no valid records")
+		}
+	})
+
+	// mergedLine builds the ACTUAL anticipated corruption: a torn (no
+	// trailing newline) fragment immediately followed by a complete record's
+	// bytes, with exactly ONE trailing '\n' for the whole merged line — never
+	// two. This is what a crash mid-f.Write leaves on disk (appendRejectedEvent's
+	// doc), as opposed to writeLines' fixtures above, which always terminate
+	// every fragment with its own '\n' and so can never produce this shape.
+	mergedLine := func(t *testing.T, torn string, complete string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "nostr-rejected.jsonl")
+		if err := os.WriteFile(path, []byte(torn+complete+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return path
+	}
+
+	// torn is a PREFIX of a real marshaled record with no closing braces —
+	// exactly what a write interrupted partway through would leave, not a
+	// hand-written corrupt string unrelated to the real record shape.
+	torn := string(otherLine[:len(otherLine)/2])
+
+	t.Run("torn prefix merged onto the SAME line as the complete target record (the real crash shape)", func(t *testing.T) {
+		path := mergedLine(t, torn, string(targetLine))
+		if !deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent missed a complete record merged onto the same physical line as a torn prior write — " +
+				"this is the exact shape appendRejectedEvent's at-least-once doc anticipates (crash mid-write leaves no " +
+				"trailing newline, so the next append lands on the same line); missing it means dedup fails open and " +
+				"a duplicate dead-letter record gets appended on every subsequent repair round")
+		}
+	})
+
+	t.Run("torn prefix merged onto a complete NON-matching record reports false, not true", func(t *testing.T) {
+		path := mergedLine(t, torn, string(otherLine))
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for an id whose only appearance is a torn, unrelated prefix on the same line as a different complete record")
+		}
+	})
+
+	t.Run("wholly torn line with no complete record at all", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "nostr-rejected.jsonl")
+		if err := os.WriteFile(path, []byte(torn), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if deadLetterHasEvent(path, target.ID) {
+			t.Errorf("deadLetterHasEvent reported true for a file containing only a torn fragment with no complete record")
+		}
+	})
 }
