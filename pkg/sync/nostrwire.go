@@ -594,7 +594,7 @@ func DriftScope(e *nostr.Event) string {
 		// missing those tags.
 		if _, boardD, ok := ParseBoardCoord(tagValue(e, "a")); ok {
 			if p := tagValue(e, "p"); p != "" {
-				return "grant:" + roleGrantD(boardD, p, 0)
+				return "grant:" + roleGrantD(boardD, p, 0, "")
 			}
 		}
 		if d := tagValue(e, "d"); d != "" {
@@ -627,7 +627,7 @@ func ItemDriftScope(itemID string) string { return "item:" + itemID }
 // ready-889) yet still belongs to the same causal chain as the revoke that will
 // supersede it.
 func GrantDriftScope(boardD, grantee string) string {
-	return "grant:" + roleGrantD(boardD, grantee, 0)
+	return "grant:" + roleGrantD(boardD, grantee, 0, "")
 }
 
 // itemIDForEvent extracts the rd item ID an event pertains to. Cards carry it in

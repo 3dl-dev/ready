@@ -674,12 +674,26 @@ board.
 		// Issue the grant via the EXISTING grant path (same body as `rd grant`) —
 		// this is the durable authorization act. No --claim: the grantee's
 		// pubkey is already known, so there is no self-mint claim to bind.
+		//
+		// ready-f7b: runNostrGrantRevoke now reports the grant's ACTUAL relay
+		// delivery outcome (published-and-accepted vs. durably-buffered-no-relay-
+		// yet) instead of an unqualified "granted"/"they can read and write", and
+		// FAILS this command (returns a non-nil error, no URL printed below) if
+		// the grant was permanently rejected by a relay — a genuine failure, not
+		// the deliberate offline-durability buffering. Before this fix, `rd board
+		// share` printed the same "granted ... they can read and write" and then
+		// the board URL even when the grant reached NO relay: the sharer handed
+		// out a link believing access was live while the grantee's client (which
+		// reads from a relay, never the sharer's local log) saw nothing.
 		if err := runNostrGrantRevoke(dir, grantee, role, label, 0, ""); err != nil {
 			return err
 		}
 
-		// Print the URL AFTER the grant is durable (zero-wait: the grant is on
-		// the relay before the recipient can click the link). NO claim-nonce is
+		// Print the URL AFTER the grant publish attempt completes — zero-wait on
+		// the common path (the grant is already on a relay before the recipient
+		// can click the link), or, on the buffered path, immediately after the
+		// honest "reached NO relay yet" line above so the sharer is not misled
+		// about what the link's recipient can do right now. NO claim-nonce is
 		// minted here (ready-5c1): the grantee's pubkey is already known and the
 		// grant just published is the authorization — a live, unbound
 		// claim-nonce would be a bearer credential anyone who saw this URL could

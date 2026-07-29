@@ -42,8 +42,26 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // sufficient on any relay. Regenerating a relay allowlist file is now ONLY the
 // standalone, optional `rd relay sync-allowlist` (for operators running their own
 // locked relay) — never an automatic side effect of a grant.
+//
+// ready-f7b — THE FIX. This is also `rd board share`'s grant step (cmd/rd/board.go
+// boardShareCmd.RunE), and publishRoleGrant's relay attempt is best-effort by design
+// (relayPublish "never fails" — an unreachable relay durably BUFFERS the signed
+// event to nostr-pending.jsonl for later auto-flush, which is deliberate, not a
+// defect). The bug this closes was NOT that buffering happens — it is that the
+// summary line below used to print "granted ... they can read and write"
+// UNCONDITIONALLY, even when the grant reached no relay at all: a `rd board share`
+// caller then handed out a board link believing access was live, when the grantee's
+// own client (reading from a relay, never the sharer's local log) would see nothing.
+// publishRoleGrant now returns the actual rdSync.PublishResult and already fails
+// loudly (non-nil error) on a PERMANENT rejection (dead-lettered, will never be
+// retried — a genuine failure, matching runGateNostr's re-resolve-and-verify shape
+// from ready-e0e). What's left here is the THIRD, non-error state: reached no relay
+// for a TRANSIENT reason (Buffered) is durable and will self-heal, so it must not
+// error out — but the human-facing line must say so plainly instead of claiming an
+// unqualified "they can read and write" that is not true yet.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
-	if err := publishRoleGrant(grantee, role, label, from, claim); err != nil {
+	res, err := publishRoleGrant(grantee, role, label, from, claim)
+	if err != nil {
 		return err
 	}
 	// Confidential-by-default (ready-216): revoking read access on a confidential
@@ -67,10 +85,37 @@ func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim str
 			board = rdSync.BoardCoord(boardAuthor, boardD)
 		}
 	}
-	if role == rdSync.RoleRevoked {
-		fmt.Printf("revoked %s on %s — they can no longer read or write.\n", shortKey(grantee), board)
-	} else {
-		fmt.Printf("granted %s to %s on %s — they can read and write.\n", role, shortKey(grantee), board)
+	// ready-f7b: report the ACTUAL delivery outcome, not a blanket "granted"/
+	// "revoked". publishRoleGrant already failed loudly above on a Rejected
+	// (permanent) outcome, so by construction only two states reach this point:
+	// anyRelay (published and accepted — the confident case) or Buffered
+	// (reached no relay yet; durable locally, will flush automatically — the
+	// deliberate offline-durability design, honestly reported as NOT YET live).
+	anyRelay := false
+	for _, a := range res.Events {
+		if a.AnyRelay {
+			anyRelay = true
+		}
+	}
+	switch {
+	case anyRelay:
+		if role == rdSync.RoleRevoked {
+			fmt.Printf("revoked %s on %s — they can no longer read or write.\n", shortKey(grantee), board)
+		} else {
+			fmt.Printf("granted %s to %s on %s — they can read and write.\n", role, shortKey(grantee), board)
+		}
+	case res.Buffered:
+		if role == rdSync.RoleRevoked {
+			fmt.Printf("revoke for %s on %s recorded locally; reached NO relay yet (buffered to nostr-pending.jsonl, will publish automatically once one is reachable) — until it flushes, %s may still appear active to anyone reading from a relay.\n", shortKey(grantee), board, shortKey(grantee))
+		} else {
+			fmt.Printf("grant for %s to %s on %s recorded locally; reached NO relay yet (buffered to nostr-pending.jsonl, will publish automatically once one is reachable) — %s cannot read or write until it flushes.\n", role, shortKey(grantee), board, shortKey(grantee))
+		}
+	default:
+		// Unreachable in practice — PublishEvents always sets AnyRelay or
+		// Buffered on the single event this function publishes (Rejected already
+		// returned an error above). Kept as an honest fallback instead of
+		// silently taking the anyRelay branch above by default.
+		fmt.Printf("published role-grant for %s on %s; relay delivery outcome unknown — verify with `rd sessions`.\n", shortKey(grantee), board)
 	}
 	return nil
 }

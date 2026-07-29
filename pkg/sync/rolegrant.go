@@ -131,14 +131,17 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 	}
 	// A grant takes the per-epoch slot ONLY when it actually carries a wrapped CEK;
 	// a CEKEpoch set without a wrap is not key material and must not fragment the
-	// authz slot (a revoke, in particular, always lands in the bare slot so it
-	// replaces the grant it revokes).
+	// authz slot. A grant takes the per-claim slot ONLY when it actually binds an
+	// invite claim-nonce (ready-55f, mirroring ready-889's CEK-epoch slot for the
+	// identical relay-retention reason — see roleGrantD). A plain grant AND a
+	// revoke, in particular, always land in the bare slot so a revoke still
+	// replaces the plain grant it supersedes.
 	slotEpoch := 0
 	if spec.WrappedCEK != "" {
 		slotEpoch = spec.CEKEpoch
 	}
 	tags := [][]string{
-		{"d", roleGrantD(spec.BoardD, spec.Grantee, slotEpoch)},
+		{"d", roleGrantD(spec.BoardD, spec.Grantee, slotEpoch, spec.Claim)},
 		{"p", spec.Grantee},
 		{"a", BoardCoord(spec.BoardAuthor, spec.BoardD)},
 		{"role", spec.Role},
@@ -175,9 +178,10 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 
 // roleGrantD returns the addressable "d" identifier for a grant slot.
 //
-// A grant carrying NO key material occupies the (board, grantee) slot
-// "<boardD>:<granteePubkeyHex>", so authz — including a revoke — is latest-wins
-// per grantee for free, via the addressable-event replaceable rule.
+// A grant carrying NO key material and NO claim binding occupies the (board,
+// grantee) slot "<boardD>:<granteePubkeyHex>", so authz — including a revoke —
+// is latest-wins per grantee for free, via the addressable-event replaceable
+// rule.
 //
 // A CEK-BEARING grant occupies a PER-EPOCH slot "<boardD>:<grantee>:e<epoch>"
 // (ready-889). It has to, because a relay keeps only the newest event per
@@ -191,16 +195,38 @@ func BuildRoleGrantEvent(k *nostr.Key, spec RoleGrantSpec, createdAt int64) (*no
 // decrypt 6 of 206 confidential cards, and the sole surviving copy of that key was
 // one workstation's log.
 //
+// A CLAIM-BINDING grant occupies its OWN slot
+// "<boardD>:<grantee>[:e<epoch>]:claim:<claim>" (ready-55f, security sweep
+// ready-348, HIGH broken-access-control). It has to, for the SAME relay-retention
+// reason as the CEK epoch split above: with the bare shared slot, ANY later
+// grant/revoke for that grantee — including `rd revoke`, which always publishes
+// claim="" — replaced the claim-bearing grant on the relay and destroyed the
+// single-use binding record outright. deriveGrants never loses the binding when
+// fed one machine's own append-only local log (claimedBy is populated from every
+// claim-bearing grant it processes, ascending, and a revoke carries no claim tag
+// to clear it) — the loss happens a layer up: a SECOND machine that only ever
+// reconciles from a relay (ReconcileBoard) receives whatever that relay still
+// retains per (kind, pubkey, d), and if the claim grant was overwritten there,
+// that machine's local log never learns the claim was ever used — so the exact
+// same claim-nonce is then silently admitted for a DIFFERENT grantee. Splitting
+// the slot means the claim-bearing grant survives on the relay independent of
+// whatever role change later applies to that grantee.
+//
 // Splitting the slot is safe because NOTHING reads this "d" for meaning: authz
-// replay (deriveGrants) orders latest-per-GRANTEE by (created_at, id), and
-// DeriveBoardKeyring selects on the "a" board coordinate plus the "p" grantee tag.
-// The "d" is a relay retention key, nothing more. Causal ORDERING deliberately does
-// not follow this split — see DriftScope, which keys a grant's chain off (a, p) so a
-// revoke still stamps strictly after the CEK grant it supersedes.
-func roleGrantD(boardD, grantee string, cekEpoch int) string {
+// replay (deriveGrants) orders latest-per-GRANTEE by (created_at, id) and reads
+// single-use binding off the "claim" TAG directly, never off "d"; DeriveBoardKeyring
+// selects on the "a" board coordinate plus the "p" grantee tag. The "d" is a relay
+// retention key, nothing more. Causal ORDERING deliberately does not follow this
+// split — see DriftScope, which keys a grant's chain off (a, p) so a revoke still
+// stamps strictly after the grant it supersedes, regardless of which slot (bare,
+// epoch, or claim) that grant occupied.
+func roleGrantD(boardD, grantee string, cekEpoch int, claim string) string {
 	slot := boardD + ":" + grantee
 	if cekEpoch > 0 {
 		slot += ":e" + strconv.Itoa(cekEpoch)
+	}
+	if claim != "" {
+		slot += ":claim:" + claim
 	}
 	return slot
 }

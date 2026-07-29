@@ -561,6 +561,29 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       expect(root.textContent).toContain("No boards found.");
       expectNoForgedContent(root);
     });
+
+    it("ready-280: surfaces relays fragment.ts dropped as a visible notice, and never dials them", async () => {
+      // fragment.ts is the layer that drops non-wss entries (see
+      // fragment.test.ts's "ready-280 relay scheme filtering" fixtures); this
+      // proves the OTHER half — that afterLogin, given a fragment carrying
+      // droppedRelays, tells the user rather than staying silent, and that the
+      // dropped URL is never one FakeRelayWebSocket actually opened.
+      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+      const DROPPED = "ws://bad.example:7777";
+
+      await afterLogin(
+        root,
+        identity,
+        { kind: "board", board: boardCoord(OWNER, "alpha"), relays: [LINK_RELAY], droppedRelays: [DROPPED] },
+        deps,
+      );
+
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
+      expect(FakeRelayWebSocket.urls).not.toContain(DROPPED);
+      const notice = root.querySelector(".confidential-notice")?.textContent ?? "";
+      expect(notice).toContain(DROPPED);
+      expect(notice).toMatch(/could not open and never tried/);
+    });
   });
 
   describe("claim link (fragment.kind === 'claim')", () => {

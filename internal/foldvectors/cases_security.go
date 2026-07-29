@@ -317,6 +317,88 @@ func (b *builder) vGrantRevocationPointInTime() error {
 	})
 }
 
+// vClaimSingleUseAcrossRevoke pins §12.6/§12.10 (ready-55f, security sweep
+// ready-348): a claim-bearing grant binds its claim-nonce to exactly ONE
+// grantee, and that binding is NOT cleared by a later revoke for the SAME
+// grantee — a later owner grant reusing the identical claim-nonce for a
+// DIFFERENT grantee must still be ignored. Before ready-55f, a claim-bearing
+// grant and a same-grantee revoke shared one addressable "d" slot
+// (`roleGrantD`); a relay retains only the newest event per (kind, pubkey, d),
+// so on any machine that only ever reconciles from a relay (never authors the
+// claim grant itself) the revoke's arrival deleted the relay's copy of the
+// original claim binding, and a second grantee reusing the same claim-nonce was
+// then wrongly admitted. This vector cannot reproduce the relay-loss mechanism
+// itself (a conformance vector folds one fixed, ALREADY-COMPLETE event set, not
+// a relay's retained subset — see pkg/sync/rolegrant_test.go's
+// TestClaimBinding_SurvivesRelayLastWriteWins for that), but it DOES pin the
+// spec-level, machine-independent invariant §12.6 states: the claim binding, once
+// made, survives a same-grantee revoke and rejects reuse for a different
+// grantee. An independent client's own §12.6 implementation must agree.
+func (b *builder) vClaimSingleUseAcrossRevoke() error {
+	const inviteClaim = "ready-55f-single-use-claim"
+	grantAgent, err := rdsync.BuildRoleGrantEvent(b.owner, rdsync.RoleGrantSpec{
+		BoardD: boardD, BoardAuthor: b.ownerPub, Grantee: b.agentPub, Role: rdsync.RoleContributor,
+		Label: "first joiner admitted by claim", Claim: inviteClaim,
+	}, t0-100)
+	if err != nil {
+		return err
+	}
+	cardAgent, err := b.card(b.agent, rdsync.CardSpec{
+		ItemID: "ready-v29", Title: "authored by the claim-admitted agent", Status: state.StatusInbox, Priority: "p1", Type: "task",
+	}, t0)
+	if err != nil {
+		return err
+	}
+	revokeAgent, err := rdsync.BuildRoleGrantEvent(b.owner, rdsync.RoleGrantSpec{
+		BoardD: boardD, BoardAuthor: b.ownerPub, Grantee: b.agentPub, Role: rdsync.RoleRevoked,
+		Label: "agent machine decommissioned",
+	}, t0+100)
+	if err != nil {
+		return err
+	}
+	// A later owner grant reuses the SAME claim-nonce for a DIFFERENT grantee
+	// (the outsider key). §12.6 requires this be ignored outright — the claim was
+	// already consumed by the agent, and that binding does not clear just because
+	// the agent was later revoked (the revoke carries no claim tag of its own).
+	grantOutsiderReusingClaim, err := rdsync.BuildRoleGrantEvent(b.owner, rdsync.RoleGrantSpec{
+		BoardD: boardD, BoardAuthor: b.ownerPub, Grantee: b.outsiderPub, Role: rdsync.RoleContributor,
+		Label: "second joiner reusing a consumed claim", Claim: inviteClaim,
+	}, t0+200)
+	if err != nil {
+		return err
+	}
+	cardOutsider, err := b.card(b.outsider, rdsync.CardSpec{
+		ItemID: "ready-v30", Title: "authored by the never-validly-admitted outsider", Status: state.StatusInbox, Priority: "p1", Type: "task",
+	}, t0+300)
+	if err != nil {
+		return err
+	}
+	items, err := itemsJSON(&state.Item{
+		ID: "ready-v29", MsgID: cardAgent.ID, Title: "authored by the claim-admitted agent", Type: "task", Priority: "p1",
+		Status: state.StatusInbox, CreatedAt: nanos(t0), UpdatedAt: nanos(t0),
+	})
+	if err != nil {
+		return err
+	}
+	return b.add(Vector{
+		Name:        "claim_single_use_survives_revoke_rejects_reuse",
+		SpecClauses: []string{"12.6", "12.10", "3.4"},
+		Note: "The outsider's grant reuses the SAME claim-nonce the agent already consumed and MUST be " +
+			"ignored regardless of the intervening revoke, so the outsider is never admitted to read-trust " +
+			"and ready-v30 (authored solely by the outsider, an untrusted key) produces NO item at all — " +
+			"not merely a dropped field, an absent item. ready-v29 (authored by the validly claim-admitted " +
+			"agent, before its own later revoke) DOES fold, proving the claim binding admitted the agent in " +
+			"the first place and the outsider's rejection is about claim single-use, not board pinning or " +
+			"config trust.",
+		Options: Options{Trusted: trust(b.ownerPub), PinnedBoard: b.boardCoord},
+		Events:  []*nostr.Event{grantAgent, cardAgent, revokeAgent, grantOutsiderReusingClaim, cardOutsider},
+		Expect: Expect{
+			Items: items,
+			Views: vw(map[string][]string{"ready": {"ready-v29"}, "focus": {"ready-v29"}}),
+		},
+	})
+}
+
 // confidentialEvents builds the shared confidential fixture: one sealed card
 // (with tokenized labels) and one sealed status event.
 func (b *builder) confidentialEvents() (card, status *nostr.Event, err error) {
