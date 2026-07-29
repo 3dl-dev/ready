@@ -20,6 +20,7 @@
 package sync
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -581,6 +582,49 @@ func newerThan(a, b *nostr.Event) bool {
 // itemFromCard materializes a *state.Item from a 30302 card event's tags/content.
 // This is the card->item projection; the state authority still comes from the
 // status-authority pass in ProjectItems.
+// canonicalCreatedSecondsRe matches EXACTLY the decimal-integer format
+// strconv.FormatInt(secs, 10) produces for a positive int64 secs: no sign, no
+// leading zero, no whitespace, digits only. BuildCardEvent only ever emits a
+// "created" tag via FormatInt when CreatedAt > 0 (nostrwire.go), so this is
+// the WHOLE set of shapes a genuine tag can take.
+var canonicalCreatedSecondsRe = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// parseCanonicalCreatedTag parses a "created" tag value, returning (secs, true)
+// only when raw is in EXACTLY that canonical form for some secs in
+// (0, math.MaxInt64] — see canonicalCreatedSecondsRe's doc. Any other shape
+// (empty, a leading '+', a leading zero, internal/leading/trailing whitespace,
+// a fraction, non-digits, or a magnitude beyond int64) returns (0, false), and
+// the caller falls back to the card's own created_at exactly as if the tag
+// were absent.
+//
+// This exists because "just try to parse it" diverges between the two folds
+// (ready-4ec rework 3): Go's strconv.ParseInt(raw, 10, 64) alone rejects
+// whitespace and overflow but still accepts a leading '+' and leading zeros,
+// while web/board/src/lib/fold.ts's BigInt(raw) alone accepts
+// leading/trailing whitespace, treats "" as 0, and has no magnitude bound at
+// all (silently producing a huge nanosecond timestamp instead of erroring).
+// A relay-accepted, validly re-signed card can carry ANY tag value the
+// signer chooses — a forged non-canonical "created" tag folded through both
+// projections landed on two DIFFERENT CreatedAt values for the identical
+// event. The canonical-format pre-check, mirrored byte-for-byte in
+// parseCanonicalCreatedTag (TS) in fold.ts, is what makes both languages
+// agree on the same accept/reject set for every input, adversarial or not —
+// not just the well-formed happy path a single hand-written vector exercises.
+// A strict canonical-integer rule is the obvious choice here: it exactly
+// matches what the writer ever produces, so nothing legitimate is rejected,
+// and it has no locale/whitespace/sign ambiguity for an adversary to exploit
+// on one side but not the other.
+func parseCanonicalCreatedTag(raw string) (int64, bool) {
+	if !canonicalCreatedSecondsRe.MatchString(raw) {
+		return 0, false
+	}
+	secs, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return secs, true
+}
+
 func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 	itemID := tagValue(e, "d")
 	// created_at is seconds; state.Item timestamps are unix nanos.
@@ -594,7 +638,7 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 	// then carries forward unchanged on every subsequent republish.
 	createdAtNano := tsNano
 	if raw := tagValue(e, "created"); raw != "" {
-		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if secs, ok := parseCanonicalCreatedTag(raw); ok {
 			createdAtNano = secs * int64(time.Second)
 		}
 	}

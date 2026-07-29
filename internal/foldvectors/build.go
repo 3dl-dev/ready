@@ -129,6 +129,7 @@ func Build() (*File, error) {
 		b.vItemTimestampEncoding,
 		b.vItemTimestampAboveFloat64SafeBound,
 		b.vItemContextContainsTimestampBytePattern,
+		b.vCreatedTagRejectsNonCanonicalShapes,
 	} {
 		if err := fn(); err != nil {
 			return nil, err

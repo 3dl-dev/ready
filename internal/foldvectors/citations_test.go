@@ -676,10 +676,9 @@ var citationExceptions = map[string]string{
 	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
 		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
 		"the relay's addressable replacement contradicts; the func is declared at :178",
-	"newerThan|pkg/sync/nostrproject.go|273@decl574": "§4.5: newerThan is USED for board " +
-		"latest-wins ordering at nostrproject.go:273-275 (shifted again by ready-4ec's " +
-		"rework, which removed the firstSeen tracking that had shifted it before); " +
-		"it's declared at :574",
+	"newerThan|pkg/sync/nostrproject.go|274@decl575": "§4.5: newerThan is USED for board " +
+		"latest-wins ordering at nostrproject.go:274-276 (shifted again by ready-4ec " +
+		"rework 3's `parseCanonicalCreatedTag` addition); it's declared at :575",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
 	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
@@ -691,20 +690,20 @@ var citationExceptions = map[string]string{
 	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|641@decl155": "§21.x: second CALL site, " +
 		"inside runEngageNostr (moved from :628 to :641 by ready-ca3); " +
 		"publishItemFullCreateNostr is declared at :155",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|457@decl474": "§9.9: CALL site inside " +
-		"ProjectItems (shifted again by ready-4ec's rework, which removed the " +
-		"firstSeen tracking that had shifted it before); applyDepAndGateStatus is " +
-		"declared at :474",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|461@decl474": "§14.4: cites " +
-		"applyDepAndGateStatus's OWN 13-line doc comment (:461-473, shifted again by " +
-		"ready-4ec's rework), not its body; the func itself is declared at :474",
-	"grantTrusts|pkg/sync/nostrproject.go|252@decl136": "§3.4/§25.4: CALL site inside " +
-		"the read-trust gate (`grantTrusts(levels, e.PubKey)` (:252), shifted again " +
-		"by ready-4ec's rework, which removed the firstSeen tracking that had " +
-		"shifted it before); grantTrusts itself is declared at :136",
-	"nostrTrustSet|cmd/rd/nostr.go|937@decl178": "§3.4: CALL site — " +
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|458@decl475": "§9.9: CALL site inside " +
+		"ProjectItems (shifted again by ready-4ec rework 3's `parseCanonicalCreatedTag` " +
+		"addition); applyDepAndGateStatus is declared at :475",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|462@decl475": "§14.4: cites " +
+		"applyDepAndGateStatus's OWN 13-line doc comment (:462-474, shifted again by " +
+		"ready-4ec rework 3), not its body; the func itself is declared at :475",
+	"grantTrusts|pkg/sync/nostrproject.go|253@decl137": "§3.4/§25.4: CALL site inside " +
+		"the read-trust gate (`grantTrusts(levels, e.PubKey)` (:253), shifted again " +
+		"by ready-4ec rework 3's `parseCanonicalCreatedTag` addition); grantTrusts " +
+		"itself is declared at :137",
+	"nostrTrustSet|cmd/rd/nostr.go|955@decl178": "§3.4: CALL site — " +
 		"`trusted := nostrTrustSet(dir, k.PubKeyHex())` inside nostrProjectAllItems " +
-		"(:937), fed into the ProjectItems(...) call's Trusted field a few lines " +
+		"(:955, shifted +18 by ready-4ec rework 3's `rd log put` CreatedAt-carry " +
+		"fix), fed into the ProjectItems(...) call's Trusted field a few lines " +
 		"later; nostrTrustSet itself is declared at :178",
 	"newerGrant|pkg/sync/rolegrant.go|550@decl669": "§4.4: CALL site — the ascending sort " +
 		"is expressed as `newerGrant(grants[j], grants[i])` (:550-552); newerGrant itself " +
@@ -793,11 +792,11 @@ var citationExceptions = map[string]string{
 	"ReadyFilter|pkg/views/views.go|67@decl60": "§13.3/§15.1: the " +
 		"not-`scheduled` conjunct (:67-69); ReadyFilter is never cited at its " +
 		"own declaration line (:60) — only via its per-conjunct detail lines",
-	"applyDepAndGateStatus|pkg/sync/nostrproject.go|475@decl474": "§8.1: the " +
-		"BlockedBy drain-and-rebuild step (:475-482, shifted again by ready-4ec's " +
-		"rework, previously :479-486) inside applyDepAndGateStatus's body; its " +
-		"declaration is at :474 (a separate call-site exception already covers " +
-		":457, a doc-comment exception already covers :461)",
+	"applyDepAndGateStatus|pkg/sync/nostrproject.go|476@decl475": "§8.1: the " +
+		"BlockedBy drain-and-rebuild step (:476-483, shifted again by ready-4ec " +
+		"rework 3's `parseCanonicalCreatedTag` addition) inside applyDepAndGateStatus's " +
+		"body; its declaration is at :475 (a separate call-site exception already covers " +
+		":458, a doc-comment exception already covers :462)",
 	"boardConfidentialEnvelope|cmd/rd/confidential.go|156@decl85": "§11.10: the " +
 		"epoch-1 bootstrap step (:139-159) inside boardConfidentialEnvelope's body; " +
 		"its declaration is at :85 (a separate doc-comment exception already covers :83)",
@@ -807,12 +806,12 @@ var citationExceptions = map[string]string{
 	"handleWorkCreate|pkg/state/state.go|581@decl572": "§15.x: a detail range " +
 		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
 		"declaration is cited exactly at :556",
-	"itemFromCard|pkg/sync/nostrproject.go|586@decl584": "§4.6: the nanosecond " +
-		"multiplication step (:586-587, shifted again by ready-4ec's rework — the " +
-		"carried \"created\" tag parsing block it added now sits between the " +
-		"conversion and the struct literal — previously :590-592) inside " +
+	"itemFromCard|pkg/sync/nostrproject.go|630@decl628": "§4.6: the nanosecond " +
+		"multiplication step (:630-631, shifted again by ready-4ec rework 3 — " +
+		"`parseCanonicalCreatedTag` was hoisted OUT of itemFromCard's body into its " +
+		"own top-level func declared just above, previously :586-587) inside " +
 		"itemFromCard's body; itemFromCard's own declaration+body is cited exactly " +
-		"at :584 (§5.1, `:584-664`)",
+		"at :628 (§5.1, `:628-708`)",
 	"itemIDForEvent|pkg/sync/nostrwire.go|640@decl636": "§9.x: a detail range " +
 		"(:640-651, shifted again by ready-4ec's rework, previously :622-633) " +
 		"inside itemIDForEvent's body; itemIDForEvent's own declaration+body is " +

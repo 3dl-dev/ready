@@ -213,3 +213,129 @@ func (b *builder) vItemContextContainsTimestampBytePattern() error {
 		},
 	})
 }
+
+// rawCreatedCard builds and signs a 30302 card exactly like builder.card,
+// then OVERWRITES its "created" tag value with rawCreated verbatim BEFORE
+// signing -- spec.CreatedAt is only a placeholder to make BuildCardEvent
+// emit a "created" tag in the first place (any nonzero value works; its wire
+// value is replaced below). A relay accepts any validly signed tag content:
+// only the fold's own parser decides whether a "created" tag is
+// trustworthy. This is what lets vCreatedTagRejectsNonCanonicalShapes prove
+// Go and TS AGREE on rejecting a non-canonical tag, not merely that each
+// happens to reject the one shape its own author tried by hand.
+func (b *builder) rawCreatedCard(k *nostr.Key, spec rdsync.CardSpec, createdAt int64, rawCreated string) (*nostr.Event, error) {
+	if spec.CreatedAt == 0 {
+		spec.CreatedAt = 1
+	}
+	ev, err := rdsync.BuildCardEvent(k, spec, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	replaced := false
+	for i, tag := range ev.Tags {
+		if len(tag) >= 1 && tag[0] == "created" {
+			ev.Tags[i] = []string{"created", rawCreated}
+			replaced = true
+		}
+	}
+	if !replaced {
+		ev.Tags = append(ev.Tags, []string{"created", rawCreated})
+	}
+	if err := ev.Sign(k); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// vCreatedTagRejectsNonCanonicalShapes pins the adversarial half of the
+// carried-"created" tag mechanism (§5.1, ready-4ec rework 3): a validly
+// RE-SIGNED card can carry ANY tag content an adversary chooses, and Go's
+// strconv.ParseInt(raw, 10, 64) alone accepts a DIFFERENT input set than
+// TS's BigInt(raw) alone -- a leading '+', leading zeros, surrounding
+// whitespace, an empty string read as zero, and unbounded magnitude all
+// diverge between the two parsers used bare. A forged non-canonical tag
+// folded through both real projections previously landed on DIFFERENT
+// CreatedAt values for the identical event -- a divergence that sat red on
+// main for seven merges before this vector existed to catch it.
+// parseCanonicalCreatedTag (Go, pkg/sync/nostrproject.go) and its TS mirror
+// (web/board/src/lib/fold.ts) now both require EXACTLY the canonical
+// decimal-integer shape strconv.FormatInt ever produces, so every one of
+// these eight non-canonical shapes is REJECTED on both sides and each
+// item's CreatedAt falls back to its own card's wire created_at, never the
+// forged value. Each card's own created_at is deliberately far from what its
+// forged tag claims, so a wrongly-ACCEPTED tag would produce an obviously
+// wrong CreatedAt, never a coincidentally-matching one.
+func (b *builder) vCreatedTagRejectsNonCanonicalShapes() error {
+	type shape struct {
+		id  string
+		raw string
+	}
+	// claimedSec is a value each malformed tag's DIGITS encode that is
+	// DELIBERATELY far from any card's own created_at below: if a parser ever
+	// wrongly ACCEPTS one of these non-canonical shapes, the resulting
+	// CreatedAt lands on (a variant of) claimedSec, not on the card's own
+	// created_at -- so an accept/reject regression on EITHER side changes
+	// this vector's expected item, not just its own internal consistency.
+	// (Reusing each card's own created_at as the malformed digits would make
+	// wrongly-accepting and correctly-rejecting numerically indistinguishable
+	// for several of these shapes -- a vector that could never fail no
+	// matter how the parser regressed.)
+	const claimedSec = "1709000000"
+	shapes := []shape{
+		{"ready-v35a", "+" + claimedSec},              // leading plus
+		{"ready-v35b", "000" + claimedSec},            // leading zeros
+		{"ready-v35c", " " + claimedSec},               // leading whitespace
+		{"ready-v35d", ""},                             // explicit empty tag value
+		{"ready-v35e", "99999999999999999999999999"},  // beyond int64 magnitude
+		{"ready-v35f", "-" + claimedSec},               // negative
+		{"ready-v35g", "not-a-number"},                 // non-numeric
+		{"ready-v35h", claimedSec + ".5"},               // fractional
+	}
+	var events []*nostr.Event
+	var expects []*state.Item
+	var readyIDs []string
+	for i, s := range shapes {
+		own := t0 + int64(100*(i+1))
+		title := "Non-canonical created tag " + s.id
+		e, err := b.rawCreatedCard(b.owner, rdsync.CardSpec{
+			ItemID: s.id, Title: title, Status: state.StatusInbox,
+			Priority: "p2", Type: "task",
+		}, own, s.raw)
+		if err != nil {
+			return err
+		}
+		if err := e.Verify(); err != nil {
+			return fmt.Errorf("vCreatedTagRejectsNonCanonicalShapes: %s must verify (validly "+
+				"re-signed, not a forged-signature case): %w", s.id, err)
+		}
+		events = append(events, e)
+		expects = append(expects, &state.Item{
+			ID: s.id, MsgID: e.ID, Title: title,
+			Type: "task", Priority: "p2", Status: state.StatusInbox,
+			CreatedAt: nanos(own), UpdatedAt: nanos(own),
+		})
+		readyIDs = append(readyIDs, s.id)
+	}
+	items, err := itemsJSON(expects...)
+	if err != nil {
+		return err
+	}
+	return b.add(Vector{
+		Name:        "created_tag_rejects_non_canonical_shapes",
+		SpecClauses: []string{"5.1", "5.6"},
+		Note: "Eight validly re-signed cards, each carrying one non-canonical \"created\" tag shape " +
+			"(leading '+', leading zeros, leading whitespace, empty, beyond int64, negative, " +
+			"non-numeric, fractional). parseCanonicalCreatedTag rejects all eight on both Go and TS, " +
+			"so every item's CreatedAt falls back to its own card's wire created_at -- proving the two " +
+			"languages' raw parsers (strconv.ParseInt vs BigInt), which accept DIFFERENT input sets on " +
+			"their own, now agree once gated by the shared canonical-format pre-check.",
+		Options: Options{Trusted: trust(b.ownerPub)},
+		Events:  events,
+		Expect: Expect{
+			Items: items,
+			Views: vw(map[string][]string{
+				"ready": readyIDs, "focus": readyIDs,
+			}),
+		},
+	})
+}

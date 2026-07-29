@@ -749,6 +749,24 @@ var nostrPutCmd = &cobra.Command{
 			Context:  context0,
 			BoardD:   board.BoardD,
 		}
+		// Carry the item's TRUE creation time forward across this update
+		// (ready-4ec): unlike every other live write path (update/claim/close/
+		// cancel/delegate/gate/approve/dep add), this raw literal was the ONE
+		// production CardSpec construction site that built the wire event
+		// directly instead of routing through CardSpecFromItem, so it silently
+		// dropped the "created" tag on every republish -- resetting the item's
+		// age to publish time exactly like the original bug, just via a
+		// different code path. nostrResolveItem projects the local
+		// authoritative log for the item's CURRENT state; itemFromCard always
+		// populates CreatedAt (from a prior carried tag, or the fallback), so
+		// an existing item's CreatedAt is always >0 here. Re-emit it unchanged.
+		// If the item does not exist yet (a genuine `rd log put` create) or the
+		// resolve errors, leave CreatedAt at its zero value so BuildCardEvent
+		// emits NO "created" tag -- the same one-time genesis bootstrap every
+		// other create path takes (see itemCreatedAtSecs's doc).
+		if existing, rerr := nostrResolveItem(itemID); rerr == nil && existing.CreatedAt > 0 {
+			card.CreatedAt = existing.CreatedAt / int64(time.Second)
+		}
 		var res rdSync.PublishResult
 		if note != "" {
 			// A status change with a close/change reason (rd close-with-reason).
