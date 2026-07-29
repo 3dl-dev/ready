@@ -110,6 +110,77 @@ export function verifyEvent(e: NostrEvent): boolean {
   }
 }
 
+declare const verifiedEventBrand: unique symbol;
+
+/**
+ * VerifiedEvent is a NostrEvent that HAS passed verifyEvent. The brand is a
+ * phantom property no literal can satisfy, so the ONLY way to obtain one is
+ * verifiedEvents() below — which actually runs the check. A derivation that
+ * must not read an unverified event (deriveLevels, rolegrant.ts) takes
+ * VerifiedEvent and is therefore STRUCTURALLY incapable of being handed the
+ * raw relay array: `tsc` rejects the call, so the check cannot be dropped
+ * silently by a future port the way it was in ready-75a.
+ *
+ * The brand is compile-time only (erased at runtime), so it is a guard against
+ * MISTAKES, not against a deliberate cast. Runtime safety in rolegrant.ts is
+ * still enforced by its own per-event verifyEvent call, mirroring Go's
+ * deriveGrants. Two layers, two different failure modes: the brand stops a
+ * caller from feeding unverified events in, the in-loop check stops the
+ * damage if some future caller casts around the brand.
+ */
+export type VerifiedEvent = NostrEvent & { readonly [verifiedEventBrand]: true };
+
+/**
+ * verifiedEvents is the ONE mint for VerifiedEvent: it drops null elements
+ * (board-fold-spec §3.1) and every event whose id/signature does not check
+ * out (§3.3), preserving input order for the survivors. Callers that fold a
+ * relay snapshot verify ONCE here and reuse the result for every downstream
+ * derivation, so no derivation re-decides trust from raw input.
+ */
+export function verifiedEvents(events: readonly (NostrEvent | null)[]): VerifiedEvent[] {
+  const out: VerifiedEvent[] = [];
+  for (const e of events) {
+    if (e === null || e === undefined) continue;
+    if (!verifyEvent(e)) continue;
+    out.push(e as VerifiedEvent);
+  }
+  return out;
+}
+
+/**
+ * eventIdentity is a total, collision-free key for an event's FULL content:
+ * every signed field plus the signature. Two byte-identical copies of one
+ * event (the same event served by two relays) share a key; two events that
+ * differ ANYWHERE — including a forgery that reuses a genuine event's id and
+ * signature but tampers with the tags — do not.
+ *
+ * Deduping a relay snapshot on the self-declared `id` alone is unsafe before
+ * verification (ready-dd5): a forgery asserting a genuine event's id EVICTS
+ * the genuine event from the map, and the fold then rejects the forgery,
+ * losing the real event entirely. Keying on the full content instead means
+ * dedup only ever collapses exact duplicates; adversarial near-copies all
+ * survive transport and are resolved by the fold, which verifies BEFORE it
+ * records an id as seen (fold.ts §3.2/§3.3).
+ */
+export function eventIdentity(e: NostrEvent): string {
+  return JSON.stringify([e.id, e.pubkey, e.created_at, e.kind, e.tags, e.content, e.sig]);
+}
+
+/** dedupeExact collapses byte-identical duplicates only, preserving first-seen
+ * order. See eventIdentity for why the event id is NOT the dedup key. */
+export function dedupeExact(events: readonly NostrEvent[]): NostrEvent[] {
+  const seen = new Set<string>();
+  const out: NostrEvent[] = [];
+  for (const e of events) {
+    if (!e || typeof e.id !== "string") continue;
+    const key = eventIdentity(e);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
 export function tagValue(e: Pick<NostrEvent, "tags">, name: string): string {
   for (const t of e.tags) {
     if (t.length >= 2 && t[0] === name) return t[1];
