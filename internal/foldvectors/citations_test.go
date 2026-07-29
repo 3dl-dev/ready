@@ -802,10 +802,6 @@ var citationExceptions = map[string]string{
 		"multiplication step (:584-586) inside itemFromCard's body; itemFromCard's " +
 		"own declaration+body is cited exactly at :582 (§5.1, `:582-648`, moved from " +
 		"`:562-628` by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus)",
-	"itemIDForEvent|pkg/sync/nostrwire.go|622@decl618": "§9.x: a detail range " +
-		"(:597-608, moved from :589-600 by ready-a9b) inside itemIDForEvent's " +
-		"body; itemIDForEvent's own declaration+body is cited exactly at :593 " +
-		"(`:593-610`)",
 	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|660@decl647": "§27.x: the " +
 		"project-prefix assignment (moved :621→:634 by ready-ca3, :634→:655 by " +
 		"ready-500's first guard-insertion round, then :655→:660 by ready-500's " +
