@@ -680,8 +680,18 @@ func (b *builder) vBySpoofGuard() error {
 	})
 }
 
-// vStatusKind1633 pins §2.3 / §15.4: kind 1633 is accepted by isStatusKind even
-// though rd never writes it, so a foreign client's draft mutates rd state.
+// vStatusKind1633 pins §2.3 / §15.4: kind 1633 (KindStatusDraft) is OUTSIDE
+// isStatusKind's allowlist {1630,1631,1632}, so a foreign client's draft event
+// is inert — no status mutation, no history row — even from an already-trusted
+// signer.
+//
+// §15.4 ruled (ready-816): this vector originally pinned the OPPOSITE, permissive
+// behaviour (a kind-1633 draft folding as an ordinary status transition, per the
+// old 1630-1633 range test) and its own doc comment anticipated this exact
+// rewrite — "a decision to exclude 1633 is a DELIBERATE, visible change". The
+// ruling is that decision: the vector is rewritten in place, keeping its name and
+// build.go slot, to assert the corrected, stricter outcome rather than being
+// retired or replaced under a new name.
 func (b *builder) vStatusKind1633() error {
 	c, err := b.card(b.owner, rdsync.CardSpec{
 		ItemID: "ready-v13", Title: "Draft kind", Status: state.StatusInbox, Priority: "p1", Type: "task",
@@ -705,11 +715,8 @@ func (b *builder) vStatusKind1633() error {
 	}
 	items, err := itemsJSON(&state.Item{
 		ID: "ready-v13", MsgID: c.ID, Title: "Draft kind",
-		Type: "task", Priority: "p1", Status: state.StatusActive,
-		CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 100),
-		History: []state.HistoryEntry{
-			{Timestamp: rfc(t0 + 100), FromStatus: "", ToStatus: state.StatusActive, ChangedBy: b.ownerPub, Note: "draft transition from a foreign client"},
-		},
+		Type: "task", Priority: "p1", Status: state.StatusInbox,
+		CreatedAt: nanos(t0), UpdatedAt: nanos(t0),
 	})
 	if err != nil {
 		return err
@@ -717,15 +724,16 @@ func (b *builder) vStatusKind1633() error {
 	return b.add(Vector{
 		Name:        "status_kind_1633_folds_like_any_status",
 		SpecClauses: []string{"2.3", "6.6", "14.10", "15.4"},
-		Note: "isStatusKind is the range 1630..1633, so a kind-1633 draft event folds as an ordinary " +
-			"status transition. rd never writes 1633; spec §15.4 records the open question of whether it " +
-			"should be accepted at all. This vector pins the current behaviour so a decision to exclude " +
-			"1633 is a DELIBERATE, visible change.",
+		Note: "isStatusKind is an explicit allowlist {1630,1631,1632}, not a 1630-1633 range, so a " +
+			"kind-1633 (KindStatusDraft) event contributes NEITHER a status change NOR a history row, " +
+			"even signed by an already-trusted key. rd never writes 1633; §15.4 resolved the prior open " +
+			"question by ruling 1633 EXCLUDED. This vector pins that exclusion as the deliberate, visible " +
+			"outcome — it must FAIL against the old 1630-1633 range test.",
 		Options: Options{Trusted: trust(b.ownerPub)},
 		Events:  []*nostr.Event{c, draft},
 		Expect: Expect{
 			Items: items,
-			Views: vw(map[string][]string{"ready": {"ready-v13"}, "work": {"ready-v13"}, "focus": {"ready-v13"}}),
+			Views: vw(map[string][]string{"ready": {"ready-v13"}, "focus": {"ready-v13"}}),
 		},
 	})
 }

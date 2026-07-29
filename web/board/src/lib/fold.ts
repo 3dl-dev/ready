@@ -32,12 +32,16 @@ export const KindStatusDraft = 1633;
 export const KindIssue = 1621;
 export const KindRoleGrant = 39301;
 
-/** isStatusKind mirrors nostrwire.go's isStatusKind: a range test, so an
- * unwritten-by-rd kind 1633 (KindStatusDraft) still folds like any other
- * status event (spec §2.3, §15.4 — an open question, not a bug this port
- * resolves). */
+/** isStatusKind mirrors nostrwire.go's isStatusKind (ready-816): an explicit
+ * allowlist of the kinds rd itself writes and folds authoritatively —
+ * {1630,1631,1632} — NOT a range test. KindStatusDraft (1633) sits inside the
+ * NIP-34 1630-1633 range but rd never emits it, and §15.4 ruled it EXCLUDED:
+ * a foreign client's kind-1633 draft, even signed by an already-trusted key,
+ * must stay inert (spec §2.3, §14.10, §15.4). Keep this in lockstep with the
+ * Go isStatusKind (pkg/sync/nostrwire.go) — a Go/TS divergence here is
+ * invisible to the Go test suite and only the board vitest suite catches it. */
 function isStatusKind(kind: number): boolean {
-  return kind >= KindStatusOpen && kind <= KindStatusDraft;
+  return kind === KindStatusOpen || kind === KindStatusResolved || kind === KindStatusClosed;
 }
 
 /** itemIDForEvent mirrors nostrwire.go's itemIDForEvent. */

@@ -1988,7 +1988,7 @@
         "14.10",
         "15.4"
       ],
-      "note": "isStatusKind is the range 1630..1633, so a kind-1633 draft event folds as an ordinary status transition. rd never writes 1633; spec §15.4 records the open question of whether it should be accepted at all. This vector pins the current behaviour so a decision to exclude 1633 is a DELIBERATE, visible change.",
+      "note": "isStatusKind is an explicit allowlist {1630,1631,1632}, not a 1630-1633 range, so a kind-1633 (KindStatusDraft) event contributes NEITHER a status change NOR a history row, even signed by an already-trusted key. rd never writes 1633; §15.4 resolved the prior open question by ruling 1633 EXCLUDED. This vector pins that exclusion as the deliberate, visible outcome — it must FAIL against the old 1630-1633 range test.",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -2070,22 +2070,13 @@
           {
             "created_at": "1700000000000000000",
             "for": "",
-            "history": [
-              {
-                "timestamp": "2023-11-14T22:15:00Z",
-                "from_status": "",
-                "to_status": "active",
-                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-                "note": "draft transition from a foreign client"
-              }
-            ],
             "id": "ready-v13",
             "msg_id": "28b724f6a6b2c24f513f7f90e3f046b9d1629bd56e1555a1cc951a8fb56fe757",
             "priority": "p1",
-            "status": "active",
+            "status": "inbox",
             "title": "Draft kind",
             "type": "task",
-            "updated_at": "1700000100000000000"
+            "updated_at": "1700000000000000000"
           }
         ],
         "views": {
@@ -2100,9 +2091,7 @@
           "ready": [
             "ready-v13"
           ],
-          "work": [
-            "ready-v13"
-          ]
+          "work": []
         }
       }
     },
@@ -4728,7 +4717,7 @@
       "identity": "",
       "events": [
         {
-          "id": "1f54b1845f888d726c8e9ec4c4e27bf3aaa6576682172adad842b71ca71fe6eb",
+          "id": "a505cae0c9544546ef8944675d48ab5d68b11d55b66118fc4f6412a050b521d9",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4778,11 +4767,11 @@
               "1"
             ]
           ],
-          "content": "xJFNOE7JYa/lW8mhN91stOj7EXXkvP93TiIJSDpWzAtlIFeMLD7yor3MBJi35KqWgcP2tI+PPWVnHqrK4E5rLG8G1WjdBaWeV14uxXBvsXx+KjR123Uz+0a7SMos3TH3/jUpaH94Gs2GofuxknQRgKJLjQcHoWQHI8XbgfJTLm0f",
-          "sig": "a66a3077aa23d38b69d0833ddc3df72dcaf3350666065048e4c7c02924e6e29f0ee985d952da3c39fbe382366ad4e3a45e7d4c5155eedeedcd2c7cc9418c8205"
+          "content": "Ft0iv2Av6hDWATXbadDChkvP7EdAqoOGFCL0JgDpcAo2U40SNUQkdhpitgAwS3YpZPu1Cpy3Ln0ab3uUNFyqEOI18d+MRS+wFklBpyg/Q9c4uuMSRu0Dmceh9gmkGQcD7qJt0IClTTduZFNFxBCs4eD2S2wEgEVudgi5wqlZ2UXz",
+          "sig": "21b325f08e180c7ead66ea06b7869b0e35ec8ac9e4eea929c0669347c2e27e3df832292053d2858ae785242c30314fca04688405b34f20bc78faf21e36046820"
         },
         {
-          "id": "ab6a127280dd438f54f871f52096e5be3b337b6c171e790da5e64aa1650d12c8",
+          "id": "315068756308503ee7cd52e820d4d27a120f94ed35e5d5db5ef3a3a49a167dd1",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4812,8 +4801,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "UkIa9bRvjrDyIgNlzhH2Sl0rR/XNisE6wL7x41fM9BJH9dBt3l7IJX55kksgFUoTR9an5f6n",
-          "sig": "33011e96bb5d1f86c2e361249f62651fe784a44f71a4650093982e99e2e84d4b11d91db88a55dd5c43f14d79ed982abc0f522ea2cc8a08dd9c77d788981ffbf5"
+          "content": "yfaj7qyp5DNVay2uiG36K2nzlLInTyH8M45M7ZkeKEWLLR7HDnWCAi29kOp48vV4BPlKOqN6",
+          "sig": "d6b7443acb6ce7c811fec111a6cfaacb6d7d8f0907aab18f24adc9d00b0b557c1a812ae0b13298682e8a86b37da8a48dbdb6f7e4b095dadabc9bb3a4ec704253"
         }
       ],
       "expect": {
@@ -4824,7 +4813,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "1f54b1845f888d726c8e9ec4c4e27bf3aaa6576682172adad842b71ca71fe6eb",
+            "gate_msg_id": "a505cae0c9544546ef8944675d48ab5d68b11d55b66118fc4f6412a050b521d9",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -4838,7 +4827,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "1f54b1845f888d726c8e9ec4c4e27bf3aaa6576682172adad842b71ca71fe6eb",
+            "msg_id": "a505cae0c9544546ef8944675d48ab5d68b11d55b66118fc4f6412a050b521d9",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -4906,7 +4895,7 @@
       "identity": "",
       "events": [
         {
-          "id": "bbbc9623f08a98673332005a58c16dbc358d270d8feec0950c6446afac8843a3",
+          "id": "491ded95372d3c12ececf3af456df156d73f42c7d2dfd2270065943687465763",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -4956,11 +4945,11 @@
               "1"
             ]
           ],
-          "content": "R5w3kQJNhEyVLHoy6+nIvU83UOl0BsJ3taf54UPo7h6zsnVoALhOGHF+HXnwFbvv8DMQlyw3hW4s8c43HZBoQ2cfs4Jvp/3YIR8pDyr/kzw2Tm/XDQbhEpLWF8nDfnoy6W96Hpp2VKJjVZlRkD4RCDkfaNpC7IenppCtapl3ZapK",
-          "sig": "1fc64f2e164d80386ed85f315ea2af8954491016a7b492a3ffa15023b5c958595f592d37b0283c06a6fec2195a679efe5dc9eea7243cbf39cb9e191949a04b7c"
+          "content": "rKsC8WCBWBQ7Lg5TqtGPt+qJjytjm+jBfhjT9anAy3JNw0UHSFz6d7/ApMzd7vPCDwEyyG0mqESL9cOQzjEm3L5SnwnFPLpSRHEOKxYc7q2hlTUcgl7AxYvS3Gh/OkcAMOBRaxIfx1D+RtIQdNxpick5G+7wEktn6b7jSnoWP18D",
+          "sig": "d2dc3295fe013c93212aa4f491f426f8e6ddb22a651264ad00c4c1411f595694e70743b8800e0c0cde25370ecfac88de1736b4303f3af15a77dc134030c94c58"
         },
         {
-          "id": "cff6715bb0d44eb041daadb10f490992aba0d8f065f1ee89f1ef661ed6f81270",
+          "id": "461f7b7590664c9e5850771a0752b2a1ddeaca70e7550792f79c6477bff4e4ec",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -4990,8 +4979,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "MwLPpzjN43HKb74OsllN9ci5Ltpuq/lwszGEgFjMcfe2d5Vh3Og6DjVKFUp6yDEiT4UgwlQo",
-          "sig": "994c554503c4752a9b21cc715eca94325405034697c2c88044e556e43d4ef8bed9440a52e1915d2d706b46d0a3d1f8f9f9ea3ebd8140447589b82f0d19d5b521"
+          "content": "LymQ+j90aquBIK1qof2bJE5snqR0aiRqK9DRD6xdoN1Jd9UW+NIpNB04UD8EDBwRT0G5sTfn",
+          "sig": "5299780fa9f9538d0d69e95e9c7abf0664325519f15c86d37c324b5192f8fa96ba2f661cc99ccaddbae7f5ff78efc376d3cdd6d784029bbdc695f054ef512030"
         }
       ],
       "expect": {
@@ -5002,7 +4991,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "bbbc9623f08a98673332005a58c16dbc358d270d8feec0950c6446afac8843a3",
+            "gate_msg_id": "491ded95372d3c12ececf3af456df156d73f42c7d2dfd2270065943687465763",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -5016,7 +5005,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "bbbc9623f08a98673332005a58c16dbc358d270d8feec0950c6446afac8843a3",
+            "msg_id": "491ded95372d3c12ececf3af456df156d73f42c7d2dfd2270065943687465763",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -5074,7 +5063,7 @@
       "identity": "",
       "events": [
         {
-          "id": "b6340f08f49772a6266c7dc41790fbdf9a3ca2559059c3080ac29f9197d0e6b0",
+          "id": "91638174033181ca77f16aef5009ceda61a2d4fd6b998cef43ee0ba94c726be7",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -5124,11 +5113,11 @@
               "1"
             ]
           ],
-          "content": "kubrW3IQrQD5bp4t+hJLL7ea/QW9+rnxrR8yFWyiesDBhCQAwqdROjmarS0IAwSFD1memY55lyEl/jiKrq8WV9cm4OpYne59xg005PbR6Wv3Tq/+Ij5r5bCaT7eLLenlg5dRY7BV9/P9pUBRVjRqrsk5FOIEjdJERk9MmWGJ9kwJ",
-          "sig": "e10a428e3f7b545c282445108a71235f6af7641a89cbfbd087a33cd2a4755dfd29afa8350e6f3860f23bf3be2356c38133122986f35673faf60f65120d2f80e4"
+          "content": "eXC0r9uunwtiFlgO4pfiG3Hw920irDghC9I65l7CNQKbKZW6IAw3aMs7Xu9DbMEu9SbL0OFDD7g3vyhPr/ZgkJZytRuQcYil1dmV+6n6cQxpAjE1OXUWnCocQdEj/Rgs7wOblO3R+Glb78rFQu6wr1pplrGCwJ3XcIDK4zhlSMkI",
+          "sig": "022f6e276e08a708d3ad4e58e4aa78b75183ec3a152b1fb9e938f823ed3e14838f2116520457956d021889f43f3396dacec770140dd223e466d7cb66b1d8469c"
         },
         {
-          "id": "e04d4e3a7f83594eef3abddbadcb6b6af05f895103e2dcb67733dc75c0b58c8d",
+          "id": "efa36f7adb1d1bebe2450da0591e8b2b945caacb1dafc8d5541e33050b8f6267",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -5158,8 +5147,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "MEn4WQoK4b/AH8GTZgY4VJepdSpjvaBjv+KccdnqLNRmvFS4P63uMpAaBsIUFgIqQ78kH5u1",
-          "sig": "05dca752c6a753cd8c9b36bc803d20eba6cd388bf2d1079cb3bd319b882a82f3624522c51532cdea3a94604b8ed3b7da76dadfe97ca77320a320abe08bb25c9f"
+          "content": "BjcIrnHJkjJ7ZLg4l9ny+f35+1a/9oNRXAI9S1qlhA6kjkQR8K7x7Weuwh9W5IgSaOzZyLXV",
+          "sig": "871ef656b821fa3e2af7d526064365f39395667016a4165b972b2be62b36e80505edb8d6221927abb50ca47ee28615ffb1044ec2ef65539055fe6a618b436dc8"
         }
       ],
       "expect": {
@@ -5170,7 +5159,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "b6340f08f49772a6266c7dc41790fbdf9a3ca2559059c3080ac29f9197d0e6b0",
+            "gate_msg_id": "91638174033181ca77f16aef5009ceda61a2d4fd6b998cef43ee0ba94c726be7",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -5184,7 +5173,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "b6340f08f49772a6266c7dc41790fbdf9a3ca2559059c3080ac29f9197d0e6b0",
+            "msg_id": "91638174033181ca77f16aef5009ceda61a2d4fd6b998cef43ee0ba94c726be7",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
