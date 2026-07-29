@@ -21,6 +21,8 @@
 package sync
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -315,13 +317,131 @@ func rejectedPathFor(pendingPath string) string {
 	return filepath.Join(filepath.Dir(pendingPath), NostrRejectedFile)
 }
 
+// deadLetterHasEvent reports whether path (nostr-rejected.jsonl) already holds
+// a record for eventID. ready-c3e finding (2): `rd relay repair` re-measures
+// the relay's gap every round and republishes exactly that gap; for a
+// PERMANENTLY oversized event the gap can never close, so the identical event
+// was re-sent and re-dead-lettered on EVERY round of EVERY repair run — 12MB
+// on one project (8 distinct oversized events across 2 stale coordinates),
+// 3.6MB on another (1 distinct event), growing forever at up to 5 records per
+// `rd relay repair` invocation (re-measured directly against both projects'
+// on-disk nostr-rejected.jsonl; corrected from an earlier restatement that
+// conflated "2 distinct events" with "2 stale coordinates" — not the same
+// count: 3dl has 8 distinct oversized event ids across those 2 coordinates).
+// Permanence is a property of the immutable signed bytes (same premise as
+// classifyRelayResult): once a record for this exact event id exists, a
+// second one carries zero new information, so the caller skips the append
+// instead of growing the file.
+//
+// FAILS CLOSED ON A BAD RECORD (ready-c3e finding 4, rework 2): a single
+// malformed or torn line is skipped, not treated as end-of-scan. The prior
+// version used a json.Decoder over the whole stream and returned false the
+// instant Decode failed on ANY record — so one corrupt line positioned BEFORE
+// the target silently disabled dedup for every record after it, permanently
+// restoring the unbounded-growth bug this function exists to fix.
+// appendRejectedEvent's own doc states the file is at-least-once (a crash
+// mid-append may leave a torn line) — that is an ANTICIPATED on-disk state,
+// not a hypothetical, so scanning must tolerate it. A read failure (including
+// "file does not exist yet") reports false — the caller then appends the
+// first record, exactly as before this fix.
+//
+// THE TORN SHAPE, PRECISELY (rework 2 — the first version of this fix got the
+// shape wrong): appendRejectedEvent does ONE os.OpenFile(O_APPEND) + ONE
+// f.Write(json+'\n'). A crash mid-write can land after only PART of that
+// single Write made it to the underlying file, with NO trailing '\n' at all —
+// so the NEXT call to appendRejectedEvent (a later round/run) opens with
+// O_APPEND and writes its own record starting immediately after those torn
+// bytes, on what bufio.Reader.ReadBytes('\n') sees as ONE physical line:
+// [torn prefix of record B, no closing brace][record C, complete]'\n'. A
+// plain "unmarshal the whole line, else skip it" (the first version of this
+// function, and finding (4)'s own regression test before rework 2) treats
+// that WHOLE merged line as one malformed record and skips it — so record C,
+// even though it is completely well-formed, is never seen: dedup fails open
+// for C's event id and a duplicate gets appended. recordsInLine below
+// recovers C by re-scanning the line for an embedded '{' the first
+// (whole-line) unmarshal missed.
+func deadLetterHasEvent(path, eventID string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	// Line-based, not json.Decoder-over-the-stream: appendRejectedEvent always
+	// writes exactly one JSON object followed by '\n' per record in the
+	// UNCORRUPTED case, so ordinary damage is contained to its own line — the
+	// reader can resync at the next '\n' instead of a decode error aborting
+	// the whole scan. bufio.Reader.ReadString has no line-length ceiling
+	// (unlike bufio.Scanner's default token limit), which matters here: a
+	// dead-lettered record's Event.Content is, by definition, an OVERSIZED
+	// event, so lines in this exact file routinely exceed 64KiB.
+	r := bufio.NewReader(f)
+	for {
+		line, rerr := r.ReadBytes('\n')
+		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			for _, rec := range recordsInLine(trimmed) {
+				if rec.Event != nil && rec.Event.ID == eventID {
+					return true
+				}
+			}
+			// No match (or nothing parseable) on this line: skip it and keep
+			// scanning. Do NOT return false here — that was finding (4)'s bug.
+		}
+		if rerr != nil {
+			return false // EOF (or a read error) — nothing further to scan.
+		}
+	}
+}
+
+// recordsInLine recovers every well-formed RejectedRecord present in line,
+// tolerating the torn-append corruption deadLetterHasEvent's doc describes: a
+// crash mid-write can merge a truncated PRIOR record's tail bytes onto the
+// front of a later, COMPLETE record with no separating newline.
+//
+// Fast path: the whole line is one clean record (every uncorrupted line in
+// practice) — a single json.Unmarshal handles it with no extra scanning.
+//
+// Recovery path: the whole-line parse failed, so line may be [torn prefix]
+// [complete record] concatenated with no delimiter. There is no way to know
+// where the complete record starts, so every '{' in the line is tried as a
+// candidate start: a json.Decoder seeded at that offset either fails fast
+// (the torn prefix and any mid-content '{' are not valid JSON from that
+// point) or decodes exactly one well-formed value (the complete record that
+// follows the torn prefix). This recovers record C in the shape above without
+// needing to locate the torn/complete boundary explicitly.
+func recordsInLine(line []byte) []RejectedRecord {
+	var whole RejectedRecord
+	if err := json.Unmarshal(line, &whole); err == nil {
+		if whole.Event == nil {
+			return nil
+		}
+		return []RejectedRecord{whole}
+	}
+	var out []RejectedRecord
+	for i, b := range line {
+		if b != '{' {
+			continue
+		}
+		var rec RejectedRecord
+		dec := json.NewDecoder(bytes.NewReader(line[i:]))
+		if derr := dec.Decode(&rec); derr != nil || rec.Event == nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
 // appendRejectedEvent appends a dead-lettered record to nostr-rejected.jsonl.
 //
 // Dead-lettering is at-least-once: relayPublish/FlushNostrPending fsync this file
 // BEFORE removing the event from the pending buffer, so a crash in the window
 // between the two may re-dead-letter the same event on the next flush (a duplicate
 // diagnostic line, never data loss). Operators reading nostr-rejected.jsonl should
-// treat records as deduplicable by event id.
+// treat records as deduplicable by event id. Callers that already know the file may
+// hold a repeat (relayPublish/relayPublishBatch's permanent branch) should call
+// deadLetterHasEvent first and skip the append on a hit (ready-c3e) — this function
+// itself stays a plain unconditional append so the rare crash-window duplicate
+// above still gets written rather than silently swallowed.
 func appendRejectedEvent(path string, rec RejectedRecord) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

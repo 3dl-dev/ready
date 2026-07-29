@@ -458,6 +458,26 @@ func applyDepAndGateStatus(items map[string]*state.Item) {
 		}
 		item.BlockedBy = nil // rebuilt below from validated edges only
 	}
+	// DETERMINISTIC EDGE ORDER (ready-f5f / ready-e12): edges is built by ranging
+	// over the items MAP, so its order is randomized per process run even though
+	// the input event set is identical. Left unsorted, the appendUniqueStr calls
+	// below populate BlockedBy/Blocks in that random order, so a blocked item's
+	// BlockedBy array (and a blocker's Blocks array, for any blocker with 2+
+	// blockees) differs byte-for-byte between runs on the exact same data — the
+	// same "map order leaks into output" defect ready-e88 fixed for item ORDER,
+	// here for item CONTENT. Sort by (blockedID, blockerID) ascending before
+	// applying: this fixes BlockedBy's own order directly (it's grouped by
+	// blockedID) and, because sorting by blockedID is the PRIMARY key, any
+	// fixed blocker's edges remain a subsequence of the globally-sorted list —
+	// so its Blocks entries land in ascending blockedID order too, without a
+	// second explicit sort. IDs are content-addressed hex strings, so lexical
+	// ordering is stable and requires no external state.
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].blockedID != edges[j].blockedID {
+			return edges[i].blockedID < edges[j].blockedID
+		}
+		return edges[i].blockerID < edges[j].blockerID
+	})
 	for _, e := range edges {
 		blocker, blockerOK := items[e.blockerID]
 		blocked, blockedOK := items[e.blockedID]
