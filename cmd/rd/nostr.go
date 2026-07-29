@@ -368,6 +368,13 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
+	// BLOCKED IS DERIVED, NEVER REPUBLISHED (ready-500, generalizing ready-e0e):
+	// this is a REPUBLISH of item's current projected state, so item.Status can
+	// still carry the dep pass's derived "blocked" overlay if the caller (e.g.
+	// delegate) didn't itself decide a new status. See NonDerivedStatus's doc
+	// (pkg/sync/nostrmigrate.go) — this is the ONE call site for the
+	// status-event-carrying path; publishItemCardEditNostr below is the other.
+	card.Status = rdSync.NonDerivedStatus(item)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	// Confidential-by-default (ready-216): seal the card + the status reason.
 	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
@@ -407,6 +414,15 @@ func publishItemCardEditNostr(item *state.Item) error {
 	}
 	board := boardSpecForProject(dir, boardAuthor)
 	card := rdSync.CardSpecFromItem(item, board.BoardD)
+	// BLOCKED IS DERIVED, NEVER REPUBLISHED (ready-500, generalizing ready-e0e):
+	// a field-only edit still republishes item's CURRENT card, and item.Status
+	// can read the dep pass's derived "blocked" overlay even though no status
+	// event is published here — the card's own "s" tag IS the projected status
+	// whenever the item has no authoritative status history to override it
+	// (pkg/sync/nostrproject.go), so this path burns blocked in just as
+	// permanently as the status-event path does without this guard. See
+	// NonDerivedStatus's doc (pkg/sync/nostrmigrate.go).
+	card.Status = rdSync.NonDerivedStatus(item)
 	card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 	// Confidential-by-default (ready-216): re-seal the edited card's free text.
 	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
@@ -555,6 +571,11 @@ var nostrPublishCmd = &cobra.Command{
 		// omitted Labels/ETA/Assignee (and would never have carried Level/For/Parent/
 		// Due), so `rd nostr publish` clobbered them to empty on the latest-wins card.
 		card := rdSync.CardSpecFromItem(item, board.BoardD)
+		// BLOCKED IS DERIVED, NEVER REPUBLISHED (ready-500, generalizing
+		// ready-e0e): this command republishes item exactly as
+		// nostrResolveItem projected it, which can carry the dep pass's derived
+		// "blocked" overlay — see NonDerivedStatus's doc (pkg/sync/nostrmigrate.go).
+		card.Status = rdSync.NonDerivedStatus(item)
 		card.BoardAuthor = boardAuthor // agent-signed card joins the OWNER's pinned board (BP-4)
 		var boardArg *rdSync.BoardSpec
 		if signer == boardAuthor {

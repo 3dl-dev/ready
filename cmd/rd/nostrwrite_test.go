@@ -925,6 +925,228 @@ func sliceContains(s []string, v string) bool {
 	return false
 }
 
+// appendCardOnlyBlockedFixture appends a LONE 30302 card event — status=blocked,
+// no accompanying NIP-34 status event, no dep edges — to dir's authoritative log
+// under itemID, signed by the project owner. This reproduces, WITHOUT going
+// through any (fixed) write path, the exact projection shape ready-500's
+// adversary review flagged as understated: an item whose current status reads
+// "blocked" with ZERO authoritative status events in its History, so
+// nostrResolveItem's card-tag fallback (pkg/sync/nostrproject.go: item.Status
+// stays exactly the card's "s" tag whenever len(authoritative) == 0) is the
+// only thing keeping it blocked — not a live dependency edge. This is the real
+// shape produced either by a non-maintainer's card-only republish on a
+// multi-agent board (which strips every non-authoritative status event) or by
+// a partial relay reconcile that lands the card without its status chain.
+func appendCardOnlyBlockedFixture(t *testing.T, dir, itemID string) {
+	t.Helper()
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	boardD := projectPrefix(dir)
+	spec := rdSync.CardSpec{
+		ItemID: itemID, Title: "Pre-burned-in", Status: state.StatusBlocked,
+		Priority: "p1", Type: "task", BoardD: boardD,
+	}
+	ce, err := rdSync.BuildCardEvent(k, spec, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildCardEvent: %v", err)
+	}
+	if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{ce}); err != nil {
+		t.Fatalf("append card-only fixture: %v", err)
+	}
+}
+
+// TestNostrNative_DelegateOnCardOnlyBlockedItem_EmptyHistory_Heals is ready-500's
+// probe for the HOLE in the prior fix: runDelegateNostr's guard used to be `if
+// item.Status == StatusBlocked && len(item.History) > 0`, which fell straight
+// through — publishing item.Status ("blocked") VERBATIM via
+// publishItemStatusChangeNostr — whenever History was empty. This is exactly
+// appendCardOnlyBlockedFixture's shape: no dep edge, no status event, current
+// status blocked purely via the card's own "s" tag. Before this fix: delegate
+// on such an item burned status=blocked in as the permanent status-authority
+// winner (nothing — no blocker to close — could ever have cleared it). The
+// fix moves the substitution into CardSpecFromItem/nonDerivedCardStatus
+// (pkg/sync/nostrmigrate.go), unconditional on History depth, so delegate here
+// must publish the explicit inbox default instead.
+func TestNostrNative_DelegateOnCardOnlyBlockedItem_EmptyHistory_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+	id := "ready-cardonly1"
+	appendCardOnlyBlockedFixture(t, dir, id)
+
+	it, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve fixture: %v", err)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("fixture status = %q before delegate; want blocked (card-tag only, no history)", it.Status)
+	}
+	if len(it.History) != 0 {
+		t.Fatalf("fixture History = %v; want empty (this test proves the empty-history branch)", it.History)
+	}
+
+	if err := runDelegateNostr(id, "atlas/worker-9", "routing"); err != nil {
+		t.Fatalf("delegate on a card-only blocked item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve after delegate: %v", err)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("delegate republished status=blocked verbatim on an empty-history item — the exact hole ready-500's adversary review found (status=%q)", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("after delegate, status = %q; want the explicit inbox default (no authoritative history to recover)", it.Status)
+	}
+	if it.By != "atlas/worker-9" {
+		t.Fatalf("delegate assignment lost: By = %q; want atlas/worker-9", it.By)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_FieldEditOnCardOnlyBlockedItem_EmptyHistory_Heals is
+// ready-500's probe for the adversary's second finding: a field-only `rd
+// update` (publishItemCardEditNostr — no status event at all) on the SAME
+// empty-history card-only-blocked shape used to write item.Status ("blocked")
+// straight into the refreshed card's "s" tag, which IS the projected status
+// verbatim whenever there is no authoritative history chain to override it —
+// burning status=blocked in with no status event ever published. The fix
+// (nonDerivedCardStatus, routed through by CardSpecFromItem) applies here too,
+// since it lives in the one function both publishItemStatusChangeNostr and
+// publishItemCardEditNostr route their outbound CardSpec through.
+func TestNostrNative_FieldEditOnCardOnlyBlockedItem_EmptyHistory_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+	id := "ready-cardonly2"
+	appendCardOnlyBlockedFixture(t, dir, id)
+
+	it, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve fixture: %v", err)
+	}
+	if it.Status != state.StatusBlocked || len(it.History) != 0 {
+		t.Fatalf("fixture status=%q history=%v; want blocked/empty", it.Status, it.History)
+	}
+
+	if err := runUpdateNostr(id, nostrUpdateSpec{title: "Retitled", hasFieldUpdate: true}); err != nil {
+		t.Fatalf("field edit on a card-only blocked item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("resolve after field edit: %v", err)
+	}
+	if it.Title != "Retitled" {
+		t.Fatalf("Title = %q; want Retitled", it.Title)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("field edit republished status=blocked verbatim (into the card's own s tag) on an empty-history item — status=%q", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("after field edit, status = %q; want the explicit inbox default", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_DelegateOnPreBurnedInItem_Heals is ready-500's residual fix
+// (finding 4 on the prior attempt): an item ALREADY burned in by the pre-fix
+// bug has its own last authoritative HISTORY entry recorded as ToStatus
+// "blocked" (a real status event was published carrying status=blocked,
+// unlike the two tests above where only the card's "s" tag was ever touched).
+// A fallback that reads only item.History[len-1].ToStatus finds "blocked"
+// again and republishes it, PERPETUATING the burn-in. This test builds exactly
+// that shape — a blocker + dep edge (so the item is legitimately blocked at
+// the time of the bad write), a status event that WRONGLY published
+// status=blocked while blocked (the pre-fix bug's own output), then closes the
+// blocker — and proves delegate on the already-burned-in item still heals to
+// the item's real pre-block status instead of re-publishing the burned-in
+// "blocked" forever.
+func TestNostrNative_DelegateOnPreBurnedInItem_Heals(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	blocker, err := runCreateNostr(dir, nostrCreateSpec{title: "Blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	target, err := runCreateNostr(dir, nostrCreateSpec{title: "Target", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := runDepAddNostr(target, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+
+	// Simulate the PRE-FIX bug's own output DIRECTLY (raw card + status events,
+	// bypassing the now-fixed publishItemStatusChangeNostr/CardSpecFromItem
+	// choke point entirely) — the fixed code would itself heal this before
+	// publishing, so it cannot be used to construct the fixture it is meant to
+	// heal. This is exactly what the pre-fix runDelegateNostr produced: a real
+	// status event carrying status=blocked verbatim while the item was
+	// derived-blocked, landing a HistoryEntry whose ToStatus is itself
+	// "blocked" — the shape a naive last-entry-only fallback cannot distinguish
+	// from a legitimate one.
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	boardD := projectPrefix(dir)
+	log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+	// Strictly-monotonic-per-item timestamp (same helper the live write hooks
+	// use) so the burn-in status event sorts AFTER the create-time inbox status
+	// event despite same-wall-clock-second timestamps — otherwise the
+	// (created_at, event-id) deterministic tie-break can place it FIRST, which
+	// would misconstruct the fixture this test means to build.
+	burnCreatedAt := nostrNextCreatedAt(log, rdSync.ItemDriftScope(target))
+	burnCard, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{
+		ItemID: target, Title: "Target", Status: state.StatusBlocked, Priority: "p1", Type: "task",
+		BoardD: boardD, Deps: []string{blocker},
+	}, burnCreatedAt)
+	if err != nil {
+		t.Fatalf("BuildCardEvent (burn-in fixture): %v", err)
+	}
+	burnStatus, err := rdSync.BuildStatusEvent(k, target, state.StatusBlocked, burnCard.ID, "burned in by the pre-fix bug", burnCreatedAt)
+	if err != nil {
+		t.Fatalf("BuildStatusEvent (burn-in fixture): %v", err)
+	}
+	if _, err := log.AppendUnique([]*nostr.Event{burnCard, burnStatus}); err != nil {
+		t.Fatalf("append burn-in fixture: %v", err)
+	}
+	it, err := nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after simulated burn-in: %v", err)
+	}
+	if len(it.History) == 0 || it.History[len(it.History)-1].ToStatus != state.StatusBlocked {
+		t.Fatalf("fixture setup failed: last history entry ToStatus = %+v; want the simulated burn-in to have landed as blocked", it.History)
+	}
+
+	if err := runCloseNostr(blocker, "done", "unblocking", "closed"); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	it, err = nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after blocker close: %v", err)
+	}
+	if it.Status != state.StatusBlocked {
+		t.Fatalf("sanity: target status = %q immediately after blocker close and before delegate; want still blocked (dep pass still derives it live)", it.Status)
+	}
+
+	if err := runDelegateNostr(target, "atlas/worker-7", "routing"); err != nil {
+		t.Fatalf("delegate on a pre-burned-in item must succeed, got: %v", err)
+	}
+	it, err = nostrResolveItem(target)
+	if err != nil {
+		t.Fatalf("resolve after delegate: %v", err)
+	}
+	if it.Status == state.StatusBlocked {
+		t.Fatalf("delegate republished the pre-burned-in 'blocked' history entry verbatim instead of healing past it — status=%q", it.Status)
+	}
+	if it.Status != state.StatusInbox {
+		t.Fatalf("target recovered to %q; want inbox (its real pre-block status, recovered by walking PAST the burned-in history entry)", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
 // TestNostrNative_ReadActive_DefaultReadsProjection is the S-read proof: on a
 // nostr-native project with NO RD_NOSTR_READ env set, the dual-read surface
 // resolves items from the nostr projection by DEFAULT. A create publishes to the

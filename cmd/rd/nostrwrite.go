@@ -265,16 +265,21 @@ func runDelegateNostr(itemID, to, reason string) error {
 	}
 	item.By = to
 	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-500, generalizing ready-e0e):
-	// delegate only reassigns performer, so a currently-derived-blocked item must
-	// republish its own last authoritative status here — never the dep pass's
-	// blocked overlay itself, or status=blocked becomes the permanent
-	// status-authority winner once this event lands (the dep pass only ever ADDS
-	// blocked and nothing ever clears a written one). item.History is untouched by
-	// applyDepAndGateStatus, so its last entry's ToStatus is exactly the
-	// pre-overlay status.
-	if item.Status == state.StatusBlocked && len(item.History) > 0 {
-		item.Status = item.History[len(item.History)-1].ToStatus
-	}
+	// delegate only reassigns performer and never itself decides a new status, so
+	// item.Status can still read the dep pass's derived "blocked" overlay here.
+	// Earlier code hand-substituted item.History's LAST entry at this call site
+	// only — a guard of the form "if len(item.History) > 0" that fell straight
+	// through (publishing blocked verbatim) whenever History was empty (a
+	// card-only item with no authoritative status event: a non-maintainer
+	// republish on a multi-agent board strips every non-authoritative status
+	// event, and a partial relay reconcile can deliver the card without its
+	// status chain too — see pkg/sync/nostrproject.go), and it trusted a single
+	// last entry that could itself already be a burned-in "blocked", which would
+	// perpetuate rather than heal it. The substitution now happens inside
+	// publishItemStatusChangeNostr itself, via rdSync.NonDerivedStatus
+	// (pkg/sync/nostrmigrate.go — see that function's doc) — so this call site
+	// needs no per-path check at all; publishItemStatusChangeNostr below is safe
+	// regardless of what item.Status or item.History currently hold.
 	if err := publishItemStatusChangeNostr(item, reason); err != nil {
 		return fmt.Errorf("nostr publish (delegate): %w", err)
 	}
