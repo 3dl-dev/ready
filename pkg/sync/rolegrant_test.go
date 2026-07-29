@@ -549,3 +549,130 @@ func TestBuildRoleGrantEvent_RejectsBadInput(t *testing.T) {
 		t.Errorf("good spec should build: %v", err)
 	}
 }
+
+// relayView simulates what an addressable-event relay actually retains for a set
+// of events sharing the SAME author: exactly one event per (kind, pubkey, d)
+// coordinate — the newest by (created_at, id), the identical tie-break
+// newerGrant/newerThan use at fold time. An older event sharing a coordinate is
+// gone, as if it had never been published — the real behaviour documented at
+// docs/design/board-fold-spec.md §16.10 and pkg/sync/boardaudit.go's
+// isAddressableKind. Used to reproduce what a SECOND machine receives after
+// reconciling from a relay (ReconcileBoard, pkg/sync/nostrinbound.go), as
+// opposed to a machine's own append-only local log which never drops anything.
+func relayView(events []*nostr.Event) []*nostr.Event {
+	type coordKey struct {
+		kind      int
+		pubkey, d string
+	}
+	winners := make(map[coordKey]*nostr.Event)
+	for _, e := range events {
+		k := coordKey{e.Kind, e.PubKey, tagValue(e, "d")}
+		cur, ok := winners[k]
+		if !ok || e.CreatedAt > cur.CreatedAt || (e.CreatedAt == cur.CreatedAt && e.ID < cur.ID) {
+			winners[k] = e
+		}
+	}
+	out := make([]*nostr.Event, 0, len(winners))
+	for _, e := range winners {
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestClaimBinding_SurvivesRelayLastWriteWins is the ready-55f fix proof.
+//
+// ready-55f (security sweep ready-348, HIGH, broken-access-control): a
+// claim-bearing grant and a LATER revoke for the SAME grantee used to share the
+// bare "<boardD>:<grantee>" addressable slot (roleGrantD). A relay retains
+// exactly one event per (kind, pubkey, d) coordinate, so once the revoke landed,
+// the relay's copy of the ORIGINAL claim-bearing grant was gone — a second
+// machine that reconciles from the relay (ReconcileBoard) never received it at
+// all. Reproduced pre-fix: deriveGrants never lost the binding when fed one
+// machine's own full append-only local log in a single call (claimedBy is
+// populated from every claim-bearing grant processed ascending, and a revoke
+// carries no claim tag to clear it) — the loss happened one layer up, when a
+// SECOND device's incomplete-by-construction event set (whatever the relay
+// still served) was folded: bob was then admitted using alice's already-consumed
+// claim-nonce. The fix gives a claim-bearing grant its OWN addressable slot
+// (mirroring ready-889's CEK-epoch slot for the identical relay-retention
+// reason), so it survives on the relay independent of any later grant/revoke
+// for that grantee.
+//
+// This test advances PAST the write (relayView simulates the relay's
+// last-write-wins storage) to a LATER fold/read on a second device's log
+// (ClaimGrantee, then a full DeriveLevels + DeriveReadTrust replay after a
+// second claim-nonce reuse attempt) — not stopping at the mutation, because a
+// test that only inspects the events slice right after building it would pass
+// while this class of defect is live.
+func TestClaimBinding_SurvivesRelayLastWriteWins(t *testing.T) {
+	owner := testKey(t)
+	ba := owner.PubKeyHex()
+	alice := testKey(t)
+	bob := testKey(t)
+	const claimNonce = "invite-nonce-002"
+
+	grantAlice, err := BuildRoleGrantEvent(owner, RoleGrantSpec{
+		BoardD: testBoardD, BoardAuthor: ba, Grantee: alice.PubKeyHex(),
+		Role: RoleContributor, Claim: claimNonce,
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildRoleGrantEvent(grantAlice): %v", err)
+	}
+	revokeAlice, err := BuildRoleGrantEvent(owner, RoleGrantSpec{
+		BoardD: testBoardD, BoardAuthor: ba, Grantee: alice.PubKeyHex(),
+		Role: RoleRevoked,
+	}, 2000)
+	if err != nil {
+		t.Fatalf("BuildRoleGrantEvent(revokeAlice): %v", err)
+	}
+
+	// The fix: the claim-bearing grant and the revoke must NOT share a "d" slot.
+	if dg, dr := tagValue(grantAlice, "d"), tagValue(revokeAlice, "d"); dg == dr {
+		t.Fatalf("fix not present: claim grant and revoke still share d slot %q — "+
+			"a relay would still evict the claim binding on revoke", dg)
+	}
+
+	full := []*nostr.Event{grantAlice, revokeAlice}
+
+	// A relay now retains BOTH events (two distinct addressable coordinates), so
+	// a second device reconciling from it receives the claim-bearing grant too.
+	relayFetched := relayView(full)
+	if len(relayFetched) != 2 {
+		t.Fatalf("expected the relay to retain both events post-fix, got %d", len(relayFetched))
+	}
+	deviceBLog := relayFetched
+
+	// The binding IS visible on device B.
+	if bound, ok := ClaimGrantee(deviceBLog, ba, testBoardD, claimNonce); !ok || bound != alice.PubKeyHex() {
+		t.Fatalf("fix failed: claim-nonce %q should still be bound to alice on device B, got bound=%q ok=%v",
+			claimNonce, bound, ok)
+	}
+
+	// Advance past the write to a later fold: the owner reuses the SAME
+	// claim-nonce for bob. It must be rejected: bob gets no level (absent from
+	// the map, per DeriveLevels's "absent" convention for a grant deriveGrants
+	// skipped outright) and — the security-relevant check — is NOT admitted into
+	// the read-trust set the projection seam actually gates on.
+	grantBob, err := BuildRoleGrantEvent(owner, RoleGrantSpec{
+		BoardD: testBoardD, BoardAuthor: ba, Grantee: bob.PubKeyHex(),
+		Role: RoleContributor, Claim: claimNonce,
+	}, 3000)
+	if err != nil {
+		t.Fatalf("BuildRoleGrantEvent(grantBob): %v", err)
+	}
+	deviceBLog = append(deviceBLog, grantBob)
+
+	levels, _ := DeriveLevels(deviceBLog, ba, testBoardD)
+	if _, ok := levels[bob.PubKeyHex()]; ok {
+		t.Fatalf("fix failed: bob should be ABSENT from the level map (claim-nonce reuse rejected), got level %d",
+			levels[bob.PubKeyHex()])
+	}
+	trust := DeriveReadTrust(deviceBLog, ba, testBoardD)
+	if trust[bob.PubKeyHex()] {
+		t.Fatalf("fix failed: bob must NOT be in the read-trust set — claim-nonce %q was already consumed by alice", claimNonce)
+	}
+	// And the binding still correctly names alice, never bob.
+	if bound, ok := ClaimGrantee(deviceBLog, ba, testBoardD, claimNonce); !ok || bound != alice.PubKeyHex() {
+		t.Fatalf("fix failed: claim-nonce %q should remain bound to alice, got bound=%q ok=%v", claimNonce, bound, ok)
+	}
+}
