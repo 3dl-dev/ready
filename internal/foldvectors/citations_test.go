@@ -806,9 +806,10 @@ var citationExceptions = map[string]string{
 		"project-prefix assignment (:634, moved from :621 by ready-ca3) inside " +
 		"publishEngagedItemsNostr's body; its declaration is cited exactly at " +
 		":621 (§26.3, moved from :608)",
-	"publishEvents|pkg/sync/nostroutbound.go|582@decl581": "§16.8: the " +
-		"`guardReservedBoard` call site one line into publishEvents's body (:582); " +
-		"publishEvents itself is declared at :581",
+	"publishEvents|pkg/sync/nostroutbound.go|587@decl586": "§16.8: the " +
+		"`guardReservedBoard` call site one line into publishEvents's body (:587, " +
+		"moved from :582 by ready-c3e's size guard); publishEvents itself is " +
+		"declared at :586 (moved from :581)",
 	"publishItemCardEditNostr|cmd/rd/nostr.go|412@decl392": "§18.10: the " +
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:406); " +
 		"its declaration+body is cited exactly at :389 (`:389-419`)",

@@ -458,3 +458,52 @@ func TestFlushNostrPending_DeadLettersPermanentKeepsTransient(t *testing.T) {
 		t.Errorf("transient record should remain in pending.jsonl for the next flush")
 	}
 }
+
+// countIDOccurrences counts how many lines/records in the JSONL file at path
+// contain id — used to detect duplicate dead-letter records, not just presence.
+func countIDOccurrences(t *testing.T, path, id string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return strings.Count(string(data), id)
+}
+
+// TestRelayPublish_PermanentReject_DeadLetterDoesNotGrowOnRepeat is ready-c3e
+// finding (2)'s regression guard. `rd relay repair` re-measures a relay's gap
+// every round (5 by default, relayRepairCmd's --rounds) and republishes
+// exactly that gap; for a PERMANENTLY rejected event the gap can never close,
+// so the identical event was re-sent and re-dead-lettered on EVERY round of
+// EVERY repair invocation — ground truth on two real projects: 3dl's
+// nostr-rejected.jsonl reached 12,261,702 bytes for 2 distinct oversized
+// events, galtrader's reached 3,599,901 bytes for 1. Publishing the identical
+// already-dead-lettered event again must add ZERO new dead-letter records —
+// the file is bounded by the number of DISTINCT permanently-rejected events,
+// not by how many times a repair loop rediscovers the same one.
+func TestRelayPublish_PermanentReject_DeadLetterDoesNotGrowOnRepeat(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, rejected := readyPaths(dir)
+	pub := &Publisher{
+		Key:         k,
+		Log:         NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile)),
+		WriteRelays: []string{fixedRelay(t, false, "invalid: event is 999999 bytes, exceeds this relay's max of 65536 bytes (64KiB, strfry default)", false)},
+		PendingPath: pending,
+		Timeout:     3 * time.Second,
+	}
+	ev := signedEvent(t, k, "oversized-payload")
+
+	const rounds = 5 // mirrors relayRepairCmd's default --rounds
+	for i := 0; i < rounds; i++ {
+		if _, err := pub.PublishEvents(context.Background(), []*nostr.Event{ev}); err != nil {
+			t.Fatalf("round %d: PublishEvents: %v", i, err)
+		}
+	}
+	if got := countIDOccurrences(t, rejected, ev.ID); got != 1 {
+		t.Errorf("dead-letter file has %d record(s) for the same permanently-rejected event after %d repair rounds, want exactly 1 (unbounded growth, ready-c3e)", got, rounds)
+	}
+}

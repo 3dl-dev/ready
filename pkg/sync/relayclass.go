@@ -315,13 +315,48 @@ func rejectedPathFor(pendingPath string) string {
 	return filepath.Join(filepath.Dir(pendingPath), NostrRejectedFile)
 }
 
+// deadLetterHasEvent reports whether path (nostr-rejected.jsonl) already holds
+// a record for eventID. ready-c3e finding (2): `rd relay repair` re-measures
+// the relay's gap every round and republishes exactly that gap; for a
+// PERMANENTLY oversized event the gap can never close, so the identical event
+// was re-sent and re-dead-lettered on EVERY round of EVERY repair run — 12MB
+// for 2 distinct events on one project, 3.6MB for 1 on another, growing
+// forever at 5 records per `rd relay repair` invocation. Permanence is a
+// property of the immutable signed bytes (same premise as
+// classifyRelayResult): once a record for this exact event id exists, a
+// second one carries zero new information, so the caller skips the append
+// instead of growing the file. A read failure (including "file does not
+// exist yet") reports false — the caller then appends the first record,
+// exactly as before this fix.
+func deadLetterHasEvent(path, eventID string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	for {
+		var rec RejectedRecord
+		if err := dec.Decode(&rec); err != nil {
+			return false
+		}
+		if rec.Event != nil && rec.Event.ID == eventID {
+			return true
+		}
+	}
+}
+
 // appendRejectedEvent appends a dead-lettered record to nostr-rejected.jsonl.
 //
 // Dead-lettering is at-least-once: relayPublish/FlushNostrPending fsync this file
 // BEFORE removing the event from the pending buffer, so a crash in the window
 // between the two may re-dead-letter the same event on the next flush (a duplicate
 // diagnostic line, never data loss). Operators reading nostr-rejected.jsonl should
-// treat records as deduplicable by event id.
+// treat records as deduplicable by event id. Callers that already know the file may
+// hold a repeat (relayPublish/relayPublishBatch's permanent branch) should call
+// deadLetterHasEvent first and skip the append on a hit (ready-c3e) — this function
+// itself stays a plain unconditional append so the rare crash-window duplicate
+// above still gets written rather than silently swallowed.
 func appendRejectedEvent(path string, rec RejectedRecord) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

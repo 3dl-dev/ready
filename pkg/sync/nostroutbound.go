@@ -544,6 +544,11 @@ func (p *Publisher) PublishEventsUnique(ctx context.Context, events []*nostr.Eve
 	if err := p.guardReservedBoard(events); err != nil {
 		return PublishResult{}, 0, err
 	}
+	// ready-c3e: same guard as publishEvents — this path (ready-d65 migration)
+	// also mints and appends NEW events, not a verbatim replay of history.
+	if err := guardEventSizes(events); err != nil {
+		return PublishResult{}, 0, err
+	}
 	added, err := p.Log.AppendUnique(events)
 	if err != nil {
 		return PublishResult{}, 0, fmt.Errorf("sync: appending unique to authoritative log: %w", err)
@@ -580,6 +585,14 @@ func distinctIfAdded(events []*nostr.Event, added int) []*nostr.Event {
 
 func (p *Publisher) publishEvents(ctx context.Context, res PublishResult, events []*nostr.Event) (PublishResult, error) {
 	if err := p.guardReservedBoard(events); err != nil {
+		return res, err
+	}
+	// ready-c3e: refuse an oversized NEW event before it becomes durable
+	// anywhere — before Log.Append (phase 1, below) and before any relay dial
+	// (phase 2). See nostrsize.go's doc for why this is refuse-not-truncate and
+	// why it must not apply to PublishBoard/PublishBoardDelta's verbatim replay
+	// of already-signed history.
+	if err := guardEventSizes(events); err != nil {
 		return res, err
 	}
 	// Phase 1 — append to the authoritative log. This MUST succeed; it is the
@@ -662,7 +675,17 @@ func (p *Publisher) applyRelayOutcome(res *PublishResult, e *nostr.Event, attemp
 			fmt.Fprintf(os.Stderr, "warning: sync: relay permanently rejected event %s (%s); no pending path — retained in authoritative log only\n", e.ID, permReason)
 			break
 		}
-		if derr := appendRejectedEvent(rejectedPathFor(p.PendingPath), RejectedRecord{Event: e, Reason: permReason}); derr != nil {
+		rejectedPath := rejectedPathFor(p.PendingPath)
+		if deadLetterHasEvent(rejectedPath, e.ID) {
+			// Already recorded by a PRIOR round/run (ready-c3e finding 2: a
+			// permanent rejection re-discovered on every repair round used to
+			// re-append here every time, growing the file without bound). The
+			// fact hasn't changed — report it exactly as if freshly dead-lettered,
+			// just don't write a redundant copy.
+			res.Rejected = true
+			break
+		}
+		if derr := appendRejectedEvent(rejectedPath, RejectedRecord{Event: e, Reason: permReason}); derr != nil {
 			// Dead-letter write failed — fall back to the retry buffer so the
 			// event is not lost from EVERY on-disk queue (symmetry with
 			// FlushNostrPending; the fresh publish must not be the odd path).
