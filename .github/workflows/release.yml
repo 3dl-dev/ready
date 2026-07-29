@@ -157,29 +157,14 @@ jobs:
             dist/*.sig
             dist/*.pem
 
-  update-site:
-    name: Update site version
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Update site version metadata
-        run: |
-          VERSION="${{ needs.release.outputs.version_bare }}"
-          sed -i "s/\"softwareVersion\": \"[^\"]*\"/\"softwareVersion\": \"${VERSION}\"/" site/index.html
-
-      - name: Commit and push site updates
-        run: |
-          VERSION="${{ needs.release.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add site/
-          git diff --staged --quiet && echo "No site changes" && exit 0
-          git commit -m "site: update version for ${VERSION}"
-          git push
+# NOTE (ready-3bd): there used to be an `update-site` job here that committed
+# the new version into site/index.html and pushed straight to main. Branch
+# protection (ready-fe2: required 'test' check, no direct pushes) correctly
+# rejects that push, so every release reported FAILURE even when the actual
+# release (binaries, checksums, signatures) was fine. Fix: stop writing the
+# version into the repo at all. .github/workflows/pages.yml now stamps
+# site/index.html's softwareVersion from the latest release tag at *build*
+# time, into the deployed Pages artifact only — nothing is committed, so
+# there is nothing for branch protection to reject, and the version can
+# never drift from the actual latest release the way a manually-updated
+# committed string could. See scripts/ci_workflows_test.go for the coverage.
