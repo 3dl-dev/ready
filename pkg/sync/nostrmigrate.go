@@ -103,6 +103,16 @@ func BuildHistoricalStatusEventWithBoard(k *nostr.Key, itemID, rdStatus, changed
 // full item — deps, gate, waiting, labels, eta, assignee AND the ready-187 additions
 // (humanness level, assignment scope For, parent/child tree edge, due) — so a single
 // latest-wins 30302 card reproduces the WHOLE item item-for-item.
+//
+// Status is carried verbatim, deliberately including StatusBlocked: this
+// function also builds the CardSpec for brand-NEW items (publishItemFullCreateNostr),
+// and a freshly-constructed *state.Item legitimately has no history yet to
+// derive anything from — a caller (e.g. a test fixture, or a future template
+// feature) that explicitly wants a new item to start out blocked must be able
+// to say so. The ready-500 guard against REPUBLISHING a derived-blocked status
+// therefore does NOT live here — see NonDerivedStatus below, called explicitly
+// by every REPUBLISH hook (an existing item's projected current state being
+// read back and re-emitted), never by create.
 func CardSpecFromItem(item *state.Item, boardD string) CardSpec {
 	return CardSpec{
 		ItemID:      item.ID,
@@ -124,6 +134,62 @@ func CardSpecFromItem(item *state.Item, boardD string) CardSpec {
 		ParentID:    item.ParentID,
 		Due:         item.Due,
 	}
+}
+
+// NonDerivedStatus is the ready-500 class-wide guard, generalizing ready-e0e's
+// single-path reject fix: 'blocked' is DERIVED every fold by
+// applyDepAndGateStatus's dep pass (pkg/sync/nostrproject.go), which only ever
+// ADDS it from a live non-terminal blocker and NEVER clears a written one. Any
+// *state.Item a caller resolved from the projection and is about to REPUBLISH
+// (as opposed to originating fresh — see CardSpecFromItem's doc for why create
+// is exempt) can carry that derived overlay in item.Status. Call this explicitly
+// right before building the outbound CardSpec on every republish path — it is
+// called from cmd/rd/nostr.go's publishItemStatusChangeNostr and
+// publishItemCardEditNostr (the two hooks every live mutation command routes
+// through) and from the manual `rd nostr publish` command, so the substitution
+// covers every current republish call site uniformly. A brand new republish
+// hook must call this too; CardSpecFromItem's own doc comment points back here
+// so the omission is not silent.
+//
+// item.Status != StatusBlocked passes through unchanged: every explicit write
+// (claim->active, close->terminal, gate/reject->waiting, approve->active,
+// update --status <anything but blocked>) already assigns a real target status
+// before reaching here, so this is a no-op for them — the risk is only ever a
+// caller (e.g. delegate, or a field-only edit) that republishes an item without
+// itself deciding a new status.
+//
+// When item.Status == StatusBlocked, the safe value to publish is the item's
+// own last AUTHORITATIVE status that was NOT itself a derived/burned-in
+// "blocked" — found by walking item.History from the tail backwards. This
+// deliberately does not stop at the LAST entry: a PRE-BURNED-IN item — one
+// already republished with status=blocked verbatim by exactly the buggy code
+// this fix corrects — has "blocked" sitting as its own most recent history
+// ToStatus, and trusting only that single entry would republish blocked again
+// and PERPETUATE the burn-in instead of healing it. Walking back past any
+// number of burned-in "blocked" entries recovers the real prior status.
+//
+// If no non-blocked entry exists anywhere in History — because History is
+// empty (a card-only item with no authoritative status event at all: a
+// non-maintainer's card-only republish on a multi-agent board strips every
+// status event not authored by the winning card's author or a board
+// maintainer, per pkg/sync/nostrproject.go's authoritative-status filter; a
+// partial relay reconcile that delivers the card but not its status chain does
+// the same), or because EVERY entry in it is itself "blocked" (fully
+// burned-in, no real status ever recorded) — there is no authoritative,
+// non-derived value left to recover. The fallback is then the same explicit
+// default a brand-new `rd create` gives an item: state.StatusInbox. This is a
+// deliberate, NAMED default — never a silent pass-through of the derived
+// "blocked" value the guard exists to stop.
+func NonDerivedStatus(item *state.Item) string {
+	if item.Status != state.StatusBlocked {
+		return item.Status
+	}
+	for i := len(item.History) - 1; i >= 0; i-- {
+		if item.History[i].ToStatus != state.StatusBlocked {
+			return item.History[i].ToStatus
+		}
+	}
+	return state.StatusInbox
 }
 
 // itemCreatedAtSecs returns the item's create timestamp in unix seconds, falling

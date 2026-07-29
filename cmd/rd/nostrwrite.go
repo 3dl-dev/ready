@@ -264,6 +264,22 @@ func runDelegateNostr(itemID, to, reason string) error {
 		return fmt.Errorf("item %s is already %s", item.ID, item.Status)
 	}
 	item.By = to
+	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-500, generalizing ready-e0e):
+	// delegate only reassigns performer and never itself decides a new status, so
+	// item.Status can still read the dep pass's derived "blocked" overlay here.
+	// Earlier code hand-substituted item.History's LAST entry at this call site
+	// only — a guard of the form "if len(item.History) > 0" that fell straight
+	// through (publishing blocked verbatim) whenever History was empty (a
+	// card-only item with no authoritative status event: a non-maintainer
+	// republish on a multi-agent board strips every non-authoritative status
+	// event, and a partial relay reconcile can deliver the card without its
+	// status chain too — see pkg/sync/nostrproject.go), and it trusted a single
+	// last entry that could itself already be a burned-in "blocked", which would
+	// perpetuate rather than heal it. The substitution now happens inside
+	// publishItemStatusChangeNostr itself, via rdSync.NonDerivedStatus
+	// (pkg/sync/nostrmigrate.go — see that function's doc) — so this call site
+	// needs no per-path check at all; publishItemStatusChangeNostr below is safe
+	// regardless of what item.Status or item.History currently hold.
 	if err := publishItemStatusChangeNostr(item, reason); err != nil {
 		return fmt.Errorf("nostr publish (delegate): %w", err)
 	}
@@ -441,6 +457,16 @@ func runUpdateNostr(itemID string, u nostrUpdateSpec) error {
 	}
 	if state.IsTerminal(item) && u.hasFieldUpdate {
 		return fmt.Errorf("item %s is already %s", item.ID, item.Status)
+	}
+	// BLOCKED IS DERIVED, NEVER PERSISTED (ready-500, generalizing ready-e0e): unlike
+	// delegate, an explicit `--status blocked` has no legitimate resolved value to
+	// coerce to — it is the user directly requesting the one status this write path
+	// must never mint, so refuse outright rather than silently substituting
+	// something the caller didn't ask for. Without this guard the write would burn
+	// status=blocked in as the permanent status-authority winner (the dep pass only
+	// ever ADDS blocked and nothing ever clears a written one).
+	if u.hasStatusUpdate && u.statusTo == state.StatusBlocked {
+		return fmt.Errorf("status %q cannot be set directly on %s: it is derived from dependencies, not a write target (use 'rd dep add' to block, or close the blocker to unblock)", state.StatusBlocked, item.ID)
 	}
 
 	if u.hasFieldUpdate {
