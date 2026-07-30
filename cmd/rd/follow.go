@@ -313,6 +313,38 @@ func runFollow(opts followOpts) (*followReport, error) {
 // 64-hex. A bare pubkey / npub / token names ONE owner key; an email may resolve
 // to a MULTI-KEY party (every machine of that operator), whose boards are all
 // discovered.
+//
+// ready-3e1: the bare-hex branch normalizes through normalizeHexPubkey. The other
+// three branches already yield canonical lowercase, but for THREE DIFFERENT
+// reasons, and only one of them is a normalizer:
+//
+//   - npub: decodeNpub bech32-decodes to bytes and returns hex.EncodeToString
+//     output, which is lowercase by construction. A genuine normalizer.
+//   - email: the keys come from a signed person-alias event, so they are event
+//     pubkeys and canonical already.
+//   - rd1_ token: rdSync.ParseBoardCoord (pkg/sync/rolegrant.go) is a plain
+//     3-way split on ':' and normalizes NOTHING. This branch is canonical
+//     because of its INPUT, not its parser — the coordinate is read out of a
+//     token payload rd itself minted from a canonical coordinate, never from
+//     as-typed human input. If a hand-typed coordinate is ever accepted here,
+//     this branch needs a normalizer.
+//
+// So the as-typed bare-hex branch is the only one that can carry an uppercase
+// pubkey forward today.
+//
+// The consequence, MEASURED (TestFollow_UppercaseHexOwner_BindsTheOwnersBoards),
+// is a misdirecting total failure, not a dead binding: these pubkeys go to
+// DiscoverOwnerBoards (pkg/sync/boarddiscovery.go), which keys its owner set on
+// each board event's PubKey — always lowercase. An uppercase owner therefore
+// matches NO board, and `rd follow <UPPERCASE-hex>` aborts with "discovered no
+// boards for %q — the owner may not have published any boards to these relays, or
+// you don't trust their key" for an owner who published plenty and whom the caller
+// does trust. The operator is pointed at their relays and their trust graph by a
+// case difference. (The bound coordinate itself is built from the board event's own
+// PubKey, so if discovery DID match, the persisted coord would be canonical — the
+// dead-coordinate-in-committed-board.json failure belongs to `rd link`'s owner
+// input, cmd/rd/nostr_grant.go runLinkOrPinBoard, not to this site.)
+
 func resolveFollowTarget(who, email string, snapshot []*nostr.Event, self string) (ownerPubkeys, tokenRelays []string, err error) {
 	switch {
 	case strings.HasPrefix(who, nostrInviteTokenPrefix):
@@ -345,7 +377,7 @@ func resolveFollowTarget(who, email string, snapshot []*nostr.Event, self string
 		return keys, nil, nil
 
 	case len(who) == 64 && isHex(who):
-		return []string{who}, nil, nil
+		return []string{normalizeHexPubkey(who)}, nil, nil
 
 	default:
 		return nil, nil, fmt.Errorf("rd follow: %q is not an email, npub, rd1_ token, or 64-hex pubkey", who)

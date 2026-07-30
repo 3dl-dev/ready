@@ -371,3 +371,173 @@ func TestPublicBoardStaysPlaintext(t *testing.T) {
 	}
 	_ = id
 }
+
+// TestConfidentialRevokeUppercaseGrantee_WithholdsNewEpochCEK is ready-3e1's
+// CONFIDENTIALITY case, and the one the earlier rounds of this item threw away as
+// "not a real property". It is real, and this is the only test that covers it.
+//
+// The setup is `rd revoke <UPPERCASE-hex>` on a confidential board — the exact
+// input the item was filed about, differing from the working case by letter case
+// alone. Without publishRoleGrant's normalization (cmd/rd/nostr_grant.go) the
+// sequence is:
+//
+//  1. the revocation is filed under p=<UPPERCASE>, so DeriveGrantHolders ends up
+//     with level[UPPER]=revoked AND level[lower]=contributor — the member's real
+//     key is still a live member;
+//  2. runNostrGrantRevoke then rekeys (rekeyBoardOnRevoke → rotationMembership),
+//     which classifies members by that level map. `exclude` is the same uppercase
+//     string and matches no holder either, so the revoked key lands in `receive`;
+//  3. the owner SIGNS the revoked key a fresh grant at cek_epoch=2 carrying the
+//     wrapped new CEK;
+//  4. the revoked key decrypts every card written after its own revocation, while
+//     `rd revoke` prints "they can no longer read or write".
+//
+// TestConfidentialRotateWithholdsFromEVERYRevokedKey (confidential_rotate_test.go)
+// does NOT catch this — it revokes with the canonical lowercase key, so it stays
+// green in the pre-fix state — and the grant-tag tests assert only the p-tag
+// string, never the CEK outcome. Asserted here in four independent ways: what the
+// revoked identity can actually READ through the production read path, which
+// epochs its derived keyring holds, structurally that no owner-signed grant
+// addressed to that key in EITHER case carries an epoch above 1, and that the
+// revocation landed on the member's real identity at all.
+//
+// TWO REVOCATION PATHS, because reverting ONE normalization is not the same
+// experiment as reverting the other:
+//
+//	"rd revoke"        drives the production entry point runNostrGrantRevoke,
+//	                   which normalizes its own copy of grantee BEFORE calling
+//	                   publishRoleGrant. It therefore reproduces the true pre-fix
+//	                   state (both grant-path lines reverted) and goes red there,
+//	                   but stays green if only publishRoleGrant's line is reverted.
+//	"publishRoleGrant" mirrors runNostrGrantRevoke's body (publish, then rekey)
+//	                   while passing the uppercase string straight through, which
+//	                   is exactly what the pre-fix entry point did. It ISOLATES
+//	                   nostr_grant.go's line: it goes red on that single-line
+//	                   revert alone, independent of authz_nostr.go.
+func TestConfidentialRevokeUppercaseGrantee_WithholdsNewEpochCEK(t *testing.T) {
+	revokes := []struct {
+		name   string
+		revoke func(t *testing.T, dir, owner, boardD, upper string)
+	}{
+		{
+			name: "rd revoke <UPPERCASE> (production entry point)",
+			revoke: func(t *testing.T, dir, _, _, upper string) {
+				t.Helper()
+				if err := runNostrGrantRevoke(dir, upper, rdSync.RoleRevoked, "", 0, ""); err != nil {
+					t.Fatalf("revoke by UPPERCASE pubkey: %v", err)
+				}
+			},
+		},
+		{
+			name: "publishRoleGrant(<UPPERCASE>) + rekey (isolates nostr_grant.go)",
+			revoke: func(t *testing.T, dir, owner, boardD, upper string) {
+				t.Helper()
+				if _, err := publishRoleGrant(upper, rdSync.RoleRevoked, "", 0, ""); err != nil {
+					t.Fatalf("publishRoleGrant(revoked, UPPERCASE): %v", err)
+				}
+				pub, ok, err := nostrPublisher()
+				if err != nil || !ok {
+					t.Fatalf("nostrPublisher: %v (ok=%v)", err, ok)
+				}
+				// The unnormalized string is handed on as `exclude` too — as
+				// runNostrGrantRevoke did before ready-3e1.
+				if err := rekeyBoardOnRevoke(dir, pub, owner, boardD, upper); err != nil {
+					t.Fatalf("rekeyBoardOnRevoke: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, rc := range revokes {
+		t.Run(rc.name, func(t *testing.T) {
+			dir, owner := setupConfidentialProject(t)
+			boardD := projectPrefix(dir)
+			coord := rdSync.BoardCoord(owner, boardD)
+			ownerHome, ownerCf := os.Getenv("RD_HOME"), os.Getenv("CF_HOME")
+
+			m1, m1Home, m1Cf := mintIdentity(t)
+			lower := m1.PubKeyHex()
+			upper := strings.ToUpper(lower)
+
+			// Grant with the CANONICAL key: the member is a genuine, live member
+			// holding the epoch-1 CEK. Only the REVOKE is uppercase.
+			if err := runNostrGrantRevoke(dir, lower, rdSync.RoleContributor, "agent-m1", 0, ""); err != nil {
+				t.Fatalf("grant m1: %v", err)
+			}
+			idPre, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "PRE-REVOKE card", itemType: "task", priority: "p1"})
+			if err != nil {
+				t.Fatalf("create pre-revoke card: %v", err)
+			}
+
+			rc.revoke(t, dir, owner, boardD, upper)
+
+			idPost, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "POST-REVOKE card", itemType: "task", priority: "p1"})
+			if err != nil {
+				t.Fatalf("create post-revoke card: %v", err)
+			}
+
+			// (1) READ as the revoked identity, through the production read path.
+			t.Setenv("RD_HOME", m1Home)
+			t.Setenv("CF_HOME", m1Cf)
+			_, byM1, err := nostrProjectAllItems()
+			if err != nil {
+				t.Fatalf("read as the revoked member: %v", err)
+			}
+			if it := byM1[idPre]; it == nil || it.Title != "PRE-REVOKE card" {
+				t.Fatalf("the revoked member lost its PRE-revocation read; revocation must not invalidate history: %+v", it)
+			}
+			if it := byM1[idPost]; it == nil || it.Title != "[encrypted]" {
+				t.Fatalf("a key revoked by its UPPERCASE pubkey read a card written AFTER its revocation (%+v) — "+
+					"the uppercase revocation was filed under a key that matches nobody, so the rekey handed the "+
+					"new epoch CEK back to the revoked member: forward secrecy silently not delivered", it)
+			}
+
+			// (2) KEYRING: the revoked member must hold epoch 1 and nothing newer.
+			if eps := keyringFor(t, dir, m1, owner, boardD).Epochs(coord); len(eps) != 1 || eps[0] != 1 {
+				t.Fatalf("the revoked member's derived keyring holds epochs %v, want exactly [1] — an epoch above 1 "+
+					"means the post-revocation CEK was wrapped to it", eps)
+			}
+
+			// (3) STRUCTURAL: no owner-signed grant addressed to that key in
+			// EITHER case carries a CEK above epoch 1. Reading placeholders proves
+			// it could not decrypt; this proves the key bytes were never wrapped to
+			// it at all, so no future change to the decryptor can quietly undo the
+			// property.
+			t.Setenv("RD_HOME", ownerHome)
+			t.Setenv("CF_HOME", ownerCf)
+			events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			sawEpoch1Wrap := false
+			for _, e := range events {
+				if e.Kind != rdSync.KindRoleGrant || e.PubKey != owner {
+					continue
+				}
+				p, _ := tagVal(e.Tags, "p")
+				if !strings.EqualFold(p, lower) {
+					continue
+				}
+				if cek, ok := tagVal(e.Tags, "cek"); !ok || cek == "" {
+					continue
+				}
+				ep, _ := tagVal(e.Tags, "cek_epoch")
+				if ep != "1" {
+					t.Fatalf("an owner-signed grant addressed to the REVOKED key (p=%q) carries cek_epoch=%s — "+
+						"the post-revocation CEK was wrapped to a revoked member", p, ep)
+				}
+				sawEpoch1Wrap = true
+			}
+			if !sawEpoch1Wrap {
+				t.Fatal("expected the revoked key to still hold its original epoch-1 wrap (revocation must not erase history)")
+			}
+
+			// (4) And the revocation itself landed on the member's REAL identity:
+			// without this, `rd sessions` and every authz gate still show it active.
+			levels, _ := rdSync.DeriveLevels(events, owner, boardD)
+			if lvl, ok := levels[lower]; !ok || lvl != rdSync.LevelRevoked {
+				t.Fatalf("level for the member's real (lowercase) pubkey = (%d, present=%v), want revoked", levels[lower], ok)
+			}
+		})
+	}
+}
