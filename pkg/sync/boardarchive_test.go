@@ -18,10 +18,31 @@ package sync
 //     trustworthy against a relay that serves stale or hostile events.
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 )
+
+// tamperSigHex flips one bit of a hex-encoded signature's first byte. The result
+// is ALWAYS different from the input, which a fixed-prefix substitution
+// ("00"+sig[2:]) is not — that form silently no-ops on the 1-in-256 signatures
+// that already start with 00, turning a forgery test into a tautology. The event
+// id is untouched: NIP-01's canonical serialization excludes sig, so a tampered
+// event keeps its id, coordinate, pubkey and created_at, and the ONLY thing that
+// can reject it is schnorr verification. That is precisely the gate under test.
+func tamperSigHex(t *testing.T, sig string) string {
+	t.Helper()
+	raw, err := hex.DecodeString(sig)
+	if err != nil {
+		t.Fatalf("tamperSigHex: decode %q: %v", sig, err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("tamperSigHex: empty signature, nothing to tamper with")
+	}
+	raw[0] ^= 0x01
+	return hex.EncodeToString(raw)
+}
 
 func TestBuildBoardEvent_ArchivedTag(t *testing.T) {
 	k := testKey(t)
@@ -229,7 +250,25 @@ func TestWinningBoardEvent_LatestWinsTieBreakAndVerification(t *testing.T) {
 
 	t.Run("a forged event never wins", func(t *testing.T) {
 		forged := *newer
-		forged.Sig = "00" + forged.Sig[2:]
+		forged.Sig = tamperSigHex(t, newer.Sig)
+		// Fixture guard: the whole subtest is vacuous if the "forgery" left the
+		// signature byte-identical — the event would then be genuine and winning
+		// on created_at would be CORRECT, not a verification bypass. The previous
+		// form of this line was `"00" + Sig[2:]`, a no-op whenever the real
+		// signature already began with 00, i.e. 1 run in 256 (measured: 78/20000).
+		// That is what made this subtest flake red in CI, and it flaked as a
+		// FALSE ALARM — WinningBoardEvent has always verified before the
+		// (created_at, lowest-id) tie-break. Keep this assertion: it is what
+		// distinguishes "the forgery was rejected" from "there was no forgery".
+		if forged.Sig == newer.Sig {
+			t.Fatalf("test fixture bug: tampered sig equals the genuine one (%s), nothing was forged", newer.Sig)
+		}
+		if forged.ID != newer.ID {
+			t.Fatalf("test fixture bug: tampering the sig changed the event id (%s -> %s); the forgery must be rejected on the SIGNATURE, not on an id/coordinate mismatch", newer.ID, forged.ID)
+		}
+		if forged.Verify() == nil {
+			t.Fatalf("test fixture bug: tampered event still verifies, so it is not a forgery")
+		}
 		win, ok := WinningBoardEvent([]*nostr.Event{older, &forged}, coord)
 		if !ok || win.ID != older.ID {
 			t.Fatalf("forged (later) event won over the older-but-genuine one: win=%v ok=%v", win, ok)

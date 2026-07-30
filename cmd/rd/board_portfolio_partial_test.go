@@ -1111,3 +1111,55 @@ func TestBoardCmd_CompletenessFlagsRejectedWhereTheyClaimNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestBoardPortfolio_GatherFilterIsScopedToSelfNotEveryGrant asserts the QUERY
+// portfolioGrantEvents sends, not what came back.
+//
+// Every relay fixture in this file (storingRelay, shortRelay, coldRelay) is
+// filter-BLIND when serving: none of them reject or trim a REQ based on its
+// filter, because correctness here is enforced client-side (Verify + the
+// reconcile trust gate + DeriveBoardKeyring re-checking grantee/board), exactly
+// as prod does against a real, untrusted relay. That means a portfolioGrantEvents
+// defect that sent an over-broad filter — e.g. every kind instead of just
+// KindRoleGrant, or no "#p" restriction at all (fetching every OTHER pubkey's
+// grants too) — would still make every gather-completeness test in this file
+// pass: the fixtures only ever seed events this key is SUPPOSED to see, so
+// serving "everything" and serving "correctly filtered" look identical to any
+// assertion keyed on the minted link's contents.
+//
+// This test closes that gap the other way: it inspects the actual REQ the
+// gather sent and asserts its shape directly, independent of what the relay
+// chose to answer with.
+func TestBoardPortfolio_GatherFilterIsScopedToSelfNotEveryGrant(t *testing.T) {
+	owner, _, _, _, dir, _, _, _, _ := portfolioEnv(t)
+	relay := newStoringRelay(t)
+	t.Cleanup(relay.close)
+	setProjectRelays(t, dir, relay.url())
+
+	out, errOut, err := tryBoardPortfolioCmd(t, true, false)
+	if err != nil {
+		t.Fatalf("rd board --portfolio --with-key: %v\nstderr:\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "#pk=") {
+		t.Fatalf("no portfolio link printed:\n%s", out)
+	}
+
+	// filterForKind, not lastFilter: `rd board --portfolio` also runs a separate
+	// archived-boards gather (kinds=[KindBoard]) against the same relay, so the
+	// LAST REQ sent is not necessarily the role-grant one this test is about.
+	got := relay.filterForKind(rdSync.KindRoleGrant)
+	if got == nil {
+		t.Fatal("the gather never sent a kind-39301 (KindRoleGrant) REQ to the configured relay — nothing to assert the filter shape of")
+	}
+	if kinds := filterKinds(got); len(kinds) != 1 || kinds[0] != rdSync.KindRoleGrant {
+		t.Errorf("portfolio gather filter kinds = %v, want exactly [%d] (KindRoleGrant) — an over-broad kind set would fetch board/card/status events too", kinds, rdSync.KindRoleGrant)
+	}
+	if p := filterStrings(got, "#p"); len(p) != 1 || p[0] != owner.PubKeyHex() {
+		t.Errorf("portfolio gather filter #p = %v, want exactly [%q] — a missing or wrong #p would ask the relay for every OTHER pubkey's grants too", p, owner.PubKeyHex())
+	}
+	// Portfolio scope is intentionally NOT board-scoped: no "#a" tag, because the
+	// whole point is every board this pubkey holds a grant for, not one.
+	if a := filterStrings(got, "#a"); a != nil {
+		t.Errorf("portfolio gather filter carries #a = %v — a portfolio-wide query must not be scoped to a single board coordinate", a)
+	}
+}
