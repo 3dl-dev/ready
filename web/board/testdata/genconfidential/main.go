@@ -112,6 +112,27 @@ const (
 // generator can seal a plaintext blob that is NOT a valid {title,...} card
 // payload — sealCardPayload only ever marshals a well-formed cardPayload
 // struct, so it cannot produce the malformed-shape fixtures ready-02e needs.
+// tamperSigHex flips one bit of a hex-encoded signature's first byte. The result
+// is ALWAYS different from the input, which a fixed-prefix substitution
+// ("00"+sig[2:]) is not — that form silently no-ops on the 1-in-256 signatures
+// that already start with 00. In a generated FIXTURE that is worse than a flaky
+// test: the "forged" card would be genuinely well-signed, so the fixture stops
+// being hostile without anything failing. The event id is untouched: NIP-01's
+// canonical serialization excludes sig, so the tampered event keeps its id,
+// coordinate, pubkey and created_at, and the only thing that can reject it is
+// schnorr verification. Mirrors tamperSigHex in pkg/sync/boardarchive_test.go.
+func tamperSigHex(sig string) (string, error) {
+	raw, err := hex.DecodeString(sig)
+	if err != nil {
+		return "", fmt.Errorf("tamperSigHex: decode %q: %w", sig, err)
+	}
+	if len(raw) == 0 {
+		return "", fmt.Errorf("tamperSigHex: empty signature, nothing to tamper with")
+	}
+	raw[0] ^= 0x01
+	return hex.EncodeToString(raw), nil
+}
+
 func sealRaw(cek [32]byte, plaintext []byte) (string, error) {
 	aead, err := chacha20poly1305.New(cek[:])
 	if err != nil {
@@ -439,7 +460,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	forged.Sig = "00" + forged.Sig[2:]
+	forged.Sig, err = tamperSigHex(forged.Sig)
+	if err != nil {
+		return err
+	}
 
 	// ready-daf round 2 — THE EXPLOIT PAYLOAD. Owner-signed PLAINTEXT at
 	// tGapPlaintext, i.e. after the board went confidential (tGrantE1) but before

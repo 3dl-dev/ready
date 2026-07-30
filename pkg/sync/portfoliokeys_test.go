@@ -152,7 +152,7 @@ func TestDerivePortfolioKeyring_RejectsInadmissibleGrants(t *testing.T) {
 	// (c) FORGED SIGNATURE. A grant that would be admissible if the bytes were
 	// signed; they are not.
 	forged, forgedCEK := pkBoard(t, owner, "forged", me.PubKeyHex(), 1, 1003)
-	forged.Sig = "00" + forged.Sig[2:]
+	forged.Sig = tamperSigHex(t, forged.Sig)
 
 	// (d) EPOCH 0. parseRoleGrant coerces an unparseable cek_epoch to 0; a key
 	// must never be bound to it.

@@ -79,7 +79,7 @@ func TestDiscoverOwnerBoards_DropsForgedBoardEvent(t *testing.T) {
 	}
 	good := boardEvent(t, owner, "alpha")
 	forged := boardEvent(t, owner, "evil")
-	forged.Sig = "00" + forged.Sig[2:] // corrupt the signature
+	forged.Sig = tamperSigHex(t, forged.Sig) // corrupt the signature
 
 	got := DiscoverOwnerBoards([]*nostr.Event{good, forged}, []string{owner.PubKeyHex()}, "")
 	if len(got) != 1 || got[0] != BoardCoord(owner.PubKeyHex(), "alpha") {
