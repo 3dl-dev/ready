@@ -18,9 +18,17 @@
  *
  *   - the relay socket (`deps.req`), replaced by an in-memory relay that
  *     applies REAL nostr semantics: it honours `kinds`, `limit` and `until`,
- *     serves newest-first, and stores an archive as a REPUBLISH of the same
+ *     serves newest-first, stores an archive as a REPUBLISH of the same
  *     coordinate at a later created_at — which is exactly what makes
- *     latest-wins load-bearing. The paging loop really pages against it.
+ *     latest-wins load-bearing — and can WITHHOLD an event it has accepted
+ *     for the next few reads, because a relay that answers a just-published
+ *     board with "no such board" is the ordinary case cleanup exists for, and
+ *     a fake that always serves the run's own board on the very next read can
+ *     never exercise the path where the archive does not happen.
+ *   - `wsReq`'s socket itself, in the last describe block, replaced by a fake
+ *     `WebSocket` — so the EOSE-versus-silence distinction that keeps the
+ *     board-count invariant from passing on a dead relay is tested on the
+ *     real `wsReq`, not on a stand-in for it.
  *   - the `rd` binary (`exec`), replaced by a fake that behaves like the real
  *     one: given ["board","archive",coord] it publishes the archived
  *     republish to the fake relay. Each failure mode this suite cares about is
@@ -33,7 +41,7 @@
  * harnesses depend on is what runs here, on every PR.
  */
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   KIND_BOARD,
   PAGE_LIMIT,
@@ -43,6 +51,7 @@ import {
   openThrowawayBoardGuard,
   ownedBoardCount,
   reportCleanup,
+  wsReq,
 } from "./throwaway-board.mjs";
 
 const OWNER = "a".repeat(64);
@@ -58,10 +67,25 @@ const RELAY = "wss://relay.example.invalid";
 function fakeRelay(events = []) {
   const store = [...events];
   const filters = [];
+  const withheld = new Map();
   let nextTs = 2_000_000;
   return {
     store,
     filters,
+    /**
+     * withhold makes this relay answer the next `reads` REQs as though it had
+     * never heard of board-d `d`, while still holding the event — a relay that
+     * has ACCEPTED a write and has not propagated it yet. Real, ordinary, and
+     * the reason cleanup cannot take a single snapshot of what to archive.
+     *
+     * `reads` is counted in REQs; every walk in these tests fits in one page,
+     * so one read = one walk = one `ownedBoards` call. Pass `Infinity` for a
+     * relay that never serves the board at all.
+     */
+    withhold(d, reads) {
+      withheld.set(d, reads);
+      return d;
+    },
     publish(e) {
       store.push(e);
       return e;
@@ -80,7 +104,13 @@ function fakeRelay(events = []) {
     },
     req(_relay, filter) {
       filters.push(structuredClone(filter));
+      const hidden = new Set();
+      for (const [d, reads] of withheld) {
+        if (reads > 0) hidden.add(d);
+        withheld.set(d, reads - 1);
+      }
       const matched = store
+        .filter((e) => !hidden.has(e.tags.find((t) => t[0] === "d")?.[1]))
         .filter((e) => (filter.kinds ? filter.kinds.includes(e.kind) : true))
         .filter((e) => (filter.until === undefined ? true : e.created_at <= filter.until))
         .sort((a, b) => b.created_at - a.created_at);
@@ -103,9 +133,29 @@ function fakeRd(relay, onArchive) {
   return { calls, exec };
 }
 
-/** noWait collapses the read-back poll's backoff so the suite stays fast
- * without changing which conditions the loop tests. */
-const noWait = { wait: async () => {}, readBackTimeoutMs: 50, readBackIntervalMs: 1 };
+/**
+ * polls() gives the read-back loop a VIRTUAL clock: `wait` advances time
+ * instead of spending it, so a test that has to let the whole read-back window
+ * expire (a relay that never serves the board) costs a handful of iterations
+ * rather than 30 real seconds — and costs exactly the same number of them
+ * every run, which a wall clock would not.
+ *
+ * PROOF that the budget is real and not a way of dodging the poll loop: the
+ * "a relay that never serves the run's board" test below asserts the walk was
+ * retried, and "the marker read-back is polled" runs on the real clock.
+ */
+const POLLS = 5;
+function polls({ intervalMs = 1000 } = {}) {
+  let t = 1_000_000;
+  return {
+    readBackTimeoutMs: intervalMs * POLLS,
+    readBackIntervalMs: intervalMs,
+    now: () => t,
+    wait: async (ms) => {
+      t += ms;
+    },
+  };
+}
 
 const RD = { rdBin: "/tmp/rd", cwd: "/tmp/proj", home: "/tmp/home" };
 
@@ -189,7 +239,7 @@ describe("the guard's cleanup contract", () => {
     guard.expect(boardD);
     create?.(boardD);
     const rd = fakeRd(relay, onArchive);
-    const result = await guard.close({ ...RD, rdBin, exec: rd.exec, ...noWait });
+    const result = await guard.close({ ...RD, rdBin, exec: rd.exec, ...polls() });
     return { guard, rd, result };
   }
 
@@ -266,22 +316,110 @@ describe("the guard's cleanup contract", () => {
     relay.board({ d: "s48fcrash" });
 
     const rd = fakeRd(relay);
-    const result = await guard.close({ ...RD, exec: rd.exec, ...noWait });
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
 
     expect(result.archived).toEqual([`${KIND_BOARD}:${OWNER}:s48fcrash`]);
     expect(result.failures).toEqual([]);
     expect(result.after).toBe(result.before);
   });
 
-  test("a run that failed BEFORE publishing anything passes without calling rd", async () => {
+  // ── the relay is not instantaneous ──────────────────────────────────────
+  //
+  // A relay that serves this run's board on the very next read is a relay
+  // that can never make the cleanup fail, and a fake that only models that
+  // relay tests nothing about the case cleanup exists for. These three drive
+  // the fake's `withhold`: a board it has accepted and is not serving yet.
+
+  test("a board the relay is not serving YET is archived when it appears", async () => {
+    const relay = fakeRelay();
+    relay.board({ d: "unrelated-real-board" });
+    const req = relay.req.bind(relay);
+    const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: OWNER, deps: { req } });
+    guard.expect("b4359lag");
+
+    // The run publishes its board and the relay takes it — but the next two
+    // reads answer as though it were not there. A cleanup that decides what to
+    // archive from a single snapshot archives NOTHING here, and then agrees
+    // with itself: the marker read-back has nothing to prove and the count
+    // invariant cannot see the board either. 1 before, 1 after, green, and a
+    // permanent stray the moment the relay catches up.
+    relay.board({ d: "b4359lag" });
+    relay.withhold("b4359lag", 2);
+
+    const rd = fakeRd(relay);
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
+
+    expect(result.archived).toEqual([`${KIND_BOARD}:${OWNER}:b4359lag`]);
+    expect(rd.calls.map((c) => c.args)).toEqual([["board", "archive", `${KIND_BOARD}:${OWNER}:b4359lag`]]);
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.after).toBe(result.before);
+  });
+
+  test("a board that appears late is archived ONCE, not once per poll", async () => {
+    const relay = fakeRelay();
+    const req = relay.req.bind(relay);
+    const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: OWNER, deps: { req } });
+    guard.expect("b4359once");
+    relay.board({ d: "b4359once" });
+    relay.withhold("b4359once", 1);
+
+    // The archive republish is withheld for a poll too, so the loop keeps
+    // going after the command has already run. Re-issuing `rd board archive`
+    // every poll would spam the relay with republishes of a board it is simply
+    // slow to serve.
+    const rd = fakeRd(relay, (coord) => {
+      relay.archiveOnRelay(coord);
+      relay.withhold(coord.split(":")[2], 1);
+      return "";
+    });
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
+
+    expect(rd.calls.length).toBe(1);
+    expect(result.ok).toBe(true);
+  });
+
+  test("a relay that NEVER serves the run's board fails the run rather than passing it clean", async () => {
+    const relay = fakeRelay();
+    relay.board({ d: "unrelated-real-board" });
+    const req = relay.req.bind(relay);
+    const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: OWNER, deps: { req } });
+    guard.expect("b4359dark");
+
+    // Published, accepted, and never served back inside the read-back window.
+    // From here this is indistinguishable from a run that died before it ever
+    // published — and the two have opposite consequences, so the guard is not
+    // allowed to guess. The count invariant AGREES (1 before, 1 after): it
+    // cannot see a board the relay will not show it, which is exactly why the
+    // count alone is not enough to call a run clean.
+    relay.board({ d: "b4359dark" });
+    relay.withhold("b4359dark", Infinity);
+
+    const readsBefore = relay.filters.length;
+    const rd = fakeRd(relay);
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
+
+    expect(relay.filters.length - readsBefore).toBe(POLLS + 1); // it really waited the window out
+    expect(rd.calls).toEqual([]);
+    expect(result.after).toBe(result.before); // the invariant passes...
+    expect(result.ok).toBe(false); // ...and the run is red anyway
+    expect(result.failures.join("\n")).toMatch(/never served 30301:a+:b4359dark, the board this run registered/);
+  });
+
+  test("a run that published nothing is reported, not quietly passed", async () => {
     const relay = fakeRelay();
     relay.board({ d: "unrelated-real-board" });
 
+    // The honest cost of the rule above: a run that died before `rd init`
+    // published anything looks the same from the relay and is reported the
+    // same way. That run has already failed for its own reason; one more loud
+    // line on a red run is the deliberate trade against a silent stray.
     const { rd, result } = await run({ relay, create: undefined, rdBin: null });
 
     expect(rd.calls).toEqual([]);
-    expect(result.ok).toBe(true);
     expect(result.after).toBe(result.before);
+    expect(result.ok).toBe(false);
+    expect(result.failures.join("\n")).toMatch(/never served .* the board this run registered/);
   });
 
   test("no rd binary but a board WAS published is a failure, not a pass", async () => {
@@ -315,7 +453,7 @@ describe("the guard's cleanup contract", () => {
       if (coord.endsWith("b4359a")) throw new Error("boom");
       return relay.archiveOnRelay(coord);
     });
-    const result = await guard.close({ ...RD, exec: rd.exec, ...noWait });
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
 
     expect(rd.calls.length).toBe(2);
     expect(result.archived).toEqual([`${KIND_BOARD}:${OWNER}:b4359b`]);
@@ -374,7 +512,7 @@ describe("the guard's cleanup contract", () => {
     // cleanup is not a clean one.
     live = false;
     const rd = fakeRd(relay);
-    const result = await guard.close({ ...RD, exec: rd.exec, ...noWait });
+    const result = await guard.close({ ...RD, exec: rd.exec, ...polls() });
 
     expect(rd.calls).toEqual([]);
     expect(result.ok).toBe(false);
@@ -387,5 +525,128 @@ describe("the guard's cleanup contract", () => {
     expect(reportCleanup({ ok: false, failures: ["a", "b"] }, (l) => lines.push(l))).toBe(2);
     expect(lines[0]).toMatch(/PASS/);
     expect(lines[1]).toMatch(/FAIL/);
+  });
+
+  test("a dead relay cannot open the guard at all, so the count is never invented", async () => {
+    // The BEFORE measurement is where a silent relay does its worst damage: it
+    // would hand back 0, the run would publish a board, cleanup would read 0
+    // again, and 0 === 0 would call it clean. The read must propagate.
+    const dead = { req: () => Promise.reject(new Error("no EOSE within 45000ms")) };
+    await expect(openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: OWNER, deps: dead })).rejects.toThrow(
+      /no EOSE/,
+    );
+
+    // ...and the difference that has to survive: a LIVE relay this key simply
+    // owns nothing on opens the guard and reports a real 0.
+    const empty = fakeRelay();
+    empty.board({ pubkey: STRANGER, d: "someone-elses" });
+    const guard = await openThrowawayBoardGuard({
+      relay: RELAY,
+      ownerPubkey: OWNER,
+      deps: { req: empty.req.bind(empty) },
+    });
+    expect(guard.before).toBe(0);
+  });
+});
+
+/**
+ * wsReq is the one function in the module that touches a socket, so the fake
+ * here is the `WebSocket` class itself and the code under test is the real
+ * `wsReq` — its timeout, its EOSE handling, its CLOSE.
+ *
+ * WHY THIS BLOCK EXISTS. `wsReq` used to `resolve(out)` on timeout. Every
+ * caller above then read an unresponsive relay as an answer: `fetchBoardEvents`
+ * returned a short page, `ownedBoardCount` returned a number, and the guard's
+ * whole board-count bracket read 0 before and 0 after and reported a clean
+ * portfolio for a relay that had said nothing at all. An invariant that passes
+ * when the measurement fails is the same defect class this item was filed to
+ * catch, so the distinction is asserted rather than assumed.
+ */
+describe("wsReq tells an empty answer from no answer", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** fakeSocket installs a `WebSocket` whose behaviour on REQ is `script`. */
+  function fakeSocket(script) {
+    const sockets = [];
+    class FakeWebSocket {
+      constructor(url) {
+        this.url = url;
+        this.sent = [];
+        this.closed = false;
+        sockets.push(this);
+        // A MICROTASK, not a 0ms timer. `wsReq` assigns `onopen` after this
+        // constructor returns, so the open cannot be synchronous — but a timer
+        // would queue behind the timeout timer's macrotask if the event loop
+        // were blocked, and the "events arrived, EOSE did not" test would then
+        // reject for the wrong reason on a loaded runner. A microtask always
+        // runs before any timer.
+        queueMicrotask(() => this.onopen?.());
+      }
+      send(raw) {
+        this.sent.push(raw);
+        const [verb, sub, filter] = JSON.parse(raw);
+        // Only a REQ produces an answer. A real relay does not re-serve the
+        // subscription when the client CLOSEs it.
+        if (verb === "REQ") script(this, sub, filter);
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    return sockets;
+  }
+
+  const deliver = (ws, sub, e) => ws.onmessage({ data: JSON.stringify(["EVENT", sub, e]) });
+  const eose = (ws, sub) => ws.onmessage({ data: JSON.stringify(["EOSE", sub]) });
+
+  test("a live relay with nothing to say resolves empty, and closes the subscription", async () => {
+    const sockets = fakeSocket((ws, sub) => eose(ws, sub));
+
+    await expect(wsReq(RELAY, { kinds: [KIND_BOARD], limit: PAGE_LIMIT })).resolves.toEqual([]);
+    expect(JSON.parse(sockets[0].sent[0])[0]).toBe("REQ");
+    expect(JSON.parse(sockets[0].sent[1])[0]).toBe("CLOSE");
+  });
+
+  test("a live relay's events are returned once EOSE says it has finished", async () => {
+    const sockets = fakeSocket((ws, sub) => {
+      deliver(ws, sub, { id: "e1" });
+      deliver(ws, sub, { id: "e2" });
+      eose(ws, sub);
+    });
+
+    await expect(wsReq(RELAY, { kinds: [KIND_BOARD] })).resolves.toEqual([{ id: "e1" }, { id: "e2" }]);
+    expect(sockets[0].closed).toBe(true);
+  });
+
+  test("a relay that never answers REJECTS — it is not a key that owns no boards", async () => {
+    const sockets = fakeSocket(() => {
+      /* accepts the REQ and says nothing, ever */
+    });
+
+    await expect(wsReq(RELAY, { kinds: [KIND_BOARD] }, { timeoutMs: 20 })).rejects.toThrow(/no EOSE within 20ms/);
+    expect(sockets[0].closed).toBe(true);
+  });
+
+  test("a page that arrives without EOSE is rejected, not resolved as if complete", async () => {
+    // The nastier half: some events DID arrive. Resolving the partial page
+    // would under-report the walk, and an under-reported walk is a stray the
+    // cleanup never sees.
+    fakeSocket((ws, sub) => {
+      deliver(ws, sub, { id: "e1" });
+      deliver(ws, sub, { id: "e2" });
+    });
+
+    await expect(wsReq(RELAY, { kinds: [KIND_BOARD] }, { timeoutMs: 20 })).rejects.toThrow(/2 event\(s\) received/);
+  });
+
+  test("the rejection propagates all the way to the board count, which never returns a number", async () => {
+    fakeSocket(() => {});
+
+    // fetchBoardEvents/ownedBoardCount default to the real wsReq: a dead relay
+    // must not be able to produce a count at all.
+    await expect(ownedBoardCount(RELAY, OWNER, { req: (r, f) => wsReq(r, f, { timeoutMs: 20 }) })).rejects.toThrow(
+      /no EOSE/,
+    );
   });
 });

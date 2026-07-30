@@ -28,7 +28,9 @@
  *
  *   - what to archive is whatever the relay says this key owns under the
  *     board-ds this run registered — no local `coord` required, so a run that
- *     dies mid-`rd init` still cleans up (leak 3);
+ *     dies mid-`rd init` still cleans up (leak 3) — and it is RE-DERIVED ON
+ *     EVERY POLL, so a board the relay had not propagated yet at the first
+ *     read is archived when it does appear;
  *   - `rd board archive` failing is a recorded failure, never a warning
  *     (leak 1);
  *   - the archived marker is READ BACK off the relay after the command, and
@@ -37,6 +39,19 @@
  *   - and the whole run is bracketed by a count of this key's unarchived
  *     boards taken before it starts and after cleanup finishes. They must
  *     agree. That is the item's done condition as an executable assertion.
+ *
+ * THE COUNT INVARIANT MUST NOT BE ABLE TO PASS FOR THE WRONG REASON. Two ways
+ * it could, both closed here and both asserted in the test suite, because an
+ * invariant that passes vacuously is the same defect class it was filed to
+ * catch:
+ *
+ *   - a relay that answers nothing would otherwise read as a key that owns no
+ *     boards: 0 before, 0 after, equal, green, on a dead relay. `wsReq`
+ *     therefore REJECTS when no EOSE arrives rather than resolving with a
+ *     partial page (see below), and a failed count read is a failed run;
+ *   - the count cannot see a board the relay is withholding, so cleanup also
+ *     requires positive sight of every board-d the run registered, and fails
+ *     closed when the relay never serves one.
  *
  * Every one of those behaviours is covered hermetically by
  * throwaway-board.test.mjs (vitest, in CI via board-ci.yml) against a fake
@@ -69,6 +84,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * up to EOSE. This is the only part of the walk that touches a socket, and it
  * is injectable (`deps.req`) so the paging, dedupe, latest-wins and
  * archived-marker logic above it can be exercised without a network.
+ *
+ * EOSE OR NOTHING. A relay that never answers REJECTS; it does not resolve
+ * with whatever partial page arrived. This is load-bearing for the board-count
+ * invariant above: if a silent relay resolved to `[]`, then "this key owns no
+ * boards" and "nothing came back" would be the same value, `ownedBoardCount`
+ * would report a clean portfolio, and the bracket would read 0 before and 0
+ * after and call an unresponsive relay a passing run. Only EOSE means the
+ * relay has finished answering; anything else is an error the caller must see.
  */
 export async function wsReq(relay, filter, { timeoutMs = 45000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -81,7 +104,12 @@ export async function wsReq(relay, filter, { timeoutMs = 45000 } = {}) {
       } catch {
         /* already closed */
       }
-      resolve(out);
+      reject(
+        new Error(
+          `relay ${relay}: no EOSE within ${timeoutMs}ms (${out.length} event(s) received) — ` +
+            `a silent relay is not an empty one, and must not be read as "this key owns no boards"`,
+        ),
+      );
     }, timeoutMs);
     ws.onopen = () => ws.send(JSON.stringify(["REQ", sub, filter]));
     ws.onmessage = (m) => {
@@ -211,6 +239,12 @@ export function archiveBoard({ rdBin, cwd, home, relay, coord, exec = execFileSy
  * `expect` takes the board-d, not the coordinate, precisely so it can be
  * called before `rd init` — the run that dies inside `rd init` is the one that
  * leaks, and it is the one with no coordinate to hand.
+ *
+ * The BEFORE count is not defended against: if the relay will not answer,
+ * this REJECTS and the harness dies here, before `rd init` has published
+ * anything. That is the correct end for a run whose cleanup could never have
+ * been verified — and it is why `wsReq` must reject on silence rather than
+ * hand back an empty page that would open the guard with a made-up count.
  */
 export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => {}, boardDs = [], deps = {} }) {
   const expected = new Set(boardDs);
@@ -235,8 +269,11 @@ export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => 
      * event to the LOCAL log only — measured 2026-07-30: init plus `rd relay
      * flush` leaves nothing on the relay, and the board first appears there on
      * the run's first write. So a run that died before writing anything has no
-     * board in the owner's portfolio to clean up, and this correctly archives
-     * nothing instead of publishing an archive for a board that never existed.
+     * board in the owner's portfolio to clean up, and this archives nothing
+     * instead of publishing an archive for a board that never existed — but it
+     * does NOT call that case clean, because from the relay's answers it is
+     * identical to a board that has simply not propagated yet. It waits the
+     * read-back window out and then reports the board as never served.
      *
      * Returns { ok, before, after, archived, failures } — `failures` is a list
      * of human-readable reasons, and a harness MUST add its length to its own
@@ -255,54 +292,75 @@ export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => 
     } = {}) {
       const failures = [];
       const archived = [];
+      /** coords `rd board archive` has already been run for, so a board that
+       * takes several polls to prove is not archived once per poll. */
+      const attempted = new Set();
+      /** boardD -> coord, for every registered board the relay has ACTUALLY
+       * served at least once. Sticky: once seen, a board stays this run's
+       * responsibility even if a later read stops showing it. */
+      const seen = new Map();
+      const coordOf = (boardD) => `${KIND_BOARD}:${ownerPubkey}:${boardD}`;
 
-      // WHAT TO ARCHIVE COMES FROM THE RELAY, never from a local `coord`
-      // variable: a run that failed inside `rd init` has no coordinate but may
-      // very well have published the board. Leak 3 in this file's header.
-      let owned;
-      try {
-        owned = await ownedBoards(relay, ownerPubkey, deps);
-      } catch (err) {
-        failures.push(`could not read this key's boards back off ${relay}: ${err.message}`);
-        return { ok: false, before, after: undefined, archived, failures };
-      }
-      const mine = [...owned.values()].filter((b) => expected.has(b.boardD));
-      const stray = mine.filter((b) => !b.archived);
-
-      for (const b of stray) {
-        try {
-          archiveBoard({ rdBin, cwd, home, relay, coord: b.coord, exec });
-          archived.push(b.coord);
-          log(`  ready-153: archived throwaway board ${b.coord}`);
-        } catch (err) {
-          // A FAILURE, not a warning. An error that is only logged lets the
-          // process exit 0 with the stray still in the owner's portfolio —
-          // the exact outcome this guard exists to prevent.
-          failures.push(`could not archive throwaway board ${b.coord}: ${err.message}`);
-        }
-      }
-
-      // READ THE MARKER BACK. `rd board archive` exiting 0 says the command
-      // ran, not that the relay took the event. The only acceptable evidence
-      // is the relay's own copy carrying the archived tag.
+      // ONE POLLED LOOP, and the ownership read is INSIDE it. An earlier
+      // version took the "what do I have to archive" snapshot once, before the
+      // loop, and only re-read to confirm the marker. That is wrong against
+      // any relay that is not instantaneous: a board this run published but
+      // that had not propagated by the first read was never in the snapshot,
+      // so it was never archived — and then the read-back had nothing to
+      // prove and the count invariant, which also cannot see a board the relay
+      // is withholding, agreed with itself. Green run, permanent stray. The
+      // work is therefore re-derived from the relay on every poll:
+      //
+      //   - WHAT TO ARCHIVE comes from the relay, never from a local `coord`
+      //     variable: a run that failed inside `rd init` has no coordinate but
+      //     may very well have published the board (leak 3 in this file's
+      //     header) — and a board that shows up on poll 3 is archived on
+      //     poll 3;
+      //   - THE MARKER IS READ BACK. `rd board archive` exiting 0 says the
+      //     command ran, not that the relay took the event;
+      //   - EVERY REGISTERED BOARD MUST BE SEEN. A board the relay never
+      //     serves is not evidence of a board that was never published — it is
+      //     the absence of evidence either way, and it fails closed.
       //
       // Polled rather than slept: a relay takes an event when it takes it, and
-      // a fixed sleep is either flaky or slow. The loop exits the moment both
-      // conditions hold, and gives up at the deadline.
+      // a fixed sleep is either flaky or slow. The loop exits the moment every
+      // condition holds, and gives up at the deadline.
       const deadline = now() + readBackTimeoutMs;
       let after;
       let unproven = [];
+      let unseen = [...expected];
       for (;;) {
+        let owned;
         try {
           owned = await ownedBoards(relay, ownerPubkey, deps);
         } catch (err) {
           failures.push(`could not read this key's boards back off ${relay}: ${err.message}`);
           break;
         }
-        unproven = mine.filter((b) => !owned.get(b.coord)?.archived).map((b) => b.coord);
+
+        for (const b of owned.values()) if (expected.has(b.boardD)) seen.set(b.boardD, b.coord);
+
+        for (const coord of seen.values()) {
+          const b = owned.get(coord);
+          if (!b || b.archived || attempted.has(coord)) continue;
+          attempted.add(coord);
+          try {
+            archiveBoard({ rdBin, cwd, home, relay, coord, exec });
+            archived.push(coord);
+            log(`  ready-153: archived throwaway board ${coord}`);
+          } catch (err) {
+            // A FAILURE, not a warning. An error that is only logged lets the
+            // process exit 0 with the stray still in the owner's portfolio —
+            // the exact outcome this guard exists to prevent.
+            failures.push(`could not archive throwaway board ${coord}: ${err.message}`);
+          }
+        }
+
+        unproven = [...seen.values()].filter((coord) => !owned.get(coord)?.archived);
+        unseen = [...expected].filter((d) => !seen.has(d));
         after = 0;
         for (const b of owned.values()) if (!b.archived) after++;
-        if (unproven.length === 0 && after === before) break;
+        if (unproven.length === 0 && unseen.length === 0 && after === before) break;
         if (now() >= deadline) break;
         await wait(readBackIntervalMs);
       }
@@ -310,6 +368,23 @@ export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => 
       for (const coord of unproven) {
         failures.push(
           `the archived marker for ${coord} is NOT on ${relay} — the board is still in the owner's portfolio`,
+        );
+      }
+
+      // FAIL CLOSED ON A BOARD THAT NEVER APPEARED. The measured behaviour is
+      // that `rd init` writes the kind-30301 board to the LOCAL log only and
+      // the board reaches the relay on the run's first write, so a run that
+      // died before writing anything genuinely has nothing to clean up. But
+      // from here that run is indistinguishable from one whose board the relay
+      // simply has not served yet, and the two have opposite consequences: one
+      // is clean, the other is a permanent stray in the owner's portfolio. The
+      // guard waits the full read-back window for the board to appear and then
+      // reports it, deliberately preferring a loud line on a run that has
+      // already failed for another reason over a silent stray.
+      for (const boardD of unseen) {
+        failures.push(
+          `${relay} never served ${coordOf(boardD)}, the board this run registered — ` +
+            `cleanup cannot establish whether it was published, and a board it cannot see it cannot archive`,
         );
       }
 
@@ -322,6 +397,10 @@ export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => 
       // from this run's point of view.
       if (after === undefined) {
         /* the read-back never completed; the failure is already recorded */
+      } else if (unseen.length > 0) {
+        /* the count agrees, but only because the relay is not showing a board
+         * this run registered. An invariant cannot see what it is not shown;
+         * the unseen failure above is the honest report. */
       } else if (after !== before) {
         failures.push(
           `the run changed the owner's unarchived board count: ${before} before, ${after} after — it left a stray behind`,
