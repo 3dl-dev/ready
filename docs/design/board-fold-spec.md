@@ -266,6 +266,42 @@ this for a reader who never opens the Go source. `FormatVersion` was bumped
 1 → 2 for this change (a client on version 1 was silently trusting a bare
 number that is only safe by accident).
 
+`FormatVersion` was bumped 2 → 3 by `ready-882`, which added `options.keyring`
+and `expect.keyring` so the epoch model (§11.10–§11.14) is inside the vector
+contract at all. Before it, every confidential vector handed the fold its key
+material as literal data (`options.decryptor`, `options.encrypted_boards`),
+which skips the derivation entirely — which epochs a reader retains, when the
+board went confidential, and which epoch a write seals under were unasserted,
+so a client could derive all three wrongly and still pass every vector. A
+vector carrying `options.keyring` names a reader SECRET and a board
+coordinate instead, and the client must DERIVE both fold inputs from that
+vector's own owner-signed 39301 grants (§11.12), wiring one derived keyring
+into BOTH slots exactly as `cmd/rd/nostr.go:969-976` does. The bump is
+required rather than optional because a client that ignores the new field
+folds with no keys and no cutover — a silent, plausible-looking wrong answer
+rather than a parse failure. See `internal/foldvectors/vectors.go`
+(`KeyringSpec`, `KeyringFacts`) and the vectors in
+`internal/foldvectors/cases_epochmodel.go`.
+
+**A KEYRING VECTOR MUST NOT DEPEND ON §11.13a** (`ready-882` rework). A vector is
+the contract SHARED by every conformant reader, and §11.13 and §11.13a legitimately
+disagree about one board shape: a verified sealed card with NO served owner CEK
+grant. Plain §11.13 — what rd's Go fold does, as §11.13a itself records — reports
+the board plaintext and leaves the quarantine gate inert; §11.13a's reader calls
+that state UNKNOWN and fails closed with the gate ON at cutover `0`. A vector whose
+expectation differs between those two is unsatisfiable by one implementation BY
+CONSTRUCTION, and the first draft of the epoch-0 vector was exactly that: it
+asserted a post-grant plaintext card folding in clear, which no §11.13a reader can
+produce. It is split into `keyring_epoch_zero_grant_yields_no_key` (a sealed card,
+which neither gate state quarantines) and `keyring_epoch_zero_grant_yields_no_cutover`
+(a plaintext card and NO sealed card, so §11.13a's witnesses have nothing to
+testify about), which keeps both halves of §11.10 falsifiable outside the zone.
+`web/board/src/lib/fold.vectors.test.ts` folds every keyring vector through the
+browser's REAL adapter (`lib/confidentiality.ts`, not a local restatement of it)
+and additionally projects each one under BOTH derivations, so a future vector
+inside the zone fails there naming §11.13a instead of passing one suite and
+breaking the other.
+
 ---
 
 ## 5. Card → item field projection
@@ -546,6 +582,29 @@ with `pkg/state.applyBlockStatus`, which likewise never clears them.
 **§9.8 No declared gate.** All four fields are cleared
 (`pkg/sync/nostrproject.go:563-569`).
 
+**§9.8a §9.8 IS AN INVARIANT WITH NO DISCRIMINATING VECTOR, AND THAT IS RECORDED
+RATHER THAN PAPERED OVER (`ready-882`).** Deleting §9.8's whole branch from
+`pkg/sync/nostrproject.go` leaves every fold vector GREEN, and the TypeScript
+mirror (`web/board/src/lib/fold.ts`) is equally inert. This is provable, not
+merely unobserved: `!declaresGate` means `WaitingType`, `WaitingOn` and `Gate` are
+ALREADY empty by the definition in §9.4, and the remaining two fields cannot be
+non-empty on entry — `WaitingSince` and `GateMsgID` are assigned NOWHERE in either
+fold except inside this same gate loop (§9.6), and no card or status tag carries
+either one (§5.1). Both folds rebuild an item from the winning card (§22.2), so
+there is no prior revision's gate state to inherit. No input the vector format can
+express therefore reaches this branch with anything to clear.
+
+It is NOT vacuous, which is why the clause stays normative: a client that MUTATES
+an item across card revisions instead of rebuilding it — a plausible incremental
+implementation, and the shape §22.2 exists to forbid — carries a stale
+`GateMsgID`/`WaitingSince` into a revision that dropped its gate tags, and then
+`rd approve` (§9.2) appears not to have cleared the gate. §9.8 is the rule that
+makes such a client wrong. What conformance can assert is the resulting INVARIANT,
+and `TestNoDeclaredGateMeansNoGateFields` asserts it over the live fold's output
+for every vector in the corpus; what it cannot produce is a mutation receipt, and
+that gap is recorded in `clauseMutationGaps` in `internal/foldvectors/vectors_test.go`
+rather than left to be rediscovered.
+
 **§9.9 Ordering.** §9.4–§9.8 run inside `applyDepAndGateStatus` AFTER the dep pass
 (`pkg/sync/nostrproject.go:475`, dep loop `:504-518`, gate loop `:520-570`), and
 `applyDepAndGateStatus` itself runs after the whole per-item status pass
@@ -761,9 +820,11 @@ closed exactly as for "no grant at all" — gate ON, cutover `0`, so §11.4
 grandfathers nothing and every event that is not a well-formed sealed envelope is
 withheld — and it says so, distinguishing "no grant reached me" (consistent with
 an indexing gap) from "the answer I got is internally inconsistent" (omission
-proven). Reference implementation: `web/board/src/main.ts`'s `confidentialityOf` /
-`grantsWithheld` over `BoardKeyring.grantEpochFloor`, witnessed by
-`web/board/src/main.grantsomission.test.ts`. **The residual, stated exactly, and it is NOT only an attack.** Both
+proven). Reference implementation: `web/board/src/lib/confidentiality.ts`'s
+`confidentialityOf` / `grantsWithheld` over `BoardKeyring.grantEpochFloor`,
+witnessed by `web/board/src/main.grantsomission.test.ts` end-to-end through the DOM
+and consumed directly by the conformance runner (`ready-882` moved it out of
+`main.ts` so the vectors fold through the REAL adapter rather than a substitute). **The residual, stated exactly, and it is NOT only an attack.** Both
 witnesses ride on the sealed cards, so they are silent for any board whose visible
 sealed history begins at or after the cutover being asserted. A relay can arrange
 that by withholding, on top of the grants, every sealed card older than the cutover

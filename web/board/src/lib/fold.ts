@@ -407,6 +407,16 @@ function applyDepAndGateStatus(items: Map<string, Item>): void {
       }
       item.gate_msg_id = item.waiting_type === "gate" ? item.msg_id : undefined;
     } else {
+      // §9.8, and it is INERT here exactly as it is in the Go fold (spec §9.8a,
+      // ready-882): reaching this branch means waiting_type/waiting_on/gate are
+      // already unset by definition, and waiting_since/gate_msg_id are assigned
+      // nowhere outside this loop and carried by no tag — while an item is rebuilt
+      // from its winning card (§22.2), so nothing stale can survive into it. Kept
+      // because the CLAUSE is not vacuous: it is what makes a client that mutates
+      // items across revisions, rather than rebuilding them, wrong. Deleting these
+      // four lines does not turn any conformance vector red, and that gap is
+      // recorded rather than hidden — see clauseMutationGaps in
+      // internal/foldvectors/vectors_test.go.
       item.waiting_on = undefined;
       item.waiting_type = undefined;
       item.waiting_since = undefined;
