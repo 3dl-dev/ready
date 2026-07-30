@@ -104,6 +104,57 @@ func TestGatesFilter_TerminalItemExcludes(t *testing.T) {
 	}
 }
 
+// TestGatesFilter_StatusClauseIsExhaustive pins the STATUS clause of
+// GatesFilter — `Status == waiting || Status == blocked` — one status at a time,
+// over EVERY status rd can mint (ready-d19).
+//
+// WHY A TABLE AND NOT MORE CLI COVERAGE: every case below holds waiting_type and
+// GateMsgID fixed at their gate-present values, so the ONLY thing that can decide
+// membership is the status clause. That makes the test discriminate per clause:
+// deleting `Status == waiting` reddens the waiting row, deleting
+// `Status == blocked` reddens the blocked row, and deleting the clause entirely
+// reddens every excluded row. No end-to-end test can do this — the write path
+// cannot produce an active/inbox/scheduled item that still carries a live
+// GateMsgID (rd gate forces waiting; the terminal branch of
+// pkg/sync.applyDepAndGateStatus strips the field on close), so at the CLI
+// altitude the status clause is unfalsifiable. ready-d19's first round asserted
+// there and wrongly recorded the clause as covered.
+//
+// This predicate is also the single cross-implementation contract the TypeScript
+// ports must agree with (web/board/src/lib/views.ts, web/board/src/board/views.ts):
+// (status == waiting OR status == blocked) AND waiting_type == "gate" AND
+// gate_msg_id != "". Blocked is IN — blocked-and-gated is the ordinary case for a
+// design gate, since the ruling is usually what unblocks the chain (ready-e0e).
+func TestGatesFilter_StatusClauseIsExhaustive(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+		why    string
+	}{
+		{state.StatusWaiting, true, "the plain pending-gate case"},
+		{state.StatusBlocked, true, "ready-e0e: a gate on a blocked item is still pending — the ruling is usually what unblocks the chain"},
+		{state.StatusInbox, false, "an untriaged item has no pending escalation"},
+		{state.StatusActive, false, "an active item is being worked, not awaiting a ruling"},
+		{state.StatusScheduled, false, "rd gate forces a scheduled item to waiting; a scheduled row here would be a stale projection"},
+		{state.StatusDone, false, "resolving a gate on a closed item is impossible — approve/reject both refuse it"},
+		{state.StatusCancelled, false, "resolving a gate on a closed item is impossible — approve/reject both refuse it"},
+		{state.StatusFailed, false, "resolving a gate on a closed item is impossible — approve/reject both refuse it"},
+	}
+	f := views.GatesFilter()
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			// Gate fields held constant across every row: status is the only variable.
+			item := makeItem("t1", tc.status, "p1", "", "boss@test.com", "agent@test.com")
+			item.WaitingType = "gate"
+			item.WaitingOn = "budget approval"
+			item.GateMsgID = "msg-gate-123"
+			if got := f(item); got != tc.want {
+				t.Errorf("GatesFilter(status=%s) = %v, want %v — %s", tc.status, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
 // TestNamed_GatesViewResolvable verifies that the gates view is registered
 // in the Named function.
 func TestNamed_GatesViewResolvable(t *testing.T) {
