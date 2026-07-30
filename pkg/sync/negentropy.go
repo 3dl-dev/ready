@@ -10,10 +10,11 @@
 // Convergence flow for one relay:
 //  1. Read the local log; select events matching the sync filter.
 //  2. Negentropy-reconcile that id-set against the relay -> {need, have}.
-//     A relay reconciles at most a CAPPED number of records per query, so this
-//     step repeats over `until`-scoped windows walking backwards in time until a
-//     window comes back under the cap (ready-bec). A single unpaged exchange
-//     silently truncated every board bigger than that cap, and never converged.
+//     A relay reconciles at most a CAPPED number of records per query and never
+//     says so, so this step repeats over `until`-scoped windows walking backwards
+//     in time until a window can no longer move that cursor (ready-bec). A single
+//     unpaged exchange silently truncated every board bigger than that cap, and
+//     never converged.
 //  3. Download `need` (REQ by ids), Verify, AppendUnique into the local log.
 //  4. Upload `have` (EVENT) to the relay (idempotent — relay dedupes by id).
 //
@@ -61,9 +62,10 @@ type SyncResult struct {
 	EventBytesDownloaded int
 	EventBytesUploaded   int
 	// Pages is how many `until`-scoped windows the walk needed (ready-bec). It is
-	// always >= 1. A value > 1 means the relay's per-query record CAP was reached
-	// and the sync paged past it — the observable that distinguishes "the board is
-	// this small" from "the relay stopped talking at its cap".
+	// always >= 1, and >= 2 whenever the relay held anything at all: the walk only
+	// stops once a window fails to move its cursor strictly older, which takes one
+	// window beyond the last one carrying events. It is the reader's only view of
+	// how far past a relay's silent per-query cap a sync had to reach.
 	Pages int
 }
 
@@ -100,22 +102,29 @@ type SyncResult struct {
 // client which it is talking to, so the walk must not depend on the relay's own
 // bound — it names its own.
 //
-// Naming the limit EXPLICITLY does two things. It makes the window size OURS, so
-// the walk's termination test ("did this window come back under the limit?") is
-// asked against a number we chose rather than one we cannot see. And where a
-// relay's cap is BELOW what we ask for, the query is refused rather than answered
-// short — pinned by TestNegentropySync_RelayCapBelowOurLimitFailsLoudly, which
-// checks rd propagates that refusal instead of merging a partial board. (Not
-// every relay refuses: the strfry above answers limit=5000 with what it has. That
-// is why the walk's correctness rests on the `until` cursor, and the refusal is
-// the safety net, not the mechanism.) 500 is strfry's default maxFilterLimit and
-// is what MaxREQIDs already uses for the download side.
+// NO MEASURED RELAY REFUSES A LIMIT ABOVE ITS CAP. Both relays reachable from
+// this repo CLAMP silently: 3dl answers limit=100/300/500 with exactly that many
+// and limit=5000 with nothing at all (the read deadline fires — an i/o timeout,
+// never a NEG-ERR); the LAN strfry answers limit=5000 with all 560 it holds. An
+// earlier revision of this file claimed a relay whose cap is BELOW the asked
+// limit refuses loudly, and built the walk's safety story on it. That claim was
+// never measured and is FALSE. There is no loud refusal to fall back on, so the
+// `until` cursor is the ONLY thing this correctness rests on, and the walk's
+// termination test must never ask "was this window as big as the limit we asked
+// for?" — a relay is free to clamp any window BELOW that and say nothing. See
+// NegentropySync for the test it asks instead.
+//
+// Naming the limit explicitly still earns its place: it makes the window size
+// OURS rather than whatever default the relay happens to volunteer, which is what
+// bounds the walk's per-window cost and gives the same-second jam check in
+// NegentropySync a number it can speak about. 500 is strfry's default
+// maxFilterLimit and is what MaxREQIDs already uses for the download side.
 const SyncPageLimit = 500
 
 // MaxSyncPages hard-stops the `until` walk. It is a backstop against a relay that
 // answers every window identically, NOT a tuning knob: the walk normally ends on
-// its own the first time a window comes back under SyncPageLimit. At 500 records
-// per window this admits a 100k-event board.
+// its own the first time a window cannot move the cursor. At 500 records per
+// window this admits a 100k-event board.
 const MaxSyncPages = 200
 
 // NegentropySync reconciles the local log against one relay via NIP-77 and
@@ -156,12 +165,28 @@ const MaxSyncPages = 200
 // converged and nothing said so. See SyncPageLimit for the measurements.
 //
 // So the exchange is repeated over `until`-scoped WINDOWS walking backwards in
-// time, each asking for at most SyncPageLimit records, until a window comes back
-// holding FEWER records than that — the only available evidence that the relay
-// answered with everything it had rather than with a capped prefix. Both sides are
-// scoped to the same window (matchesFilter honours `until`), so each exchange
-// still costs only its window's diff and a converged re-sync still moves zero
-// event bytes.
+// time, each asking for at most SyncPageLimit records. Both sides are scoped to
+// the same window (matchesFilter honours `until`), so each exchange still costs
+// only its window's diff and a converged re-sync still moves zero event bytes.
+//
+// TERMINATION IS THE CURSOR, NOT THE WINDOW SIZE. A window smaller than the limit
+// rd asked for is NOT evidence the relay is finished: no measured relay refuses a
+// limit above its cap, both simply clamp and say nothing (see SyncPageLimit), so a
+// relay capped at 400 answers rd's limit=500 with 400 records and looks exactly
+// like a 400-event board. Stopping there is the same silent truncation one layer
+// down. The walk therefore ends only when a window cannot move the cursor STRICTLY
+// older — either the relay held nothing at or below the cursor, or everything it
+// held sits on the cursor's own second. That test is answered entirely by
+// `oldest`, a value read off the events the relay actually served, and is
+// independent of every relay's unreadable cap. The cost is one extra exchange per
+// sync (the final window, which comes back holding only the boundary second).
+//
+// RESIDUAL, stated rather than hidden: if a relay clamps BELOW SyncPageLimit and
+// more than its clamp's worth of events share one identical created_at second,
+// `until` cannot step past that second and no signal distinguishes it from the end
+// of the board. At or above SyncPageLimit that case IS detected and returned as an
+// error. Keeping SyncPageLimit at or above every measured
+// relay cap is what keeps the undetectable band empty.
 func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration, production bool) (SyncResult, error) {
 	res := SyncResult{Relay: relayURL}
 	if timeout <= 0 {
@@ -199,8 +224,8 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 
 	for res.Pages = 1; ; res.Pages++ {
 		if res.Pages > MaxSyncPages {
-			return res, fmt.Errorf("sync: %s: gave up after %d windows still hitting the relay's %d-record cap — the board is either larger than %d events or the relay is re-serving the same window",
-				relayURL, MaxSyncPages, SyncPageLimit, MaxSyncPages*SyncPageLimit)
+			return res, fmt.Errorf("sync: %s: gave up after %d windows with the cursor still moving — the board is either larger than %d events or the relay is re-serving the same window",
+				relayURL, MaxSyncPages, MaxSyncPages*SyncPageLimit)
 		}
 		windowFilter := syncWindowFilter(filter, until, bounded)
 
@@ -304,19 +329,27 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 			}
 		}
 
-		capped := relayWindow >= SyncPageLimit
+		// THE TERMINATION TEST. `oldest == MaxInt64` means the relay reconciled no
+		// record at all at or below the cursor; otherwise the walk continues exactly
+		// when the cursor can step STRICTLY older. Deliberately NOT `relayWindow >=
+		// SyncPageLimit`: a relay capped below the limit rd asks for answers short
+		// and silently, so window size cannot tell "the board ends here" from "the
+		// relay stopped talking here". See SyncPageLimit.
+		advances := oldest != math.MaxInt64 && (!bounded || oldest < until)
 
-		// Queue the uploads this window can honestly speak for. In a CAPPED window
-		// the relay only reconciled [oldest, until], so a local event older than
-		// that is not "missing from the relay" — it is merely below the cap, and a
-		// later window decides. Uploading it here is how a converged machine would
-		// end up re-publishing its whole backlog on every sync.
+		// A window the walk will MOVE PAST only reconciled [oldest, until], so a
+		// local event older than `oldest` is not "missing from the relay" — it is
+		// merely below what this window could see, and a later window decides.
+		// Uploading it here is how a converged machine would end up re-publishing its
+		// whole backlog on every sync. The window the walk STOPS on is unbounded
+		// below, so it is the last chance to speak for those events and applies no
+		// such floor.
 		for _, id := range neg.Have {
 			e := byID[id]
 			if e == nil {
 				continue
 			}
-			if capped && e.CreatedAt < oldest {
+			if advances && e.CreatedAt < oldest {
 				continue
 			}
 			if uploadSeen[id] {
@@ -326,20 +359,16 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 			uploadIDs = append(uploadIDs, id)
 		}
 
-		if !capped {
+		if !advances {
+			// A stuck cursor on a window that is FULL at the limit rd itself named
+			// means more than SyncPageLimit events share a single created_at second:
+			// `until` cannot move without skipping some of them. Say so — staying
+			// quiet about a truncation is the whole defect this walk exists to end.
+			if bounded && oldest != math.MaxInt64 && relayWindow >= SyncPageLimit {
+				return res, fmt.Errorf("sync: %s: the relay's %d-record window at until=%d is full and every record shares that timestamp — cannot page further without dropping events",
+					relayURL, SyncPageLimit, until)
+			}
 			break
-		}
-		if oldest == math.MaxInt64 {
-			// A full window whose every record is unaccounted for — nothing to move
-			// the cursor to. Stop rather than re-ask the same window forever.
-			break
-		}
-		if bounded && oldest >= until {
-			// More than a cap's worth of events share a single created_at second, so
-			// `until` cannot move without skipping some of them. Say so: this is the
-			// silent-truncation case, and staying quiet about it is the defect.
-			return res, fmt.Errorf("sync: %s: the relay's %d-record window at until=%d is full and every record shares that timestamp — cannot page further without dropping events",
-				relayURL, SyncPageLimit, until)
 		}
 		until = oldest
 		bounded = true

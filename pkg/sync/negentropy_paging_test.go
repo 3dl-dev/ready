@@ -18,16 +18,22 @@
 // is untouched by the fake and is what these tests exercise.
 //
 // AND THE MODEL IS CHECKED AGAINST THE MODELLED THING. cappedRelay asserts three
-// things about real relays: one query answers at most `limit` records, it picks
-// the NEWEST ones, and it honours `until`. All three are measured live against a
-// real strfry by TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt
-// (negentropy_live_cap_test.go, RD_NOSTR_LIVE_RELAY=1), which also runs the walk
-// end to end over a 560-event board. Without that file this fake would be the
-// only witness to a behaviour it invented.
+// things about real relays: one query answers at most min(cap, limit) records
+// WITHOUT saying it clamped, it picks the NEWEST ones, and it honours `until`.
+// All three are measured live against real relays by
+// TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt (a purpose-built 560-event
+// board on the LAN strfry) and TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole
+// (this repo's own board on wss://relay.3dl.network, the relay the truncation was
+// first measured on), both in negentropy_live_cap_test.go under
+// RD_NOSTR_LIVE_RELAY=1. Without those this fake would be the only witness to a
+// behaviour it invented — which is exactly how the retired "a capped relay refuses
+// loudly" claim survived here for a revision.
 //
 // The walk is what makes these tests pass: cappedRelay serves at most `cap`
 // records per query, so deleting the paging (one exchange, no `until` cursor)
-// turns TestNegentropySync_PagesPastTheRelayCap red at 500 of 1200 events.
+// turns TestNegentropySync_PagesPastTheRelayCap red at 500 of 1200 events, and
+// terminating on window size instead of on the cursor turns
+// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard red at 400 of 600.
 package sync
 
 import (
@@ -53,6 +59,12 @@ import (
 // query, choosing the NEWEST matching ones (created_at descending) exactly as a
 // limit-clamping relay does, and it honours the `until` bound that lets a client
 // page past that cap.
+//
+// IT CLAMPS SILENTLY, AT ANY CAP, INCLUDING ONE BELOW THE LIMIT THE CLIENT ASKS
+// FOR. That is the measured behaviour of both relays this repo can reach: neither
+// refuses a limit above its cap, both just answer short and say nothing (see
+// SyncPageLimit). A window is min(cap, the filter's limit) records — never an
+// error.
 type cappedRelay struct {
 	srv *httptest.Server
 	cap int
@@ -61,7 +73,7 @@ type cappedRelay struct {
 	events   []*nostr.Event // newest first
 	byID     map[string]*nostr.Event
 	windows  []int64 // the `until` of every NEG-OPEN seen; 0 = unbounded
-	rejected int     // queries refused for asking a limit above the cap
+	negErrAt int     // 1-indexed NEG-OPEN to answer with NEG-ERR; 0 = never
 	accepted []*nostr.Event
 }
 
@@ -89,7 +101,10 @@ func newCappedRelay(t *testing.T, events []*nostr.Event, capN int) *cappedRelay 
 func (cr *cappedRelay) url() string { return "ws" + strings.TrimPrefix(cr.srv.URL, "http") }
 
 // window returns the records this relay will reconcile for one query: the newest
-// `cap` events at or below `until`, matching the filter's kinds and #a scope.
+// min(cap, limit) events at or below `until`, matching the filter's kinds and #a
+// scope. A limit ABOVE the cap is clamped to the cap without comment — the
+// measured behaviour, and the thing that makes window size useless to the client
+// as a termination signal.
 func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -98,6 +113,10 @@ func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 		if ts, ok := timestampField(raw); ok {
 			until = ts
 		}
+	}
+	bound := cr.cap
+	if l, ok := timestampField(f["limit"]); ok && int(l) < bound {
+		bound = int(l)
 	}
 	var out []*nostr.Event
 	for _, e := range cr.events { // already newest-first
@@ -108,7 +127,7 @@ func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 			continue
 		}
 		out = append(out, e)
-		if len(out) == cr.cap {
+		if len(out) == bound {
 			break
 		}
 	}
@@ -137,23 +156,21 @@ func (cr *cappedRelay) serve(conn *websocket.Conn) {
 			_ = json.Unmarshal(frame[1], &negSub)
 			var f map[string]any
 			_ = json.Unmarshal(frame[2], &f)
-			// A relay refuses a limit above its own cap rather than silently
-			// answering short — the property that makes asking explicitly safe.
-			if l, ok := timestampField(f["limit"]); ok && int(l) > cr.cap {
-				cr.mu.Lock()
-				cr.rejected++
-				cr.mu.Unlock()
-				resp, _ := json.Marshal([]any{"NEG-ERR", negSub, fmt.Sprintf("limit %d exceeds max of %d", l, cr.cap)})
-				_ = conn.WriteMessage(websocket.TextMessage, resp)
-				continue
-			}
 			var until int64
 			if ts, ok := timestampField(f["until"]); ok {
 				until = ts
 			}
 			cr.mu.Lock()
 			cr.windows = append(cr.windows, until)
+			nth, errAt := len(cr.windows), cr.negErrAt
 			cr.mu.Unlock()
+			// Not a cap behaviour — a relay simply failing mid-walk. See
+			// TestNegentropySync_AMidWalkRelayErrorIsNotReportedAsSuccess.
+			if errAt > 0 && nth == errAt {
+				resp, _ := json.Marshal([]any{"NEG-ERR", negSub, "blocked: relay says no"})
+				_ = conn.WriteMessage(websocket.TextMessage, resp)
+				continue
+			}
 
 			var items []nostr.NegItem
 			for _, e := range cr.window(f) {
@@ -240,14 +257,6 @@ func (cr *cappedRelay) windowCount() int {
 	return len(cr.windows)
 }
 
-// refusals is how many queries this relay turned away for asking a limit above
-// its own cap — the loud-refusal behaviour, as distinct from answering short.
-func (cr *cappedRelay) refusals() int {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-	return cr.rejected
-}
-
 func (cr *cappedRelay) uploadedIDs() map[string]int {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -281,6 +290,98 @@ func pagingBoard(t *testing.T, k *nostr.Key, boardCoord string, n int, base int6
 		out = append(out, e)
 	}
 	return out
+}
+
+// sameSecondBoard builds n distinct signed cards that ALL carry the same
+// created_at — the one shape an `until` cursor cannot step through, because
+// `until` is a timestamp and there is nowhere older to move it to within the
+// second.
+func sameSecondBoard(t *testing.T, k *nostr.Key, boardCoord string, n int, at int64) []*nostr.Event {
+	t.Helper()
+	out := make([]*nostr.Event, 0, n)
+	for i := 0; i < n; i++ {
+		e := &nostr.Event{
+			Kind:      KindCard,
+			CreatedAt: at,
+			Tags: [][]string{
+				{"d", fmt.Sprintf("ready-ss%04d", i)},
+				{"a", boardCoord},
+				{"title", fmt.Sprintf("same-second card %d", i)},
+				{"s", "active"},
+			},
+			Content: fmt.Sprintf("card %d", i),
+		}
+		if err := e.Sign(k); err != nil {
+			t.Fatalf("sign card %d: %v", i, err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestNegentropySync_SameSecondOverflowIsAnErrorNotASilentDrop pins the one case
+// the cursor genuinely cannot solve: MORE than a full window's worth of events
+// sharing a single created_at second. `until` cannot move below the second
+// without skipping records inside it, so the walk has no honest way forward — and
+// the whole point of ready-bec is that a truncation must never be reported as a
+// completed sync. It must be an error.
+func TestNegentropySync_SameSecondOverflowIsAnErrorNotASilentDrop(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardCoord := "30301:" + k.PubKeyHex() + ":jamboard"
+	events := sameSecondBoard(t, k, boardCoord, SyncPageLimit+100, time.Now().Unix()-3600)
+	relay := newCappedRelay(t, events, SyncPageLimit)
+
+	log := NewNostrLog(t.TempDir() + "/" + NostrLogFile)
+	filter := BoardSyncFilter(boardCoord, nil)
+	trusted := map[string]bool{k.PubKeyHex(): true}
+
+	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err == nil {
+		t.Fatalf("%d events on ONE second behind a %d-record window cannot all be reached, and saying nothing is the defect: got downloaded=%d pages=%d",
+			len(events), SyncPageLimit, res.Downloaded, res.Pages)
+	}
+	if !strings.Contains(err.Error(), "shares that timestamp") {
+		t.Fatalf("the error must name WHY the walk cannot continue, got: %v", err)
+	}
+}
+
+// TestNegentropySync_ASmallBoardOnOneSecondIsNotAJam is the discriminating twin.
+// A tiny board whose events all share a created_at second is completely ordinary
+// — `rd init` writes a board, a card and a status within the same second — and it
+// must sync clean. Any jam detector that fires on "the cursor stopped moving"
+// alone, or on "this window was as big as the biggest one seen", declares this
+// board broken. Only a window FULL at the limit rd itself asked for is evidence
+// of overflow.
+func TestNegentropySync_ASmallBoardOnOneSecondIsNotAJam(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardCoord := "30301:" + k.PubKeyHex() + ":oneSecondBoard"
+	events := sameSecondBoard(t, k, boardCoord, 3, time.Now().Unix()-3600)
+	relay := newCappedRelay(t, events, SyncPageLimit)
+
+	log := NewNostrLog(t.TempDir() + "/" + NostrLogFile)
+	filter := BoardSyncFilter(boardCoord, nil)
+	trusted := map[string]bool{k.PubKeyHex(): true}
+
+	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err != nil {
+		t.Fatalf("a %d-event board that happens to share one second must sync clean: %v", len(events), err)
+	}
+	if res.Downloaded != len(events) {
+		t.Fatalf("downloaded %d of %d", res.Downloaded, len(events))
+	}
+	res2, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if res2.Downloaded != 0 || res2.Uploaded != 0 {
+		t.Fatalf("converged re-sync moved events: downloaded=%d uploaded=%d", res2.Downloaded, res2.Uploaded)
+	}
 }
 
 // TestNegentropySync_PagesPastTheRelayCap is the item's proof: a board holding
@@ -421,9 +522,11 @@ func TestNegentropySync_UploadsWhatTheRelayGenuinelyLacks(t *testing.T) {
 }
 
 // TestSyncWindowFilter_AsksForAnExplicitLimit pins the two filter properties the
-// walk depends on: every query names a limit (so a relay whose cap is BELOW it
-// refuses loudly instead of answering short), and the cursor is stamped only
-// once the walk is bounded.
+// walk depends on: every query names a limit, so the per-window cost is a number
+// rd chose rather than whatever default the relay volunteers, and the cursor is
+// stamped only once the walk is bounded. The limit is NOT a correctness
+// mechanism — a relay may clamp below it silently, which is why termination is
+// the cursor (see SyncPageLimit).
 func TestSyncWindowFilter_AsksForAnExplicitLimit(t *testing.T) {
 	base := map[string]any{"kinds": []int{KindCard}, "#a": []string{"coord"}}
 
@@ -453,32 +556,35 @@ func TestSyncWindowFilter_AsksForAnExplicitLimit(t *testing.T) {
 	}
 }
 
-// TestNegentropySync_RelayCapBelowOurLimitFailsLoudly is the discriminating test
-// for the ONLY thing that justifies naming `limit` explicitly at all.
+// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard is the walk's
+// hardest case, and the one an earlier revision of this file got WRONG.
 //
-// An absent limit is answered with a silently short window — the defect. Naming
-// it converts a relay whose cap is BELOW what rd asks for into a REFUSAL, and a
-// refusal is only worth something if rd propagates it instead of treating the
-// short answer it did not get as success. So: a relay capped at 400 facing rd's
-// limit=500 must (a) refuse the query rather than serve 400 of 600, and (b) leave
-// NegentropySync returning an error with an EMPTY local log — never a partial
-// board reported as a completed sync.
+// That revision asserted a relay whose cap is BELOW the limit rd asks for REFUSES
+// the query (NEG-ERR), and treated that refusal as the safety net under the
+// paging walk. The claim was never measured and is false: NEITHER relay reachable
+// from this repo refuses. wss://relay.3dl.network clamps limit=100/300/500 to
+// exactly that many and answers limit=5000 with an i/o timeout; the LAN strfry
+// answers limit=5000 with everything it holds. A relay is free to clamp any
+// window below what was asked and say nothing at all.
 //
-// The control is TestNegentropySync_PagesPastTheRelayCap, where the same fake at
-// cap == SyncPageLimit syncs all 1200 events: the refusal here is about the limit
-// exceeding the cap, not about the relay being unusable.
+// So the walk gets NO signal from window size, and this test is what pins that.
+// A relay capped at 400 facing rd's limit=500, over a 600-event board:
 //
-// This is what makes cappedRelay's refusal branch load-bearing rather than
-// decorative. Delete that branch (let the relay answer short, as it does for any
-// limit at or below its cap) and this test goes red: err becomes nil and 400 of
-// 600 events land in the log under a reported success — the exact silent
-// truncation the item is about.
-func TestNegentropySync_RelayCapBelowOurLimitFailsLoudly(t *testing.T) {
+//   - window 1 comes back with 400 records. 400 < SyncPageLimit. Nothing
+//     distinguishes that from a 400-event board.
+//   - the walk must page anyway, on the `until` cursor alone, and land all 600.
+//
+// RED BEFORE THE FIX: the termination test used to be `relayWindow >=
+// SyncPageLimit`, so this sync stopped after window 1 with 400 of 600 events, no
+// error, pages=1 — the item's own silent truncation, one layer down. The control
+// is TestNegentropySync_PagesPastTheRelayCap (cap == SyncPageLimit), which stayed
+// green throughout: the defect was only ever visible BELOW the asked limit.
+func TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard(t *testing.T) {
 	k, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	boardCoord := "30301:" + k.PubKeyHex() + ":refusalboard"
+	boardCoord := "30301:" + k.PubKeyHex() + ":subcapboard"
 	const total = 600
 	const relayCap = SyncPageLimit - 100 // strictly below what the walk asks for
 	events := pagingBoard(t, k, boardCoord, total, time.Now().Unix()-int64(total)-10)
@@ -488,29 +594,88 @@ func TestNegentropySync_RelayCapBelowOurLimitFailsLoudly(t *testing.T) {
 	filter := BoardSyncFilter(boardCoord, nil)
 	trusted := map[string]bool{k.PubKeyHex(): true}
 
+	// The premise: one query at rd's own limit really does come back SHORT of that
+	// limit. Without this the test could pass for the wrong reason.
+	first, err := nostr.NegentropyReconcile(context.Background(), relay.url(), syncWindowFilter(filter, 0, false), nil)
+	if err != nil {
+		t.Fatalf("probe reconcile: %v", err)
+	}
+	if len(first.Need) != relayCap {
+		t.Fatalf("probe: one query at limit=%d returned %d records, want the relay's silent cap of %d",
+			SyncPageLimit, len(first.Need), relayCap)
+	}
+	if len(first.Need) >= SyncPageLimit {
+		t.Fatalf("probe: the cap under test (%d) must be BELOW SyncPageLimit (%d) or this test measures nothing",
+			len(first.Need), SyncPageLimit)
+	}
+
 	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
-	if err == nil {
-		t.Fatalf("a relay capped at %d BELOW our limit=%d must not produce a successful sync: got downloaded=%d of %d, pages=%d",
-			relayCap, SyncPageLimit, res.Downloaded, total, res.Pages)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
 	}
-	if !strings.Contains(err.Error(), "NEG-ERR") {
-		t.Fatalf("the relay's refusal must reach the caller intact, got: %v", err)
+	if res.Downloaded != total {
+		t.Fatalf("a relay clamping at %d BELOW our limit=%d silently truncated the sync: downloaded=%d of %d (need=%d pages=%d)",
+			relayCap, SyncPageLimit, res.Downloaded, total, res.Need, res.Pages)
 	}
-	if relay.refusals() != 1 {
-		t.Fatalf("relay recorded %d refusals, want exactly 1 — the walk must ask ONCE with an explicit limit, not retry blindly", relay.refusals())
-	}
-	if relay.windowCount() != 0 {
-		t.Fatalf("the refused query must never have been answered as a window, relay served %d", relay.windowCount())
-	}
-	if res.Downloaded != 0 {
-		t.Fatalf("a refused sync merged %d events", res.Downloaded)
+	if res.Pages < 2 {
+		t.Fatalf("%d events at a %d-record silent cap needs more than one window, walk used %d", total, relayCap, res.Pages)
 	}
 	stored, err := log.ReadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored) != 0 {
-		t.Fatalf("a refused sync left %d events in the local log — a partial board under a reported failure is still a partial board", len(stored))
+	if len(stored) != total {
+		t.Fatalf("local log holds %d events, want %d", len(stored), total)
+	}
+	items := ProjectItems(stored, ProjectOptions{Trusted: trusted})
+	if len(items) != total {
+		t.Fatalf("fresh clone projected %d of %d cards", len(items), total)
+	}
+
+	// And it converges: a second sync against the same clamping relay moves nothing.
+	res2, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if res2.Downloaded != 0 || res2.Uploaded != 0 {
+		t.Fatalf("converged re-sync moved events: downloaded=%d uploaded=%d", res2.Downloaded, res2.Uploaded)
+	}
+}
+
+// TestNegentropySync_AMidWalkRelayErrorIsNotReportedAsSuccess guards the walk's
+// error path, which the multi-window shape made reachable: a relay that fails on
+// the SECOND window has already handed over a partial board on the first, and the
+// tempting bug is to keep what arrived and return nil.
+//
+// This is NOT a cap behaviour and is not offered as one — no measured relay
+// answers NEG-ERR to a cap-exceeding limit (see
+// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard). It is ordinary
+// failure hygiene: a partial board must never be returned as a completed sync.
+func TestNegentropySync_AMidWalkRelayErrorIsNotReportedAsSuccess(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardCoord := "30301:" + k.PubKeyHex() + ":midwalkerrboard"
+	const total = 900
+	events := pagingBoard(t, k, boardCoord, total, time.Now().Unix()-int64(total)-10)
+	relay := newCappedRelay(t, events, SyncPageLimit)
+	relay.negErrAt = 2 // the first window succeeds; the walk then hits a wall
+
+	log := NewNostrLog(t.TempDir() + "/" + NostrLogFile)
+	filter := BoardSyncFilter(boardCoord, nil)
+	trusted := map[string]bool{k.PubKeyHex(): true}
+
+	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err == nil {
+		t.Fatalf("a walk that could not finish must not report success: downloaded=%d of %d, pages=%d",
+			res.Downloaded, total, res.Pages)
+	}
+	if !strings.Contains(err.Error(), relay.url()) {
+		t.Fatalf("the error must name the relay it came from, got: %v", err)
+	}
+	if res.Downloaded >= total {
+		t.Fatalf("the fake failed the second window, so the board cannot be complete: downloaded=%d of %d", res.Downloaded, total)
 	}
 }
 

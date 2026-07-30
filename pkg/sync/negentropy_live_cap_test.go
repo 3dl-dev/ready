@@ -20,6 +20,14 @@
 //	it honours `until`                          (so the walk terminates)
 //	NegentropySync -> the whole board, pages>1  (the fix)
 //
+// It is a CONTROLLED experiment: a board of a size this file chose, on a relay it
+// publishes to. The field counterpart lives at the bottom of this file —
+// TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole reads the real 3dl board off
+// wss://relay.3dl.network, the relay/board pair the truncation was first measured
+// on and the one ready-bec's done condition names. Neither subsumes the other: a
+// change in 3dl's clamping is invisible to this test, and a board this test can
+// characterise is not available there.
+//
 // Gated behind RD_NOSTR_LIVE_RELAY=1, like every other live proof in this
 // package (ready-5fd made that gate honest: these proofs RUN, they do not skip).
 package sync
@@ -38,8 +46,10 @@ import (
 // liveCapBoardSize is how many events this proof puts on the relay. It must
 // EXCEED the window rd asks for (SyncPageLimit), or "the relay truncated" and
 // "the board is small" are indistinguishable and nothing here measures anything.
-// +60 clears it while keeping the publish cheap and the walk at a readable two
-// windows.
+// +60 clears it while keeping the publish cheap and the walk short: measured
+// pages=3 — the 500-record window, the 60 below it, and the closing window that
+// finds the cursor cannot move (the walk terminates on the CURSOR, never on a
+// window's size; see NegentropySync).
 const liveCapBoardSize = SyncPageLimit + 60
 
 // TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt is the item's live proof,
@@ -211,4 +221,232 @@ func TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt(t *testing.T) {
 	}
 	t.Logf("PROVEN against %s: one query is bounded at %d newest records and says nothing; `until` walks past it; the fresh clone fetched all %d over %d windows and the re-sync moved 0 event bytes",
 		relay, SyncPageLimit, liveCapBoardSize, res.Pages)
+}
+
+// ---------------------------------------------------------------------------
+// The named measurement: the REAL board on the REAL relay the defect was found on
+// ---------------------------------------------------------------------------
+
+// prodRelayURL / prodBoardCoord name the exact relay and board ready-bec's done
+// condition speaks about: "a fresh clone of the 3dl board projects all 536
+// cards". Every other proof in this package runs against a board it published
+// itself, which is what makes them controlled — and is also why none of them
+// would have caught a regression against THIS relay and THIS board, the pair the
+// truncation was actually measured on (an unpaged sync merged 481 events and
+// projected 201 items of a 536-card board, twice, silently).
+//
+// The board coordinate is this repo's own pinned board (.ready/config.json
+// "board"), whose D-tag is the reserved production one. This test only ever READS
+// it: the local log starts empty so the walk has nothing to upload, and
+// GuardedPublish is called with production=false, which refuses any event
+// addressing that coordinate before a relay is dialled (guardReservedBoard). The
+// Uploaded assertion below pins that read-only property rather than assuming it.
+//
+// Both are overridable so the proof can be pointed at another deployment.
+func prodRelayURL() string {
+	if r := os.Getenv("RD_NOSTR_PROD_RELAY_URL"); r != "" {
+		return r
+	}
+	return "wss://relay.3dl.network"
+}
+
+func prodBoardCoord() string {
+	if c := os.Getenv("RD_NOSTR_PROD_BOARD_COORD"); c != "" {
+		return c
+	}
+	return "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:ready"
+}
+
+// prodBoardCardFloor is the card count measured on that board on 2026-07-30 and
+// written into ready-bec's done condition. It is asserted as a FLOOR, not an
+// equality: rd's boards only gain cards, so a hard 536 would go red the next time
+// anyone files an item, and a flaky proof proves nothing. The floor still fails
+// loudly on the defect it exists for — the truncated sync projected 201.
+const prodBoardCardFloor = 536
+
+// pagedCoordWalk is the INDEPENDENT ground truth: a plain NIP-01 REQ walk over an
+// `#a` coordinate filter, paged on `until` at limit >= 500, run with none of the
+// code under test. It deliberately shares nothing with NegentropySync — different
+// protocol (REQ/EOSE, not NIP-77), its own filter construction, its own cursor —
+// so "the sync got everything" is checked against a second opinion rather than
+// against itself.
+//
+// No `authors` filter appears here or anywhere in this test: it silently
+// under-returns on relay.3dl.network (ready-5c5 measured 42 of 56 boards), which
+// would confound a measurement whose entire point is counting.
+func pagedCoordWalk(ctx context.Context, t *testing.T, relay string, base map[string]any) map[string]*nostr.Event {
+	t.Helper()
+	seen := map[string]*nostr.Event{}
+	var until int64
+	bounded := false
+	for page := 1; page <= MaxSyncPages; page++ {
+		f := map[string]any{"limit": SyncPageLimit}
+		for k, v := range base {
+			f[k] = v
+		}
+		if bounded {
+			f["until"] = until
+		}
+		fctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		evs, err := nostr.FetchMany(fctx, relay, f)
+		cancel()
+		if err != nil {
+			t.Fatalf("ground-truth walk page %d (until=%d): %v", page, until, err)
+		}
+		oldest := int64(1<<62 - 1)
+		fresh := 0
+		for _, e := range evs {
+			if e == nil {
+				continue
+			}
+			if e.CreatedAt < oldest {
+				oldest = e.CreatedAt
+			}
+			if _, dup := seen[e.ID]; !dup {
+				seen[e.ID] = e
+				fresh++
+			}
+		}
+		t.Logf("ground truth page %d: until=%d served=%d new=%d cumulative=%d", page, until, len(evs), fresh, len(seen))
+		if len(evs) == 0 {
+			break
+		}
+		if bounded && oldest >= until {
+			break
+		}
+		until = oldest
+		bounded = true
+	}
+	return seen
+}
+
+// cardIDs returns the distinct rd item ids (30302 "d" tags) among a set of events
+// — the unit ready-bec's done condition counts.
+func cardIDs(events map[string]*nostr.Event) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range events {
+		if e.Kind == KindCard {
+			if d := tagValue(e, "d"); d != "" {
+				out[d] = true
+			}
+		}
+	}
+	return out
+}
+
+// TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole takes the measurement
+// ready-bec's done condition NAMES and nothing on this branch had taken: a fresh
+// clone of the 3dl board, from wss://relay.3dl.network, holding every event and
+// projecting every card.
+//
+// The sibling proof (TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt) is the
+// controlled experiment — a board of a size this repo chose, on a relay whose cap
+// this repo can characterise. This one is the FIELD measurement, and the two catch
+// different regressions: the controlled proof would stay green if
+// relay.3dl.network changed its cap, its clamping behaviour, or its handling of a
+// 1800-event coordinate, because it never touches it. The done condition names
+// this relay and this board precisely because that is where the truncation was
+// observed.
+//
+// Read-only by construction: empty local log (nothing to upload) plus
+// production=false (GuardedPublish refuses the reserved production coordinate
+// before dialling). Uploaded==0 is asserted, not assumed.
+func TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole(t *testing.T) {
+	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
+		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live production-board fresh-clone proof")
+	}
+	relay := prodRelayURL()
+	coord := prodBoardCoord()
+	t.Logf("live production relay: %s  board: %s", relay, coord)
+
+	ctx := context.Background()
+	filter := BoardSyncFilter(coord, nil)
+
+	// (0) GROUND TRUTH FIRST, and deliberately first: the board is live, so
+	// anything published between this walk and the sync can only make the sync
+	// hold MORE. Every assertion below is therefore monotone-safe.
+	truth := pagedCoordWalk(ctx, t, relay, filter)
+	truthCards := cardIDs(truth)
+	t.Logf("GROUND TRUTH (independent paged #a REQ walk): %d events, %d distinct cards", len(truth), len(truthCards))
+	if len(truth) <= SyncPageLimit {
+		t.Fatalf("the board on %s holds %d events, which is not more than one window (%d) — this proof cannot measure paging against it. Point RD_NOSTR_PROD_BOARD_COORD at a board bigger than %d.",
+			relay, len(truth), SyncPageLimit, SyncPageLimit)
+	}
+	if len(truthCards) < prodBoardCardFloor {
+		t.Fatalf("the independent walk found %d cards on %s, below the %d measured into ready-bec's done condition — either the walk regressed or the board lost cards",
+			len(truthCards), coord, prodBoardCardFloor)
+	}
+
+	// (1) THE TRUNCATION, on this relay, with the filter rd's first window ships.
+	// An empty local set makes `need` exactly what one query was willing to give.
+	rctx, rcancel := context.WithTimeout(ctx, 90*time.Second)
+	one, err := nostr.NegentropyReconcile(rctx, relay, syncWindowFilter(filter, 0, false), nil)
+	rcancel()
+	if err != nil {
+		t.Fatalf("single-window reconcile: %v", err)
+	}
+	t.Logf("MEASURED: ONE exchange at limit=%d reconciled %d of the %d events on this board", SyncPageLimit, len(one.Need), len(truth))
+	if len(one.Need) >= len(truth) {
+		t.Fatalf("one query answered with all %d events — %s no longer truncates, so this proof measures nothing", len(truth), relay)
+	}
+
+	// (2) THE FRESH CLONE. Trust gate disabled (nil) on purpose: this measures the
+	// PAGING walk, and a trust set would make the count a function of which keys
+	// hold grants on the live board. The gate is proven separately, against a
+	// controlled board, by TestLiveRelay_NegentropyDownloadTrustGate.
+	log := NewNostrLog(filepath.Join(t.TempDir(), NostrLogFile))
+	res, err := NegentropySync(ctx, relay, log, filter, nil, 180*time.Second, false)
+	if err != nil {
+		t.Fatalf("fresh-clone sync: %v", err)
+	}
+	t.Logf("FRESH CLONE: need=%d downloaded=%d uploaded=%d pages=%d", res.Need, res.Downloaded, res.Uploaded, res.Pages)
+	if res.Uploaded != 0 {
+		t.Fatalf("this proof must be READ-ONLY against the production board, it uploaded %d events", res.Uploaded)
+	}
+	if res.Pages < 2 {
+		t.Fatalf("a %d-event board behind a %d-record window must take more than one window, walk used pages=%d",
+			len(truth), len(one.Need), res.Pages)
+	}
+
+	// (3) THE CLONE HOLDS EVERYTHING THE INDEPENDENT WALK FOUND. This is the
+	// assertion the truncation fails: the measured defect merged 481 of them.
+	stored, err := log.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, e := range stored {
+		if e != nil {
+			have[e.ID] = true
+		}
+	}
+	var missing []string
+	for id := range truth {
+		if !have[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) != 0 {
+		t.Fatalf("fresh clone is SHORT: it holds %d of the %d events the independent walk found on %s — %d missing, first %v",
+			len(have), len(truth), relay, len(missing), missing[:min(5, len(missing))])
+	}
+
+	// (4) AND IT PROJECTS EVERY CARD — the done condition's own words.
+	items := ProjectItems(stored, ProjectOptions{})
+	var unprojected []string
+	for id := range truthCards {
+		if items[id] == nil {
+			unprojected = append(unprojected, id)
+		}
+	}
+	if len(unprojected) != 0 {
+		t.Fatalf("fresh clone projected %d items but %d of the %d cards on the board are missing, first %v",
+			len(items), len(unprojected), len(truthCards), unprojected[:min(5, len(unprojected))])
+	}
+	if len(items) < prodBoardCardFloor {
+		t.Fatalf("fresh clone projected %d items, below the %d ready-bec's done condition names (the truncated sync projected 201)",
+			len(items), prodBoardCardFloor)
+	}
+	t.Logf("PROVEN against %s: one query gives %d of %d events; the paged walk gives all %d over %d windows and the fresh clone projects %d items (>= the %d named in ready-bec)",
+		relay, len(one.Need), len(truth), len(truth), res.Pages, len(items), prodBoardCardFloor)
 }
