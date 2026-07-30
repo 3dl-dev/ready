@@ -43,8 +43,21 @@ type Config struct {
 	// need not be listed here. Admit another identity by adding its hex pubkey.
 	// An empty list means "self only" — a single-machine portfolio trusts just
 	// its own key, which is the safe default (a permissive relay cannot inject
-	// state authored by a foreign key). Relay-side write-allowlisting (ready-266)
-	// is a SEPARATE, defence-in-depth layer; this client-side gate stands alone.
+	// state authored by a foreign key).
+	//
+	// THIS GATE IS THE WHOLE DEFENCE ON AN UNFENCED RELAY (ready-5fd). The
+	// portfolio-wide relay write-allowlist (ready-266) was RETIRED: a relay is a
+	// dumb pipe and per-identity trust at the relay edge coupled every portfolio
+	// app's onboarding to an rd infra change. scripts/unlock-relays.sh removed the
+	// writePolicy from the shared strfry relays and scripts/lock-relays.sh must NOT
+	// be re-applied. Probed 2026-07-30: ws://192.168.2.40:7777 and
+	// ws://192.168.2.41:7777 accept a write from a freshly generated, never-granted
+	// key; wss://relay.3dl.network separately still refuses one ("restricted:
+	// pubkey is not admitted to this relay's tenant write-allowlist") — that is a
+	// third-party tenant policy rd neither owns nor may rely on. So do not read any
+	// relay as a second layer under this gate; assume events from arbitrary keys
+	// are served to rd and that only this allowlist stops them.
+	// Pinned by pkg/sync.TestReconcile_TrustGate_RefusesUntrustedAuthorFromOpenRelay.
 	TrustedPubkeys []string `json:"trusted_pubkeys,omitempty"`
 }
 
