@@ -184,6 +184,38 @@ func TestStashGuard_RawStashApplyIsNotBlockedButWarnsLoudly(t *testing.T) {
 	}
 }
 
+// TestStashGuard_RawStashPopIsNotBlockedButWarnsLoudly covers the exact verb
+// from the 2026-07-29 incident, raw. pop applies BEFORE it drops, so no hook
+// runs before the working tree changes and it cannot be prevented. What must
+// be true: it is LOUD, and the entry it dropped is still reachable (the
+// trailing refs/stash deletion is refused) so the work is recoverable.
+func TestStashGuard_RawStashPopIsNotBlockedButWarnsLoudly(t *testing.T) {
+	base := setupBaseRepo(t)
+	wtA := filepath.Join(t.TempDir(), "wt-a")
+	mustAddWorktree(t, base, wtA, "work/a")
+	seedPreGuardStashEntry(t, wtA, "sibling agent's work\n", "sibling wip")
+	mustInstallGuard(t, scriptsDir(t), base)
+
+	out, _ := gitOut(wtA, "stash", "pop")
+	// Exit status is deliberately not asserted: pop's apply succeeds and its
+	// trailing ref deletion is refused, so the status reflects the refusal
+	// while the apply already landed. That split is the honest behavior.
+	if got := mustReadWork(t, wtA); got != "sibling agent's work\n" {
+		t.Fatalf("no git hook can stop pop's apply; expected the sibling content to land, got %q", got)
+	}
+	if !strings.Contains(out, "ready-f75 stash guard") {
+		t.Fatalf("raw `git stash pop` must be LOUD, got:\n%s", out)
+	}
+	if !strings.Contains(out, "WARNING") {
+		t.Fatalf("pop must produce the shared-stack warning, got:\n%s", out)
+	}
+	// The dropped entry must still be reachable rather than garbage.
+	sha := strings.TrimSpace(mustGit(t, wtA, "rev-parse", "--verify", "refs/stash"))
+	if sha == "" {
+		t.Fatalf("refs/stash deleted by pop — the entry is now unreachable garbage")
+	}
+}
+
 // TestStashGuard_RawStashDropLeavesLastEntryRecoverable pins the other honest
 // limit. drop rewrites the refs/stash reflog before any transaction opens, so
 // the entry is off `git stash list` before the hook runs — it is NOT blocked.
