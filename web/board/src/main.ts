@@ -55,12 +55,17 @@ import {
 import type { NostrEvent } from "./lib/nostrevent";
 import { dedupeExact, eventIdentity } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard } from "./lib/boarddiscovery";
-import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT } from "./lib/keyring";
+import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 // The §11.13/§11.13a confidentiality decision layer. It lived in this file until
 // ready-882 moved it to a module so the conformance runner could drive the REAL
 // adapter instead of a substitute; see lib/confidentiality.ts's header.
-import { confidentialityOf, encryptedBoardsOf, type WhyUnestablished } from "./lib/confidentiality";
+import {
+  confidentialityOf,
+  encryptedBoardsOf,
+  type Confidentiality,
+  type WhyUnestablished,
+} from "./lib/confidentiality";
 import { PLACEHOLDER } from "./lib/envelope";
 import { verifiedEvents } from "./lib/nostrevent";
 import { foldItemSource, type ItemSource } from "./lib/itemsource";
@@ -339,13 +344,16 @@ export async function loadBoardItems(
   unestablished: UnestablishedBoard[];
   writers: Map<string, NostrBoardWriter>;
   live: LiveBoard[];
+  status: BoardStatus[];
 }> {
   const out: Item[] = [];
   const writers = new Map<string, NostrBoardWriter>();
   const live: LiveBoard[] = [];
   let confidential = false;
   const unestablished: UnestablishedBoard[] = [];
+  const status: BoardStatus[] = [];
   const unwrap = deps.keyUnwrapper(identity);
+  const signing = canSign(identity.auth);
 
   for (const b of boards) {
     try {
@@ -456,11 +464,140 @@ export async function loadBoardItems(
         src,
         writer,
       });
-    } catch {
-      // Skip this board; the others still render.
+
+      // ready-27b: what this reader can honestly say about THIS board, decided
+      // here because this is the only place the board's own keyring, its
+      // confidentiality verdict and this session's signing capability are all in
+      // scope at once. See boardStatusOf.
+      status.push(boardStatusOf(b, state, keyring, signing));
+    } catch (err) {
+      // ready-27b: a board that will not load is REPORTED, not dropped. The
+      // others still render — that stance is unchanged, and it is the ready-62d1
+      // lesson one layer up — but the board keeps its node in the left tree and
+      // that node now says the load failed. Before this, the node was still
+      // there (it comes from discovery, which succeeded) showing a count of 0,
+      // which is the page asserting "this board has no work" about a board it
+      // never managed to read: the one outcome the portfolio view must never
+      // produce, because it is indistinguishable from the truth.
+      status.push({
+        coord: b.coord,
+        name: b.title || b.boardD,
+        state: "failed",
+        detail:
+          `This board did not load: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Its cards are NOT shown and its count here is not a count of its work — reload, or check the relays in this link.`,
+      });
     }
   }
-  return { items: out, confidential, unestablished, writers, live };
+  return { items: out, confidential, unestablished, writers, live, status };
+}
+
+/**
+ * BoardLoadState is the per-board answer the portfolio view owes its reader
+ * (ready-27b). A portfolio is a list of boards from different owners with
+ * different keys, and the aggregate notices (confidentialNotice and friends)
+ * state portfolio-wide totals — "N of M titles were decrypted" — which is the
+ * right sentence for the view and the wrong one for a board. A reader looking at
+ * a project's node has one question, "is what I am seeing this project's work?",
+ * and only a per-board answer can answer it.
+ *
+ *  - "open": the board's items are here as they are on the relay. Public, or
+ *    confidential with a key this session holds.
+ *  - "withholding": the board is confidential and this page could NOT establish
+ *    WHEN it became confidential, so the fold withholds every card on it that is
+ *    not a sealed envelope (encryptedBoardsOf on "unknown"). The count beside
+ *    such a board is LOWER than the board's real item count and nothing else
+ *    about the node says so. MEASURED, not hypothetical: on 2026-07-30 the live
+ *    `ready` board served 536 distinct cards, 369 of them sealed, and the page
+ *    showed 369 under a node reading "open" while `rd list --json` in that
+ *    project said 536.
+ *  - "sealed": confidential, and no key for it reached this session. Its cards
+ *    render as [encrypted] placeholders.
+ *  - "unreadable-grant": confidential, and an owner-signed grant NAMING THIS KEY
+ *    reached the page but this browser could not open it. Distinct from "sealed"
+ *    because the reader is entitled to this board and the fix is not a new grant
+ *    — see BoardKeyring.granteeGrants.
+ *  - "failed": the board's own event fetch or fold threw. NOTHING is known about
+ *    its contents, including whether it is empty.
+ */
+export type BoardLoadState = "open" | "withholding" | "sealed" | "unreadable-grant" | "failed";
+
+/** BoardStatus is one board's load outcome, in the reader's own words. `name` is
+ * the board's signed title (never its coordinate — a coordinate is provenance,
+ * not a name), falling back to its d-tag when the title is itself sealed. */
+export interface BoardStatus {
+  coord: string;
+  name: string;
+  state: BoardLoadState;
+  /** One sentence a person can act on. Empty for "open". */
+  detail: string;
+}
+
+/**
+ * boardStatusOf decides ONE board's load state from its own keyring and
+ * confidentiality verdict.
+ *
+ * WHY "HOLDS A KEY" IS THE TEST FOR "open", rather than "no placeholders
+ * rendered": a board can hold a key and still have individual cards sealed under
+ * an epoch this reader missed, and a board can render zero placeholders simply by
+ * being empty. currentEpoch() !== null is the property that actually decides
+ * whether this session can open this board's content at all, and it is the same
+ * property the WRITE path seals under (see the enc branch above), so the state
+ * shown to the reader and the state the writer acts on cannot drift apart.
+ *
+ * THE READ-ONLY WORDING IS DIFFERENT ON PURPOSE. A link session holds no signing
+ * key, so it can never unwrap a grant — telling such a reader to ask for a grant
+ * would send them to fix the wrong thing. What they need is a link minted with
+ * this board's key in it.
+ *
+ * "withholding" OUTRANKS EVERY KEY QUESTION, and that order is the point of the
+ * state existing. Holding a key is not the same as seeing the board: on an
+ * unestablished cutover the fold drops every card that is not a sealed envelope
+ * whether or not this reader can decrypt, so a keyholder gets a SHORT board and
+ * the old "do I hold a key?" test called that board open. The key situation is
+ * still said, in the same sentence, because it is still true and still
+ * actionable — it just cannot be the headline when the count itself is short.
+ */
+function boardStatusOf(
+  board: DiscoveredBoard,
+  state: Confidentiality,
+  keyring: BoardKeyring,
+  signing: boolean,
+): BoardStatus {
+  const name = board.title || board.boardD;
+  const base = { coord: board.coord, name };
+  const held = keyring.currentEpoch(board.coord) !== null;
+  if (state === "unknown") {
+    return {
+      ...base,
+      state: "withholding",
+      detail:
+        `THE COUNT SHOWN FOR THIS BOARD IS SHORT. It is confidential, and the owner-signed grants that reached this page do not establish WHEN it became confidential, ` +
+        `so every card on it that is not a sealed envelope is WITHHELD — a card written before the board went confidential cannot be told apart from cleartext written after. ` +
+        `\`rd list\` in this project will show more items than this board does. The paragraph above says which evidence is missing.` +
+        (held ? "" : ` This session also holds no read key for this board, so the cards that do render show ${PLACEHOLDER}.`),
+    };
+  }
+  if (state === "public" || held) {
+    return { ...base, state: "open", detail: "" };
+  }
+  if (signing && keyring.granteeGrants(board.coord) > 0) {
+    return {
+      ...base,
+      state: "unreadable-grant",
+      detail:
+        `This board is confidential and its owner DID grant this key access — but this browser could not open the key in that grant, ` +
+        `so every card below is shown as ${PLACEHOLDER}. A grant issued before mid-2026 wraps its key in a form no browser extension can return intact; ` +
+        `the owner re-issues it with \`rd confidential rewrap\`. A declined extension prompt looks identical from here, so try reloading first.`,
+    };
+  }
+  return {
+    ...base,
+    state: "sealed",
+    detail: signing
+      ? `This board is confidential and no owner-signed grant naming this key reached this page, so every card below is shown as ${PLACEHOLDER}. Ask this board's owner to grant this key access.`
+      : `This board is confidential and this link carries no read key for it, so every card below is shown as ${PLACEHOLDER}. This session holds no signing key, so it cannot unwrap one either — ask for a link minted with this board's key.`,
+  };
 }
 
 /**
@@ -981,7 +1118,7 @@ export async function afterLogin(
     }
 
     const linkKeys = fragmentKeyMap(fragment);
-    const { items, confidential, unestablished, writers, live } = await loadBoardItems(
+    const { items, confidential, unestablished, writers, live, status } = await loadBoardItems(
       boards,
       relays,
       authorityEvents,
@@ -1008,10 +1145,23 @@ export async function afterLogin(
     // showing work it silently cannot act on.
     const itemBoard = new Map(items.filter((i) => i.boardCoord).map((i) => [i.id, i.boardCoord!]));
 
+    // ready-27b: every discovered board reaches the workspace CARRYING ITS OWN
+    // LOAD OUTCOME. A board that failed to load, or that this session holds no
+    // key for, is still in this list — vanishing from the portfolio and
+    // rendering as an empty board are the two dishonest outcomes, and both are
+    // what happens when the outcome is not carried alongside the board.
+    const statusOf = new Map(status.map((s) => [s.coord, s]));
     const workspace = mountBoardWorkspace(root, items, {
       writer: boardScopedWriter(writers, itemBoard),
       viewerId: identity.pubkey,
-      boards: boards.map((b) => ({ coord: b.coord, title: b.title || "(confidential board)" })),
+      boards: boards.map((b) => ({
+        coord: b.coord,
+        title: b.title || "(confidential board)",
+        state: statusOf.get(b.coord)?.state ?? "failed",
+        detail:
+          statusOf.get(b.coord)?.detail ??
+          "This board did not load and reported no reason, so nothing here describes its contents.",
+      })),
       identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${canSign(identity.auth) ? "" : " (read-only)"}`,
       emptyBoardsNote: "No boards found.",
       notice: notice !== "" ? notice : undefined,
