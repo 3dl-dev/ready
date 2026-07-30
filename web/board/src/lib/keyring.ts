@@ -107,6 +107,7 @@ export class BoardKeyring {
   private readonly ltks = new Map<string, Uint8Array>();
   private readonly cutovers = new Map<string, number>();
   private readonly grantEpochFloors = new Map<string, number>();
+  private readonly granteeCEKGrants = new Map<string, number>();
 
   /** cek returns the content key for (coord, epoch), or null when this reader
    * holds none. Null is the fail-closed answer and every caller renders the
@@ -167,6 +168,36 @@ export class BoardKeyring {
     return this.grantEpochFloors.get(coord) ?? null;
   }
 
+  /**
+   * granteeGrants counts the owner-signed CEK-bearing grants that NAME THIS
+   * READER on this board — grants that passed checks 1-3 — whether or not their
+   * wrap then opened (check 4).
+   *
+   * IT IS THE DIFFERENCE BETWEEN TWO FACTS THE PAGE OTHERWISE CANNOT TELL APART,
+   * and both of them end in the same silent absence of a key (ready-27b):
+   *
+   *   * "no grant naming this key reached this page" — nobody granted you, or the
+   *     relay did not serve it. Nothing this reader can do but ask the owner.
+   *   * "a grant naming this key DID reach this page and this browser could not
+   *     open it" — count > 0 with no CEK. That is exactly what a pre-ready-c4b
+   *     RAW-PAYLOAD wrap looks like from here (keyunwrap.ts's header: a raw
+   *     32-byte plaintext cannot survive NIP-07's TextDecoder, so the honest
+   *     outcome is the placeholder), and it is the state 14 of the ~24 live
+   *     boards are in until `rd confidential rewrap` runs on each. The reader is
+   *     entitled to that board and the page renders it as [encrypted] anyway.
+   *
+   * Counted before the unwrap, so a declined extension prompt lands here too —
+   * which is why the notice main.ts builds from this says "this browser could not
+   * open it", not "the grant is malformed". The page cannot tell those apart and
+   * must not claim to.
+   *
+   * Counted per COORDINATE, like every other field here, so it can never be
+   * reported against a board other than the one the grant named.
+   */
+  granteeGrants(coord: string): number {
+    return this.granteeCEKGrants.get(coord) ?? 0;
+  }
+
   /** epochs lists the CEK epochs this reader holds for a board, ascending.
    * Diagnostics and tests only. */
   epochs(coord: string): number[] {
@@ -210,6 +241,11 @@ export class BoardKeyring {
   noteCutover(coord: string, at: number): void {
     const cur = this.cutovers.get(coord);
     if (cur === undefined || at < cur) this.cutovers.set(coord, at);
+  }
+
+  /** @internal */
+  noteGranteeGrant(coord: string): void {
+    this.granteeCEKGrants.set(coord, (this.granteeCEKGrants.get(coord) ?? 0) + 1);
   }
 
   /** @internal */
@@ -270,6 +306,11 @@ export async function deriveBoardKeyring(
 
     // CHECK 3 — the SIGNED p tag must name this reader.
     if (g.grantee !== readerPubkey) continue;
+
+    // ready-27b: this reader is NAMED by an owner-signed CEK grant on this
+    // board. Recorded BEFORE the unwrap, because the whole value of the record
+    // is that it survives the unwrap failing — see granteeGrants' doc.
+    kr.noteGranteeGrant(coord);
 
     // CHECK 4 — the wrap must actually open for this reader's key (ECDH
     // binding). A wrap lifted out of someone else's grant fails here.

@@ -84,6 +84,42 @@
   padding: 9px 12px;
 }
 
+/* ready-27b: one row per board this view could not show in full. Same token
+   vocabulary as .confidential-notice above — it is the same kind of statement,
+   said per board instead of per portfolio. */
+.board-status {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.board-status-row {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--key);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+.board-status-row.board-status-failed { border-left-color: var(--ink-3); }
+.board-status-name { color: var(--ink); font-weight: 600; }
+
+/* The left tree's per-board marker. It has to read as a WORD next to the count,
+   never as decoration — see render.ts buildTreeNode. */
+.node .board-state {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 4px;
+  flex: none;
+}
+
 .gate-rail {
   border: 1px solid var(--gate-line);
   border-left: 4px solid var(--gate);
