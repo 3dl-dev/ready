@@ -200,12 +200,19 @@ export function buildBoardEvent(
 }
 
 /** buildCardEvent mirrors BuildCardEvent's plaintext branch, tag for tag, in
- * order: d, title, a(board), s, rank, priority, itype, p(assignee), i*(deps),
- * gate, waiting_type, waiting_on, l*(labels), eta, level, for, parent, due.
- * Content is the item's context. */
+ * order: d, created?, title, a(board), s, rank, priority, itype, p(assignee),
+ * i*(deps), gate, waiting_type, waiting_on, l*(labels), eta, level, for,
+ * parent, due. Content is the item's context. */
 export function buildCardEvent(env: WriteEnv, item: Item): BuiltEvent {
   if (item.id === "") throw new WriteRefusedError("empty_item_id", "card event: empty item id");
   const tags: string[][] = [["d", item.id]];
+  // TRUE CREATION TIME (ready-4ec): carry the item's own creation time forward
+  // as a "created" tag so a browser-authored republish does not reset it —
+  // mirrors CardSpecFromItem's itemCreatedAtSecs (pkg/sync/nostrmigrate.go).
+  // Zero (genesis / unknown) emits no tag; the fold then falls back to this
+  // event's own created_at, correct for exactly the one card a fresh item has
+  // never republished yet.
+  if (item.created_at > 0n) tags.push(["created", (item.created_at / 1_000_000_000n).toString(10)]);
   tags.push(["title", item.title ?? ""]);
   if (env.boardD !== "") tags.push(["a", boardCoord(env.boardAuthor || env.signer, env.boardD)]);
   const status = nonDerivedStatus(item);

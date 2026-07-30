@@ -256,10 +256,16 @@ function out0(s: string, token: string, value: string): string {
   return s.split(token).join(value);
 }
 
-function expandPlaceholders(s: string, cardIds: Map<string, string>, issueIds: Map<string, string>): string {
+function expandPlaceholders(
+  s: string,
+  cardIds: Map<string, string>,
+  issueIds: Map<string, string>,
+  createdSecs: Map<string, string> = new Map(),
+): string {
   let out = out0(s, "{{owner}}", OWNER);
   for (const [id, cid] of cardIds) out = out0(out, `{{card:${id}}}`, cid);
   for (const [id, iid] of issueIds) out = out0(out, `{{issue:${id}}}`, iid);
+  for (const [id, secs] of createdSecs) out = out0(out, `{{created:${id}}}`, secs);
   return out;
 }
 
@@ -308,11 +314,26 @@ describe(`write conformance vectors (${vectorFile.vectors.length} from testdata/
       }
       const issueIds = log.issueEventIds();
 
+      // createdSecs (ready-4ec): every seed's GENESIS card, published before this
+      // vector's op ran, is the one card the fold's "created" tag fallback ever
+      // applies to (no tag yet) -- its own wall-clock created_at is exactly the
+      // value buildCardEvent now carries forward into every later republish's
+      // "created" tag. Sourced from the PRE-OP slice of the log, never the
+      // post-op one, so a vector whose own op republishes the card cannot see
+      // its own new (later) timestamp here -- mirrors cmd/rd/writevectors_test.go.
+      const createdSecs = new Map<string, string>();
+      for (const e of log.events.slice(0, before)) {
+        if (e.kind === KindCard) {
+          const d = tagValue(e, "d");
+          if (d !== "" && !createdSecs.has(d)) createdSecs.set(d, String(e.created_at));
+        }
+      }
+
       const want = v.events ?? [];
       expect(signed.map((e) => e.kind), "event kinds").toEqual(want.map((w) => w.kind));
       want.forEach((w, i) => {
         const got = signed[i];
-        const wantTags = w.tags.map((t) => t.map((val) => expandPlaceholders(val, cardIds, issueIds)));
+        const wantTags = w.tags.map((t) => t.map((val) => expandPlaceholders(val, cardIds, issueIds, createdSecs)));
         expect(got.tags, `event ${i} (kind ${w.kind}) tags`).toEqual(wantTags);
         if (w.content.mode === "empty") expect(got.content, `event ${i} content`).toBe("");
         else if (w.content.mode === "literal") expect(got.content, `event ${i} content`).toBe(w.content.value);
