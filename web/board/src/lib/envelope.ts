@@ -15,12 +15,21 @@
 //
 // FAIL CLOSED IS THE WHOLE POINT OF THIS MODULE. ChaCha20-Poly1305 is an AEAD:
 // a Poly1305 tag mismatch means the ciphertext was tampered with OR the key is
-// wrong, and there is no third possibility worth guessing at. So every function
-// here returns null on ANY defect — bad base64, a body too short to hold a nonce
-// and a tag, a wrong CEK, a flipped ciphertext byte, a flipped tag byte, JSON
-// that does not parse, a payload that is not a JSON object. Nothing here ever
-// returns a partial result, a best-effort string, or the raw ciphertext, and
-// nothing here throws: a null propagates to the placeholder in the UI.
+// wrong, and there is no third possibility worth guessing at. So every READ
+// function here returns null on ANY defect — bad base64, a body too short to
+// hold a nonce and a tag, a wrong CEK, a flipped ciphertext byte, a flipped tag
+// byte, JSON that does not parse, a payload that is not a JSON object. Nothing
+// on the read side ever returns a partial result, a best-effort string, or the
+// raw ciphertext, and nothing there throws: a null propagates to the
+// placeholder in the UI.
+//
+// THE SEAL HALF (ready-191) IS THE OPPOSITE SHAPE, DELIBERATELY. sealContent /
+// sealCardPayload / sealStatusPayload THROW on a defect and never return a
+// value that could be mistaken for a sealed body. A read that fails renders a
+// placeholder — visible, recoverable, harmless. A WRITE that "fails softly"
+// would hand its caller something to publish, and the only thing left to
+// publish is the plaintext: the exact leak the confidential board exists to
+// prevent. There is no null branch here to be tempted by.
 //
 // ON THE AEAD IMPLEMENTATION. ready-c4b took @noble/ciphers as a runtime
 // dependency for the open; this merge keeps ./chacha20poly1305 instead, because
@@ -34,7 +43,7 @@
 
 import type { NostrEvent } from "./nostrevent";
 import { tagValue } from "./nostrevent";
-import { open as aeadOpen } from "./chacha20poly1305";
+import { open as aeadOpen, seal as aeadSeal } from "./chacha20poly1305";
 import { hexToBytes } from "./sha256";
 import { hmacSha256 } from "./hmac";
 
@@ -310,6 +319,144 @@ export function labelToken(ltk: Uint8Array, label: string): string {
   return Array.from(hmacSha256(ltk, new TextEncoder().encode(label)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// ── the SEAL half (ready-191) ───────────────────────────────────────────────
+//
+// Everything above opens what rd sealed. Everything below seals what rd will
+// open. It is the same wire contract read backwards — docs/design/
+// confidential-boards-envelope.md §3 — and its Go counterpart is
+// pkg/sync/envelope.go's sealContent / sealCardPayload / sealStatusPayload /
+// encMarkerTags, function for function.
+//
+// WHY THE BROWSER NEEDS IT AT ALL: `rd init` defaults to CONFIDENTIAL, so a
+// board page that cannot seal is read-only on every board created the normal
+// way. board/writeevents.ts refused such a write outright rather than
+// downgrade the card to plaintext (the right call, and still the fallback when
+// no key is held); this is what makes the refusal unnecessary when a grant or a
+// key-bearing link put the CEK in memory.
+
+/**
+ * SealEnvelope is the per-board sealing material a confidential WRITE needs —
+ * the browser counterpart of pkg/sync/envelope.go's Envelope struct.
+ *
+ * It is INJECTED, never derived here. The CEK reaches the page only through
+ * lib/keyring.ts (an owner-signed grant unwrapped by the NIP-07 signer) or
+ * lib/fragment.ts (a key-bearing link the reader's own rd minted). This module
+ * does no ECDH, holds no secret key, and cannot mint a CEK — see keyunwrap.ts's
+ * header for why that boundary is the whole architecture.
+ */
+export interface SealEnvelope {
+  /** the board's 32-byte current-epoch content-encryption key. */
+  cek: Uint8Array;
+  /** the epoch that CEK belongs to; emitted clear as ["cek_epoch","<epoch>"].
+   * BoardKeyring.currentEpoch() is the value to pass — see its doc for why the
+   * HIGHEST held epoch, and not the newest grant seen, is what a write seals
+   * under. */
+  epoch: number;
+  /** the board's label-token key, when this reader holds one. Null/absent means
+   * NO clear `l` tag is emitted at all (never a plaintext one) — matching
+   * BuildCardEvent's `case spec.Enc != nil:` branch exactly. */
+  ltk?: Uint8Array | null;
+}
+
+/** encodeBase64Std is the inverse of decodeBase64Std: Go's base64.StdEncoding,
+ * padded, standard alphabet. */
+export function encodeBase64Std(b: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return btoa(bin);
+}
+
+/**
+ * randomNonce returns a fresh 12-byte AEAD nonce from the platform CSPRNG.
+ *
+ * A ChaCha20-Poly1305 nonce REPEATED under the same key is a total break: two
+ * bodies sealed under one (key, nonce) pair leak their XOR and hand an attacker
+ * the Poly1305 authenticator. So there is exactly one source here, and it
+ * THROWS when the platform has no crypto.getRandomValues rather than falling
+ * back to Math.random — a fallback would produce a sealed-looking card whose
+ * confidentiality is fiction, and nothing downstream could tell.
+ */
+function randomNonce(): Uint8Array {
+  const c = globalThis.crypto;
+  if (!c || typeof c.getRandomValues !== "function") {
+    throw new Error("envelope: no crypto.getRandomValues — refusing to seal without a CSPRNG");
+  }
+  return c.getRandomValues(new Uint8Array(NONCE_SIZE));
+}
+
+/**
+ * sealContent is the inverse of openContent and the exact wire form
+ * pkg/sync/envelope.go's sealContent produces:
+ *
+ *	base64Std( nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce, plaintext) )
+ *
+ * `nonce` is injectable ONLY so a test can pin a known-answer ciphertext; every
+ * production call omits it and gets a fresh CSPRNG nonce. Throws on a CEK that
+ * is not 32 bytes, a nonce that is not 12, or a missing CSPRNG.
+ */
+export function sealContent(cek: Uint8Array, plaintext: Uint8Array, nonce?: Uint8Array): string {
+  if (cek.length !== 32) throw new Error(`envelope: seal: CEK must be 32 bytes, got ${cek.length}`);
+  const n = nonce ?? randomNonce();
+  if (n.length !== NONCE_SIZE) throw new Error(`envelope: seal: nonce must be ${NONCE_SIZE} bytes, got ${n.length}`);
+  const ct = aeadSeal(cek, n, plaintext);
+  const out = new Uint8Array(n.length + ct.length);
+  out.set(n, 0);
+  out.set(ct, n.length);
+  return encodeBase64Std(out);
+}
+
+/**
+ * encodeCardPayload produces the JSON blob a confidential card seals — the same
+ * bytes pkg/sync/envelope.go's cardPayload marshals, including its `omitempty`
+ * behaviour: `context`, `waiting_on` and `labels` are OMITTED when empty, and
+ * `title` is always present even when "".
+ *
+ * `title` being unconditional is load-bearing on BOTH sides: decodeCardPayload
+ * here and cardPayloadWellFormed in Go both treat a payload with no `title` key
+ * as not-a-card-payload and fail closed. A browser-sealed card that dropped an
+ * empty title would decrypt successfully and then be REJECTED by rd as
+ * malformed, rendering [encrypted] over content that was never encrypted from
+ * the reader in the first place.
+ *
+ * (Go's json.Marshal additionally escapes the three HTML-significant runes as
+ * < / > / &; JSON.stringify emits them literally. That difference
+ * lives entirely INSIDE the ciphertext, and both sides' parser accepts either
+ * spelling, so the payloads are semantically identical without being
+ * byte-identical. Nothing compares sealed bytes across implementations — they
+ * cannot be compared anyway: the nonce is fresh per seal.)
+ */
+export function encodeCardPayload(pl: CardPlaintext): Uint8Array {
+  const obj: Record<string, unknown> = { title: pl.title };
+  if (pl.context !== "") obj.context = pl.context;
+  if (pl.waitingOn !== "") obj.waiting_on = pl.waitingOn;
+  if (pl.labels.length > 0) obj.labels = pl.labels;
+  return new TextEncoder().encode(JSON.stringify(obj));
+}
+
+/** sealCardPayload marshals + seals the card free-text blob (title, context,
+ * waiting_on, and the PLAINTEXT labels for member-side rendering) into the
+ * Content wire string. Mirrors envelope.go's sealCardPayload. */
+export function sealCardPayload(env: SealEnvelope, pl: CardPlaintext, nonce?: Uint8Array): string {
+  return sealContent(env.cek, encodeCardPayload(pl), nonce);
+}
+
+/** sealStatusPayload marshals + seals a status event's close/change reason.
+ * Mirrors envelope.go's sealStatusPayload: `{"reason":...}`, with `reason`
+ * always present (no omitempty on the Go struct). */
+export function sealStatusPayload(env: SealEnvelope, reason: string, nonce?: Uint8Array): string {
+  return sealContent(env.cek, new TextEncoder().encode(JSON.stringify({ reason })), nonce);
+}
+
+/** encMarkerTags returns the two — and only two — always-clear marker tags a
+ * confidential card/status event carries: ["enc","1"] and
+ * ["cek_epoch","<epoch>"]. Mirrors envelope.go's encMarkerTags, same order. */
+export function encMarkerTags(env: SealEnvelope): string[][] {
+  return [
+    [TAG_ENC, ENC_VERSION],
+    [TAG_CEK_EPOCH, String(env.epoch)],
+  ];
 }
 
 export const __internal = { encWellFormed, hexToBytes };

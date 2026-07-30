@@ -8,7 +8,9 @@
 // deterministically: who is refused, when the refusal happens (BEFORE anything
 // is signed), and what the writer does when the relay says no.
 import { describe, expect, it, vi } from "vitest";
+import type { BoardDecryptor, SealEnvelope } from "../lib/envelope";
 import { signNostrEvent, xOnlyPubkey } from "../lib/schnorrsign";
+import { hexToBytes } from "../lib/sha256";
 import type { NostrEvent } from "../lib/nostrevent";
 import { RelayRejectedError, SignerMismatchError, type Nip07Signer } from "../lib/publish";
 import { LEVEL_CONTRIBUTOR, LEVEL_MAINTAINER } from "../lib/rolegrant";
@@ -109,7 +111,7 @@ describe("who may write (client-side, and BEFORE anything is signed)", () => {
     await expect(w.moveStatus("seed-1", "active")).rejects.toBeInstanceOf(NotAuthorizedError);
   });
 
-  it("a CONFIDENTIAL board is refused rather than downgraded to plaintext", async () => {
+  it("a CONFIDENTIAL board with NO key held is refused rather than downgraded to plaintext", async () => {
     const signEvent = vi.fn();
     const w = makeWriter({ confidential: true, signer: { signEvent } });
     expect(w.whyReadOnly()).toMatch(/seals its free text/i);
@@ -205,5 +207,97 @@ describe("§17.2 — two rapid writes to the same item are serialized", () => {
       .history!.map((h) => h.timestamp);
     expect(new Set(stamps).size).toBe(stamps.length);
     expect(w.items().get("seed-1")!.status).toBe("done");
+  });
+});
+
+describe("a CONFIDENTIAL board the session HOLDS the key for (ready-191)", () => {
+  // The board is confidential and this session holds its CEK — from a grant
+  // addressed to this key, or from a key-bearing link. The writer must then SEAL
+  // rather than refuse; refusing here is what made every board created by a
+  // plain `rd init` read-only in the browser.
+  const CEK = hexToBytes("11".repeat(32));
+  const LTK = hexToBytes("22".repeat(32));
+  const enc: SealEnvelope = { cek: CEK, epoch: 1, ltk: LTK };
+  const coord = `30301:${OWNER}:${BOARD_D}`;
+  const decryptor: BoardDecryptor = {
+    cek: (c, epoch) => (c === coord && epoch === 1 ? CEK : null),
+  };
+
+  /** A confidential seed built with the SAME buildFullCreate the writer itself
+   * uses, run with the enc envelope — so the snapshot is genuinely sealed rather
+   * than a plaintext card wearing an enc tag. */
+  function confidentialWriter(over: Partial<ConstructorParameters<typeof NostrBoardWriter>[0]> = {}) {
+    const item: Item = {
+      id: "seed-1",
+      msg_id: "",
+      title: "Sealed seed",
+      context: "sealed body",
+      type: "task",
+      priority: "p2",
+      status: "inbox",
+      for: OWNER,
+      created_at: 0n,
+      updated_at: 0n,
+    };
+    const snapshot = buildFullCreate(
+      {
+        signer: OWNER,
+        boardAuthor: OWNER,
+        boardD: BOARD_D,
+        boardTitle: BOARD_D,
+        items: new Map(),
+        issueEventIds: new Map(),
+        createdAt: 1_780_000_000,
+        confidential: true,
+        enc,
+      },
+      item,
+    ).map((b) => signNostrEvent({ created_at: b.created_at, kind: b.kind, tags: b.tags, content: b.content }, SECRET));
+    return new NostrBoardWriter({
+      signerPubkey: OWNER,
+      signer: realSigner(),
+      board: { ownerPubkey: OWNER, boardD: BOARD_D, title: BOARD_D },
+      relays: [RELAY],
+      snapshot,
+      grantLevels: new Map([[OWNER, LEVEL_MAINTAINER]]),
+      publishOptions: { socketFactory: fakeRelay(true), timeoutMs: 2000 },
+      confidential: true,
+      enc,
+      decryptor,
+      ...over,
+    });
+  }
+
+  it("is NOT read-only, and a status move round-trips through the writer's own view", async () => {
+    const w = confidentialWriter();
+    expect(w.whyReadOnly()).toBeUndefined();
+    await w.claim("seed-1", "mine now");
+    const item = w.items().get("seed-1")!;
+    expect(item.status).toBe("active");
+    expect(item.title).toBe("Sealed seed");
+    expect(item.context).toBe("sealed body");
+    expect(item.redacted).toBeFalsy();
+  });
+
+  it("WITHOUT the decryptor the writer refuses — it must not republish placeholders", async () => {
+    // The trap this guards: the writer projects its own view to build the next
+    // write from, so a projection told not to decrypt marks every sealed card
+    // Redacted, and rebuilding a card from "[encrypted]" would re-seal the
+    // placeholder AS the item's content, irreversibly. Refusing is correct; the
+    // fix is to hand the writer its keys, which the case above does.
+    const w = confidentialWriter({ decryptor: null });
+    expect(w.items().get("seed-1")!.redacted).toBe(true);
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(WriteRefusedError);
+  });
+
+  it("holding the read key does NOT bypass the write-grant check", async () => {
+    // Read authority and write authority are different questions. A key-bearing
+    // link makes a board readable; it says nothing about whether this pubkey may
+    // write, and the relay will refuse it too.
+    const signEvent = vi.fn();
+    const w = confidentialWriter({ grantLevels: new Map([[OTHER, LEVEL_CONTRIBUTOR]]), signer: { signEvent } });
+    expect(w.whyReadOnly()).toMatch(/no write grant/i);
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(NotAuthorizedError);
+    expect(signEvent).not.toHaveBeenCalled();
   });
 });

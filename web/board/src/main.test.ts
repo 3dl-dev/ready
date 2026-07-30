@@ -50,7 +50,8 @@ import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
 import * as boarddiscoveryModule from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
-import { neverUnwraps } from "./lib/keyunwrap";
+import { fakeNip44Signer } from "./lib/fakesigner";
+import { neverUnwraps, nip07KeyUnwrapper } from "./lib/keyunwrap";
 import {
   makeNip01Relay,
   type Nip01RelayConfig,
@@ -68,8 +69,10 @@ import {
   BOARD_COORD as CONF_COORD,
   BOARD_D as CONF_BOARD_D,
   OWNER_PUB as CONF_OWNER,
+  OWNER_SEC as CONF_OWNER_SEC,
   boardEvent as confBoardEvent,
   cards as confCards,
+  expectedPlaintext as confExpected,
   grants as confGrants,
 } from "./lib/confidential.fixtures";
 import {
@@ -1271,5 +1274,64 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
     // for this key — it is only being outranked.
     const signingWriter = await writerFor(extension(STRANGER), GATE_BOARD, GATE_SNAPSHOT, []);
     expect(signingWriter.whyReadOnly()).toMatch(/no write grant/i);
+  });
+
+  // ── ready-191: the confidential refusal is about the KEY, not the board ────
+  //
+  // Every case above holds `keyUnwrapper: () => neverUnwraps`, so no CEK ever
+  // reaches the page and the confidential board is correctly read-only. That is
+  // half the contract. The other half — the half that made every board created
+  // by a plain `rd init` read-only in the browser — is that a session which DOES
+  // hold the board's key must be able to write, sealed. This case runs the REAL
+  // loadBoardItems with a working unwrapper and asserts it threaded the key all
+  // the way into the writer.
+  it("ready-191: the SAME confidential board becomes writable once the session holds its CEK", async () => {
+    const board: DiscoveredBoard = {
+      coord: CONF_COORD,
+      ownerPubkey: CONF_OWNER,
+      boardD: CONF_BOARD_D,
+      title: "Confidential Board",
+    };
+    const identity = extension(CONF_OWNER);
+    // The extension signs as the confidential board's owner — publish.ts checks
+    // the returned event was signed as built, so the identity and the signer must
+    // be the same key.
+    const confSign = vi.fn(async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+      signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, CONF_OWNER_SEC),
+    );
+    window.nostr = { getPublicKey: async () => CONF_OWNER, signEvent: confSign } as unknown as Window["nostr"];
+
+    const deps: BoardDeps = {
+      loadRelays: async () => [],
+      fetchEvents: async () => CONF_SNAPSHOT,
+      // The real grant → NIP-44 unwrap → CEK path, with a spec-validated NIP-44
+      // v2 implementation standing in for the extension (nip44ref.test.ts).
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
+    };
+    const { writers } = await loadBoardItems([board], [], confGrants, identity, deps, () => {});
+    const writer = writers.get(board.coord)!;
+
+    // NOT read-only — and specifically not for the confidentiality reason, which
+    // is the branch this item narrowed.
+    expect(writer.whyReadOnly()).toBeUndefined();
+
+    // ANTI-TAUTOLOGY: the writer really did decrypt, so the write below rebuilds
+    // the card from REAL content rather than being refused as redacted.
+    const conf1 = confExpected.find((e) => e.id === "conf-001")!;
+    expect(writer.items().get("conf-001")!.title).toBe(conf1.title);
+    expect(writer.items().get("conf-001")!.redacted).toBeFalsy();
+
+    // The only thing left to stop the write is the empty relay list, which stops
+    // it AFTER the events are built and signed.
+    await expect(writer.setPriority("conf-001", "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(confSign).toHaveBeenCalled();
+
+    // What it signed was SEALED: no clear title tag, the enc markers present, and
+    // the item's real title nowhere in the serialized event.
+    const card = (await confSign.mock.results[0].value) as NostrEvent;
+    expect(card.kind).toBe(30302);
+    expect(card.tags.some((t) => t[0] === "title")).toBe(false);
+    expect(card.tags).toContainEqual(["enc", "1"]);
+    expect(JSON.stringify(card)).not.toContain(conf1.title);
   });
 });
