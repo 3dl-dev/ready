@@ -32,6 +32,8 @@ import type { BoardDecryptor, EncryptedBoardSet } from "./envelope";
 import { encodeItem } from "./state";
 import type { Item } from "./state";
 import { named, labelFilter, apply, allNames } from "./views";
+import { apply as boardApply, gatesFilter as boardGatesFilter } from "../board/views";
+import { toUIItem } from "./itemsource";
 import { hexToBytes } from "./sha256";
 import { deriveBoardKeyring, type BoardKeyring } from "./keyring";
 // The PRODUCTION confidentiality wiring, imported — not reimplemented. See
@@ -258,6 +260,22 @@ describe("fold.vectors.json conformance", () => {
       const want = [...(v.expect.views[viewName] ?? [])].sort();
       expect(got).toEqual(want);
     }
+    // ready-e51 (round 3): the SECOND port of the gates predicate — board/views.ts,
+    // the one the gate RAIL and the detail pane's ruling banner both read — held
+    // to the SAME Go-generated id set as lib/views.ts above.
+    //
+    // I filed this gap (ready-86b) with the reason "different Item shape, needs
+    // an adapter", and then did not try it. The adapter is PRODUCTION CODE:
+    // itemsource.toUIItem is what main.ts's fold already maps every projected
+    // item through before the UI sees it, so this asserts the rail's membership
+    // over exactly the objects the rail is handed at runtime. Before this, the
+    // only thing holding that port to the Go authority was a hand-written 9-row
+    // TS-to-TS agreement table in board/views.test.ts — and this predicate has
+    // already drifted once (ready-e0e), in this exact port.
+    expect(sortedIds(boardApply(orderedItems.map((i) => toUIItem(i)), boardGatesFilter()) as unknown as Item[])).toEqual(
+      [...(v.expect.views["gates"] ?? [])].sort(),
+    );
+
     // Every view the fold produced must be one the vector actually asserts on
     // — an unasserted view is a silent coverage hole (mirrors the Go
     // suite's "view %q is not asserted by this vector" check).

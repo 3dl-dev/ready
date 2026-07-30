@@ -21,12 +21,19 @@
 // The live relay + real browser + real rd CLI version of this same proof is
 // scripts/live-roundtrip-both-ways.mjs.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { afterLogin, defaultDeps, startLiveUpdates, type BoardDeps, type Identity } from "./main";
+import {
+  afterLogin,
+  defaultDeps,
+  loadBoardItems,
+  startLiveUpdates,
+  type BoardDeps,
+  type Identity,
+} from "./main";
 import { authTransition } from "./lib/auth";
 import { neverUnwraps } from "./lib/keyunwrap";
 import { fetchEventsFromRelays, subscribeToRelays } from "./lib/relay";
 import { makeNip01Relay, type Nip01RelayHandle } from "./lib/nip01relay.fixtures";
-import { eventIdentity, type NostrEvent } from "./lib/nostrevent";
+import type { NostrEvent } from "./lib/nostrevent";
 import { signNostrEvent, xOnlyPubkey } from "./lib/schnorrsign";
 import type { Item } from "./lib/state";
 import { buildFullCreate, buildWrite, type WriteEnv } from "./board/writeevents";
@@ -273,6 +280,99 @@ describe("ready-e51: an item the rd CLI created after load is WRITABLE, not mere
   });
 });
 
+describe("ready-e51: an event the initial load already folded is not folded a second time", () => {
+  // The per-board `if (b.seen.has(key)) return;` guard in startLiveUpdates was
+  // unwitnessed — disabling it left the whole suite green, INCLUDING the case
+  // above named "does not double-apply the events the initial load already
+  // folded". That case asserts on rendered card ids, and the fold dedups by
+  // event id (§3.2), so the PROJECTION is identical either way. What the guard
+  // actually buys is a bounded LiveBoard.events: the live REQ's `since` is the
+  // newest instant already folded and NIP-01 `since` is INCLUSIVE, so the
+  // subscription is re-served that instant the moment it opens and again on
+  // every reconnect. Without the guard each copy is appended, forever, on a page
+  // left open — and every fold thereafter re-verifies a signature list that only
+  // grows.
+  //
+  // THE EVENT LIST IS AN EXPORTED SEAM. An earlier revision of this case
+  // hand-built a fake board, on the claim that b.events/b.seen are internal to
+  // startLiveUpdates and nothing else exposes them. That was false, and it was
+  // false about the module under test: loadBoardItems is EXPORTED and RETURNS
+  // the LiveBoard array — the real events, the real `seen` set, the real
+  // `newest` cursor, the real ItemSource and the real NostrBoardWriter, in
+  // exactly the state a real load leaves them. So the case drives that, and the
+  // only substitute left is the socket.
+  const board = { coord: COORD, ownerPubkey: OWNER, boardD: BOARD_D, title: "Live Board" };
+
+  it("is not appended to the board's event list and does not re-fold it", async () => {
+    const { deps, handle } = liveDeps([...SNAPSHOT]);
+    const { live } = await loadBoardItems([board], [RELAY], SNAPSHOT, identity, deps, () => {});
+
+    // PRECONDITIONS, asserted rather than assumed: one live board, whose event
+    // list and cursor are what the REAL load produced from the REAL fetch.
+    expect(live).toHaveLength(1);
+    const b = live[0];
+    const loaded = b.events.length;
+    // Exactly the board's ITEM stream, which is a strict subset of SNAPSHOT: the
+    // 30301 definitions and the kind-1621 issue root are outside BOARD_KINDS /
+    // carry no board "a" tag, so the production filter never fetched them.
+    expect(new Set(b.events.map((e) => e.id))).toEqual(
+      new Set(SNAPSHOT.filter((e) => e.kind === 30302 || e.kind === 1630).map((e) => e.id)),
+    );
+    expect(loaded).toBeGreaterThan(0);
+    expect(b.items.map((i) => i.id)).toEqual(["live-1"]);
+    const newestLoaded = b.events.reduce((max, e) => (e.created_at > max ? e.created_at : max), 0);
+    expect(b.newest).toBe(newestLoaded);
+
+    const emitted: string[][] = [];
+    const sub = startLiveUpdates({
+      boards: live,
+      relays: [RELAY],
+      subscribe: deps.subscribeEvents!,
+      onItems: (next) => emitted.push(next.map((i) => i.id)),
+      coalesceMs: 5,
+    });
+    try {
+      await settleLive();
+      // The live REQ's OWN backfill has already happened here: `since` is
+      // inclusive, so the relay answered it with the newest instant the load had
+      // folded. Nothing was appended and nothing was re-folded.
+      expect(b.events).toHaveLength(loaded);
+      expect(emitted).toEqual([]);
+
+      // …and again as a reconnect or a re-publish would deliver it. NOT
+      // TRIVIALLY DEAF: the relay reports it reached exactly one OPEN
+      // subscription, so "nothing happened" is not a socket that never spoke.
+      const alreadyFolded = b.events.find((e) => e.kind === 30302 && e.created_at === newestLoaded)!;
+      expect(handle.push(alreadyFolded)).toBe(1);
+      await settleLive();
+      expect(b.events).toHaveLength(loaded);
+      expect(emitted).toEqual([]);
+      // (Nothing is asserted about the writer here: NostrBoardWriter.absorb
+      // content-dedups its own log, so a duplicate reaching it is invisible at
+      // this seam by construction. The unbounded growth the guard prevents is in
+      // b.events, which is the list asserted above.)
+
+      // THE OTHER HALF: a genuinely new event on the same subscription IS
+      // appended, folded, and absorbed into the writer whose snapshot the next
+      // write is built from.
+      // Same subset the load fetched — a 30301 or a 1621 published alongside is
+      // outside this subscription's filter and would be delivered to nobody.
+      const fresh = created("live-2", "Created by rd after load", 1_780_000_200).filter(
+        (e) => e.kind === 30302 || e.kind === 1630,
+      );
+      expect(fresh).toHaveLength(2);
+      for (const e of fresh) expect(handle.push(e)).toBe(1);
+      await settleLive();
+      expect(b.events).toHaveLength(loaded + fresh.length);
+      expect(emitted.length).toBeGreaterThan(0);
+      expect([...emitted.at(-1)!].sort()).toEqual(["live-1", "live-2"]);
+      expect(b.writer.items().has("live-2")).toBe(true);
+    } finally {
+      sub.close();
+    }
+  });
+});
+
 describe("ready-4359: a multi-board view re-folds only what changed", () => {
   // Driven through the exported startLiveUpdates rather than afterLogin, because
   // the assertion is about which board's FOLD ran — an observation the DOM cannot
@@ -340,73 +440,6 @@ describe("ready-4359: a multi-board view re-folds only what changed", () => {
     // …and the emitted projection still carries BOTH boards' items: reusing a
     // board's last fold must not drop it from the view.
     expect(emitted.at(-1)).toEqual(["item-a", "item-b"]);
-    sub.close();
-  });
-
-  // ready-e51: the per-board `if (b.seen.has(key)) return;` guard in
-  // startLiveUpdates was unwitnessed — disabling it left the whole suite green,
-  // INCLUDING the case named "does not double-apply the events the initial load
-  // already folded". That case asserts on rendered card ids, and the fold dedups
-  // by event id (§3.2), so the PROJECTION is identical either way: no assertion
-  // made on the DOM can see this property. What the guard actually buys is a
-  // bounded b.events — without it, every event the inclusive `since` boundary
-  // re-serves is appended again, forever, on a page left open, and re-absorbed
-  // into the writer. So the witness has to observe the EVENT LIST, which is what
-  // the fakeBoard harness exposes.
-  it("an event the initial load already folded is not appended, absorbed, or re-folded", async () => {
-    const a = fakeBoard(`30301:${OWNER}:a`, "item-a");
-    const { ctor, handle } = makeNip01Relay({ events: [] });
-    const alreadyFolded = sign({
-      created_at: 1_780_000_700,
-      kind: 30302,
-      tags: [
-        ["d", "item-a"],
-        ["a", a.board.coord],
-      ],
-      content: "",
-    });
-    // The state a real load leaves behind: this event is already in b.events and
-    // b.seen, and b.newest sits exactly on it — so the live REQ's INCLUSIVE
-    // `since` boundary serves it right back.
-    a.board.events.push(alreadyFolded);
-    a.board.seen.add(eventIdentity(alreadyFolded));
-    a.board.newest = alreadyFolded.created_at;
-
-    const sub = startLiveUpdates({
-      boards: [a.board],
-      relays: [RELAY],
-      subscribe: (relays, filter, opts) => subscribeToRelays(relays, filter, { ...opts, webSocketCtor: ctor }),
-      onItems: () => {},
-      coalesceMs: 5,
-    });
-    await settleLive();
-    const foldsBefore = a.folds();
-
-    handle.push(alreadyFolded);
-    await settleLive();
-
-    expect(a.board.events).toHaveLength(1); // not 2 — the re-served copy was dropped
-    expect(a.absorbed).toHaveLength(0);
-    expect(a.folds()).toBe(foldsBefore);
-
-    // NOT TRIVIALLY DEAF: a genuinely new event on the same subscription IS
-    // appended, absorbed and folded — so "nothing happened" cannot be explained
-    // by the socket never delivering anything.
-    handle.push(
-      sign({
-        created_at: 1_780_000_701,
-        kind: 30302,
-        tags: [
-          ["d", "item-a2"],
-          ["a", a.board.coord],
-        ],
-        content: "",
-      }),
-    );
-    await settleLive();
-    expect(a.board.events).toHaveLength(2);
-    expect(a.absorbed).toHaveLength(1);
-    expect(a.folds()).toBe(foldsBefore + 1);
     sub.close();
   });
 

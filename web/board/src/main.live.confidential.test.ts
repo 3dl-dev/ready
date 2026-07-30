@@ -37,7 +37,7 @@ import { fakeNip44Signer } from "./lib/fakesigner";
 import { nip07KeyUnwrapper } from "./lib/keyunwrap";
 import { makeNip01Relay } from "./lib/nip01relay.fixtures";
 import type { DiscoveredBoard } from "./lib/boarddiscovery";
-import { subscribeToRelays } from "./lib/relay";
+import { fetchEventsFromRelays, subscribeToRelays } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
 import type { Item } from "./board/types";
 import {
@@ -94,10 +94,18 @@ async function openLiveBoard(): Promise<{
   close: () => void;
   loaded: Item[];
 }> {
-  const { ctor, handle } = makeNip01Relay({ events: [] });
+  // ONE relay, honouring filters, for BOTH the load fetch and the live
+  // subscription — the same socket a browser uses for both. An earlier revision
+  // of this file claimed "the only substitute is the socket" while handing
+  // loadBoardItems a `fetchEvents: async () => LOAD_SNAPSHOT` stub, which is a
+  // second substitute and a more consequential one: it hands the load a set no
+  // production filter would have returned. Now the load really asks
+  // {kinds: BOARD_KINDS, "#a": [coord]} of a relay that applies it.
+  const { ctor, handle } = makeNip01Relay({ events: [...LOAD_SNAPSHOT] });
   const deps: BoardDeps = {
     loadRelays: async () => [RELAY],
-    fetchEvents: async () => LOAD_SNAPSHOT,
+    fetchEvents: (relays, filter, opts) =>
+      fetchEventsFromRelays(relays, filter, { ...opts, webSocketCtor: ctor, retries: 0, timeoutMs: 2000 }),
     // The real grant -> NIP-44 unwrap -> CEK path, with the spec-validated
     // NIP-44 v2 reference standing in for the extension (nip44ref.test.ts).
     keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
