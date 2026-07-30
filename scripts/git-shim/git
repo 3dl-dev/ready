@@ -4,31 +4,21 @@
 # they ever reach git.
 #
 # WHY A WRAPPER AT ALL. The hook half of this guard (see
-# scripts/git-hooks/reference-transaction) is bounded by what git will let a
-# hook see, and that bound is DEPTH-DEPENDENT:
+# scripts/git-hooks/reference-transaction) is bounded by what git lets a hook
+# see, and the bound turned out to depend on how deep the shared stack is.
+# This wrapper exists because it has no such bound: it never invokes git for
+# the mutating verbs, so no ref transaction, no reflog rewrite and no index
+# write ever start, whatever the stack depth.
 #
-#   shared stack depth   raw `git stash pop` / `drop` under the hooks alone
-#   ------------------   -------------------------------------------------
-#   0                    fails at stash@{0} resolution, no damage
-#   1                    entry already consumed; the TRAILING ref deletion is
-#                        refused (exit 128), which is the only reason the
-#                        commit stays reachable via refs/stash
-#   >= 2                 exit 0, entry consumed, sibling's content in your
-#                        tree. `pop` at least prints the post-index-change
-#                        warning; `drop` at n >= 2 prints NOTHING AT ALL.
+# WHAT EACH MECHANISM ACTUALLY STOPS IS NOT WRITTEN DOWN IN ANY SHIPPED FILE.
+# Three review rounds of ready-f75 went on that claim in prose and each one
+# was defeated by rewording. It lives in scripts/wt_stash_test.go instead,
+# where it is executable and each mechanism is measured in isolation:
 #
-# Measured on git 2.43 at n = 1, 2, 3 and 5. The live ready clone sits at
-# n = 27, i.e. squarely in the row where the hooks have no ref-level effect
-# whatsoever. A guard that only holds at n <= 1 does not meet the item's done
-# condition ("agents dispatched into worktrees cannot clobber each other"),
-# so this wrapper exists to hold at ARBITRARY depth.
+#   go test ./scripts/ -run TestStashGuard -v
 #
-# HOW IT HOLDS AT ANY DEPTH: it never invokes git for the dangerous verbs. No
-# ref transaction, no reflog rewrite, no index write — the damage git does
-# before any hook runs simply never starts. Depth is irrelevant because git
-# is never reached.
-#
-# WHAT IT DOES NOT COVER, stated plainly:
+# WHAT THIS WRAPPER DOES NOT COVER, which is a property of the wrapper itself
+# rather than a claim about coverage:
 #   * It only intercepts invocations that resolve `git` through PATH. An
 #     absolute path (/usr/bin/git), a shell function, or a program that
 #     execs git by absolute path goes straight past it.
@@ -149,12 +139,6 @@ esac
   echo "this repo SHARES. Two agents dispatched into separate worktrees push onto"
   echo "and pop from the same stack, and a pop by position silently applies and"
   echo "then deletes whichever sibling's entry is on top (observed 2026-07-29)."
-  echo
-  echo "The git hooks alone cannot cover you here: 'git stash apply' opens no ref"
-  echo "transaction, and 'pop'/'drop' rewrite the refs/stash reflog before any"
-  echo "transaction opens. Measured: at a shared-stack depth of 2 or more, raw"
-  echo "'git stash pop' and 'git stash drop' complete at exit 0 under the hooks."
-  echo "This wrapper is what holds at arbitrary depth, by never invoking git."
   echo
   echo "Use the worktree-scoped replacement, whose entries live under"
   echo "refs/worktree/wtstash/N (git stores those per worktree):"

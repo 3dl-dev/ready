@@ -15,14 +15,13 @@
 # the shared stack now gets told, on stderr, at the moment their working tree
 # changed, that the content may be another worktree's.
 #
-# KNOW WHAT THIS IS WORTH. On a shared stack holding two or more entries —
-# the live ready clone holds 27 — this warning is the ENTIRE contribution of
-# the git hooks to apply and pop, because the sibling reference-transaction
-# hook has no ref-level effect at that depth (measured at depth 1, 2, 3 and
-# 5). It is a smoke alarm, not a lock. `git stash drop` at depth 2 or more
-# does not even reach this hook: it touches no working tree, so nothing warns
-# at all. The mechanism that actually holds at arbitrary depth is the PATH
-# shim, scripts/git-shim/git, which never invokes git for these verbs.
+# KNOW WHAT THIS IS WORTH: it is a smoke alarm, not a lock. It cannot stop
+# anything — git ignores its exit code. Do not read its existence, or the
+# existence of the guard as a whole, as a statement of what is prevented; that
+# claim has been deleted from every shipped file after three rounds of getting
+# it wrong. The scope is measured in scripts/wt_stash_test.go:
+#
+#   go test ./scripts/ -run TestStashGuard -v
 #
 # It speaks ONLY for `git stash apply` / `git stash pop`. Every other index
 # write in the repo (add, commit, checkout, reset, merge, rebase, and
@@ -86,19 +85,14 @@ esac
   echo "a DIFFERENT dispatched agent in a different worktree, and your working"
   echo "tree may now contain its content mixed into yours."
   echo
-  echo "No git hook can prevent this: 'git stash apply' opens no ref transaction,"
-  echo "and 'git stash pop' applies before it drops. Verify with 'git status'"
-  echo "and 'git diff'."
-  echo
-  echo "This warning is ALL the git hooks give you here, and on a stack holding"
-  echo "two or more entries it is all they give you for pop as well — the"
-  echo "reference-transaction hook has no ref-level effect at that depth. Treat"
-  echo "it as a smoke alarm, not a lock."
+  echo "This is a warning, not a block — nothing was prevented. Verify with"
+  echo "'git status' and 'git diff' before doing anything else."
   echo
   echo "Use 'git wtstash [push|list|pop|apply|drop|clear]' instead — it is scoped"
-  echo "to refs/worktree/wtstash/N, which git stores per worktree. To make this"
-  echo "case impossible rather than merely audible, put scripts/git-shim earlier"
-  echo "on PATH than the real git."
+  echo "to refs/worktree/wtstash/N, which git stores per worktree. Putting"
+  echo "scripts/git-shim earlier on PATH than the real git is the stronger form."
+  echo "For what each of those actually stops, measure rather than assume:"
+  echo "  go test ./scripts/ -run TestStashGuard -v"
 } >&2
 
 exit 0

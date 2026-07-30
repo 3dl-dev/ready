@@ -5,11 +5,10 @@
 # covers every worktree, past and future).
 #
 # WHAT IT INSTALLS
-#   1. hooks/reference-transaction — aborts writes to refs/stash. This is the
-#      blocking half, and its reach is bounded; see the coverage table below,
-#      which that file carries verbatim.
-#   2. hooks/post-index-change — the detection half: turns the unstoppable
-#      apply/pop case into a LOUD stderr warning.
+#   1. hooks/reference-transaction — aborts ref transactions that write
+#      refs/stash.
+#   2. hooks/post-index-change — warns loudly on stderr when a stash apply or
+#      pop has just rewritten the working tree.
 #   3. hooks/post-checkout — re-asserts the guard on every checkout, and in
 #      particular on `git worktree add`, which git runs post-checkout for.
 #      That is the worktree-creation path, so newly dispatched worktrees pick
@@ -22,46 +21,30 @@
 #   not work: git resolves its own builtins before consulting an alias of the
 #   same name, so `alias.stash` is silently ignored (measured, not assumed).
 #
-# COVERAGE. The table is not prose: every row is re-derived on every test run
-# by TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage, which runs each
-# verb against a really-installed guard and fails if the table and the
-# measurement disagree. An earlier version of this file asserted coverage it
-# did not have.
+# THIS SCRIPT MAKES NO COVERAGE CLAIM, AND NEITHER DOES ANYTHING IT INSTALLS.
+# Three review rounds of ready-f75 went on a per-verb claim written in prose —
+# a false one, then a blacklist of its phrasings, then a whitelist of claim
+# words — each defeated by rewording. The claim has been deleted rather than
+# maintained. "Installed" here means "the hook was measured to fire" (see
+# SELF-VERIFICATION below) and NOTHING MORE. It does not mean an agent is safe.
 #
-# ready-f75 coverage table BEGIN
-#   mechanism: git-hooks
-#     blocked-pre-damage: push save clear
-#     not-blocked: apply pop drop
-#     depth-limit: REF-EFFECTIVE ONLY AT DEPTH <= 1. At a shared-stack depth
-#       of 1 the trailing refs/stash deletion is refused, but the entry has
-#       already left `git stash list` by then; the refusal only keeps the
-#       commit reachable via refs/stash. At depth 2 or more there is no
-#       ref-level effect whatsoever — exit 0, entry consumed, sibling content
-#       in the caller's tree. Measured at depth 1, 2, 3 and 5. The live ready
-#       clone sits at depth 27, i.e. in the row with no ref-level effect, so
-#       at realistic depth the post-index-change warning is the whole of the
-#       hooks' coverage — and for drop at depth >= 2 there is not even that.
-#   mechanism: path-shim
-#     blocked-pre-damage: push save apply pop drop clear
-#     not-blocked: (none)
-#     depth-limit: none — scripts/git-shim/git never invokes git for these
-#       verbs, so shared-stack depth is irrelevant. It applies only where its
-#       directory is earlier on PATH than the real git, which is a property
-#       of the process that spawns an agent and cannot be installed from
-#       inside this repository the way the hooks can.
-# ready-f75 coverage table END
+# What the guard stops is stated where it is executable, in
+# scripts/wt_stash_test.go:
 #
-# READ THE TWO MECHANISMS TOGETHER, NOT SEPARATELY. "The stash guard is
-# installed" does NOT mean an agent is safe at this repo's stack depth. The
-# hooks make the shared stack ungrowable, which is what stops a NEW cross-
-# worktree entanglement from forming. They do not make consuming the existing
-# 27-entry backlog safe, and at that depth they do not even fail. Only the
-# PATH shim does, and activating it is one line the caller must run:
+#   go test ./scripts/ -run TestStashGuard -v
+#
+# The two mechanisms are measured there SEPARATELY — the hooks with no shim on
+# PATH, the shim with no hooks installed — because an earlier round measured
+# them together and a fail-open shim passed on the hooks' behaviour.
+#
+# The PATH shim is materialised by this script but cannot be activated by it;
+# PATH belongs to the process that spawns an agent. The one line is:
 #
 #   export PATH="$(git rev-parse --git-common-dir)/f75-stash-guard/bin:$PATH"
 #
-# (The installer prints the resolved form. Emptying the backlog, which would
-# make the whole question moot, is owner-reserved data deletion: ready-bef.)
+# (The installer prints the resolved form and reports whether it is on PATH.
+# Emptying the pre-existing stash backlog, which would moot part of this, is
+# owner-reserved data deletion: ready-bef.)
 #
 # WHO RUNS IT — the guard must not depend on a human remembering:
 #   * hooks/post-checkout re-asserts it on every `git worktree add`, which is
@@ -75,10 +58,9 @@
 #   come from one of the three above (in practice: the first test run). git
 #   deliberately provides no way for a repository to install its own hooks at
 #   clone time — that would be arbitrary code execution on `git clone` — so
-#   "zero-step activation on clone" is not achievable and is not claimed. What
-#   is claimed: after any one of those three has run once, every worktree of
-#   the clone is covered, including ones created later, because hooks live in
-#   shared state.
+#   "zero-step activation on clone" is not achievable and is not claimed.
+#   Hooks live in shared state, so one run reaches every worktree of the clone
+#   (TestStashGuard_WorktreeAddReAssertsGuard exercises that path).
 #
 # WHERE IT INSTALLS: the directory git itself will read hooks from, i.e.
 # `git rev-parse --git-path hooks`, which honors core.hooksPath. A previous
@@ -249,11 +231,11 @@ else
 fi
 
 # --- report the state of the SHARED stack ------------------------------
-# The guard makes the shared stack ungrowable. It cannot make an already
-# non-empty stack safe: `git stash apply`/`pop` of a PRE-EXISTING entry opens
-# no ref transaction and no hook can stop it. Emptying the stack is data
-# deletion and is owner-reserved (ready-bef), so this reports and does not
-# act.
+# A non-empty shared stack is the standing hazard: every entry on it belongs
+# to some worktree, and any worktree can consume it. Emptying the stack is
+# data deletion and is owner-reserved (ready-bef), so this reports and does
+# not act. It reports the DEPTH — a fact — and points at the tests; it does
+# not tell the operator which verbs are safe.
 stack_depth="$(git stash list 2>/dev/null | wc -l | tr -d ' ')"
 shim_on_path=no
 if command -v git >/dev/null 2>&1 && [[ "$(command -v git)" == "$SHIM_DIR/git" ]]; then
@@ -262,52 +244,48 @@ fi
 
 if [[ "${stack_depth:-0}" -gt 0 && "$MODE" != "quiet" ]]; then
   warn "ready-f75 stash guard: the SHARED stash stack still holds $stack_depth entr$([[ "$stack_depth" == 1 ]] && echo y || echo ies)."
-  warn "  No new entry can be pushed onto it any more, so it can only shrink."
-  warn "  But the hooks cannot stop 'git stash apply', 'pop' or 'drop' against one"
-  warn "  of those entries — apply/pop would dump another worktree's old content"
-  warn "  into your tree, and drop removes an entry before any hook runs."
-  if [[ "${stack_depth:-0}" -ge 2 ]]; then
-    warn "  AT THIS DEPTH ($stack_depth >= 2) THE HOOKS HAVE NO REF-LEVEL EFFECT AT ALL:"
-    warn "  raw 'git stash pop' and 'git stash drop' exit 0 and consume an entry, and"
-    warn "  drop does so without printing anything. Only at depth 1 does the trailing"
-    warn "  ref deletion get refused, and even then the entry is already consumed."
-  fi
+  warn "  Those entries belong to whichever worktree created them, and any worktree"
+  warn "  can consume them. Installing this guard does NOT make raw 'git stash' safe"
+  warn "  against them, and this script will not tell you which verbs it stops —"
+  warn "  that has been wrong in writing three times. Measure it instead:"
+  warn "    go test ./scripts/ -run TestStashGuard -v"
+  warn "  Use 'git wtstash' (per-worktree) or commit WIP on your own branch."
   if [[ "$shim_on_path" == yes ]]; then
-    warn "  The PATH shim IS active, so those verbs are refused before git runs."
+    warn "  The PATH shim IS on PATH in this shell."
   else
-    warn "  The PATH shim is NOT active. To make those verbs impossible at any depth:"
+    warn "  The PATH shim is NOT active. To activate it for this shell:"
     warn "    export PATH=\"$SHIM_DIR:\$PATH\""
   fi
-  warn "  Otherwise use 'git wtstash' and do not run raw 'git stash apply'/'pop'/'drop'."
   warn "  Emptying the backlog is owner-reserved data deletion: ready-bef."
 fi
 
 case "$MODE" in
   verbose)
-    say "ready-f75 stash guard ACTIVE (verified: a guarded ref write was refused by the hook)"
+    say "ready-f75 stash guard INSTALLED (verified: a guarded ref write was refused by the hook)"
     say "  hooks dir:  $HOOKS_DIR"
     for n in "${HOOK_NAMES[@]}"; do say "    $n"; done
     say "  git wtstash -> $GUARD_DIR/wt-stash.sh  (per-worktree, refs/worktree/wtstash/*)"
     say "  shared stack depth: ${stack_depth:-0}"
-    say ""
-    say "  hooks:     stop 'git stash push', 'save' and 'clear' before any damage."
-    say "             They cannot stop 'git stash apply', 'pop' or 'drop', and their"
-    say "             refusal on pop/drop is ref-effective only at stack depth 1."
-    say "  PATH shim: stops every one of those verbs at any depth, by never running"
-    say "             git — but ONLY where it is on PATH, which this script cannot"
-    say "             do for you. Currently on PATH: $shim_on_path"
+    say "  PATH shim: materialised at $SHIM_DIR"
+    say "             This script cannot put it on PATH for you; PATH belongs to"
+    say "             the process that spawns an agent. Currently on PATH: $shim_on_path"
     say "             export PATH=\"$SHIM_DIR:\$PATH\""
-    say "  Per-verb measurements: docs/ops/shared-git-state-audit.md"
+    say ""
+    say "  This script does not state what the guard stops. That claim was wrong"
+    say "  in writing three times, so it was deleted rather than maintained. The"
+    say "  scope is executable and lives in scripts/wt_stash_test.go:"
+    say "    go test ./scripts/ -run TestStashGuard -v"
     ;;
   new-worktree)
-    warn "ready-f75 stash guard is active in this repo: raw 'git stash' push is"
-    warn "  refused because refs/stash is shared across every worktree. Use"
-    warn "  'git wtstash' (push|list|pop|apply|drop|clear) or commit WIP on your"
-    warn "  own branch. The hooks do NOT stop apply/pop/drop of an existing entry;"
-    warn "  for that, export PATH=\"$SHIM_DIR:\$PATH\""
+    warn "ready-f75 stash guard is installed in this repo, because refs/stash is"
+    warn "  SHARED across every worktree of a clone. Use 'git wtstash'"
+    warn "  (push|list|pop|apply|drop|clear) or commit WIP on your own branch."
+    warn "  Do not assume raw 'git stash' is safe here — run"
+    warn "  'go test ./scripts/ -run TestStashGuard -v' to see what is stopped."
+    warn "  For the strongest form: export PATH=\"$SHIM_DIR:\$PATH\""
     ;;
   verify-only)
-    say "ready-f75 stash guard verified ACTIVE ($HOOKS_DIR)"
+    say "ready-f75 stash guard hooks verified to fire ($HOOKS_DIR)"
     ;;
 esac
 

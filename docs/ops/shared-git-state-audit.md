@@ -36,97 +36,66 @@ another. Where the answer was "maybe", the harm was attempted for real.
 ### 1. `refs/stash` — CONFIRMED HAZARD, the observed incident
 
 `.git/refs/stash`. Shared. This is the incident. Addressed by the guard in
-`scripts/install-git-stash-guard.sh`; exact, measured coverage is carried
-verbatim in `scripts/git-hooks/reference-transaction` and re-derived on every
-test run by `TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage`, which
-runs each verb against an installed guard and fails if the documented verb
-lists and the measured ones differ.
+`scripts/install-git-stash-guard.sh`.
+
+**This document does not state what that guard stops.** Three review rounds of
+ready-f75 were spent on a per-verb coverage claim written in prose — a false
+one, then a blacklist of its own phrasings, then a whitelist of claim words —
+and each was defeated by rewording it. The claim has been **deleted** rather
+than maintained, from this file and from every file that ships. An absent claim
+cannot be an overclaim.
+
+The scope lives in `scripts/wt_stash_test.go`, where it is executable:
 
 ```
-ready-f75 coverage table BEGIN
-  mechanism: git-hooks
-    blocked-pre-damage: push save clear
-    not-blocked: apply pop drop
-    depth-limit: REF-EFFECTIVE ONLY AT DEPTH <= 1. At a shared-stack depth
-      of 1 the trailing refs/stash deletion is refused, but the entry has
-      already left `git stash list` by then; the refusal only keeps the
-      commit reachable via refs/stash. At depth 2 or more there is no
-      ref-level effect whatsoever — exit 0, entry consumed, sibling content
-      in the caller's tree. Measured at depth 1, 2, 3 and 5. The live ready
-      clone sits at depth 27, i.e. in the row with no ref-level effect, so
-      at realistic depth the post-index-change warning is the whole of the
-      hooks' coverage — and for drop at depth >= 2 there is not even that.
-  mechanism: path-shim
-    blocked-pre-damage: push save apply pop drop clear
-    not-blocked: (none)
-    depth-limit: none — scripts/git-shim/git never invokes git for these
-      verbs, so shared-stack depth is irrelevant. It applies only where its
-      directory is earlier on PATH than the real git, which is a property
-      of the process that spawns an agent and cannot be installed from
-      inside this repository the way the hooks can.
-ready-f75 coverage table END
+go test ./scripts/ -run TestStashGuard -v
 ```
 
-#### 1a. Why the hooks stop where they do
+Two tests are the statement, and each hard-codes its expectation and then runs
+raw `git stash` against a really-installed mechanism at a realistic shared-stack
+depth:
 
-| verb | hook-blockable? | measured behaviour with the hooks installed |
-| --- | --- | --- |
-| `git stash push`, `git stash save` | **yes, pre-damage** | ref transaction aborted, exit 128, working tree keeps the change, nothing reaches the stack |
-| `git stash clear` | **yes** | pure ref deletion, aborted, every entry preserved |
-| `git stash apply` | **no** | opens *no* ref transaction. Only `post-index-change` fires, and git ignores its exit code (a hook returning 1 still leaves apply at exit 0 with the tree rewritten). Covered by a loud warning only. |
-| `git stash pop` | **no** | applies *before* it drops; no hook runs before the apply |
-| `git stash drop` | **no** | rewrites the `refs/stash` reflog via `git reflog delete --rewrite --updateref`, which opens no transaction |
-| the same three, on an **empty** stack | **n/a** | fail at `stash@{0}` resolution: exit 1, "No stash entries found.", working tree untouched |
+- `TestStashGuard_HooksBlockPushSaveClearOnlyAtRealisticDepth` — the git hooks,
+  with no PATH shim anywhere.
+- `TestStashGuard_PathShimBlocksEveryMutatingVerbAtAnyDepth` — the PATH shim,
+  with no hooks installed at all.
 
-#### 1b. The depth limit, which is the part that matters here
+**The isolation is the point.** An earlier round measured the shim in a fixture
+that also had the hooks installed, so the hook satisfied the shim's rows and a
+shim with its own fail-open put back still passed. Each mechanism is now
+exercised alone.
 
-The "no" rows above are not uniformly no. Measured under a fully installed
-guard, seeding the stack to depth *n* and then running the raw verb:
+`TestStashGuard_HooksHaveNoRefLevelEffectAtRealisticDepth` separately pins the
+depth dependence that made the hooks' behaviour hard to reason about: what the
+hooks do to `pop` and `drop` is not the same at a one-entry stack as at the
+depth this clone actually runs at.
 
-| shared-stack depth | raw `git stash pop` | raw `git stash drop` |
-| --- | --- | --- |
-| 0 | exit 1 at `stash@{0}` resolution, no damage | exit 1, no damage |
-| 1 | entry already consumed; trailing ref deletion refused, exit 128; commit stays reachable via `refs/stash` | same, exit 128 |
-| 2 | **exit 0**, entry consumed | **exit 0**, entry consumed, *no output at all* |
-| 3 | **exit 0**, entry consumed | **exit 0**, entry consumed, *no output at all* |
-| 5 | **exit 0**, entry consumed | **exit 0**, entry consumed, *no output at all* |
+#### 1a. What the hooks *do* buy, mechanically
 
-So the exit-128 refusal an operator is most likely to *see* while testing —
-the single-entry case — is the only depth at which the hooks touch the ref at
-all, and even there the entry has already left `git stash list`. **The live
-ready clone sits at depth 27.** At that depth the hooks contribute exactly one
-thing to `pop`: the `post-index-change` warning. To `drop` they contribute
-nothing whatsoever, not even a message. Anyone reading "the stash guard is
-installed" as "an agent cannot consume a sibling's entry" is reading it wrong,
-and that is why the sentence is spelled out in the hook header, the installer
-header, the installer's runtime output and this document.
+Not a coverage claim — a description of the mechanism, which is what a reader
+needs in order to decide whether to trust the tests above:
+`reference-transaction` aborts ref transactions that write `refs/stash`, so the
+shared stack does not grow. That is what severs the observed incident: an
+agent's work never reaches shared state, so a sibling can never consume it. The
+residual is an agent consuming a *pre-existing* entry, which shrinks to zero
+once the stack is empty. Emptying the backlog is data deletion and is
+owner-reserved: **ready-bef**. (`git stash list | wc -l` read 27 when ready-bef
+was raised and 26 on 2026-07-30 — see the note at the end of this section.)
 
-What the hooks *do* buy, at every depth, is that the stack is **ungrowable**
-and **unclearable**. Ungrowable is what severs the observed incident: an
-agent's work can never reach shared state, so a sibling's pop can never
-discard it. The residual — an agent consuming a *pre-existing* entry — shrinks
-to zero once the stack is empty. Emptying the 27-entry backlog is data
-deletion and is owner-reserved: **ready-bef**. (The backlog was recorded as 28
-in an earlier round; the item's own evidence listing enumerates `stash@{0}`
-through `stash@{26}`, and `git stash list | wc -l` reads 27. 27 is the number.)
-
-#### 1c. Non-hook mechanisms — evaluated, one adopted
+#### 1b. Non-hook mechanisms — evaluated, one adopted
 
 The done condition is about *agents*, not about git hooks, so mechanisms
 outside git's hook system were measured too.
 
-| mechanism | verdict | measurement |
+| mechanism | verdict | why |
 | --- | --- | --- |
 | `alias.stash` pointing at the safe implementation | **discarded** | git resolves its own builtins before consulting an alias of the same name, so the alias is silently ignored — the builtin runs and nothing indicates the alias existed |
 | `refs/stash` as a symref into the per-worktree `refs/worktree/*` namespace | **discarded** | push and list work, but `git stash pop` then fails with "not a stash reference", which strands work instead of protecting it |
-| **`git` wrapper earlier on PATH** (`scripts/git-shim/git`) | **ADOPTED** | at depth 3, every mutating verb (`push`, `save`, `apply`, `pop`, `drop`, `clear`) exits 1 with the stack still at 3 entries and both the caller's file and the sibling-touched file byte-unchanged. `git stash list`/`show` and every non-stash command pass straight through; `git -C <dir> stash pop` is intercepted too (global options are skipped when locating the subcommand) |
+| **`git` wrapper earlier on PATH** (`scripts/git-shim/git`) | **ADOPTED** | it never invokes git for the mutating verbs, so none of the damage git does before a hook could run ever starts. Behaviour asserted by `TestStashGuard_PathShimBlocksEveryMutatingVerbAtAnyDepth` with the hooks absent |
 | dispatch-level refusal to hand out a worktree while a sibling holds entries | **not available from this repo** | the only worktree-creation hook git offers is `post-checkout`, whose exit status does not affect the outcome of `git worktree add` — it can warn (it does) but it cannot refuse. Refusing would have to live in the dispatch harness, which is not in this repository |
 
-The wrapper holds at arbitrary depth for the mechanical reason that it never
-invokes git for those verbs: no ref transaction, no reflog rewrite, no index
-write, so none of the damage git does before a hook can run ever starts.
-
-Its limits, stated as plainly as its coverage:
+The wrapper's limits, which are properties of the wrapper rather than claims
+about coverage:
 
 - It only intercepts invocations that resolve `git` through `PATH`. An
   absolute path (`/usr/bin/git`), a shell function, or a program that execs
@@ -141,6 +110,25 @@ Its limits, stated as plainly as its coverage:
   process that *spawns* an agent. That is the dispatch harness, which lives
   outside this repo. Wiring it there is the remaining step, and it is filed
   rather than claimed.
+
+#### 1c. The hazard fired twice more while this item was open
+
+Both times it surfaced because an agent volunteered it, which is the property
+the guard exists to remove.
+
+- **2026-07-30, during the dispatch that was working this item.** The ready-5fd
+  implementer ran `git stash -u` to compare gofmt output against a clean tree,
+  not accounting for the stack being repo-global. Its `pop` applied
+  `work/ready-500`'s entry into its tree and conflicted in two files. Verified
+  by the orchestrator at the time: the entry survived at `stash@{0}` (git keeps
+  the entry on a conflicted pop) and nothing was lost.
+- **Later the same day, the same entry was consumed.** `git stash list` read 27
+  with `stash@{0}: WIP on work/ready-500: ...` at the start of this round's
+  work and 26 with a different top entry a few minutes later; no `apply`, `pop`,
+  `drop` or `clear` was run from this worktree. The commit is not lost — it is
+  dangling and reachable by SHA — but nothing warned, nothing failed, and no
+  record of who consumed it exists. Recovery, if wanted, is
+  `git stash store <sha>`; the SHAs are recorded in ready-f75's trail.
 
 ### 2. `git worktree remove --force` on a sibling — CONFIRMED HAZARD, worst of the lot
 

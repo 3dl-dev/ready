@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# reference-transaction — ready-f75 stash guard (blocking half).
+# reference-transaction — ready-f75 stash guard, ref-transaction half.
 #
 # WHY: refs/stash lives in the repository's COMMON .git directory — the one
 # piece of state every `git worktree` of a repo SHARES. Two agents dispatched
@@ -9,63 +9,27 @@
 # agent's pop reverting a sibling's uncommitted files to HEAD, caught only
 # because that agent volunteered it.
 #
-# EXACT COVERAGE. The table below is not prose: every row is re-derived on
-# every test run by TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage,
-# which runs each verb against a really-installed guard on a realistic shared
-# stack and fails if the table and the measurement disagree. An earlier
-# version of this file asserted coverage it did not have, which is why the
-# claim is machine-checked rather than written down.
+# WHAT THIS FILE DOES: it aborts a ref transaction that writes refs/stash.
+# That is the whole of its mechanism, and it is the only thing stated here.
 #
-# ready-f75 coverage table BEGIN
-#   mechanism: git-hooks
-#     blocked-pre-damage: push save clear
-#     not-blocked: apply pop drop
-#     depth-limit: REF-EFFECTIVE ONLY AT DEPTH <= 1. At a shared-stack depth
-#       of 1 the trailing refs/stash deletion is refused, but the entry has
-#       already left `git stash list` by then; the refusal only keeps the
-#       commit reachable via refs/stash. At depth 2 or more there is no
-#       ref-level effect whatsoever — exit 0, entry consumed, sibling content
-#       in the caller's tree. Measured at depth 1, 2, 3 and 5. The live ready
-#       clone sits at depth 27, i.e. in the row with no ref-level effect, so
-#       at realistic depth the post-index-change warning is the whole of the
-#       hooks' coverage — and for drop at depth >= 2 there is not even that.
-#   mechanism: path-shim
-#     blocked-pre-damage: push save apply pop drop clear
-#     not-blocked: (none)
-#     depth-limit: none — scripts/git-shim/git never invokes git for these
-#       verbs, so shared-stack depth is irrelevant. It applies only where its
-#       directory is earlier on PATH than the real git, which is a property
-#       of the process that spawns an agent and cannot be installed from
-#       inside this repository the way the hooks can.
-# ready-f75 coverage table END
+# WHAT IT COVERS IS NOT WRITTEN DOWN, HERE OR ANYWHERE ELSE THAT SHIPS.
+# Three review rounds of ready-f75 were spent on a per-verb coverage claim in
+# prose: a false one, then a blacklist of its phrasings, then a whitelist of
+# claim words. Each was defeated by rewording, because prose drifts from
+# behaviour and no string test catches that. The claim has been deleted.
 #
-# WHY THE HOOKS CANNOT DO BETTER, verb by verb, on git 2.43.
-#   * `git stash apply` performs NO ref transaction, so this hook never runs
-#     for it. The only hook git fires is post-index-change, whose exit code
-#     git ignores — a post-index-change returning 1 still leaves apply at
-#     exit 0 with the working tree already rewritten. The sibling
-#     post-index-change hook turns that unstoppable case into a LOUD warning
-#     instead of a silent one.
-#   * `git stash drop`, and the drop half of `git stash pop`, rewrite the
-#     refs/stash REFLOG first, via `git reflog delete --rewrite --updateref`,
-#     which opens no ref transaction. By the time this hook sees anything the
-#     entry is already off `git stash list`.
-#   * `git stash pop` applies BEFORE it drops, so even where this hook does
-#     fire, the working tree has already changed.
+# The scope of this guard lives in scripts/wt_stash_test.go, where it is
+# executable — hard-coded expectations checked by running raw `git stash`
+# against a really-installed mechanism, each mechanism in isolation:
 #
-# So what the hooks buy is that the shared stack becomes UNGROWABLE and
-# UNCLEARABLE. Ungrowable is what severs the observed incident: agent A's
-# work can no longer reach the shared stack, so agent B's pop can no longer
-# discard it. What remains is an agent consuming a PRE-EXISTING entry, and at
-# the depths this repo actually runs at, only the PATH shim and an empty
-# stack close that. Emptying the backlog is data deletion and is
-# owner-reserved (ready-bef). Once the stack is EMPTY, raw pop/apply/drop all
-# fail at stash@{0} resolution with "No stash entries found." and zero
-# working-tree damage — measured. That is the end state in which every verb
-# is safe with no guard at all.
+#   go test ./scripts/ -run TestStashGuard -v
 #
-# Full per-hazard analysis of the rest of the shared .git directory:
-# docs/ops/shared-git-state-audit.md
+# Read the test names and the assertions. Do not infer coverage from the fact
+# that this hook exists, from its refusal message, or from anything an
+# installer prints. Run the tests.
+#
+# Full per-hazard analysis of the rest of the shared .git directory (a dated
+# measurement record, not a promise): docs/ops/shared-git-state-audit.md
 #
 # Installed by scripts/install-git-stash-guard.sh. Marker line below is what
 # makes installation idempotent and what stops the installer from silently
@@ -147,18 +111,12 @@ verb="$(_invoking_git_cmd)"
         echo "trailing ref deletion only keeps the entry REACHABLE — recover it with"
         echo "  git stash apply refs/stash"
         echo "Check 'git status' and 'git diff' before doing anything else."
-        echo
-        echo "AT A SHARED-STACK DEPTH OF 2 OR MORE YOU WOULD NOT HAVE SEEN THIS AT"
-        echo "ALL: the same command exits 0, consumes the entry, and for drop prints"
-        echo "nothing. Do not read this refusal as protection at depth."
         ;;
     esac
     echo
-    echo "The hooks stop 'git stash push', 'save' and 'clear' before any damage."
-    echo "They cannot stop 'git stash apply', 'pop' or 'drop': neither the apply"
-    echo "nor the reflog-rewrite half opens a ref transaction, so no hook runs."
-    echo "Only the PATH shim (scripts/git-shim) stops those, at any stack depth."
-    echo "Measurements: docs/ops/shared-git-state-audit.md"
+    echo "Do NOT read this refusal as a statement of what is guarded. What this"
+    echo "guard stops is measured, not asserted:"
+    echo "  go test ./scripts/ -run TestStashGuard -v"
   else
     echo
     echo "(That was the guard's own self-check canary. If you see this from"
