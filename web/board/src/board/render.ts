@@ -208,6 +208,17 @@ const COLUMNS = [
   { key: "blocked", label: "Blocked", swatch: "var(--blocked)", target: "blocked" },
 ] as const;
 
+/** What setItems preserves across a live re-render: the text field that had
+ * focus, identified by (class, owning item), plus its unpublished value and
+ * caret. See BoardWorkspace.setItems. */
+interface FocusedField {
+  cls: string;
+  itemId?: string;
+  value: string;
+  start: number | null;
+  end: number | null;
+}
+
 export class BoardWorkspace {
   private items: Item[];
   private readonly container: HTMLElement;
@@ -255,9 +266,70 @@ export class BoardWorkspace {
     document.removeEventListener("keydown", this.onKeydown);
   }
 
+  /**
+   * setItems replaces the projection the board is showing and re-renders.
+   *
+   * ready-4359 made this a LIVE path: it used to be called by nobody (the page
+   * folded once at load and never again), and it is now called every time the
+   * relay pushes something — a change made by the rd CLI on another machine, or
+   * by a second browser. That turns render()'s replaceChildren() into a hazard
+   * it never was before: a fold arriving while the human is halfway through
+   * typing a gate reason would silently destroy what they had typed and move the
+   * caret. Their unpublished keystrokes are the one thing on this page that
+   * exists NOWHERE else, so the refresh preserves them across the rebuild —
+   * value, caret and selection — for the text field that has focus.
+   *
+   * The field is re-found by (class, owning item id), which is stable across a
+   * rebuild in a way that a node identity is not: every write control carries a
+   * class, and the ones mounted per item hang under a [data-id] ancestor. If the
+   * item it belonged to is gone from the new projection, nothing is restored —
+   * there is no field to restore it into.
+   */
   setItems(items: Item[]): void {
+    const focus = this.captureFocusedField();
     this.items = items;
     this.render();
+    this.restoreFocusedField(focus);
+  }
+
+  private captureFocusedField(): FocusedField | undefined {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLInputElement) || !this.container.contains(active)) return undefined;
+    const cls = [...active.classList].find((c) => c.startsWith("act-") || c.startsWith("gate-"));
+    if (cls === undefined) return undefined;
+    return {
+      cls,
+      itemId: (active.closest("[data-id]") as HTMLElement | null)?.dataset.id,
+      value: active.value,
+      start: active.selectionStart,
+      end: active.selectionEnd,
+    };
+  }
+
+  /**
+   * NO SELECTOR INTERPOLATION. Item ids and class names are matched by
+   * comparison, never spliced into a querySelector string: an id arrives from a
+   * relay, so building a selector out of one is an injection primitive on a page
+   * whose whole security model is that relay data is untrusted input.
+   *
+   * More than one element can carry the same data-id — the gate rail's entry and
+   * the card both do — so every candidate is searched and the first that
+   * actually holds the field wins.
+   */
+  private restoreFocusedField(f: FocusedField | undefined): void {
+    if (!f) return;
+    const scopes: Element[] =
+      f.itemId === undefined
+        ? [this.container]
+        : [...this.container.querySelectorAll<HTMLElement>("[data-id]")].filter((n) => n.dataset.id === f.itemId);
+    for (const scope of scopes) {
+      const next = [...scope.querySelectorAll("input")].find((n) => n.classList.contains(f.cls));
+      if (!next) continue;
+      next.value = f.value;
+      next.focus();
+      if (f.start !== null && f.end !== null) next.setSelectionRange(f.start, f.end);
+      return;
+    }
   }
 
   getState(): {

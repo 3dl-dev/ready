@@ -349,3 +349,222 @@ export async function fetchEventsFromRelays(
   }
   return dedupeExact(collected);
 }
+
+// ── LIVE SUBSCRIPTION (ready-4359) ──────────────────────────────────────────
+//
+// fetchEventsFromRelays above is a ONE-SHOT: it walks `until` backwards, EOSEs,
+// closes the socket and resolves. That was the whole read path the board had, so
+// the page folded ONCE at load and never again — a change made anywhere else
+// (the rd CLI on another machine, a second browser) stayed invisible until the
+// human pressed reload. This is the other half: a REQ that is deliberately NOT
+// closed at EOSE, so the relay keeps pushing every later event that matches.
+//
+// WHY IT IS A SEPARATE FUNCTION AND NOT A FLAG ON THE ONE ABOVE. The two have
+// opposite contracts on every axis that matters:
+//
+//   backfill                          live
+//   ────────                          ────
+//   resolves once, then done          never resolves; runs until close()
+//   pages `until` backwards           no paging — see PAGING below
+//   a dead relay is dropped silently  a dead relay is RECONNECTED, forever
+//   rejects if every relay failed     never rejects — by the time it runs there
+//                                     is no caller left to reject to
+//
+// Folding them would mean one function whose behaviour on error, on EOSE and on
+// termination is decided by a boolean, which is how a live path silently
+// inherits "resolve and close the socket".
+//
+// PAGING IS DELIBERATELY ABSENT. `until`-walking answers "give me everything you
+// already hold", which the initial load has just done. A live REQ carries
+// `since` — the newest instant already folded — and asks for what comes after
+// it; the events the relay pushes post-EOSE arrive one at a time and no cap
+// applies to a push. The cap DOES apply to the backlog a RECONNECT asks for
+// (measured on wss://relay.3dl.network: 500 events per REQ), so a page whose
+// socket was down for longer than 500 board events would lose the oldest of that
+// backlog. That bound is stated rather than hidden: a reload recovers it, and
+// nothing below claims otherwise.
+//
+// NO `authors` FILTER, EVER — the same rule the backfill follows (see the
+// comments in ../main.ts): wss://relay.3dl.network's author index under-returns
+// deterministically. A live board subscription is scoped by `#a`, the board
+// coordinate, which every card, status and grant event carries in the CLEAR even
+// on a confidential board (envelope spec §0).
+
+/** LiveSubscription is the handle subscribeToRelays returns: one call,
+ * `close()`, which stops every socket and every pending reconnect. Idempotent —
+ * a page that closes twice (unmount, then navigation) must not throw. */
+export interface LiveSubscription {
+  close(): void;
+}
+
+export interface LiveSubscriptionOptions {
+  /**
+   * Called once per DISTINCT event, in arrival order, and never after close().
+   *
+   * Duplicates — the same event served by two relays, or re-served by a
+   * reconnect whose `since` boundary is inclusive — are collapsed by FULL
+   * CONTENT (eventIdentity), never by the self-declared id, for exactly the
+   * reason fetchFromOneRelay's `collected` map is not id-keyed: nothing at this
+   * layer has verified a signature, so id-keyed dedup would let a forgery
+   * asserting a genuine event's id suppress the genuine event BEFORE the fold
+   * could reject the forgery.
+   */
+  onEvent: (e: NostrEvent) => void;
+  onStatus?: (e: RelayStatusEvent) => void;
+  /** Injectable WebSocket constructor — the real one in the browser, a fake in
+   * tests. Same seam, and same reason, as FetchEventsOptions'. */
+  webSocketCtor?: typeof WebSocket;
+  /** Delay before a dropped socket is re-opened (default 3000ms). A relay that
+   * is unreachable is retried at this interval indefinitely: the page may be
+   * open for hours, a relay that is down now may be up later, and there is no
+   * user-visible operation to fail. */
+  reconnectMs?: number;
+}
+
+const DEFAULT_RECONNECT_MS = 3000;
+
+/**
+ * subscribeToRelays opens a LIVE NIP-01 subscription on every relay in `relays`
+ * and calls `onEvent` for each distinct matching event, including every one the
+ * relay pushes AFTER EOSE. It returns immediately, never throws for a relay that
+ * is unreachable, and never stops on its own.
+ *
+ * `filter.since` is the caller's cursor — normally the newest created_at it has
+ * already folded. It is advanced internally as events arrive, so a reconnect
+ * asks only for what happened while the socket was down instead of replaying the
+ * board. `since` is INCLUSIVE in NIP-01, so the boundary event comes back on
+ * every reconnect; the content-keyed dedup absorbs it.
+ */
+export function subscribeToRelays(
+  relays: readonly string[],
+  filter: NostrFilter,
+  opts: LiveSubscriptionOptions,
+): LiveSubscription {
+  const WS = opts.webSocketCtor ?? (globalThis as unknown as { WebSocket?: typeof WebSocket }).WebSocket;
+  if (!WS) throw new Error("relay: no WebSocket implementation available");
+  const reconnectMs = opts.reconnectMs ?? DEFAULT_RECONNECT_MS;
+
+  const seen = new Set<string>();
+  const sockets = new Set<WebSocket>();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let since = filter.since;
+  let closed = false;
+
+  const later = (relay: string, attempt: number): void => {
+    const t = setTimeout(() => {
+      timers.delete(t);
+      connect(relay, attempt + 1);
+    }, reconnectMs);
+    timers.add(t);
+  };
+
+  const connect = (relay: string, attempt: number): void => {
+    if (closed) return;
+    let ws: WebSocket;
+    let subId = "";
+    let done = false; // this socket has already scheduled its reconnect
+    opts.onStatus?.({ relay, status: "connecting", attempt });
+
+    const retry = (detail: string): void => {
+      if (done) return;
+      done = true;
+      sockets.delete(ws);
+      if (closed) return;
+      opts.onStatus?.({ relay, status: "error", attempt, detail });
+      later(relay, attempt);
+    };
+
+    try {
+      ws = new WS(relay);
+    } catch (err) {
+      // A constructor that throws (a scheme this origin refuses outright) is
+      // still retried on the same schedule — one call per reconnectMs, and the
+      // retry logic stays in one place. There is no socket to register.
+      opts.onStatus?.({ relay, status: "error", attempt, detail: err instanceof Error ? err.message : String(err) });
+      if (!closed) later(relay, attempt);
+      return;
+    }
+    sockets.add(ws);
+
+    ws.onopen = () => {
+      if (closed) {
+        try {
+          ws.close();
+        } catch {
+          /* already closing */
+        }
+        return;
+      }
+      subId = randomSubId();
+      const req: NostrFilter = { ...filter };
+      if (since !== undefined) req.since = since;
+      // NO `limit` and NO `until`: see PAGING above. Either one turns the live
+      // REQ into a bounded sample and silences everything past it.
+      delete req.until;
+      delete req.limit;
+      try {
+        ws.send(JSON.stringify(["REQ", subId, req]));
+        opts.onStatus?.({ relay, status: "open", attempt });
+      } catch (err) {
+        retry(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    ws.onerror = () => retry("socket error");
+    ws.onclose = () => retry("closed");
+
+    ws.onmessage = (msg: MessageEvent) => {
+      if (closed) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(typeof msg.data === "string" ? msg.data : String(msg.data));
+      } catch {
+        return; // ignore malformed frames from an untrusted relay
+      }
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      const [type, ...rest] = parsed as [string, ...unknown[]];
+      if (type === "EVENT" && rest[0] === subId) {
+        const e = rest[1] as NostrEvent;
+        if (!e || typeof e.id !== "string") return;
+        const key = eventIdentity(e);
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (typeof e.created_at === "number" && (since === undefined || e.created_at > since)) {
+          since = e.created_at;
+        }
+        opts.onEvent(e);
+      } else if (type === "EOSE" && rest[0] === subId) {
+        // The subscription STAYS OPEN. EOSE means "that is my backlog", not
+        // "that is all there will ever be" — everything this function exists for
+        // arrives after it.
+        opts.onStatus?.({ relay, status: "eose", attempt });
+      } else if (type === "CLOSED" && rest[0] === subId) {
+        const detail = typeof rest[1] === "string" ? rest[1] : JSON.stringify(rest[1] ?? "");
+        try {
+          ws.close();
+        } catch {
+          /* already closing */
+        }
+        retry(`subscription closed: ${detail}`);
+      }
+    };
+  };
+
+  for (const relay of relays) connect(relay, 0);
+
+  return {
+    close(): void {
+      closed = true;
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+      for (const ws of sockets) {
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+      }
+      sockets.clear();
+    },
+  };
+}

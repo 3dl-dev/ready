@@ -45,12 +45,15 @@ import type { PortfolioKeys } from "./lib/portfoliokeys";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
 import {
   fetchEventsFromRelays,
+  subscribeToRelays,
   type FetchEventsOptions,
+  type LiveSubscription,
+  type LiveSubscriptionOptions,
   type NostrFilter,
   type RelayStatusEvent,
 } from "./lib/relay";
 import type { NostrEvent } from "./lib/nostrevent";
-import { dedupeExact } from "./lib/nostrevent";
+import { dedupeExact, eventIdentity } from "./lib/nostrevent";
 import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard } from "./lib/boarddiscovery";
 import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
@@ -60,7 +63,7 @@ import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunw
 import { confidentialityOf, encryptedBoardsOf, type WhyUnestablished } from "./lib/confidentiality";
 import { PLACEHOLDER } from "./lib/envelope";
 import { verifiedEvents } from "./lib/nostrevent";
-import { foldItemSource } from "./lib/itemsource";
+import { foldItemSource, type ItemSource } from "./lib/itemsource";
 import { mountBoardWorkspace } from "./board/render";
 import type { Item } from "./board/types";
 import "./board/board.css";
@@ -92,6 +95,24 @@ export interface BoardDeps {
    * out of getPublicKey() — and the no-keys unwrapper otherwise.
    */
   keyUnwrapper: (identity: Identity) => KeyUnwrapper;
+  /**
+   * subscribeEvents opens the LIVE subscription that keeps an already-rendered
+   * board current (ready-4359). Production supplies the real relay client; a
+   * test that does not want a live socket omits it and gets a board that folds
+   * once, exactly as before.
+   *
+   * IT IS OPTIONAL SO THAT OMITTING IT MEANS "NO LIVE UPDATES", NEVER "OPEN A
+   * REAL SOCKET". Every board test in this suite builds its own BoardDeps
+   * literal; a required field with a real-network default would have had them
+   * all dialling wss:// URLs out of jsdom the moment this landed. The production
+   * wiring is pinned separately, by main.test.ts asserting defaultDeps carries
+   * it — that is the regression this shape trades for.
+   */
+  subscribeEvents?: (
+    relays: readonly string[],
+    filter: NostrFilter,
+    opts: LiveSubscriptionOptions,
+  ) => LiveSubscription;
 }
 
 /** Production wiring: same-origin relays.json + the real WebSocket client +
@@ -100,6 +121,7 @@ export const defaultDeps: BoardDeps = {
   loadRelays: () => loadOwnBoardsRelays(),
   fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
   keyUnwrapper: (identity) => (canSign(identity.auth) ? nip07KeyUnwrapper(nip44Provider()) : neverUnwraps),
+  subscribeEvents: (relays, filter, opts) => subscribeToRelays(relays, filter, opts),
 };
 
 /**
@@ -111,6 +133,19 @@ export const defaultDeps: BoardDeps = {
  * snapshot that need not agree with the first.
  */
 const AUTHORITY_KINDS = [KIND_BOARD, KIND_ROLE_GRANT];
+
+/**
+ * BOARD_KINDS is one board's item stream: cards, the four status kinds, and the
+ * role grants a granted contributor's read-trust derives from. It mirrors
+ * pkg/sync/nostrinbound.go's BoardSyncFilter exactly.
+ *
+ * It is a named constant because TWO queries must use the SAME set — the
+ * one-shot backfill at load and the live subscription that keeps it current. A
+ * live filter narrower than the backfill's would leave a kind that renders at
+ * load and then never updates, which is worse than not being live at all: the
+ * board would look current and be selectively stale.
+ */
+const BOARD_KINDS = [30302, 1630, 1631, 1632, 1633, 39301];
 
 /** dedupeSnapshot merges event lists from separate REQs into one snapshot. The
  * single-board path (ready-5c5) needs two REQs — the two authority kinds hang
@@ -274,9 +309,11 @@ export async function loadBoardItems(
   confidential: boolean;
   unestablished: UnestablishedBoard[];
   writers: Map<string, NostrBoardWriter>;
+  live: LiveBoard[];
 }> {
   const out: Item[] = [];
   const writers = new Map<string, NostrBoardWriter>();
+  const live: LiveBoard[] = [];
   let confidential = false;
   const unestablished: UnestablishedBoard[] = [];
   const unwrap = deps.keyUnwrapper(identity);
@@ -286,7 +323,7 @@ export async function loadBoardItems(
       const events = await deps.fetchEvents(
         relays,
         // Kinds mirror pkg/sync/nostrinbound.go's BoardSyncFilter exactly.
-        { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [b.coord] },
+        { kinds: BOARD_KINDS, "#a": [b.coord] },
         { onStatus },
       );
       const keyring = await deriveBoardKeyring(
@@ -323,7 +360,8 @@ export async function loadBoardItems(
         },
         b.coord,
       );
-      out.push(...src.loadItems(events));
+      const boardItems = src.loadItems(events);
+      out.push(...boardItems);
 
       // ready-191: the WRITE-side envelope. A confidential board is writable from
       // this page exactly while the session holds its CEK — the same key the read
@@ -349,30 +387,185 @@ export async function loadBoardItems(
       // grant levels, the owner pubkey and whether the board is confidential all
       // differ across the portfolio, and a writer that averaged them would be
       // wrong for every board but one.
-      writers.set(
-        b.coord,
-        new NostrBoardWriter({
-          signerPubkey: identity.pubkey,
-          signer: canSign(identity.auth) ? nip07Signer() : undefined,
-          board: { ownerPubkey: b.ownerPubkey, boardD: b.boardD, title: b.title },
-          relays,
-          snapshot: events,
-          grantLevels: deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD).levels,
-          confidential: state !== "public",
-          enc,
-          // The writer projects its own view to build the next write from; it
-          // must decrypt and quarantine exactly as the read above did, or it
-          // would refuse every write on a confidential board (refuseRedacted)
-          // and show the user a different board than the page does.
-          decryptor: keyring,
-          encryptedBoards,
-        }),
-      );
+      const writer = new NostrBoardWriter({
+        signerPubkey: identity.pubkey,
+        signer: canSign(identity.auth) ? nip07Signer() : undefined,
+        board: { ownerPubkey: b.ownerPubkey, boardD: b.boardD, title: b.title },
+        relays,
+        snapshot: events,
+        grantLevels: deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD).levels,
+        confidential: state !== "public",
+        enc,
+        // The writer projects its own view to build the next write from; it
+        // must decrypt and quarantine exactly as the read above did, or it
+        // would refuse every write on a confidential board (refuseRedacted)
+        // and show the user a different board than the page does.
+        decryptor: keyring,
+        encryptedBoards,
+      });
+      writers.set(b.coord, writer);
+
+      // ready-4359: everything the live subscription needs to re-fold THIS board
+      // when the relay pushes something new — the events it has, the fold that
+      // produced these items (same options, same keyring: a re-fold under
+      // different options would be a second, divergent projection), and the
+      // writer whose snapshot must stay in step with it.
+      live.push({
+        coord: b.coord,
+        events: [...events],
+        seen: new Set(events.map(eventIdentity)),
+        newest: events.reduce((max, e) => (typeof e.created_at === "number" && e.created_at > max ? e.created_at : max), 0),
+        items: boardItems,
+        src,
+        writer,
+      });
     } catch {
       // Skip this board; the others still render.
     }
   }
-  return { items: out, confidential, unestablished, writers };
+  return { items: out, confidential, unestablished, writers, live };
+}
+
+/**
+ * LiveBoard is one board's re-foldable state: the events already folded, the
+ * fold that produced the current items, and the writer built from the same
+ * snapshot.
+ *
+ * `src` is CARRIED, not rebuilt. The projection depends on the keyring, the
+ * confidentiality gate and the pinned coordinate that were derived from the
+ * owner-signed authority snapshot at load; re-deriving any of that from the live
+ * stream would let a pushed event change what this session can read or is
+ * willing to write. Live events are ITEM state. Authority is not live.
+ */
+export interface LiveBoard {
+  coord: string;
+  /** Every event this board has folded, live ones appended. It only grows: a
+   * superseded card is still evidence the fold needs (latest-wins is decided
+   * over the whole set), so nothing here can be pruned without making the page's
+   * projection depend on when it was opened. A session that sits open through
+   * thousands of writes therefore grows; a reload compacts it. */
+  events: NostrEvent[];
+  /** eventIdentity of everything in `events`, so a re-served event is not
+   * appended twice. Content-keyed, never id-keyed — lib/relay.ts's reason. */
+  seen: Set<string>;
+  /** Newest created_at folded so far: the live REQ's `since` cursor. */
+  newest: number;
+  /** This board's CURRENT projection — the one the load produced, replaced each
+   * time this board is re-folded. Carried so the first live event does not have
+   * to re-fold every OTHER board just to reassemble the view. */
+  items: Item[];
+  src: ItemSource;
+  writer: NostrBoardWriter;
+}
+
+/** Milliseconds of quiet before a burst of pushed events is folded. One rd
+ * command publishes several events (a card plus its status event, sometimes a
+ * grant), and they arrive within milliseconds of each other; folding on each one
+ * would re-verify every signature on the board N times and flash N intermediate
+ * states through the DOM. Short enough that a human reads it as immediate. */
+const LIVE_COALESCE_MS = 150;
+
+/**
+ * startLiveUpdates is the reverse direction of the board's write path
+ * (ready-4359 done condition 4): a change made anywhere else — the rd CLI on
+ * another machine, a second browser, a teammate — reaches the OPEN page with no
+ * reload.
+ *
+ * It re-folds rather than patching. The pushed event is appended to the board's
+ * event list and the WHOLE board is projected again through the SAME
+ * ItemSource — so what the page shows after a live update is, by construction,
+ * what `rd` would project from the same events. A patch path would be a second
+ * implementation of the fold, and the failure mode this epic exists to prevent
+ * is precisely the client and rd disagreeing.
+ *
+ * The writer absorbs the same events (NostrBoardWriter.absorb, which explains
+ * why at length): the snapshot every subsequent write is BUILT from must not
+ * stay at the state the page has stopped showing.
+ *
+ * EXPORTED FOR TESTS — main.test.ts drives it with a scripted relay and asserts
+ * the DOM changes with no second afterLogin call.
+ */
+export function startLiveUpdates(args: {
+  boards: LiveBoard[];
+  relays: readonly string[];
+  subscribe: NonNullable<BoardDeps["subscribeEvents"]>;
+  onItems: (items: Item[]) => void;
+  coalesceMs?: number;
+}): LiveSubscription {
+  const { boards, relays, subscribe, onItems } = args;
+  const coalesceMs = args.coalesceMs ?? LIVE_COALESCE_MS;
+  const subs: LiveSubscription[] = [];
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  /**
+   * The last projection of each board, so an event on ONE board does not re-fold
+   * the other 23. A `--portfolio` link is genuinely multi-board (ready-4d9) and
+   * every fold re-verifies every signature on the board it folds, so folding all
+   * of them per pushed event would make one busy board slow the whole view down.
+   * Only the boards that actually received something are re-folded; the rest are
+   * reused verbatim, which is the same array the previous fold produced.
+   */
+  const dirty = new Set<string>();
+
+  const refold = (): void => {
+    pending = undefined;
+    if (closed) return;
+    const items: Item[] = [];
+    for (const b of boards) {
+      if (dirty.has(b.coord)) {
+        try {
+          b.items = b.src.loadItems(b.events);
+        } catch {
+          // Keep the last good projection for THIS board and carry on with the
+          // others — the same stance loadBoardItems takes at load ("skip this
+          // board; the others still render"). One board that cannot fold must
+          // not stop every other board on the page from updating, and it must
+          // not leave the view empty either.
+        }
+      }
+      items.push(...b.items);
+    }
+    dirty.clear();
+    onItems(items);
+  };
+
+  for (const b of boards) {
+    subs.push(
+      subscribe(
+        relays,
+        // `#a`, never `authors` — see lib/relay.ts's NO `authors` FILTER note.
+        // `since` is the newest instant already folded, so a reconnect asks for
+        // the gap rather than the board.
+        { kinds: BOARD_KINDS, "#a": [b.coord], since: b.newest > 0 ? b.newest : undefined },
+        {
+          onEvent: (e) => {
+            if (closed) return;
+            const key = eventIdentity(e);
+            // The subscription de-duplicates within itself; this catches the
+            // overlap with the events the initial LOAD already folded, which it
+            // has never seen.
+            if (b.seen.has(key)) return;
+            b.seen.add(key);
+            b.events.push(e);
+            if (typeof e.created_at === "number" && e.created_at > b.newest) b.newest = e.created_at;
+            b.writer.absorb([e]);
+            dirty.add(b.coord);
+            if (pending === undefined) pending = setTimeout(refold, coalesceMs);
+          },
+        },
+      ),
+    );
+  }
+
+  return {
+    close(): void {
+      closed = true;
+      if (pending !== undefined) clearTimeout(pending);
+      pending = undefined;
+      for (const s of subs) s.close();
+    },
+  };
 }
 
 /** nip07Signer returns the extension's SIGNING surface, or undefined when it
@@ -646,6 +839,15 @@ function safeEncodeNpub(pubkeyHex: string): string {
   }
 }
 
+/**
+ * The live subscription belonging to the board currently on screen, closed
+ * before another one is mounted. afterLogin can run more than once in a session
+ * (log in, hit an error, log in again); two live subscriptions on the same
+ * relays would both re-fold into a workspace only one of them still owns, and
+ * the sockets of the abandoned one would stay open for the life of the page.
+ */
+let activeLive: LiveSubscription | undefined;
+
 export async function afterLogin(
   root: HTMLElement,
   identity: Identity,
@@ -654,6 +856,8 @@ export async function afterLogin(
 ): Promise<void> {
   root.replaceChildren();
   root.className = "board-page";
+  activeLive?.close();
+  activeLive = undefined;
 
   if (fragment.kind === "claim") {
     renderAwaitingAuthorization(root, identity, fragment.payload.board, safeEncodeNpub(identity.pubkey));
@@ -740,7 +944,7 @@ export async function afterLogin(
     }
 
     const linkKeys = fragmentKeyMap(fragment);
-    const { items, confidential, unestablished, writers } = await loadBoardItems(
+    const { items, confidential, unestablished, writers, live } = await loadBoardItems(
       boards,
       relays,
       authorityEvents,
@@ -760,17 +964,36 @@ export async function afterLogin(
       .filter((s) => s !== "")
       .join(" ");
 
-    mountBoardWorkspace(root, items, {
-      writer: boardScopedWriter(
-        writers,
-        new Map(items.filter((i) => i.boardCoord).map((i) => [i.id, i.boardCoord!])),
-      ),
+    // ready-4359: MUTATED, not rebuilt, when a live update arrives. It answers
+    // "which board does this item live on" for every write, so an item the rd
+    // CLI creates after this page loaded would otherwise render on the board and
+    // be unwritable ("no writable board is loaded for item …") — the page
+    // showing work it silently cannot act on.
+    const itemBoard = new Map(items.filter((i) => i.boardCoord).map((i) => [i.id, i.boardCoord!]));
+
+    const workspace = mountBoardWorkspace(root, items, {
+      writer: boardScopedWriter(writers, itemBoard),
       viewerId: identity.pubkey,
       boards: boards.map((b) => ({ coord: b.coord, title: b.title || "(confidential board)" })),
       identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${canSign(identity.auth) ? "" : " (read-only)"}`,
       emptyBoardsNote: "No boards found.",
       notice: notice !== "" ? notice : undefined,
     });
+
+    // ready-4359 done condition 4. Without this the page folds ONCE and a change
+    // made anywhere else is invisible until the human reloads. Any previous
+    // subscription was already closed at the top of this function.
+    activeLive = deps.subscribeEvents
+      ? startLiveUpdates({
+          boards: live,
+          relays,
+          subscribe: deps.subscribeEvents,
+          onItems: (next) => {
+            for (const i of next) if (i.boardCoord) itemBoard.set(i.id, i.boardCoord);
+            workspace.setItems(next);
+          },
+        })
+      : undefined;
   } catch (err) {
     connecting.textContent = err instanceof Error ? err.message : String(err);
   }

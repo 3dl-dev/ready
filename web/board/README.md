@@ -44,6 +44,32 @@ toolchain never runs `vite dev` in CI or production. Revisit when Vite
 ships a release with a patched esbuild in the 5.x line, or on the next
 routine dependency bump.
 
+## Live proofs (manual — CI cannot run these)
+
+`scripts/` holds the harnesses that exercise the real relay, a real Chromium
+and the real `rd` binary. They need a live relay, a Chromium on disk and the
+local machine's allowlisted rd signing key, so they are run by hand, not in CI.
+Each one states in its own header exactly what is real in it and what is not.
+
+```sh
+node scripts/live-parity.mjs                        # the fold agrees with rd, live
+node scripts/live-write-roundtrip.mjs [--confidential]   # the 7 write ops, read back independently
+node scripts/live-roundtrip-both-ways.mjs [--confidential]  # both directions (ready-4359)
+```
+
+`live-roundtrip-both-ways.mjs` is the end-to-end one: a real browser moves a
+card, edits a title and approves a gate; an independent `rd` (clean `RD_HOME`,
+empty log, trust set = the board owner) reads all three back off the relay with
+the right actor and reason; then the **rd CLI** changes the board and the
+still-open browser shows it through its live subscription, with no reload — the
+page's `window` sentinel is checked afterwards, because "it reloaded itself"
+would explain the same screen.
+
+The deterministic halves of the same guarantees run in CI:
+`src/lib/relaylive.test.ts`, `src/main.live.test.ts`,
+`src/board/nostrwriter.absorb.test.ts`, `src/board/render.liveupdate.test.ts`,
+`src/board/writeevents.vectors.test.ts`, `src/board/nostrwriter.test.ts`.
+
 ## Confidential boards (ready-c4b)
 
 A confidential rd board encrypts only free text — title, description,
