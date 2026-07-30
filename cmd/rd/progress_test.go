@@ -9,8 +9,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -463,5 +465,340 @@ func TestSearch_MatchesProgressNoteText(t *testing.T) {
 	}
 	if matchesSearch(item, "something entirely absent") {
 		t.Errorf("rd search matched a term that appears nowhere")
+	}
+}
+
+// --- ready-ed4 rework: the write path's OWN confidentiality, and the
+// --- status-change half of the pending-note mint -----------------------------
+//
+// Everything above this line runs on a PLAINTEXT board (setupNostrNativeProject
+// marks the board Public). That was a coverage hole with a receipt: DELETING the
+// setCardEnvelope call in publishItemNoteNostr — so every `rd progress` note
+// publishes IN CLEAR on a confidential board — left the entire suite green,
+// because pkg/sync's note tests all construct the Envelope themselves and so
+// cannot observe the production path failing to construct one. The tests below
+// assert on the PUBLISHED events instead, which is the only place a missing
+// envelope is visible.
+
+// noteEvents returns every kind-1111 progress-note event in the slice.
+func noteEvents(events []*nostr.Event) []*nostr.Event {
+	var out []*nostr.Event
+	for _, e := range events {
+		if e != nil && e.Kind == rdSync.KindNote {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// assertSealedOnTheWire fails unless every event in evs carries a well-formed
+// confidential envelope AND none of `secrets` appears anywhere in the marshaled
+// event — tags included, because a relay INDEXES tags and a leak into one is as
+// fatal as a leak into Content.
+//
+// The envelope check is spelled out here rather than delegated to pkg/sync:
+// encWellFormed is unexported, and delegating would make the assertion a second
+// call into the code under test. enc marker is the known version, cek_epoch
+// parses, and Content base64-decodes to at least a 12-byte nonce plus a 16-byte
+// Poly1305 tag — so an enc-shaped event carrying smuggled cleartext fails here.
+func assertSealedOnTheWire(t *testing.T, evs []*nostr.Event, what string, secrets ...string) {
+	t.Helper()
+	for _, e := range evs {
+		if got, _ := tagVal(e.Tags, "enc"); got != "1" {
+			t.Errorf("%s (kind %d, id %s) carries enc=%q, want \"1\" — it was published UNSEALED on a confidential board", what, e.Kind, e.ID, got)
+		}
+		if got, ok := tagVal(e.Tags, "cek_epoch"); !ok {
+			t.Errorf("%s (id %s) carries no cek_epoch tag — no reader can pick a key for it", what, e.ID)
+		} else if _, err := strconv.Atoi(got); err != nil {
+			t.Errorf("%s (id %s) has an unparseable cek_epoch %q", what, e.ID, got)
+		}
+		raw, err := base64.StdEncoding.DecodeString(e.Content)
+		if err != nil {
+			t.Errorf("%s (id %s) Content is not base64 — it is not a sealed payload: %.80q", what, e.ID, e.Content)
+		} else if len(raw) < 12+16 {
+			t.Errorf("%s (id %s) Content decodes to %d bytes, too short to be nonce+AEAD — it is not sealed", what, e.ID, len(raw))
+		}
+		blob, merr := json.Marshal(e)
+		if merr != nil {
+			t.Fatalf("marshal %s: %v", what, merr)
+		}
+		for _, s := range secrets {
+			if strings.Contains(string(blob), s) {
+				t.Errorf("%s (id %s) LEAKS %q on the wire: %s", what, e.ID, s, blob)
+			}
+		}
+	}
+}
+
+// assertLogCarriesNoPlaintext scans EVERY event in the log for each secret. A
+// note sealed in its own event but echoed in the clear by some other event the
+// same mutation wrote is not confidential.
+func assertLogCarriesNoPlaintext(t *testing.T, events []*nostr.Event, secrets ...string) {
+	t.Helper()
+	for _, e := range events {
+		blob, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal kind-%d event: %v", e.Kind, err)
+		}
+		for _, s := range secrets {
+			if strings.Contains(string(blob), s) {
+				t.Fatalf("kind-%d event leaks confidential free text (%q) on the wire: %s", e.Kind, s, blob)
+			}
+		}
+	}
+}
+
+// TestProgress_ConfidentialBoardSealsTheNoteOnTheWire is the mutation-proof for
+// the ONE way a progress note leaks: the production write path failing to supply
+// an envelope AT ALL.
+//
+// It runs the real `rd progress` cobra command against a CONFIDENTIAL board and
+// then asserts on what was actually PUBLISHED — the kind-1111 event as it sits
+// in the authoritative log, which is byte-for-byte what a relay receives. This
+// test constructs no Envelope and stubs no key source, so a write path that
+// forgets to seal is visible here and nowhere else in the suite.
+//
+// MUTATION RECEIPT: delete the setCardEnvelope call at the top of
+// publishItemNoteNostr (cmd/rd/nostrnote.go) and this test fails on the
+// enc-marker assertion AND on the plaintext-on-the-wire scan.
+func TestProgress_ConfidentialBoardSealsTheNoteOnTheWire(t *testing.T) {
+	dir, _ := setupConfidentialProject(t)
+
+	id, err := runCreateNostr(dir, nostrCreateSpec{
+		title: "rotate the signing key", itemType: "task", priority: "p1",
+		context: "the base description of the item",
+	})
+	if err != nil {
+		t.Fatalf("runCreateNostr: %v", err)
+	}
+
+	// Deliberately disjoint from the item's own title/context, so a whole-log scan
+	// for these tokens can only ever hit the NOTE.
+	const secretNote = "prod-west deploy credential rotated at 20:17; predecessor revoked"
+	secretWords := []string{"prod-west", "credential", "predecessor", secretNote}
+
+	rootCmd.SetArgs([]string{"progress", id, "--notes", secretNote})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rd progress on a confidential board: %v", err)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	notes := noteEvents(events)
+	if len(notes) != 1 {
+		t.Fatalf("one `rd progress` produced %d kind-1111 events, want exactly 1 — every assertion below would be vacuous", len(notes))
+	}
+	assertSealedOnTheWire(t, notes, "the published progress note", secretWords...)
+	assertLogCarriesNoPlaintext(t, events, secretWords...)
+
+	// NOT VACUOUS: the owner still reads its own note back in plaintext, so the
+	// scan above proves SEALING rather than the note having gone missing.
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	item := byID[id]
+	if item == nil {
+		t.Fatalf("item %s missing from the owner's projection", id)
+	}
+	if len(item.Notes) != 1 || item.Notes[0].Text != secretNote {
+		t.Fatalf("owner reads back %v, want exactly the one note %q — the seal assertions must not be passing because the note vanished", noteTextsOf(item.Notes), secretNote)
+	}
+	assertNoDotCf(t)
+}
+
+func noteTextsOf(notes []state.ProgressNote) []string {
+	out := make([]string, len(notes))
+	for i, n := range notes {
+		out[i] = n.Text
+	}
+	return out
+}
+
+// projectRelayView projects what a machine that only ever talked to a RELAY
+// sees: superseded 30302 cards dropped (an addressable relay keeps one per
+// coordinate), everything else kept. Keys are derived from that same view, so a
+// grant this reader could not fetch cannot silently rescue the projection.
+func projectRelayView(t *testing.T, dir string, events []*nostr.Event) map[string]*state.Item {
+	t.Helper()
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	view := newestCardsOnly(events)
+	keyring := boardReadKeyring(dir, k, view)
+	return rdSync.ProjectItems(view, rdSync.ProjectOptions{
+		Trusted:         nostrTrustSet(dir, k.PubKeyHex()),
+		PinnedBoard:     nostrPinnedBoard(dir),
+		Decryptor:       keyring,
+		EncryptedBoards: keyring,
+	})
+}
+
+// legacyCardBlob rebuilds the exact Content shape the PRE-ready-ed4 appender
+// produced: the base description, then one "\n\n[<ts>] <text>" per note.
+func legacyCardBlob(base string, notes []string) string {
+	blob := base
+	for i, n := range notes {
+		blob += fmt.Sprintf("\n\n[2026-07-%02dT10:%02dZ] %s", 1+i%28, i%60, n)
+	}
+	return blob
+}
+
+// TestCardRepublishPaths_MintPendingNotesFromALegacyCard covers the OTHER TWO
+// THIRDS of appendPendingNotes' claim.
+//
+// appendPendingNotes is called from three publish paths — PublishNote (the
+// `rd progress` path), PublishStatusChange (claim/done/fail/cancel), and
+// PublishCardEdit (label/dep/update). Only the first was tested. Removing the
+// call from PublishStatusChange therefore failed NOTHING but a spec
+// line-number anchor, even though the behavioural consequence is total: a
+// status change compacts the legacy card WITHOUT first minting events for the
+// trail it compacts out, so every reader that does not hold the local log —
+// which is every other machine, and the browser board — loses the item's whole
+// history the moment anyone runs `rd claim` on it.
+//
+// The proof runs the REAL cobra commands on a genuinely legacy-shaped card and
+// reads back through a RELAY-ONLY view (superseded cards dropped), which is the
+// only view in which that loss is visible at all.
+//
+// Every path also runs on a CONFIDENTIAL board, because appendPendingNotes is
+// where a recovered note's envelope comes from (Enc: card.Enc) — the same
+// missing-envelope leak as the live-note path, on the recovery half.
+//
+// MUTATION RECEIPT: delete the appendPendingNotes call from PublishStatusChange
+// and the claim/* and done/* subtests fail; delete it from PublishCardEdit and
+// the label-add/* subtests fail.
+func TestCardRepublishPaths_MintPendingNotesFromALegacyCard(t *testing.T) {
+	base := "the base description of a legacy item"
+	legacyNotes := []string{
+		"legacy note one: reproduced the OOM under load",
+		"legacy note two: the allocation came from the negentropy buffer",
+		"legacy note three: patched and re-measured, 12 MB steady",
+	}
+	// Confidential subtests scan the wire for these; they appear in the notes and
+	// nowhere in any title.
+	secretWords := []string{"negentropy buffer", "re-measured", "reproduced the OOM"}
+
+	cases := []struct {
+		name         string
+		confidential bool
+		args         func(id string) []string
+	}{
+		{"claim/plaintext board", false, func(id string) []string { return []string{"claim", id} }},
+		{"claim/confidential board", true, func(id string) []string { return []string{"claim", id} }},
+		{"done/plaintext board", false, func(id string) []string { return []string{"done", id, "--reason", "shipped it"} }},
+		{"done/confidential board", true, func(id string) []string { return []string{"done", id, "--reason", "shipped it"} }},
+		// The THIRD appendPendingNotes caller: PublishCardEdit, reached by every
+		// card-only mutation (label, dep, update). `rd label add` republishes the
+		// card without changing status, so it compacts the legacy trail out of the
+		// card exactly as a status change does — and must mint the same events.
+		{"label-add/plaintext board", false, func(id string) []string { return []string{"label", "add", id, "urgent"} }},
+		{"label-add/confidential board", true, func(id string) []string { return []string{"label", "add", id, "urgent"} }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var dir string
+			if tc.confidential {
+				dir, _ = setupConfidentialProject(t)
+			} else {
+				dir, _ = setupNostrNativeProject(t)
+			}
+
+			id, err := runCreateNostr(dir, nostrCreateSpec{
+				title: "legacy item", itemType: "task", priority: "p1", context: base,
+			})
+			if err != nil {
+				t.Fatalf("runCreateNostr: %v", err)
+			}
+
+			// SEED THE LEGACY CARD through the production card-edit hook, so the card
+			// is sealed (or not) exactly as this board seals things and the test never
+			// constructs an Envelope of its own. Notes are cleared so the edit carries
+			// no PendingNotes: this publishes ONE card whose Content is the old
+			// appender's inline blob, which is precisely what vms-760's card is.
+			item, err := nostrResolveItem(id)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			item.Context = legacyCardBlob(base, legacyNotes)
+			item.Notes = nil
+			if err := publishItemCardEditNostr(item); err != nil {
+				t.Fatalf("seed legacy card: %v", err)
+			}
+
+			log := rdSync.NewNostrLog(rdSync.NostrLogPath(dir))
+			seeded, err := log.ReadAll()
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			// SEED SANITY: the trail exists ONLY inside the card right now — the fold
+			// recovers it, and not one note has an event of its own yet.
+			if n := countKind(seeded, rdSync.KindNote); n != 0 {
+				t.Fatalf("seed produced %d kind-1111 events, want 0 — the seed is not legacy-shaped", n)
+			}
+			seedItem := projectRelayView(t, dir, seeded)[id]
+			if seedItem == nil {
+				t.Fatalf("seeded item %s missing from the relay view", id)
+			}
+			if len(seedItem.Notes) != len(legacyNotes) {
+				t.Fatalf("seeded card splits into %d notes, want %d — the seed is not legacy-shaped", len(seedItem.Notes), len(legacyNotes))
+			}
+			for i, n := range seedItem.Notes {
+				if n.MsgID != "" {
+					t.Fatalf("seeded note %d already carries MsgID %q — it would not be pending, so this subtest would prove nothing", i, n.MsgID)
+				}
+			}
+
+			// THE STATUS CHANGE. This is the mutation that republishes — and therefore
+			// COMPACTS — the card.
+			rootCmd.SetArgs(tc.args(id))
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("rd %v: %v", tc.args(id), err)
+			}
+
+			after, err := log.ReadAll()
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			minted := noteEvents(after)
+			if len(minted) != len(legacyNotes) {
+				t.Fatalf("the status change minted %d kind-1111 events, want %d (one per note it compacted out of the card) — the trail was dropped from every relay's copy", len(minted), len(legacyNotes))
+			}
+
+			// THE CARD WAS ACTUALLY COMPACTED. Without this the assertion above could
+			// pass on a card that still carries the trail inline, which is the growth
+			// this whole item exists to stop.
+			relay := projectRelayView(t, dir, after)
+			got := relay[id]
+			if got == nil {
+				t.Fatalf("relay-only reader does not see %s after the status change", id)
+			}
+			if got.Context != base {
+				t.Errorf("card Context after the status change = %.80q, want just the base description — the card is still carrying the trail", got.Context)
+			}
+
+			// AND NOTHING WAS LOST, for a reader holding no local log.
+			if len(got.Notes) != len(legacyNotes) {
+				t.Fatalf("relay-only reader sees %d notes, want %d — compaction destroyed the trail for every machine but this one", len(got.Notes), len(legacyNotes))
+			}
+			for i, want := range legacyNotes {
+				if got.Notes[i].Text != want {
+					t.Errorf("note %d reads back as %q, want %q", i, got.Notes[i].Text, want)
+				}
+				if got.Notes[i].MsgID == "" {
+					t.Errorf("note %d has no MsgID — it was never minted as its own event", i)
+				}
+			}
+
+			if tc.confidential {
+				assertSealedOnTheWire(t, minted, "a recovered legacy note", secretWords...)
+				assertLogCarriesNoPlaintext(t, after, secretWords...)
+			}
+			assertNoDotCf(t)
+		})
 	}
 }

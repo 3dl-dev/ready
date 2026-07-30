@@ -439,6 +439,33 @@ agent key writes on an owner-authored item. The fail-closed confidential fold ga
 (§11.3) DOES apply to notes, so a plaintext note on a confidential board is
 quarantined exactly as a plaintext card or status event is.
 
+**§5.11 Note sealing is a WRITE-side obligation, on every path that mints a
+note.** §5.10's read-side gate quarantines an unsealed note; it does not stop one
+being published, and a quarantined note is a leak that has already happened. So
+this is normative for writers: **on a confidential board, every kind-1111 event
+MUST carry the same envelope the item's card carries** — the `enc`/`cek_epoch`
+clear markers and a Content sealed under that board's current CEK.
+
+A note is minted on FOUR paths, and each one is an independent chance to forget:
+the live note (`PublishNote`, `pkg/sync/nostroutbound.go:921`, whose envelope
+comes from the CLI hook `publishItemNoteNostr`, `cmd/rd/nostrnote.go:34`), and
+the recovery mint that every card republish performs for the trail it is
+compacting out of a legacy card (`appendPendingNotes`,
+`pkg/sync/nostroutbound.go:887`, reached from `PublishNote`,
+`PublishStatusChange` at `pkg/sync/nostroutbound.go:225`, and `PublishCardEdit`
+at `pkg/sync/nostroutbound.go:295`). The browser writer carries the same
+obligation (`web/board/src/board/writeevents.ts`).
+
+**A test that constructs the envelope itself cannot see this fail.** The
+obligation is therefore proven by asserting on the PUBLISHED event — that it
+carries a well-formed envelope and that the note text appears nowhere in the
+event's wire bytes — from a test that supplies no key material of its own:
+`TestProgress_ConfidentialBoardSealsTheNoteOnTheWire` and
+`TestCardRepublishPaths_MintPendingNotesFromALegacyCard`
+(`cmd/rd/progress_test.go`) for the four Go paths, and
+`TestLiveRelay_ConfidentialTrailRecoversOnARelayOnlyReader`
+(`pkg/sync/nostrnotes_live_relay_test.go`) against a real relay's own bytes.
+
 ---
 
 ## 6. Status authority and history replay
