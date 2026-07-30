@@ -163,6 +163,33 @@ export const tieArchived: NostrEvent = {
   sig: "2fa9f368fb906276ab3354816cba92061bea1f25d82eba69446f138b507acc403d4ba94600058bebc0ebbe07c207cdfd024884d33456197e85e021db581d505f",
 };
 
+// ready-4c98: ATTACKER_OWNER is a THIRD real keypair (Go-signed, same
+// pkg/sync.BuildBoardEvent path as everything above), distinct from BOTH
+// OWNER and OTHER. It exists because every single-board-link fixture above
+// collapses three logically-distinct "follow target" candidates into ONE
+// value (OWNER): parsedCoord.owner (the link names OWNER's board),
+// identity.pubkey (every IDENTITIES entry logs in as OWNER), and
+// events[0].pubkey (forgedSig/alpha/etc. are all pubkey: OWNER too). A
+// mutation that swapped the follow target for any of the other two
+// candidates would still pass every existing assertion. attackerAlpha
+// breaks the collapse: it is genuinely signed (verification cannot reject
+// it) at the SAME "alpha" coordinate OWNER's real alpha/alphaDup boards use,
+// but authored by a THIRD key that is neither the link's owner nor the
+// logged-in identity used alongside it (STRANGER, main.test.ts). Only the
+// follow-target check — author must equal the link's named owner — can keep
+// it off the page.
+export const ATTACKER_OWNER = "951af1ae68df5468b433466fd7b0f309c3c0322f84ff0fb62ebc7b992b29cc94";
+
+export const attackerAlpha: NostrEvent = {
+  id: "f1cec7a35f7743c61c1f6169e3cf5c68ffbaec5eedc0e68cde1ab56151356f38",
+  pubkey: ATTACKER_OWNER,
+  created_at: 1700000008,
+  kind: 30301,
+  tags: [["d", "alpha"], ["title", "Attacker's Alpha Board"]],
+  content: "",
+  sig: "86ca9d2a3481e44952c533a74b20afae24145f03d8b03ebeeb4fad83bc14cbee798cfb50bbc012bf13b087225cda4d94a60eaa2e7a34497e1bb19a9dcd4e1b92",
+};
+
 // FUTUREVER_OWNER / futureVersionArchived: a real, Go-signed kind-30301 event
 // whose "archived" tag carries a value OTHER than ArchivedTagValue ("1") —
 // "v2-hidden", standing in for a hypothetical future marker version. Used by
