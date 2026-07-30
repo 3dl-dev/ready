@@ -59,6 +59,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
+// ready-153: this harness provisions a throwaway board (PART B below runs `rd
+// init`), so it is bound to the shared cleanup contract like every other live
+// harness that does. See throwaway-board.mjs; the binding itself is asserted
+// for every live-*.mjs in the tree by harness-cleanup.test.mjs.
+import { openThrowawayBoardGuard, reportCleanup } from "./throwaway-board.mjs";
+
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
 const CHROME =
@@ -381,13 +387,25 @@ async function main() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "rd-fe4-cache-"));
   const cleanup = [];
 
+  // ready-153. The BEFORE board count, taken before anything is published: the
+  // guard is opened here so the count is honest even for `--only a`, which
+  // provisions no board at all. Nothing is registered with it yet —
+  // `guard.expect(BOARD_D)` happens in PART B, immediately before the `rd init`
+  // that publishes it, so a run that never reaches PART B has nothing to clean
+  // up and the guard says so rather than reporting a board that was never made.
+  const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: identity.pubkey_hex, log });
+  let failures = 0;
+  let rdBin = null;
+  let projectDir = null;
+  let writerHome = null;
+
   try {
     log(`relay:    ${RELAY}`);
     log(`viewer:   ${identity.pubkey_hex}`);
     log(`scratch:  ${tmp}`);
 
     step("build rd from this tree");
-    const rdBin = path.join(tmp, "rd");
+    rdBin = path.join(tmp, "rd");
     execFileSync("go", ["build", "-o", rdBin, "./cmd/rd"], { cwd: REPO_ROOT, stdio: "inherit" });
 
     step("build the shipped bundle and serve it");
@@ -546,11 +564,15 @@ async function main() {
       step("PART B — condition 4, by the method the condition names: the rd CLI mutates, the OPEN page converges");
 
       log("\n  provision a throwaway PUBLIC board (nothing here touches a real project board)");
-      const writerHome = path.join(tmp, "writer-home");
+      writerHome = path.join(tmp, "writer-home");
       mkdirSync(writerHome, { recursive: true });
       writeFileSync(path.join(writerHome, "nostr-identity.json"), JSON.stringify(identity), { mode: 0o600 });
-      const projectDir = path.join(tmp, BOARD_D);
+      projectDir = path.join(tmp, BOARD_D);
       mkdirSync(projectDir, { recursive: true });
+      // ready-153: register BEFORE `rd init`, so a run that dies inside init —
+      // the run with a published board and no coordinate to hand — still cleans
+      // up. The guard derives what to archive from the relay, not from initOut.
+      guard.expect(BOARD_D);
       const initOut = JSON.parse(
         rd(rdBin, projectDir, writerHome, [
           "init",
@@ -680,8 +702,15 @@ async function main() {
     for (const r of results) log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
     const bad = results.filter((r) => !r.ok).length;
     log(`\n${results.length - bad}/${results.length} assertions held`);
-    process.exitCode = bad === 0 ? 0 : 1;
+    failures += bad;
   } finally {
+    // ready-153: archive whatever this run put on the relay and prove the
+    // owner's board count is back where it started, BEFORE the scratch dir goes
+    // away — `rd board archive` needs the project dir and writer home that live
+    // in it. Its failures count toward this run's exit code; a cleanup that
+    // only warns exits 0 with a permanent stray in the owner's portfolio.
+    failures += reportCleanup(await guard.close({ rdBin, cwd: projectDir, home: writerHome }), log);
+
     for (const fn of cleanup.reverse()) {
       try {
         fn();
@@ -692,6 +721,7 @@ async function main() {
     if (KEEP) log(`\nkept: ${tmp}`);
     else rmSync(tmp, { recursive: true, force: true });
   }
+  process.exit(failures === 0 ? 0 : 1);
 }
 
 /** titleOf is what the LIVE DOM says this item's title is, right now. */

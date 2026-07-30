@@ -9,6 +9,14 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // scripts/**: ready-153. The live harnesses under scripts/ can never run
+    // in CI (Chromium, a Go toolchain, the owner's signing key, a real relay),
+    // but the cleanup contract they depend on — throwaway-board.mjs — is pure
+    // logic over an injectable relay and an injectable `rd`, and the check
+    // that every board-creating harness is actually bound to that contract is
+    // a source-shape assertion. Both run here, on every PR. Before this, the
+    // only evidence a harness cleaned up after itself was prose in a commit
+    // message.
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
   },
 });
