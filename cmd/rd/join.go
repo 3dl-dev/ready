@@ -67,12 +67,43 @@ func isHex(s string) bool {
 // against. A grantee accepted as uppercase or mixed-case hex and carried
 // forward unnormalized publishes a grant whose p tag can never equal the
 // grantee's actual event pubkey: InviteGrantValid returns false for the real
-// key while the command reports success — a silently dead grant. Every call
-// site that accepts a hex pubkey destined for a grant (cmd/rd/board.go
-// resolveGranteePubkey, cmd/rd/nostr_grant.go publishRoleGrant,
-// cmd/rd/authz_nostr.go runNostrGrantRevoke) normalizes through this single
-// helper so there is one place that defines "canonical form", not N
-// independent strings.ToLower calls that could drift apart.
+// key while the command reports success — a silently dead grant.
+//
+// The dead grant is one instance of a general rule, NOT the scope of it: EVERY
+// entry point that accepts an as-typed hex pubkey normalizes through this
+// helper, because every one of them ends up comparing that string against a
+// pubkey that came from a signed event and is therefore lowercase. The failures
+// are all the same shape — a byte comparison that silently cannot match, with
+// success reported:
+//
+//	cmd/rd/board.go resolveGranteePubkey     → grant p/d tags (dead grant)
+//	cmd/rd/nostr_grant.go publishRoleGrant   → grant p/d tags (dead grant; also
+//	                                           the confidential forward-secrecy
+//	                                           guard, see its own comment)
+//	cmd/rd/authz_nostr.go runNostrGrantRevoke → rekey exclude + summary line
+//	cmd/rd/follow.go resolveFollowTarget     → DiscoverOwnerBoards owner set
+//	                                           (finds NO board; blames relays
+//	                                           and the trust graph instead)
+//	cmd/rd/nostr_grant.go runLinkOrPinBoard  → board coordinate in
+//	                                           .ready/config.json AND committed
+//	                                           .ready/board.json (dead pin, and
+//	                                           it travels to every clone)
+//	cmd/rd/ready.go --scope                  → nostrScopeForKey owner/levels
+//	                                           lookup (granted key DENIED)
+//	cmd/rd/identify.go --add-key             → alias p tags (key locked out of
+//	                                           the trust closure it joins)
+//
+// The remaining isHex call sites deliberately do NOT normalize, and each has a
+// reason that must be re-checked if it changes: cmd/rd/kill.go and
+// cmd/rd/revoke.go only VALIDATE before handing the string to
+// runNostrGrantRevoke, which normalizes (covered end-to-end by
+// TestGrantRevokeKillCmd_UppercaseGrantee_NormalizesAtEachEntryPoint);
+// cmd/rd/sessions.go's nostrAuthorityResolver.label takes an actor pubkey read
+// out of a signed event, never human input, so it is canonical already.
+//
+// One helper, so there is a single definition of "canonical form" rather than N
+// independent strings.ToLower calls that could drift apart — and a single
+// symbol to grep for when auditing whether a new entry point normalized.
 func normalizeHexPubkey(s string) string {
 	return strings.ToLower(s)
 }

@@ -318,3 +318,118 @@ func TestResolveBoardAuthorD_UnpinnedFallsBackToSigner(t *testing.T) {
 		t.Errorf("resolveBoardAuthorD = (%s,%s), want (cafebabe,ready)", gotOwner, gotD)
 	}
 }
+
+// TestLinkCmd_UppercaseOwner_PinsCanonicalCoordinate is ready-3e1 at `rd link`'s
+// owner input (runLinkOrPinBoard), the second of the two coordinate-writing entry
+// points the item's "everywhere hex pubkeys are accepted" clause covers.
+//
+// `rd link` takes the owner from as-typed human input in two forms — the
+// positional 30301:<owner>:<d> coordinate and --owner — and both are validated by
+// the case-insensitive isHex. Unnormalized, the coordinate it builds is written to
+// .ready/config.json AND the COMMITTED .ready/board.json, and every consumer
+// matches it byte-for-byte against a board event's author pubkey, which is always
+// lowercase. So an uppercase owner pins the repo to a coordinate that resolves to
+// no board — reads come back empty, writes bind to a board nobody else reads — and
+// because board.json is committed, the dead pin travels to every clone. `rd link`
+// prints "linked board: ..." either way.
+//
+// Reverting nostr_grant.go's `owner = normalizeHexPubkey(owner)` turns this red
+// for both input forms.
+func TestLinkCmd_UppercaseOwner_PinsCanonicalCoordinate(t *testing.T) {
+	cases := []struct {
+		name string
+		// args/flag as `rd link` would receive them, given the UPPERCASE owner.
+		invoke func(t *testing.T, upper, boardD string) error
+	}{
+		{
+			name: "positional 30301:<UPPERCASE-owner>:<d>",
+			invoke: func(t *testing.T, upper, boardD string) error {
+				t.Helper()
+				return runLinkOrPinBoard(nostrLinkCmd, []string{"30301:" + upper + ":" + boardD})
+			},
+		},
+		{
+			name: "--owner <UPPERCASE>",
+			invoke: func(t *testing.T, upper, boardD string) error {
+				t.Helper()
+				if err := nostrLinkCmd.Flags().Set("owner", upper); err != nil {
+					t.Fatalf("set --owner: %v", err)
+				}
+				if err := nostrLinkCmd.Flags().Set("board-d", boardD); err != nil {
+					t.Fatalf("set --board-d: %v", err)
+				}
+				t.Cleanup(func() {
+					_ = nostrLinkCmd.Flags().Set("owner", "")
+					_ = nostrLinkCmd.Flags().Set("board-d", "")
+				})
+				return runLinkOrPinBoard(nostrLinkCmd, nil)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupNostrCmdTest(t)
+
+			// A REAL owner key that published a REAL board event — so "the
+			// coordinate must resolve" is a fact about signed data, not a string
+			// comparison the test invented.
+			ownerKey, err := nostr.GenerateKey()
+			if err != nil {
+				t.Fatalf("GenerateKey: %v", err)
+			}
+			owner := ownerKey.PubKeyHex()
+			boardD := "shared"
+			be, err := rdSync.BuildBoardEvent(ownerKey, rdSync.BoardSpec{
+				BoardD: boardD, Title: boardD, Maintainers: []string{owner},
+			}, time.Now().Unix())
+			if err != nil {
+				t.Fatalf("BuildBoardEvent: %v", err)
+			}
+			if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{be}); err != nil {
+				t.Fatalf("append board event: %v", err)
+			}
+			wantCoord := rdSync.BoardCoord(owner, boardD)
+
+			if err := tc.invoke(t, strings.ToUpper(owner), boardD); err != nil {
+				t.Fatalf("rd link with an UPPERCASE owner: %v", err)
+			}
+
+			cfg, err := rdconfig.LoadSyncConfig(dir)
+			if err != nil {
+				t.Fatalf("LoadSyncConfig: %v", err)
+			}
+			if cfg.Board != wantCoord {
+				t.Errorf(".ready/config.json board = %q, want the canonical %q", cfg.Board, wantCoord)
+			}
+			binding, err := rdconfig.LoadBoardBinding(dir)
+			if err != nil {
+				t.Fatalf("LoadBoardBinding: %v", err)
+			}
+			if binding.Board != wantCoord {
+				t.Errorf("COMMITTED .ready/board.json board = %q, want the canonical %q — this file is "+
+					"version-controlled, so a non-canonical coordinate is a dead pin in every clone",
+					binding.Board, wantCoord)
+			}
+			if got := nostrPinnedBoard(dir); got != wantCoord {
+				t.Errorf("nostrPinnedBoard = %q, want %q", got, wantCoord)
+			}
+
+			// The pin RESOLVES: the board author derived from it is the key that
+			// actually signed the board event, which is what binds this repo's
+			// cards and grants to a live board rather than to nothing.
+			gotAuthor, gotD, err := resolveBoardAuthorD(dir, "deadbeef")
+			if err != nil {
+				t.Fatalf("resolveBoardAuthorD: %v", err)
+			}
+			if gotAuthor != owner || gotD != boardD {
+				t.Errorf("resolveBoardAuthorD = (%s,%s), want (%s,%s) — the pinned owner must equal the "+
+					"board event's signer", gotAuthor, gotD, owner, boardD)
+			}
+			if got := rdSync.DiscoverOwnerBoards([]*nostr.Event{be}, []string{gotAuthor}, ""); len(got) != 1 || got[0] != wantCoord {
+				t.Errorf("the pinned owner discovers boards %v, want [%s] — the pinned coordinate names "+
+					"no board that exists", got, wantCoord)
+			}
+		})
+	}
+}

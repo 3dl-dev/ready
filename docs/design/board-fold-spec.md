@@ -965,7 +965,7 @@ non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
 (`cmd/rd/nostr.go:978-981`) and then sorts — by priority, then ETA, then ID for
-ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:395-409`),
+ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:405-419`),
 by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
 total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
 rework added the ID tie-break).

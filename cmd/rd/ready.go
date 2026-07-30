@@ -174,6 +174,16 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 				if len(scopeKey) != 64 || !isHex(scopeKey) {
 					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
 				}
+				// ready-3e1: normalize before the gate. nostrScopeForKey
+				// (cmd/rd/sessions.go) byte-compares its argument against the
+				// board owner pubkey and indexes the DeriveLevels map with it;
+				// both keys are canonical lowercase because they come from
+				// signed events. isHex above accepts A-F as a FORMAT check, so
+				// an uppercase --scope for a genuinely granted key misses the
+				// map and the gate DENIES it with "no active grant ... (not a
+				// granted identity)" — the same silent-wrong-answer class as
+				// the dead grant, in the read direction.
+				scopeKey = normalizeHexPubkey(scopeKey)
 				allowed, note := nostrScopeForKey(scopeKey)
 				if !allowed {
 					// Stderr is a separate stream from stdout, so this note is
