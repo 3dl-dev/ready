@@ -280,6 +280,56 @@ func TestBoardShareCmd_WithPubkey_GrantsAndPrintsURL(t *testing.T) {
 	}
 }
 
+// TestBoardShareCmd_WithUppercasePubkey_GrantsAndIsValid is the ready-3e1
+// regression test: `rd board share <UPPERCASE-hex>` must publish a grant whose
+// p/d tags carry the LOWERCASE canonical form, so InviteGrantValid — the same
+// derivation the trust gate uses — returns true for the grantee's REAL (always
+// lowercase, nostr.Key.PubKeyHex()) pubkey. Before the fix, resolveGranteePubkey
+// and publishRoleGrant both accepted the uppercase form (isHex is
+// case-insensitive) but never normalized it: the published grant's tags carried
+// the uppercase string verbatim, InviteGrantValid returned false for the
+// grantee's actual lowercase pubkey, and the command still printed a URL and
+// no error — a silently dead grant reported as success.
+func TestBoardShareCmd_WithUppercasePubkey_GrantsAndIsValid(t *testing.T) {
+	ownerKey, boardD, coord, dir := boardTestEnv(t)
+	granteeKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey grantee: %v", err)
+	}
+	granteeLower := granteeKey.PubKeyHex()
+	granteeUpper := strings.ToUpper(granteeLower)
+
+	out := captureStdoutPipe(t, func() {
+		if err := boardShareCmd.RunE(boardShareCmd, []string{granteeUpper}); err != nil {
+			t.Fatalf("rd board share <UPPERCASE-pubkey>: %v", err)
+		}
+	})
+	urlLine := findURLLine(t, out)
+	values, err := url.ParseQuery(urlLine[strings.Index(urlLine, "#")+1:])
+	if err != nil {
+		t.Fatalf("rd board share <UPPERCASE-pubkey> fragment did not parse: %v", err)
+	}
+	if got := values.Get("board"); got != coord {
+		t.Errorf("rd board share <UPPERCASE-pubkey> fragment board=%q, want %q", got, coord)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("reading local log: %v", err)
+	}
+	// THE FIX, proven against the real (lowercase) event pubkey — this is what
+	// the grantee's own client would use to check its own access.
+	if !rdSync.InviteGrantValid(events, ownerKey.PubKeyHex(), boardD, granteeLower) {
+		t.Error("InviteGrantValid = false for the grantee's real (lowercase) pubkey after `rd board share <UPPERCASE-hex>` — the grant was published under the wrong case and never matches the grantee's actual key")
+	}
+	// And the uppercase string itself must NOT be a separate valid identity —
+	// it was never anyone's real pubkey; if this ever returned true it would
+	// mean two distinct-looking strings are both silently treated as grants.
+	if rdSync.InviteGrantValid(events, ownerKey.PubKeyHex(), boardD, granteeUpper) {
+		t.Error("InviteGrantValid = true for the uppercase string — the grant must be stored under the canonical lowercase form, not the as-typed case")
+	}
+}
+
 // TestBoardShareCmd_WithPubkey_NoClaimNonce is the REJECTION test for
 // ready-5c1: `rd board share <known-pubkey>` must NOT mint a claim-nonce or an
 // rd1_ token, even though the grant it just published carries no --claim. The

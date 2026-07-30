@@ -60,6 +60,16 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // error out — but the human-facing line must say so plainly instead of claiming an
 // unqualified "they can read and write" that is not true yet.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
+	// ready-3e1: normalize BEFORE the fork below, not just inside publishRoleGrant.
+	// publishRoleGrant lowercases its own local copy of grantee, which fixes the
+	// PUBLISHED grant, but this function's own `grantee` variable is a separate
+	// copy (Go strings are passed by value) that ALSO feeds rekeyBoardOnRevoke's
+	// revokedPubkey exclusion below. An unnormalized grantee there would fail to
+	// match the lowercase pubkey DeriveBoardKeyring/planBoardRotation compare
+	// against, so a revoke's forward-secrecy rekey would keep re-wrapping the new
+	// epoch CEK TO the just-revoked key. Normalizing once here keeps every use in
+	// this function — and everything it calls — on the same canonical string.
+	grantee = normalizeHexPubkey(grantee)
 	res, err := publishRoleGrant(grantee, role, label, from, claim)
 	if err != nil {
 		return err

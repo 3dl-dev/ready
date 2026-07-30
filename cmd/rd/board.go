@@ -432,6 +432,17 @@ const boardKeyWarning = "WARNING: this link CARRIES THIS BOARD'S READ KEY in its
 // resolveGranteePubkey accepts either an npub1... (NIP-19 bech32) or a bare
 // 64-hex pubkey — the same two forms `rd grant`/`rd follow` accept — and
 // returns the 64-hex pubkey. decodeNpub is shared with cmd/rd/follow.go.
+//
+// ready-3e1: the bare-hex branch normalizes to lowercase. isHex accepts A-F as
+// well as a-f (case-insensitive format check), but the grantee's REAL identity
+// is nostr.Key.PubKeyHex(), which is always lowercase — that lowercase string
+// is what lands in the grant's signed p/d tags and what DeriveLevels/
+// InviteGrantValid index on. An uppercase or mixed-case grantee accepted here
+// verbatim would publish a grant whose p tag can never equal the grantee's
+// actual event pubkey: InviteGrantValid returns false for the real key while
+// the command reports success — a silently dead grant. decodeNpub already
+// returns lowercase (hex.EncodeToString), so only the bare-hex branch needs
+// normalizing.
 func resolveGranteePubkey(who string) (string, error) {
 	if strings.HasPrefix(who, "npub1") {
 		pub, err := decodeNpub(who)
@@ -441,7 +452,7 @@ func resolveGranteePubkey(who string) (string, error) {
 		return pub, nil
 	}
 	if len(who) == 64 && isHex(who) {
-		return who, nil
+		return normalizeHexPubkey(who), nil
 	}
 	return "", fmt.Errorf("rd board share: %q is not an npub1... or a 64-hex pubkey", who)
 }

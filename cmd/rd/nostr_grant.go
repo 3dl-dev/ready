@@ -72,6 +72,17 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) (rd
 	if len(grantee) != 64 || !isHex(grantee) {
 		return rdSync.PublishResult{}, fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
+	// ready-3e1: normalize to lowercase. isHex above accepts A-F as a FORMAT
+	// check, but the grantee's real event pubkey (nostr.Key.PubKeyHex()) is
+	// always lowercase, and that lowercase string is what the p/d tags below and
+	// DeriveLevels/InviteGrantValid compare against. An uppercase or mixed-case
+	// grantee reaching BuildRoleGrantEvent unnormalized would publish a grant
+	// whose p tag can never equal the grantee's actual pubkey — a silently dead
+	// grant reported as success. This is the single point every grant-issuing
+	// path (`rd grant`, `rd revoke`, `rd kill`, `rd board share`, `rd grant
+	// --all-boards`) funnels through, since publishRoleGrant is only ever
+	// called from runNostrGrantRevoke.
+	grantee = normalizeHexPubkey(grantee)
 	if !nostrWriteActive() {
 		return rdSync.PublishResult{}, fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
 	}

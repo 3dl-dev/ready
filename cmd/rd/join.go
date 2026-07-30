@@ -47,7 +47,8 @@ EXAMPLES
 }
 
 // isHex returns true if s consists entirely of hex characters. Shared by the
-// nostr grant/revoke/sessions/audit paths.
+// nostr grant/revoke/sessions/audit paths. Deliberately case-insensitive (A-F
+// as well as a-f) — it is a FORMAT check, not an identity check.
 func isHex(s string) bool {
 	for _, c := range s {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
@@ -55,6 +56,25 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+// normalizeHexPubkey lowercases a hex pubkey already validated by isHex.
+//
+// ready-3e1: isHex's case-insensitivity above is correct for FORMAT
+// validation, but a pubkey's real identity is nostr.Key.PubKeyHex(), which is
+// ALWAYS lowercase — that lowercase string is what a signed grant's p/d tags
+// carry, and what DeriveLevels/InviteGrantValid/MayGrant index and compare
+// against. A grantee accepted as uppercase or mixed-case hex and carried
+// forward unnormalized publishes a grant whose p tag can never equal the
+// grantee's actual event pubkey: InviteGrantValid returns false for the real
+// key while the command reports success — a silently dead grant. Every call
+// site that accepts a hex pubkey destined for a grant (cmd/rd/board.go
+// resolveGranteePubkey, cmd/rd/nostr_grant.go publishRoleGrant,
+// cmd/rd/authz_nostr.go runNostrGrantRevoke) normalizes through this single
+// helper so there is one place that defines "canonical form", not N
+// independent strings.ToLower calls that could drift apart.
+func normalizeHexPubkey(s string) string {
+	return strings.ToLower(s)
 }
 
 func init() {

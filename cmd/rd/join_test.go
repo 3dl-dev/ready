@@ -48,6 +48,27 @@ func TestIsHex(t *testing.T) {
 	}
 }
 
+// TestNormalizeHexPubkey verifies normalizeHexPubkey (ready-3e1) lowercases an
+// uppercase or mixed-case hex pubkey to the canonical form nostr.Key.PubKeyHex()
+// produces — the form a grant's p/d tags and DeriveLevels/InviteGrantValid
+// compare against.
+func TestNormalizeHexPubkey(t *testing.T) {
+	const lower = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a724"
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{lower, lower},
+		{strings.ToUpper(lower), lower},
+		{"84DEE6E676E5BB67b4ad4e042cf70cbd8681155db535942fcc6a0533858a724", lower}, // mixed-case
+	}
+	for _, tc := range cases {
+		if got := normalizeHexPubkey(tc.input); got != tc.want {
+			t.Errorf("normalizeHexPubkey(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 // TestJoin_NoDotCfNoLock is the HIGH-4 regression guard: a full invite redemption
 // (the join core) must create NO campfire state (.cf/ or identity.json) and NO
 // rd.json.lock ANYWHERE. Before the fix, `rd join`'s --reset-beacon-root path wrote
