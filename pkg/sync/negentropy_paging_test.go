@@ -11,29 +11,50 @@
 // to an independently paged `#a` walk.
 //
 // WHAT IS MOCKED AND WHAT IS NOT. The relay is a fake, because the defect IS a
-// relay behaviour (the cap) and no live relay lets a test choose its cap. It is
-// not a stub: it speaks the REAL NIP-77 exchange via nostr.Negentropy.ServerReply
-// and the REAL NIP-01 REQ/EVENT/EOSE download over a real websocket, holding
-// REAL signed events. The code under test — the `until` walk in NegentropySync —
-// is untouched by the fake and is what these tests exercise.
+// relay behaviour (the cap) and a test needs to choose the cap to drive the walk
+// deterministically. It is not a stub: it speaks the REAL NIP-77 exchange via
+// nostr.Negentropy.ServerReply and the REAL NIP-01 REQ/EVENT/EOSE download over a
+// real websocket, holding REAL signed events. The code under test — the `until`
+// walk in NegentropySync — is untouched by the fake and is what these tests
+// exercise.
 //
-// AND THE MODEL IS CHECKED AGAINST THE MODELLED THING. cappedRelay asserts three
-// things about real relays: one query answers at most min(cap, limit) records
-// WITHOUT saying it clamped, it picks the NEWEST ones, and it honours `until`.
-// All three are measured live against real relays by
-// TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt (a purpose-built 560-event
-// board on the LAN strfry) and TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole
-// (this repo's own board on wss://relay.3dl.network, the relay the truncation was
-// first measured on), both in negentropy_live_cap_test.go under
-// RD_NOSTR_LIVE_RELAY=1. Without those this fake would be the only witness to a
-// behaviour it invented — which is exactly how the retired "a capped relay refuses
-// loudly" claim survived here for a revision.
+// AND EVERY BEHAVIOUR IT MODELS WAS MEASURED FIRST, ON A RELAY CONFIGURED TO
+// PRODUCE IT. That order matters here more than usual: this file has twice
+// carried a relay behaviour nobody had ever observed. The first was "a capped
+// relay refuses loudly" (retired). The second was its replacement — "a relay
+// silently clamps the NEG-OPEN window below the limit the client asked for" —
+// which was assumed because neither reachable relay could be told to cap at 400.
+// It can be: strfry's cap is its own `maxFilterLimit`, so a throwaway strfry was
+// stood up on loopback at maxFilterLimit=400 with a 600-event board, and the
+// answer was neither of the two guesses:
 //
-// The walk is what makes these tests pass: cappedRelay serves at most `cap`
-// records per query, so deleting the paging (one exchange, no `until` cursor)
-// turns TestNegentropySync_PagesPastTheRelayCap red at 500 of 1200 events, and
-// terminating on window size instead of on the cursor turns
-// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard red at 400 of 600.
+//	NEG-OPEN limit=401/500/1000/5000 -> 401/500/600/600  the limit is HONOURED;
+//	                                                     maxFilterLimit does not
+//	                                                     apply to NIP-77 at all
+//	REQ      limit=401/500/5000/none -> 400 every time    CLAMPED, SILENTLY
+//
+// So the silent sub-limit truncation is REAL but lives on the DOWNLOAD half, not
+// the reconcile half: negentropy names 450 ids and the REQ that fetches them
+// returns 400, with no error. That is what cappedRelay now models —
+// an honoured `limit` on NEG-OPEN, `reqCap` on REQ — and what
+// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard drives. The live
+// counterpart is TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently in
+// negentropy_live_cap_test.go, which re-runs the same experiment against the real
+// thing; the whole-board and newest-first properties are measured by
+// TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt and
+// TestLiveRelay_FreshCloneOfTheProductionBoardIsWhole.
+//
+// The third modelled behaviour, `reqMaxLimit`, is the loud refusal — also measured
+// rather than imagined, on wss://relay.3dl.network, which answers a REQ carrying
+// limit=600 with CLOSED "invalid: requested limit 600 exceeds this relay's max of
+// 500". rd must never trip it; see
+// TestNegentropySync_NeverAsksAREQLimitTheRelayWillRefuse.
+//
+// The walk is what makes these tests pass. Deleting the paging (one exchange, no
+// `until` cursor) turns TestNegentropySync_PagesPastTheRelayCap red at 500 of 1200
+// events, and terminating on window size instead of on the cursor turns
+// TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard red at 400 of 450
+// — the exact numbers the live capped strfry produced.
 package sync
 
 import (
@@ -54,32 +75,51 @@ import (
 	"github.com/3dl-dev/ready/pkg/nostr"
 )
 
-// cappedRelay is an in-process nostr relay that reproduces the ONE behaviour this
-// item is about: it will reconcile or serve at most `cap` records for any single
-// query, choosing the NEWEST matching ones (created_at descending) exactly as a
-// limit-clamping relay does, and it honours the `until` bound that lets a client
-// page past that cap.
+// cappedRelay is an in-process nostr relay reproducing the three relay behaviours
+// this item turns on, each of which was MEASURED on a real relay before it was
+// modelled here (see the file header for the experiments and their numbers):
 //
-// IT CLAMPS SILENTLY, AT ANY CAP, INCLUDING ONE BELOW THE LIMIT THE CLIENT ASKS
-// FOR. That is the measured behaviour of both relays this repo can reach: neither
-// refuses a limit above its cap, both just answer short and say nothing (see
-// SyncPageLimit). A window is min(cap, the filter's limit) records — never an
-// error.
+//  1. NEG-OPEN honours the client's `limit` exactly. It reconciles the newest
+//     min(limit, matching) records at or below `until`, and with no limit it
+//     reconciles everything. A relay's own maxFilterLimit does NOT bound this
+//     path — measured on a strfry capped at 400, which answered limit=500 with
+//     500 records and an unbounded query with all 600 it held.
+//
+//  2. REQ is clamped to `reqCap` records, SILENTLY, newest first — no error, no
+//     NOTICE, no CLOSED, just EOSE with fewer events than were asked for. This is
+//     rd's download half, so `reqCap` below SyncPageLimit is how negentropy comes
+//     to name more ids than the fetch delivers. Measured on the same strfry:
+//     every REQ came back with exactly 400 whatever limit was named, including
+//     none at all.
+//
+//  3. `reqMaxLimit`, when set, is a STATED ceiling: a REQ naming a limit above it
+//     is refused loudly with CLOSED "invalid: …". Measured on
+//     wss://relay.3dl.network, which refuses limit=600 against a max of 500. rd
+//     must stay under it rather than rely on it.
+//
+// It honours `until` on both halves, which is what lets a client page past any of
+// the three.
 type cappedRelay struct {
 	srv *httptest.Server
-	cap int
+	// reqCap bounds ONE NIP-01 REQ, silently. It is the relay's maxFilterLimit.
+	reqCap int
+	// reqMaxLimit, when > 0, is the ceiling above which an explicitly-named REQ
+	// limit is refused with CLOSED instead of clamped. 0 = never refuse.
+	reqMaxLimit int
 
-	mu       sync.Mutex
-	events   []*nostr.Event // newest first
-	byID     map[string]*nostr.Event
-	windows  []int64 // the `until` of every NEG-OPEN seen; 0 = unbounded
-	negErrAt int     // 1-indexed NEG-OPEN to answer with NEG-ERR; 0 = never
-	accepted []*nostr.Event
+	mu        sync.Mutex
+	events    []*nostr.Event // newest first
+	byID      map[string]*nostr.Event
+	windows   []int64 // the `until` of every NEG-OPEN seen; 0 = unbounded
+	negErrAt  int     // 1-indexed NEG-OPEN to answer with NEG-ERR; 0 = never
+	accepted  []*nostr.Event
+	reqLimits []int64 // the explicit `limit` of every REQ seen; -1 = none named
+	reqIDs    []int   // how many ids each REQ asked for
 }
 
 func newCappedRelay(t *testing.T, events []*nostr.Event, capN int) *cappedRelay {
 	t.Helper()
-	cr := &cappedRelay{cap: capN, byID: map[string]*nostr.Event{}}
+	cr := &cappedRelay{reqCap: capN, byID: map[string]*nostr.Event{}}
 	cr.events = append(cr.events, events...)
 	sort.SliceStable(cr.events, func(i, j int) bool { return cr.events[i].CreatedAt > cr.events[j].CreatedAt })
 	for _, e := range cr.events {
@@ -100,11 +140,12 @@ func newCappedRelay(t *testing.T, events []*nostr.Event, capN int) *cappedRelay 
 
 func (cr *cappedRelay) url() string { return "ws" + strings.TrimPrefix(cr.srv.URL, "http") }
 
-// window returns the records this relay will reconcile for one query: the newest
-// min(cap, limit) events at or below `until`, matching the filter's kinds and #a
-// scope. A limit ABOVE the cap is clamped to the cap without comment — the
-// measured behaviour, and the thing that makes window size useless to the client
-// as a termination signal.
+// window returns the records this relay will reconcile for ONE NEG-OPEN: the
+// newest `limit` events at or below `until`, matching the filter's kinds and #a
+// scope. The limit is HONOURED, not clamped — reqCap plays no part here, because
+// a real strfry's maxFilterLimit was measured to have no effect on the NIP-77
+// path (see the file header). With no limit named, everything in the window is
+// reconciled.
 func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -114,8 +155,8 @@ func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 			until = ts
 		}
 	}
-	bound := cr.cap
-	if l, ok := timestampField(f["limit"]); ok && int(l) < bound {
+	bound := -1 // no limit named: reconcile the whole window
+	if l, ok := timestampField(f["limit"]); ok {
 		bound = int(l)
 	}
 	var out []*nostr.Event
@@ -127,7 +168,7 @@ func (cr *cappedRelay) window(f map[string]any) []*nostr.Event {
 			continue
 		}
 		out = append(out, e)
-		if len(out) == bound {
+		if bound >= 0 && len(out) == bound {
 			break
 		}
 	}
@@ -198,10 +239,17 @@ func (cr *cappedRelay) serve(conn *websocket.Conn) {
 			_ = json.Unmarshal(frame[1], &sub)
 			var f map[string]any
 			_ = json.Unmarshal(frame[2], &f)
+
+			askedLimit := int64(-1)
+			if l, ok := timestampField(f["limit"]); ok {
+				askedLimit = l
+			}
 			cr.mu.Lock()
 			var served []*nostr.Event
+			nIDs := 0
 			if raw, ok := f["ids"]; ok {
 				if ids, ok := raw.([]any); ok {
+					nIDs = len(ids)
 					for _, r := range ids {
 						if id, ok := r.(string); ok {
 							if e := cr.byID[id]; e != nil {
@@ -211,7 +259,34 @@ func (cr *cappedRelay) serve(conn *websocket.Conn) {
 					}
 				}
 			}
+			cr.reqLimits = append(cr.reqLimits, askedLimit)
+			cr.reqIDs = append(cr.reqIDs, nIDs)
+			maxLimit := cr.reqMaxLimit
+			capN := cr.reqCap
 			cr.mu.Unlock()
+
+			// (3) THE LOUD REFUSAL, measured on wss://relay.3dl.network: a REQ that
+			// NAMES a limit above the relay's stated max is closed, not clamped. Only
+			// an explicit limit trips it — an absent one is clamped like any other.
+			if maxLimit > 0 && askedLimit > int64(maxLimit) {
+				closed, _ := json.Marshal([]any{"CLOSED", sub, fmt.Sprintf(
+					"invalid: requested limit %d exceeds this relay's max of %d — no silent truncation; narrow with since/until or resubmit with a smaller limit",
+					askedLimit, maxLimit)})
+				_ = conn.WriteMessage(websocket.TextMessage, closed)
+				continue
+			}
+
+			// (2) THE SILENT CLAMP, measured on a strfry with maxFilterLimit=400: at
+			// most reqCap events come back, NEWEST FIRST, and the client is told
+			// nothing — the frames it gets are ordinary EVENTs followed by an
+			// ordinary EOSE. Newest-first is load-bearing: it is what makes the
+			// events the walk DOES receive the top of the requested range, so the
+			// cursor lands above the records that were withheld and a later window
+			// still reaches them.
+			sort.SliceStable(served, func(i, j int) bool { return served[i].CreatedAt > served[j].CreatedAt })
+			if capN > 0 && len(served) > capN {
+				served = served[:capN]
+			}
 			for _, e := range served {
 				payload, _ := json.Marshal([]any{"EVENT", sub, e})
 				if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
@@ -255,6 +330,15 @@ func (cr *cappedRelay) windowCount() int {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 	return len(cr.windows)
+}
+
+// reqShapes returns the explicit `limit` (-1 when none was named) and the id count
+// of every REQ this relay saw, in order — the two numbers that decide whether a
+// real relay clamps, refuses, or answers in full.
+func (cr *cappedRelay) reqShapes() (limits []int64, idCounts []int) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	return append([]int64(nil), cr.reqLimits...), append([]int(nil), cr.reqIDs...)
 }
 
 func (cr *cappedRelay) uploadedIDs() map[string]int {
@@ -557,36 +641,54 @@ func TestSyncWindowFilter_AsksForAnExplicitLimit(t *testing.T) {
 }
 
 // TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard is the walk's
-// hardest case, and the one an earlier revision of this file got WRONG.
+// hardest case, and the one this file has now got wrong TWICE before measuring it.
 //
-// That revision asserted a relay whose cap is BELOW the limit rd asks for REFUSES
-// the query (NEG-ERR), and treated that refusal as the safety net under the
-// paging walk. The claim was never measured and is false: NEITHER relay reachable
-// from this repo refuses. wss://relay.3dl.network clamps limit=100/300/500 to
-// exactly that many and answers limit=5000 with an i/o timeout; the LAN strfry
-// answers limit=5000 with everything it holds. A relay is free to clamp any
-// window below what was asked and say nothing at all.
+// Revision 1 asserted that a relay whose cap is below the limit rd asks for
+// REFUSES the query (NEG-ERR), and made that refusal the safety net under the
+// walk. Revision 2 replaced it with "the relay silently clamps the NEG-OPEN
+// window to its cap" — also unmeasured, because neither reachable relay could be
+// asked to cap at 400. Both were guesses about a relay nobody had configured.
 //
-// So the walk gets NO signal from window size, and this test is what pins that.
-// A relay capped at 400 facing rd's limit=500, over a 600-event board:
+// STRFRY'S CAP IS ITS OWN CONFIG, so it was configured: a throwaway strfry on
+// loopback with maxFilterLimit=400, a 600-event board, and the answer is a third
+// thing neither guess predicted. maxFilterLimit does not touch NIP-77 at all —
+// NEG-OPEN at limit=500 returned 500, unbounded returned all 600. It bounds every
+// NIP-01 REQ, silently — every REQ came back with exactly 400 events whatever
+// limit was named, including none.
 //
-//   - window 1 comes back with 400 records. 400 < SyncPageLimit. Nothing
-//     distinguishes that from a 400-event board.
-//   - the walk must page anyway, on the `until` cursor alone, and land all 600.
+// THAT PUTS THE SILENT TRUNCATION ON THE DOWNLOAD HALF, and this test pins the
+// consequence. 450 events behind a relay whose REQ cap is 400:
 //
-// RED BEFORE THE FIX: the termination test used to be `relayWindow >=
-// SyncPageLimit`, so this sync stopped after window 1 with 400 of 600 events, no
-// error, pages=1 — the item's own silent truncation, one layer down. The control
-// is TestNegentropySync_PagesPastTheRelayCap (cap == SyncPageLimit), which stayed
-// green throughout: the defect was only ever visible BELOW the asked limit.
+//   - window 1: NEG-OPEN at limit=500 names all 450 ids. That is SHORT of the
+//     limit, so a walk terminating on window size treats it as the whole board.
+//   - the REQ that fetches those 450 ids returns the newest 400. No error.
+//     50 events are simply absent, and nothing anywhere says so.
+//   - the walk must page anyway, on the `until` cursor alone, and land all 450.
+//
+// RED BEFORE THE FIX, AND MEASURED RED — these are not the fake's numbers, they
+// are what the real capped strfry produced on 2026-07-30 with the two termination
+// rules swapped under it:
+//
+//	relayWindow >= SyncPageLimit -> downloaded=400 of 450, pages=1, no error
+//	the `until` cursor           -> downloaded=450,        pages=3
+//
+// The control is TestNegentropySync_PagesPastTheRelayCap (reqCap == SyncPageLimit,
+// so nothing is withheld), which stayed green throughout: the defect is only ever
+// visible when the download comes back short of what negentropy promised.
 func TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard(t *testing.T) {
 	k, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	boardCoord := "30301:" + k.PubKeyHex() + ":subcapboard"
-	const total = 600
+	// 450 sits in the band that discriminates the two termination rules: below
+	// SyncPageLimit (so window size says "done") and above reqCap (so the download
+	// is short). This is the size the live experiment used.
+	const total = 450
 	const relayCap = SyncPageLimit - 100 // strictly below what the walk asks for
+	if total >= SyncPageLimit || total <= relayCap {
+		t.Fatalf("board size %d must sit strictly between reqCap=%d and SyncPageLimit=%d or this test measures nothing", total, relayCap, SyncPageLimit)
+	}
 	events := pagingBoard(t, k, boardCoord, total, time.Now().Unix()-int64(total)-10)
 	relay := newCappedRelay(t, events, relayCap)
 
@@ -594,19 +696,32 @@ func TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard(t *testing.T
 	filter := BoardSyncFilter(boardCoord, nil)
 	trusted := map[string]bool{k.PubKeyHex(): true}
 
-	// The premise: one query at rd's own limit really does come back SHORT of that
-	// limit. Without this the test could pass for the wrong reason.
+	// PREMISE 1: NEG-OPEN honours rd's limit, so window 1 names every one of the
+	// 450 ids and comes back SHORT of the limit rd asked for. That short window is
+	// exactly what the retired rule read as "the board ends here".
 	first, err := nostr.NegentropyReconcile(context.Background(), relay.url(), syncWindowFilter(filter, 0, false), nil)
 	if err != nil {
 		t.Fatalf("probe reconcile: %v", err)
 	}
-	if len(first.Need) != relayCap {
-		t.Fatalf("probe: one query at limit=%d returned %d records, want the relay's silent cap of %d",
-			SyncPageLimit, len(first.Need), relayCap)
+	if len(first.Need) != total {
+		t.Fatalf("probe: NEG-OPEN at limit=%d must HONOUR the limit and name all %d ids, got %d — the fake no longer models the measured strfry",
+			SyncPageLimit, total, len(first.Need))
 	}
 	if len(first.Need) >= SyncPageLimit {
-		t.Fatalf("probe: the cap under test (%d) must be BELOW SyncPageLimit (%d) or this test measures nothing",
+		t.Fatalf("probe: window 1 (%d records) must come back BELOW SyncPageLimit (%d) or the window-size rule would page anyway and this test measures nothing",
 			len(first.Need), SyncPageLimit)
+	}
+
+	// PREMISE 2: the REQ that fetches those ids is clamped, silently, to strictly
+	// fewer than were asked for. This is the measured behaviour the whole test
+	// rests on, so it is asserted rather than assumed.
+	fetched, err := nostr.FetchByIDs(context.Background(), relay.url(), first.Need)
+	if err != nil {
+		t.Fatalf("probe fetch: %v", err)
+	}
+	if len(fetched) != relayCap {
+		t.Fatalf("probe: a REQ for %d ids must come back SILENTLY clamped to the relay's %d-record cap, got %d events and no error",
+			len(first.Need), relayCap, len(fetched))
 	}
 
 	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
@@ -614,11 +729,11 @@ func TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard(t *testing.T
 		t.Fatalf("sync: %v", err)
 	}
 	if res.Downloaded != total {
-		t.Fatalf("a relay clamping at %d BELOW our limit=%d silently truncated the sync: downloaded=%d of %d (need=%d pages=%d)",
+		t.Fatalf("a relay clamping the download at %d BELOW our limit=%d silently truncated the sync: downloaded=%d of %d (need=%d pages=%d)",
 			relayCap, SyncPageLimit, res.Downloaded, total, res.Need, res.Pages)
 	}
 	if res.Pages < 2 {
-		t.Fatalf("%d events at a %d-record silent cap needs more than one window, walk used %d", total, relayCap, res.Pages)
+		t.Fatalf("%d events behind a %d-record silent download cap needs more than one window, walk used %d", total, relayCap, res.Pages)
 	}
 	stored, err := log.ReadAll()
 	if err != nil {
@@ -639,6 +754,66 @@ func TestNegentropySync_RelayCapBelowOurLimitStillGetsTheWholeBoard(t *testing.T
 	}
 	if res2.Downloaded != 0 || res2.Uploaded != 0 {
 		t.Fatalf("converged re-sync moved events: downloaded=%d uploaded=%d", res2.Downloaded, res2.Uploaded)
+	}
+}
+
+// TestNegentropySync_NeverAsksAREQLimitTheRelayWillRefuse pins the OTHER half of
+// what the sub-limit experiment turned up, and the half rd has to stay on the
+// right side of rather than survive.
+//
+// A previous revision of this package stated flatly that no measured relay
+// refuses a limit above its cap. Measured 2026-07-30, read-only,
+// wss://relay.3dl.network refuses one outright:
+//
+//	REQ {…,limit:600} -> CLOSED "invalid: requested limit 600 exceeds this
+//	                     relay's max of 500 — no silent truncation; narrow with
+//	                     since/until or resubmit with a smaller limit"
+//
+// A refused REQ is a failed download, not a short one, so if rd ever names a REQ
+// limit above 500 — by raising MaxREQIDs, or by stamping the window's limit onto
+// the id-fetch — every sync against that relay breaks outright rather than
+// degrading. The relay here refuses on the same rule, and the walk must complete
+// against it: not by handling the refusal, but by never provoking it.
+func TestNegentropySync_NeverAsksAREQLimitTheRelayWillRefuse(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardCoord := "30301:" + k.PubKeyHex() + ":refuseboard"
+	const total = 1200
+	events := pagingBoard(t, k, boardCoord, total, time.Now().Unix()-int64(total)-10)
+	relay := newCappedRelay(t, events, SyncPageLimit)
+	relay.reqMaxLimit = SyncPageLimit // the measured 3dl ceiling
+
+	log := NewNostrLog(t.TempDir() + "/" + NostrLogFile)
+	filter := BoardSyncFilter(boardCoord, nil)
+	trusted := map[string]bool{k.PubKeyHex(): true}
+
+	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err != nil {
+		t.Fatalf("sync against a relay that refuses over-limit REQs: %v", err)
+	}
+	if res.Downloaded != total {
+		t.Fatalf("downloaded %d of %d (pages=%d)", res.Downloaded, total, res.Pages)
+	}
+
+	limits, idCounts := relay.reqShapes()
+	if len(limits) == 0 {
+		t.Fatal("the walk issued no REQ at all, so this proves nothing about REQ shape")
+	}
+	for i, l := range limits {
+		if l > int64(SyncPageLimit) {
+			t.Fatalf("REQ %d named limit=%d, above the %d a real relay refuses outright — every sync against wss://relay.3dl.network would fail",
+				i, l, SyncPageLimit)
+		}
+	}
+	// The id set is the other way to exceed a relay's per-REQ bound: 500 ids with
+	// no limit named is already at strfry's default maxFilterLimit, and more than
+	// that is what ready-8de measured returning no frames at all.
+	for i, n := range idCounts {
+		if n > nostr.MaxREQIDs {
+			t.Fatalf("REQ %d asked for %d ids, above the %d chunk FetchByIDs promises", i, n, nostr.MaxREQIDs)
+		}
 	}
 }
 

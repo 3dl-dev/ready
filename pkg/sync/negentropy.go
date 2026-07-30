@@ -93,7 +93,7 @@ type SyncResult struct {
 // 560-event board (TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt):
 //
 //	NEG-OPEN {kinds,#a}              -> need=560   (no default cap at this size)
-//	NEG-OPEN {kinds,#a,limit:100}    -> need=100   (clamps to the asked limit)
+//	NEG-OPEN {kinds,#a,limit:100}    -> need=100   (honours the asked limit)
 //	NEG-OPEN {kinds,#a,limit:500}    -> need=500   (the newest 500)
 //	NEG-OPEN {kinds,#a,limit:5000}   -> need=560   (answered, NOT refused)
 //
@@ -102,17 +102,49 @@ type SyncResult struct {
 // client which it is talking to, so the walk must not depend on the relay's own
 // bound — it names its own.
 //
-// NO MEASURED RELAY REFUSES A LIMIT ABOVE ITS CAP. Both relays reachable from
-// this repo CLAMP silently: 3dl answers limit=100/300/500 with exactly that many
-// and limit=5000 with nothing at all (the read deadline fires — an i/o timeout,
-// never a NEG-ERR); the LAN strfry answers limit=5000 with all 560 it holds. An
-// earlier revision of this file claimed a relay whose cap is BELOW the asked
-// limit refuses loudly, and built the walk's safety story on it. That claim was
-// never measured and is FALSE. There is no loud refusal to fall back on, so the
-// `until` cursor is the ONLY thing this correctness rests on, and the walk's
-// termination test must never ask "was this window as big as the limit we asked
-// for?" — a relay is free to clamp any window BELOW that and say nothing. See
-// NegentropySync for the test it asks instead.
+// THE CAP LIVES ON THE DOWNLOAD HALF, NOT THE RECONCILE HALF. This was settled by
+// experiment on 2026-07-30 rather than argued: a throwaway strfry was stood up on
+// loopback with its own `maxFilterLimit` set to 400 — a relay whose cap is
+// STRICTLY BELOW the limit rd asks for, which neither reachable relay could be
+// told to be — and a 600-event board published to it. Reproduce with
+//
+//	docker run -d -p 127.0.0.1:17777:7777 \
+//	  -v $PWD/strfry.conf:/etc/strfry.conf dockurr/strfry:latest
+//	# strfry.conf: maxFilterLimit = 400, writePolicy.plugin = ""
+//
+// Measured (TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently):
+//
+//	NEG-OPEN {…,limit:399/400/401/500} -> need=399/400/401/500   limit HONOURED
+//	NEG-OPEN {…,limit:1000/5000}       -> need=600 (whole board) limit HONOURED
+//	NEG-OPEN {…} (no limit)            -> need=600 (whole board)
+//	REQ      {…,limit:401/500/5000}    -> served=400             CLAMPED, SILENTLY
+//	REQ      {…} (no limit)            -> served=400             CLAMPED, SILENTLY
+//
+// So `maxFilterLimit` is NOT applied to the NIP-77 path at all: negentropy
+// answers exactly what the client asked for. It IS applied to every NIP-01 REQ,
+// where it clamps with no error, no NOTICE and no CLOSED — just EOSE with fewer
+// events than were asked for. That REQ is rd's download half (FetchByIDs), so the
+// silent sub-limit truncation this walk must survive is real, measured, and
+// arrives when the ids fetched come back SHORT of the ids negentropy said to
+// fetch.
+//
+// A RELAY DOES REFUSE AN OVER-LIMIT REQ, LOUDLY. Also measured 2026-07-30, read
+// only, against wss://relay.3dl.network:
+//
+//	REQ      {…,limit:600/1000}  -> CLOSED "invalid: requested limit 600 exceeds
+//	                                this relay's max of 500 — no silent truncation
+//	                                (nostrrelay-828); narrow with since/until or
+//	                                resubmit with a smaller limit"
+//	NEG-OPEN {…,limit:600/1000}  -> no reply at all; the read deadline fires
+//
+// An earlier revision of this file asserted the opposite ("no measured relay
+// refuses a limit above its cap") on the strength of the NEG-OPEN timeout alone,
+// having never asked the REQ path. Both statements were wrong in the same way —
+// asserted from the relays that happened to be reachable. What is true is
+// narrower and is all the walk may lean on: a relay may answer a REQ short and
+// silently (strfry), or refuse it loudly (3dl), and the client cannot tell which
+// in advance. rd therefore never names a REQ limit above SyncPageLimit, and
+// MaxREQIDs is held at 500 for exactly that reason.
 //
 // Naming the limit explicitly still earns its place: it makes the window size
 // OURS rather than whatever default the relay happens to volunteer, which is what
@@ -169,17 +201,27 @@ const MaxSyncPages = 200
 // the same window (matchesFilter honours `until`), so each exchange still costs
 // only its window's diff and a converged re-sync still moves zero event bytes.
 //
-// TERMINATION IS THE CURSOR, NOT THE WINDOW SIZE. A window smaller than the limit
-// rd asked for is NOT evidence the relay is finished: no measured relay refuses a
-// limit above its cap, both simply clamp and say nothing (see SyncPageLimit), so a
-// relay capped at 400 answers rd's limit=500 with 400 records and looks exactly
-// like a 400-event board. Stopping there is the same silent truncation one layer
-// down. The walk therefore ends only when a window cannot move the cursor STRICTLY
+// TERMINATION IS THE CURSOR, NOT THE WINDOW SIZE, and this is the difference
+// between a whole board and a silently short one. `relayWindow` is derived from
+// the NEG-OPEN diff, but the events that actually land come from the REQ that
+// follows it — and a relay whose maxFilterLimit sits below SyncPageLimit clamps
+// that REQ silently (see SyncPageLimit for the measurement). So negentropy can
+// name 450 ids while the download returns only the newest 400 of them, with no
+// error anywhere. A walk that stopped on "this window was smaller than the limit
+// we asked for" stops right there, having merged 400 of 450 and reported success:
+//
+//	MEASURED 2026-07-30, real strfry with maxFilterLimit=400, 450-event board
+//	  termination on window size -> downloaded=400 of 450, pages=1, no error
+//	  termination on the cursor  -> downloaded=450,        pages=3
+//
+// The walk therefore ends only when a window cannot move the cursor STRICTLY
 // older — either the relay held nothing at or below the cursor, or everything it
 // held sits on the cursor's own second. That test is answered entirely by
-// `oldest`, a value read off the events the relay actually served, and is
-// independent of every relay's unreadable cap. The cost is one extra exchange per
-// sync (the final window, which comes back holding only the boundary second).
+// `oldest`, which is read off the events the relay ACTUALLY SERVED rather than
+// the ids it promised, so a clamped download shortens the step instead of
+// skipping the records it could not deliver. It is independent of every relay's
+// unreadable cap. The cost is one extra exchange per sync (the final window,
+// which comes back holding only the boundary second).
 //
 // RESIDUAL, stated rather than hidden: if a relay clamps BELOW SyncPageLimit and
 // more than its clamp's worth of events share one identical created_at second,
@@ -332,9 +374,12 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 		// THE TERMINATION TEST. `oldest == MaxInt64` means the relay reconciled no
 		// record at all at or below the cursor; otherwise the walk continues exactly
 		// when the cursor can step STRICTLY older. Deliberately NOT `relayWindow >=
-		// SyncPageLimit`: a relay capped below the limit rd asks for answers short
-		// and silently, so window size cannot tell "the board ends here" from "the
-		// relay stopped talking here". See SyncPageLimit.
+		// SyncPageLimit`: relayWindow counts the ids negentropy NAMED, while a relay
+		// whose maxFilterLimit is below SyncPageLimit clamps the REQ that fetches
+		// them and says nothing, so a window can be short of the limit and still
+		// have left records behind. Measured against a real strfry capped at 400:
+		// window size stops at 400 of 450 with no error; the cursor gets all 450.
+		// See SyncPageLimit.
 		advances := oldest != math.MaxInt64 && (!bounded || oldest < until)
 
 		// A window the walk will MOVE PAST only reconciled [oldest, until], so a
@@ -398,10 +443,12 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 }
 
 // syncWindowFilter copies filter and stamps it with this window's cursor. `limit`
-// is always set: see SyncPageLimit for why asking explicitly is what turns a
-// relay cap below it into a loud refusal instead of a short answer. Any `until` /
-// `limit` already on the caller's filter is REPLACED — they are the walk's own
-// controls, and no rd caller sets them.
+// is always set, and set to SyncPageLimit rather than to something larger: naming
+// it makes the per-window cost rd's own instead of whatever the relay volunteers,
+// and staying at 500 keeps rd below the ceiling relay.3dl.network refuses outright
+// (see SyncPageLimit for both measurements). Any `until` / `limit` already on the
+// caller's filter is REPLACED — they are the walk's own controls, and no rd caller
+// sets them.
 func syncWindowFilter(filter map[string]any, until int64, bounded bool) map[string]any {
 	out := make(map[string]any, len(filter)+2)
 	for k, v := range filter {

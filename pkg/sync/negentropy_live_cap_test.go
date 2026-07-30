@@ -224,6 +224,170 @@ func TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The configured relay: a cap STRICTLY BELOW the limit rd asks for
+// ---------------------------------------------------------------------------
+
+// subCapRelayURL names a relay whose per-REQ cap is BELOW SyncPageLimit. No
+// public relay is, and neither relay this repo can otherwise reach could be told
+// to be — which is why the sub-limit cap was, for two revisions, the one
+// load-bearing premise under cappedRelay that had been measured against nothing.
+//
+// It is not an inability. strfry's cap is its own `maxFilterLimit`, so one can be
+// stood up in about ten seconds:
+//
+//	docker run --rm --entrypoint cat dockurr/strfry:latest \
+//	  /etc/strfry.conf.default > strfry.conf
+//	sed -i 's/maxFilterLimit = 500/maxFilterLimit = 400/' strfry.conf
+//	sed -i 's|plugin = "/app/write-policy.py"|plugin = ""|' strfry.conf
+//	docker run -d --name rd-strfry-cap400 -p 127.0.0.1:17777:7777 \
+//	  -v $PWD/strfry.conf:/etc/strfry.conf dockurr/strfry:latest
+//	RD_NOSTR_LIVE_RELAY=1 RD_NOSTR_SUBCAP_RELAY_URL=ws://127.0.0.1:17777 \
+//	  go test ./pkg/sync/ -run TestLiveRelay_ASubLimitCapped
+//
+// (The write-policy line matters: the image ships a pubkey whitelist that NAKs
+// every publish with "blocked: pubkey … not in whitelist", which looks exactly
+// like an empty board.)
+func subCapRelayURL() string { return os.Getenv("RD_NOSTR_SUBCAP_RELAY_URL") }
+
+// subCapBoardSize sits strictly between the relay's cap and SyncPageLimit, which
+// is the band where the two candidate termination rules DISAGREE: at 450 the
+// NEG-OPEN window is short of the limit rd asked for (so "the window was small,
+// we must be done" fires) while the download is short of the window (so events
+// remain). Below the cap nothing is withheld; above SyncPageLimit both rules page.
+const subCapBoardSize = 450
+
+// TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently is the experiment
+// that settles where a relay's cap actually bites, against a REAL strfry
+// configured to have one, and it is the live witness for every behaviour
+// cappedRelay models.
+//
+// MEASURED 2026-07-30, dockurr/strfry with maxFilterLimit=400, 600-event board:
+//
+//	NEG-OPEN limit=100/399/400/401/500 -> 100/399/400/401/500   HONOURED
+//	NEG-OPEN limit=1000/5000/none      -> 600 (the whole board) HONOURED
+//	REQ      limit=399                 -> 399
+//	REQ      limit=400/401/500/5000    -> 400                   CLAMPED
+//	REQ      no limit                  -> 400                   CLAMPED
+//
+// So `maxFilterLimit` does not apply to NIP-77 at all — negentropy answers exactly
+// what the client asks for — and it clamps every NIP-01 REQ SILENTLY: no NOTICE,
+// no CLOSED, just EOSE with fewer events than were requested. Neither of the two
+// behaviours this file previously assumed (a loud NEG-ERR refusal; a silently
+// clamped NEG-OPEN window) occurs.
+//
+// The consequence is the whole point: rd's download is a REQ, so negentropy can
+// NAME 450 ids while the fetch DELIVERS 400, silently. Measured end to end on this
+// relay with the two termination rules swapped under it:
+//
+//	relayWindow >= SyncPageLimit -> downloaded=400 of 450, pages=1, no error
+//	the `until` cursor           -> downloaded=450,        pages=3
+//
+// Skipped unless RD_NOSTR_SUBCAP_RELAY_URL names such a relay, because a relay
+// with this configuration has to be created on purpose. The command that creates
+// it is in subCapRelayURL's doc above.
+func TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently(t *testing.T) {
+	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
+		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live sub-limit-cap measurement")
+	}
+	relay := subCapRelayURL()
+	if relay == "" {
+		t.Skip("set RD_NOSTR_SUBCAP_RELAY_URL to a relay whose maxFilterLimit is below SyncPageLimit (see subCapRelayURL for the docker one-liner)")
+	}
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fresh key and a per-run board d-tag: this relay is a throwaway, and the
+	// counts below are only meaningful over a board of a size this test set.
+	boardCoord := BoardCoord(k.PubKeyHex(), fmt.Sprintf("subcap-%d", time.Now().UnixNano()))
+	t.Logf("sub-cap relay: %s  board: %s", relay, boardCoord)
+
+	base := time.Now().Unix() - int64(subCapBoardSize) - 10
+	events := pagingBoard(t, k, boardCoord, subCapBoardSize, base)
+	ctx := context.Background()
+	pctx, pcancel := context.WithTimeout(ctx, 5*time.Minute)
+	acks, err := GuardedPublishMany(pctx, relay, events, false)
+	pcancel()
+	if err != nil {
+		t.Fatalf("publish %d events: %v", subCapBoardSize, err)
+	}
+	for i, a := range acks {
+		if a.Err != nil {
+			t.Fatalf("publish event %d: %v", i, a.Err)
+		}
+		if !a.Accepted {
+			t.Fatalf("relay refused event %d: %q — if this says \"not in whitelist\", the image's write-policy plugin is still enabled; see subCapRelayURL", i, a.Message)
+		}
+	}
+	filter := BoardSyncFilter(boardCoord, nil)
+
+	// (1) NEG-OPEN HONOURS THE LIMIT. The window rd's first page asks for comes
+	// back naming every event on the board, because the board is smaller than the
+	// limit — the relay's own 400-record cap does not touch this path at all.
+	rctx, rcancel := context.WithTimeout(ctx, 60*time.Second)
+	one, err := nostr.NegentropyReconcile(rctx, relay, syncWindowFilter(filter, 0, false), nil)
+	rcancel()
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	t.Logf("MEASURED: NEG-OPEN at limit=%d named %d ids of a %d-event board", SyncPageLimit, len(one.Need), subCapBoardSize)
+	if len(one.Need) != subCapBoardSize {
+		t.Fatalf("NEG-OPEN at limit=%d named %d ids of %d — cappedRelay models this path as HONOURING the limit (maxFilterLimit not applied to NIP-77). Re-derive the model against %s",
+			SyncPageLimit, len(one.Need), subCapBoardSize, relay)
+	}
+	if len(one.Need) >= SyncPageLimit {
+		t.Fatalf("the board (%d) must be smaller than SyncPageLimit (%d) or the window-size rule pages anyway and nothing here discriminates",
+			len(one.Need), SyncPageLimit)
+	}
+
+	// (2) THE REQ IS CLAMPED, SILENTLY, AND BELOW WHAT NEGENTROPY JUST PROMISED.
+	// This is the premise cappedRelay.reqCap models and the one that had never
+	// been measured. No error is returned: the truncation is invisible.
+	fctx, fcancel := context.WithTimeout(ctx, 120*time.Second)
+	fetched, err := nostr.FetchByIDs(fctx, relay, one.Need)
+	fcancel()
+	if err != nil {
+		t.Fatalf("fetch %d ids: %v", len(one.Need), err)
+	}
+	t.Logf("MEASURED: a REQ for those %d ids returned %d events and NO error", len(one.Need), len(fetched))
+	if len(fetched) >= len(one.Need) {
+		t.Fatalf("%s served all %d requested ids — its per-REQ cap is not below SyncPageLimit, so this test measures nothing. Point RD_NOSTR_SUBCAP_RELAY_URL at a relay with maxFilterLimit < %d",
+			relay, len(one.Need), SyncPageLimit)
+	}
+
+	// (3) AND THE WALK STILL LANDS THE WHOLE BOARD. Under the retired
+	// window-size rule this stops at len(fetched) with pages=1 and no error.
+	log := NewNostrLog(filepath.Join(t.TempDir(), NostrLogFile))
+	trusted := map[string]bool{k.PubKeyHex(): true}
+	res, err := NegentropySync(ctx, relay, log, filter, trusted, 120*time.Second, false)
+	if err != nil {
+		t.Fatalf("paged sync: %v", err)
+	}
+	t.Logf("PAGED: need=%d downloaded=%d pages=%d", res.Need, res.Downloaded, res.Pages)
+	if res.Downloaded != subCapBoardSize {
+		t.Fatalf("a relay clamping the DOWNLOAD at %d silently truncated the sync: downloaded=%d of %d (pages=%d)",
+			len(fetched), res.Downloaded, subCapBoardSize, res.Pages)
+	}
+	if res.Pages < 2 {
+		t.Fatalf("the download was clamped at %d of %d, so the walk needed more than one window, got pages=%d",
+			len(fetched), subCapBoardSize, res.Pages)
+	}
+	items := ProjectItems(mustReadAll(t, log), ProjectOptions{Trusted: trusted})
+	if len(items) != subCapBoardSize {
+		t.Fatalf("fresh clone projected %d of %d cards", len(items), subCapBoardSize)
+	}
+	res2, err := NegentropySync(ctx, relay, log, filter, trusted, 120*time.Second, false)
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if res2.Downloaded != 0 || res2.Uploaded != 0 {
+		t.Fatalf("converged re-sync moved events: downloaded=%d uploaded=%d", res2.Downloaded, res2.Uploaded)
+	}
+	t.Logf("PROVEN against %s: NEG-OPEN honours limit=%d (named %d), the REQ clamps to %d SILENTLY, and the cursor walk still merged all %d over %d windows",
+		relay, SyncPageLimit, len(one.Need), len(fetched), res.Downloaded, res.Pages)
+}
+
+// ---------------------------------------------------------------------------
 // The named measurement: the REAL board on the REAL relay the defect was found on
 // ---------------------------------------------------------------------------
 
