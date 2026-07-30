@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# reference-transaction — ready-f75 stash guard, ref-transaction half.
+#
+# WHY: refs/stash lives in the repository's COMMON .git directory — the one
+# piece of state every `git worktree` of a repo SHARES. Two agents dispatched
+# into separate worktrees who both stash are pushing onto the SAME stack; a
+# pop by position can apply-then-delete the OTHER agent's entry with no error
+# at all. Observed 2026-07-29: 14+ interleaved entries from 10 branches, one
+# agent's pop reverting a sibling's uncommitted files to HEAD, caught only
+# because that agent volunteered it.
+#
+# WHAT THIS FILE DOES: it aborts a ref transaction that writes refs/stash.
+# That is the whole of its mechanism, and it is the only thing stated here.
+#
+# WHAT IT COVERS IS NOT WRITTEN DOWN, HERE OR ANYWHERE ELSE THAT SHIPS.
+# Three review rounds of ready-f75 were spent on a per-verb coverage claim in
+# prose: a false one, then a blacklist of its phrasings, then a whitelist of
+# claim words. Each was defeated by rewording, because prose drifts from
+# behaviour and no string test catches that. The claim has been deleted.
+#
+# The scope of this guard lives in scripts/wt_stash_test.go, where it is
+# executable — hard-coded expectations checked by running raw `git stash`
+# against a really-installed mechanism, each mechanism in isolation:
+#
+#   go test ./scripts/ -run TestStashGuard -v
+#
+# Read the test names and the assertions. Do not infer coverage from the fact
+# that this hook exists, from its refusal message, or from anything an
+# installer prints. Run the tests.
+#
+# Full per-hazard analysis of the rest of the shared .git directory (a dated
+# measurement record, not a promise): docs/ops/shared-git-state-audit.md
+#
+# Installed by scripts/install-git-stash-guard.sh. Marker line below is what
+# makes installation idempotent and what stops the installer from silently
+# overwriting somebody else's reference-transaction hook:
+# ready-f75 stash guard
+set -uo pipefail
+
+# refs/stash is the real target. The canary ref exists only so the installer
+# can prove, empirically and without touching refs/stash, that git actually
+# runs THIS file in THIS repository (core.hooksPath can point anywhere).
+GUARDED_REFS_RE='^refs/(stash|f75-stash-guard-canary)$'
+
+state="${1:-}"
+[[ "$state" == "prepared" ]] || exit 0
+
+# Which user-facing `git ...` triggered us? git may run the ref update from
+# an internal subprocess (e.g. `git reflog delete` under `git stash drop`),
+# so walk up the process tree. Linux /proc only; absent /proc we simply
+# report the verb as unknown and still block.
+_invoking_git_cmd() {
+  local pid="$PPID" cmd ppid depth=0
+  while [[ -n "$pid" && "$pid" != "0" && "$depth" -lt 8 ]]; do
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || return 0
+    if [[ "$cmd" == *"stash"* ]]; then
+      printf '%s' "${cmd% }"
+      return 0
+    fi
+    # /proc/<pid>/stat field 4 is ppid, but field 2 (comm) may contain
+    # spaces and parens, so strip through the last ')' before counting.
+    ppid=$(sed -e 's/^.*) [A-Za-z] //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)
+    [[ "$ppid" == "$pid" ]] && return 0
+    pid="$ppid"
+    depth=$((depth + 1))
+  done
+}
+
+blocked_ref=""
+blocked_old=""
+blocked_new=""
+while read -r old new refname; do
+  if [[ "$refname" =~ $GUARDED_REFS_RE ]]; then
+    blocked_ref="$refname"
+    blocked_old="$old"
+    blocked_new="$new"
+    break
+  fi
+done
+
+[[ -n "$blocked_ref" ]] || exit 0
+
+verb="$(_invoking_git_cmd)"
+{
+  echo "ready-f75 stash guard: REFUSED a write to $blocked_ref"
+  echo "  $blocked_old -> $blocked_new"
+  if [[ -n "$verb" ]]; then
+    echo "  invoked by: $verb"
+  fi
+  if [[ "$blocked_ref" == "refs/stash" ]]; then
+    echo
+    echo "refs/stash lives in the COMMON .git directory that every git worktree"
+    echo "of this repo shares. A stash pushed from one dispatched agent's worktree"
+    echo "lands on the same stack every other agent pops from, and a pop by"
+    echo "position silently discards whichever sibling's entry happens to be on"
+    echo "top (observed 2026-07-29, ready-f75)."
+    echo
+    echo "Use the worktree-scoped replacement — its entries live under"
+    echo "refs/worktree/wtstash/N, which git stores per worktree:"
+    echo "  git wtstash [push|list|pop|apply|drop|clear]"
+    echo
+    echo "Or just commit the WIP on your own branch; a dispatched agent owns its"
+    echo "branch and can always reset/amend it later."
+    case "$verb" in
+      *"stash pop"* | *"stash drop"*)
+        echo
+        echo "NOTE: this refusal did NOT undo anything, and you only saw it because"
+        echo "the shared stack was down to its LAST entry. The reflog rewrite already"
+        echo "happened, so the entry is off 'git stash list'; pop also applies before"
+        echo "it drops, so your working tree may already have changed. Aborting the"
+        echo "trailing ref deletion only keeps the entry REACHABLE — recover it with"
+        echo "  git stash apply refs/stash"
+        echo "Check 'git status' and 'git diff' before doing anything else."
+        ;;
+    esac
+    echo
+    echo "Do NOT read this refusal as a statement of what is guarded. What this"
+    echo "guard stops is measured, not asserted:"
+    echo "  go test ./scripts/ -run TestStashGuard -v"
+  else
+    echo
+    echo "(That was the guard's own self-check canary. If you see this from"
+    echo "anything other than scripts/install-git-stash-guard.sh, ignore it.)"
+  fi
+} >&2
+
+exit 1
