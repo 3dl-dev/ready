@@ -197,10 +197,27 @@ export class NostrBoardWriter implements BoardWriter {
   }
 
   /** items projects the writer's current view (snapshot + everything it has
-   * published this session). */
+   * published this session).
+   *
+   * READ-TRUST IS ENFORCED HERE TOO, AND FROM grantLevels (ready-605). This
+   * projection is what every write is BUILT FROM — buildWrite rebuilds the whole
+   * card from the item it finds here — so an ungranted key that wins latest-wins
+   * in THIS map chooses the title, context and labels the human's key then signs.
+   * A gate rail is enough to invite the click. Projecting with `trusted: null`
+   * while the page projected with a set would be the ready-191 shape of defect
+   * over again: two projections of one board that disagree, with the writer's
+   * being the permissive one.
+   *
+   * The set is grantLevels' KEY SET, not a second notion of trust. grantLevels
+   * is deriveLevels' `levels` map over the board's owner-signed 39301 grants,
+   * whose keys are precisely pkg/sync/rolegrant.go's DeriveReadTrust membership
+   * (board author + every cap-valid grantee, revoked keys retained so their past
+   * events survive the §3.5 until gate). Taking it from the field this writer
+   * ALREADY authorises writes against makes divergence between the two
+   * structurally impossible rather than merely tested for. */
   items(): Map<string, Item> {
     return projectItems(this.log, {
-      trusted: null,
+      trusted: new Set(this.deps.grantLevels.keys()),
       maintainers: null,
       pinnedBoard: `30301:${this.deps.board.ownerPubkey}:${this.deps.board.boardD}`,
       decryptor: this.deps.decryptor ?? null,
