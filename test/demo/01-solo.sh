@@ -35,8 +35,8 @@ echo "$ cd myproject && rd init --name \"myproject\""
 
 echo ""
 echo "=== SECTION: create ==="
-echo '$ rd create "Ship login page" --priority p1 --type task'
-ITEM_ID=$("$RD" create "Ship login page" --priority p1 --type task)
+echo '$ rd create "Ship login page" --priority p1 --type task --parent-id none'
+ITEM_ID=$("$RD" create "Ship login page" --priority p1 --type task --parent-id none)
 echo "# item ID: $ITEM_ID"
 
 echo ""

@@ -68,7 +68,7 @@ info "rd init (nostr-native project; local signed-event log is the source of tru
 
 echo
 info "STEP 1: rd create -> card (inbox) + 1630 status event"
-ID="$("$RD" create "b5f history replay demo" --type task --priority p1 --context "ready-b5f live proof" 2>"$WORK/create.err" | tail -1)"
+ID="$("$RD" create "b5f history replay demo" --type task --priority p1 --parent-id none --context "ready-b5f live proof" 2>"$WORK/create.err" | tail -1)"
 cat "$WORK/create.err" >&2 || true
 [ -n "$ID" ] || fail "rd create produced no item id"
 info "created item: $ID"

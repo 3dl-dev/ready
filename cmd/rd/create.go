@@ -78,16 +78,19 @@ var createCmd = &cobra.Command{
 	Long: `Create a new work item in the project.
 
 Title can be a positional argument or --title flag.
-Required: title, --type, --priority
+Required: title, --type, --priority, --parent-id
+
+--parent-id must name an existing item, or use 'none' to explicitly create a
+root item with no parent. There is no default — every item must say which.
 
 If --eta is omitted, it is derived from priority:
   p0 = now, p1 = +4h, p2 = +24h, p3 = +72h
 
 Example:
-  rd create "Fix auth bug" --type task --priority p0
-  rd create --title "Fix auth bug" --type task --priority p0
-  rd create "Review API design" --type decision --priority p1 --for baron@3dl.dev
-  rd create "Ship v2" --type task --priority p1 --context "See spec in docs/v2.md" --json
+  rd create "Fix auth bug" --type task --priority p0 --parent-id none
+  rd create --title "Fix auth bug" --type task --priority p0 --parent-id none
+  rd create "Review API design" --type decision --priority p1 --for baron@3dl.dev --parent-id ready-epic1
+  rd create "Ship v2" --type task --priority p1 --context "See spec in docs/v2.md" --parent-id none --json
 
 Note: use --context for descriptions, not --description.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -106,6 +109,7 @@ Note: use --context for descriptions, not --description.`,
 		by, _ := cmd.Flags().GetString("by")
 		priority, _ := cmd.Flags().GetString("priority")
 		parentID, _ := cmd.Flags().GetString("parent-id")
+		parentIDGiven := cmd.Flags().Changed("parent-id")
 		eta, _ := cmd.Flags().GetString("eta")
 		due, _ := cmd.Flags().GetString("due")
 		labelSlice, _ := cmd.Flags().GetStringArray("label")
@@ -127,6 +131,20 @@ Note: use --context for descriptions, not --description.`,
 		}
 		if priority == "" {
 			return fmt.Errorf("--priority is required")
+		}
+		// ready-4140: --parent-id used to default to "" and was never checked
+		// for presence, so every item that omitted it was silently born an
+		// orphan (cmd/rd/create.go:215's registration had no MarkFlagRequired
+		// and no other required-ness check). Measured 2026-07-30: dontguess
+		// 29% orphaned, enterprise_ai_framework 92% orphaned, with nothing
+		// preventing more. Require the flag explicitly — "none" remains the
+		// spelled-out way to create a root item (see parentid.go), so this
+		// closes the silent path without blocking intentional roots.
+		if !parentIDGiven {
+			return fmt.Errorf("--parent-id is required: name an existing item as the parent, or pass --parent-id none to create a root item explicitly")
+		}
+		if parentID == "" {
+			return fmt.Errorf("--parent-id %q is not valid: name an existing item as the parent, or pass --parent-id none to create a root item explicitly", parentID)
 		}
 
 		// Alias rewrite: runs BEFORE enum validation so aliased types (e.g. "bug")
@@ -212,7 +230,8 @@ func init() {
 	createCmd.Flags().String("level", "", "level: epic, task, subtask")
 	createCmd.Flags().String("by", "", "who will do the work")
 	createCmd.Flags().String("project", "", "project name")
-	createCmd.Flags().String("parent-id", "", "parent item ID; must name an existing item, or use 'none' for no parent")
+	createCmd.Flags().String("parent-id", "", "parent item ID (required); must name an existing item, or use 'none' for no parent")
+	_ = createCmd.MarkFlagRequired("parent-id")
 	createCmd.Flags().String("eta", "", "ETA in RFC3339 format (default: derived from priority)")
 	createCmd.Flags().String("due", "", "hard deadline in RFC3339 format")
 	createCmd.Flags().String("description", "", "")

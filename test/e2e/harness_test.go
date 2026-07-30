@@ -334,6 +334,7 @@ func TestHarness_CreateAndList(t *testing.T) {
 		"--priority", "p1",
 		"--type", "task",
 		"--for", "test@example.com",
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -43,9 +43,13 @@ func TestCreate_TypeBugAlias_RewritesToTaskAndLabel(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id: %v", err)
+	}
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	// Capture stderr so we can assert the notice line.
@@ -150,9 +154,13 @@ func TestCreate_TypeIncident_NotAliasNotValid(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id: %v", err)
+	}
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	err := createCmd.RunE(createCmd, []string{"Test incident"})

@@ -40,15 +40,15 @@ cd "$FRONTEND"
 
 echo ""
 echo "=== SECTION: create-items ==="
-echo '$ cd backend && rd create "Expose /api/v1/users endpoint" --priority p1 --type task'
+echo '$ cd backend && rd create "Expose /api/v1/users endpoint" --priority p1 --type task --parent-id none'
 cd "$BACKEND"
-BACKEND_ID=$("$RD" create "Expose /api/v1/users endpoint" --priority p1 --type task)
+BACKEND_ID=$("$RD" create "Expose /api/v1/users endpoint" --priority p1 --type task --parent-id none)
 echo "# backend item ID: $BACKEND_ID"
 
 echo ""
-echo '$ cd frontend && rd create "Build user list page" --priority p1 --type task'
+echo '$ cd frontend && rd create "Build user list page" --priority p1 --type task --parent-id none'
 cd "$FRONTEND"
-FRONTEND_ID=$("$RD" create "Build user list page" --priority p1 --type task)
+FRONTEND_ID=$("$RD" create "Build user list page" --priority p1 --type task --parent-id none)
 echo "# frontend item ID: $FRONTEND_ID"
 
 echo ""

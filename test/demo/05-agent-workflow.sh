@@ -37,12 +37,12 @@ echo "$ cd ci-project && rd init --name ci-project"
 
 echo ""
 echo "=== SECTION: create-work ==="
-echo '$ rd create "Reindex search corpus" --type task --priority p1'
-ITEM1_ID=$("$RD" create "Reindex search corpus" --type task --priority p1)
+echo '$ rd create "Reindex search corpus" --type task --priority p1 --parent-id none'
+ITEM1_ID=$("$RD" create "Reindex search corpus" --type task --priority p1 --parent-id none)
 echo "# created: $ITEM1_ID"
 echo ""
-echo '$ rd create "Update dependency manifest" --type task --priority p2'
-ITEM2_ID=$("$RD" create "Update dependency manifest" --type task --priority p2)
+echo '$ rd create "Update dependency manifest" --type task --priority p2 --parent-id none'
+ITEM2_ID=$("$RD" create "Update dependency manifest" --type task --priority p2 --parent-id none)
 echo "# created: $ITEM2_ID"
 
 echo ""

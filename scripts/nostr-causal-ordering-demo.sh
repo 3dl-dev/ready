@@ -100,7 +100,7 @@ info "STEP 1: create + claim + done an item through (publishes to $RELAY_URL)"
 # NIP-01 id tie-break only decides genuinely-CONCURRENT same-second edits (proven
 # in LAYER B); a true causal lifecycle is ordered by created_at, so current state
 # resolves to 'done' deterministically on every machine.
-ID="$(cd "$PROJ" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" create "f92 causal-ordering proof" --type task --priority p1 --context "ready-f92" 2>>"$WORK/a.err" | tail -1)"
+ID="$(cd "$PROJ" && CF_HOME="$CFHOME" RD_NOSTR_RELAY_URL="$RELAY_URL" "$RD" create "f92 causal-ordering proof" --type task --priority p1 --parent-id none --context "ready-f92" 2>>"$WORK/a.err" | tail -1)"
 [ -n "$ID" ] || { cat "$WORK/a.err" >&2; fail "rd create produced no item id"; }
 info "item id: $ID"
 sleep 1

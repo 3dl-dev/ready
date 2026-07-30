@@ -215,9 +215,11 @@ func TestNostrNative_CreateCmd_EndToEnd_NoDotCf(t *testing.T) {
 	}
 	must(createCmd.Flags().Set("type", "task"))
 	must(createCmd.Flags().Set("priority", "p2"))
+	must(createCmd.Flags().Set("parent-id", "none"))
 	t.Cleanup(func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	})
 	if err := createCmd.RunE(createCmd, []string{"End to end item"}); err != nil {
 		t.Fatalf("createCmd.RunE: %v", err)

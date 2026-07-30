@@ -1984,6 +1984,17 @@ must understand: rd's own CLI cannot empty `Title`/`Context`/`Priority`/`ETA`/
 that builds a `CardSpec` directly and leaves a field empty WILL empty it on the
 winning card.
 
+ready-4140: `--parent-id` on `rd create` went further still — omitting the flag
+entirely used to leave `ParentID` empty by default, so every item created
+without it was silently born an orphan (measured 2026-07-30: 29%–92% of items
+orphaned across live projects with no `rd create` caller ever forced to say
+"root" on purpose). `cmd/rd/create.go`'s `RunE` now rejects a create call where
+`--parent-id` was never supplied (`cmd.Flags().Changed`), and separately rejects
+an explicitly empty value (`--parent-id ""`), which would otherwise fall through
+`resolveParentIDField`'s `"" => no parent` branch exactly like the old default
+did. `--parent-id none` is unaffected — it remains the one explicit spelling for
+"this item really has no parent."
+
 **§24.3 Priority emits two tags.** `Priority` produces BOTH `rank` and `priority`
 with the same value (`pkg/sync/nostrwire.go:272-276`); the fold prefers
 `priority` and falls back to `rank` (§5.1,
@@ -2091,7 +2102,7 @@ perform maps to at least one clause:
 | open gate | `rd gate` (`cmd/rd/gate.go:38`) | card + 1630 | §22.1 |
 | approve gate | `rd approve` (`cmd/rd/approve.go:26`) | card (gate tags dropped) + 1630 | §22.2 |
 | reject gate | `rd reject` (`cmd/rd/reject.go:28`) | card + 1630 (`waiting → waiting`) | §22.3 |
-| create item | `rd create` (`cmd/rd/create.go:179`) | board? + card + 1621? + 1630 | §18.8 |
+| create item | `rd create` (`cmd/rd/create.go:197`) | board? + card + 1621? + 1630 | §18.8 |
 | edit description | `rd update --context` / `rd progress` | card only | §24.1, §24.6 |
 | set ETA / due / level | `rd update` / `rd defer` | card only | §24.1, §24.6 |
 | add dep | `rd dep add` (`cmd/rd/dep.go:44`) | card only (`i`) | §21.1 |

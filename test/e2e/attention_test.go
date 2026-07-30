@@ -141,6 +141,7 @@ func TestE2E_List_JSONFieldContract(t *testing.T) {
 		"--type", "task",
 		"--for", "test@example.com",
 		"--context", "some context text",
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("create: %v", err)
 	}

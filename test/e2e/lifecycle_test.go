@@ -14,6 +14,7 @@ func createItem(e *Env, t *testing.T, title, priority, itemType string) Item {
 		"--title", title,
 		"--priority", priority,
 		"--type", itemType,
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("create %q: %v", title, err)
 	}
@@ -46,6 +47,7 @@ func TestE2E_Create_DefaultsForToIdentity(t *testing.T) {
 		"--title", "Default for test",
 		"--priority", "p2",
 		"--type", "task",
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -101,6 +103,7 @@ func TestE2E_Create_ShowByID(t *testing.T) {
 		"--type", "decision",
 		"--for", "baron@example.com",
 		"--context", "some context",
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -246,6 +249,7 @@ func TestE2E_Create_ExplicitIDCollision(t *testing.T) {
 		"--priority", "p1",
 		"--type", "task",
 		"--for", "test@example.com",
+		"--parent-id", "none",
 	)
 	stderr := e.RdMustFail("create",
 		"--id", "dup-001",
@@ -253,6 +257,7 @@ func TestE2E_Create_ExplicitIDCollision(t *testing.T) {
 		"--priority", "p1",
 		"--type", "task",
 		"--for", "test@example.com",
+		"--parent-id", "none",
 	)
 	if !strings.Contains(stderr, "dup-001") {
 		t.Errorf("expected error mentioning the duplicate ID, got: %q", stderr)

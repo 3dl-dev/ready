@@ -183,9 +183,13 @@ func TestCreate_InvalidType_NoJSONLWrite(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority flag: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id flag: %v", err)
+	}
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	// Invoke the real command entry point — not a standalone validation function.
@@ -242,9 +246,13 @@ func TestCreate_ValidType_HarnessCanDetectWrites(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority flag: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id flag: %v", err)
+	}
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	err := createCmd.RunE(createCmd, []string{"Test item"})
@@ -296,10 +304,14 @@ func TestCreateCmd_InvalidType_ExitsBeforeStore(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority flag: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id flag: %v", err)
+	}
 	// Clean up flag state after test.
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	// Execute RunE with a title as positional arg.
@@ -342,9 +354,13 @@ func TestCreateCmd_ValidType_ProceedsToStore(t *testing.T) {
 	if err := createCmd.Flags().Set("priority", "p1"); err != nil {
 		t.Fatalf("setting --priority flag: %v", err)
 	}
+	if err := createCmd.Flags().Set("parent-id", "none"); err != nil {
+		t.Fatalf("setting --parent-id flag: %v", err)
+	}
 	defer func() {
 		_ = createCmd.Flags().Set("type", "")
 		_ = createCmd.Flags().Set("priority", "")
+		_ = createCmd.Flags().Set("parent-id", "")
 	}()
 
 	err := createCmd.RunE(createCmd, []string{"Test item"})

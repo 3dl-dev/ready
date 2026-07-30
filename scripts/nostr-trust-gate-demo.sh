@@ -164,7 +164,7 @@ pass "attacker key temporarily admitted to both relays (relay-layer gate satisfi
 
 echo
 info "STEP 1: VICTIM (identity A, allowlisted) creates the item legit/active/p1 on the LIVE relay"
-ID="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" create "legit item" --type task --priority p1 --context "ready-d53 trust proof" 2>"$WORK/create.err" | tail -1)"
+ID="$(cd "$VICTIM_PROJ" && RD_HOME="$VICTIM_HOME" "$RD" create "legit item" --type task --priority p1 --parent-id none --context "ready-d53 trust proof" 2>"$WORK/create.err" | tail -1)"
 cat "$WORK/create.err" >&2 || true
 [ -n "$ID" ] || fail "rd create produced no item id"
 info "victim item id: $ID"

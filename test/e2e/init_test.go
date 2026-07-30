@@ -104,7 +104,7 @@ func TestE2E_Init_NostrNative_ThenCreateClaimClose(t *testing.T) {
 
 	// create
 	stdout, stderr, code := runIsolatedRd(projectDir, home, rdHome, cfHome,
-		"create", "--title", "First item", "--priority", "p1", "--type", "task", "--json")
+		"create", "--title", "First item", "--priority", "p1", "--type", "task", "--parent-id", "none", "--json")
 	if code != 0 {
 		t.Fatalf("rd create failed (exit %d): %s", code, stderr)
 	}

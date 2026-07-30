@@ -43,6 +43,7 @@ func TestE2E_Gate_ApproveFullCycle(t *testing.T) {
 		"--title", "Gate approve test item",
 		"--priority", "p1",
 		"--type", "task",
+		"--parent-id", "none",
 		"--json",
 	)
 	if createCode != 0 {
@@ -193,6 +194,7 @@ func TestE2E_Gate_RejectFullCycle(t *testing.T) {
 		"--title", "Gate reject test item",
 		"--priority", "p2",
 		"--type", "task",
+		"--parent-id", "none",
 		"--json",
 	)
 	if createCode != 0 {
@@ -330,6 +332,7 @@ func TestE2E_Gate_BadInputs(t *testing.T) {
 		"--title", "Non-gated item",
 		"--priority", "p1",
 		"--type", "task",
+		"--parent-id", "none",
 	); err != nil {
 		t.Fatalf("rd create: %v", err)
 	}

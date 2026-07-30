@@ -70,7 +70,7 @@ info "rd init (nostr-native project; create/close write the local signed-event l
 
 echo
 info "STEP 1: rd create -- nostr-native, so the card + issue + status land in the local log"
-ID="$("$RD" create "issue-anchor demo item" --type task --priority p1 --context "ready-da7 live proof" 2>/dev/null | tail -1)"
+ID="$("$RD" create "issue-anchor demo item" --type task --priority p1 --parent-id none --context "ready-da7 live proof" 2>/dev/null | tail -1)"
 [ -n "$ID" ] || fail "create produced empty id"
 info "item=$ID"
 LOG="$PROJ/.ready/nostr-log.jsonl"

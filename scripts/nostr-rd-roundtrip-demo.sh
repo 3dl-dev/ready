@@ -58,7 +58,7 @@ info "rd init (nostr-native project; local signed-event log is the source of tru
 
 echo
 info "STEP 1: rd create -> publish 30302 card + 1630 status to the relay (best-effort) + local log"
-ID="$("$RD" create "keystone round-trip" --type task --priority p1 --context "ready-a13 live proof" 2>"$WORK/create.err" | tail -1)"
+ID="$("$RD" create "keystone round-trip" --type task --priority p1 --parent-id none --context "ready-a13 live proof" 2>"$WORK/create.err" | tail -1)"
 cat "$WORK/create.err" >&2 || true
 [ -n "$ID" ] || fail "rd create produced no item id"
 info "created item: $ID"

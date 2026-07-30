@@ -130,12 +130,12 @@ pass "both machines: campfire-disconnected offline projects initialized"
 echo; info "PHASE 1: machine-1 — full lifecycle over the REAL rd CLI (RD_NOSTR=1 -> live relays)"
 
 info "rd create item A"
-ITEM_A="$(rd1 create "capstone: item A (full lifecycle)" --type task --priority p1 --context "ready-c8c capstone" 2>/dev/null | tail -1)"
+ITEM_A="$(rd1 create "capstone: item A (full lifecycle)" --type task --priority p1 --parent-id none --context "ready-c8c capstone" 2>/dev/null | tail -1)"
 [ -n "$ITEM_A" ] || fail "create A produced no id"
 info "  item A = $ITEM_A"; sleep "$SPACE"
 
 info "rd create item B (blocker)"
-ITEM_B="$(rd1 create "capstone: item B (blocker)" --type task --priority p2 2>/dev/null | tail -1)"
+ITEM_B="$(rd1 create "capstone: item B (blocker)" --type task --priority p2 --parent-id none 2>/dev/null | tail -1)"
 [ -n "$ITEM_B" ] || fail "create B produced no id"
 info "  item B = $ITEM_B"; sleep "$SPACE"
 
@@ -189,7 +189,7 @@ pass "PHASE 2: machine-2 reconstructed A and B BYTE-IDENTICAL to machine-1, pure
 
 # ---- PHASE 3: machine-2 mutates; machine-1 converges (measured) -------------
 echo; info "PHASE 3: machine-2 MUTATES (create C, claim C); machine-1 converges"
-ITEM_C="$(rd2 create "capstone: item C (born on machine-2)" --type task --priority p1 2>/dev/null | tail -1)"
+ITEM_C="$(rd2 create "capstone: item C (born on machine-2)" --type task --priority p1 --parent-id none 2>/dev/null | tail -1)"
 [ -n "$ITEM_C" ] || fail "machine-2 create C produced no id"
 info "  item C = $ITEM_C"; sleep "$SPACE"
 rd2 claim "$ITEM_C" --reason "machine-2 takes ownership" >/dev/null || fail "machine-2 claim C failed"; sleep "$SPACE"

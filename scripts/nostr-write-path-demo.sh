@@ -93,8 +93,8 @@ info "rd init (nostr-native project; every mutation writes the local signed-even
 
 echo
 info "STEP 0: create parent + blocker + child + grandchild"
-PID=$("$RD" create "parent item"  --type task --priority p1 2>/dev/null | tail -1)
-BID=$("$RD" create "blocker item" --type task --priority p1 2>/dev/null | tail -1)
+PID=$("$RD" create "parent item"  --type task --priority p1 --parent-id none 2>/dev/null | tail -1)
+BID=$("$RD" create "blocker item" --type task --priority p1 --parent-id none 2>/dev/null | tail -1)
 C1=$("$RD" create "child one"     --type task --priority p1 --parent-id "$PID" 2>/dev/null | tail -1)
 G1=$("$RD" create "grandchild"    --type task --priority p1 --parent-id "$C1"  2>/dev/null | tail -1)
 [ -n "$PID" ] && [ -n "$BID" ] && [ -n "$C1" ] && [ -n "$G1" ] || fail "create produced empty id(s)"

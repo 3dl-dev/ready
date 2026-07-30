@@ -34,8 +34,8 @@ echo "$ cd gate-demo && rd init --name gate-demo"
 
 echo ""
 echo "=== SECTION: claim-work ==="
-echo '$ rd create "Migrate auth layer to new token format" --type task --priority p1'
-ITEM_ID=$("$RD" create "Migrate auth layer to new token format" --type task --priority p1)
+echo '$ rd create "Migrate auth layer to new token format" --type task --priority p1 --parent-id none'
+ITEM_ID=$("$RD" create "Migrate auth layer to new token format" --type task --priority p1 --parent-id none)
 echo "# created: $ITEM_ID"
 echo ""
 echo "$ rd claim $ITEM_ID"
@@ -77,8 +77,8 @@ echo ""
 echo "=== SECTION: reject-scenario ==="
 echo "# Second scenario: worker gates a new item, the human rejects it."
 echo "# After rejection the item stays in waiting until the approach is revised."
-echo '$ rd create "Refactor payment processor" --type task --priority p2'
-ITEM2_ID=$("$RD" create "Refactor payment processor" --type task --priority p2)
+echo '$ rd create "Refactor payment processor" --type task --priority p2 --parent-id none'
+ITEM2_ID=$("$RD" create "Refactor payment processor" --type task --priority p2 --parent-id none)
 echo "# created: $ITEM2_ID"
 echo ""
 echo "$ rd claim $ITEM2_ID"
