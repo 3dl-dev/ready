@@ -128,9 +128,18 @@ export class NostrBoardWriter implements BoardWriter {
     // not a reason to publish plaintext, it is a reason to stay read-only.
     if (this.deps.confidential && !this.deps.enc) {
       return (
+        // THE REMEDY NAMED HERE IS A GRANT, NOT A LINK (ready-191). An earlier
+        // revision offered "open the board with a key-bearing link", which is
+        // false as advice: a `--with-key` link DOES supply the CEK, but it opens
+        // read-only by construction (cek= implies pk= implies `method:
+        // "readOnly"` implies no signer), so following it lands the reader on the
+        // SIGNER refusal below rather than on a writable board. A grant addressed
+        // to a key an extension can sign with is the only thing that makes a
+        // confidential board writable here.
         "This board seals its free text (confidential) and no read key for it reached this session, so " +
         "the browser cannot seal what it writes. Editing it here would publish the title and context in " +
-        "the clear, so writes are disabled — use the rd CLI, or open the board with a key-bearing link."
+        "the clear, so writes are disabled — use the rd CLI, or ask the board owner to grant this key " +
+        "(rd grant <npub>) and sign in with a NIP-07 extension."
       );
     }
     if (!this.deps.signer || !hasSigner({ nostr: this.deps.signer as unknown as Window["nostr"] })) {

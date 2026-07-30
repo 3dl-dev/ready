@@ -539,9 +539,13 @@ export function buildWrite(env: WriteEnv, op: WriteOp): BuiltEvent[] {
   if (env.confidential && !env.enc) {
     throw new WriteRefusedError(
       "confidential",
+      // See NostrBoardWriter.whyReadOnly for why the remedy is a GRANT and not a
+      // key-bearing link: a link supplies the CEK but opens read-only, so it
+      // cannot make this board writable.
       "this board seals its free text (confidential board) and no read key for it reached this " +
         "session, so the browser cannot seal a card — writing here would publish the title and " +
-        "context in the clear. Use the rd CLI for this board, or open it with a key-bearing link.",
+        "context in the clear. Use the rd CLI for this board, or ask its owner to grant this key " +
+        "(rd grant <npub>).",
     );
   }
   switch (op.op) {

@@ -42,7 +42,13 @@ interface Input {
   boardAuthor: string;
   boardD: string;
   boardCoord: string;
-  /** the board CEK/LTK the Go side minted, hex. */
+  /** the board CEK/LTK the Go side minted, hex.
+   *
+   * `ltkHex` EMPTY means the session holds no label-token key — the state a
+   * grant that carries no `ltk` tag produces. It is not a degenerate case: rd's
+   * own writer has the same state (`spec.Enc != nil && spec.Enc.LTK == nil`) and
+   * both implementations must then emit NO `l` tag at all rather than leaking a
+   * plaintext label. confidential_write_test.go's no-LTK test drives it. */
   cekHex: string;
   ltkHex: string;
   epoch: number;
@@ -87,7 +93,7 @@ const env: WriteEnv = {
   issueEventIds: new Map(),
   createdAt: input.createdAt,
   confidential: true,
-  enc: { cek, epoch: input.epoch, ltk: hexToBytes(input.ltkHex) },
+  enc: { cek, epoch: input.epoch, ltk: input.ltkHex === "" ? null : hexToBytes(input.ltkHex) },
 };
 
 const events = buildWrite(env, input.op);

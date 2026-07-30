@@ -115,9 +115,20 @@ export class BoardKeyring {
     return this.ceks.get(coord)?.get(epoch) ?? null;
   }
 
-  /** ltk returns the board's label-token key, or null. Held so a future path
-   * that pushes an `#l` filter to a relay can tokenize the label first (spec
-   * §7); labels themselves are filtered client-side on decrypted plaintext. */
+  /** ltk returns the board's label-token key, or null.
+   *
+   * READ BY THE WRITE PATH since ready-191: main.ts hands it to
+   * NostrBoardWriter as `enc.ltk`, and board/writeevents.ts emits each label as
+   * labelToken(ltk, label) so a confidential card's `l` tags are relay-filterable
+   * without being readable (spec §7). Null is the fail-closed answer and means
+   * NO `l` tag is emitted at all — never a plaintext one; rd's own writer takes
+   * the identical branch (pkg/sync/nostrwire.go). Labels are still filtered
+   * client-side off the decrypted plaintext, so nothing is lost when it is null.
+   *
+   * Which sessions hold one: a GRANT session does, when the grant carries an
+   * `ltk` tag. A LINK-KEY session does NOT — `rd board --with-key` stopped
+   * emitting ltk= (fragment.ts's header) — and does not need one, because it
+   * cannot write at all. */
   ltk(coord: string): Uint8Array | null {
     return this.ltks.get(coord) ?? null;
   }
@@ -332,7 +343,13 @@ export function applyFragmentKeys(kr: BoardKeyring, coord: string, keys: Fragmen
   }
   // keys.ltk arrives only from a link minted before the LTK was dropped from
   // emission (fragment.ts header). Applied for consistency with the CEKs — the
-  // keyring's shape should not depend on which build minted the link — but
-  // nothing in this app reads BoardKeyring.ltk() today.
+  // keyring's shape should not depend on which build minted the link.
+  //
+  // ltk() DOES have a production reader now (the write path, ready-191), so this
+  // line is no longer inert — but it still cannot become a write escalation: a
+  // session that reached applyFragmentKeys came in through `pk=`, which mints a
+  // read-only identity with no signer, so every write is refused before an event
+  // is built. Pinned by main.fragmentkey.test.ts's "a LEGACY link that DOES carry
+  // ltk= is refused identically".
   if (keys.ltk && keys.ltk.length === 32) kr.addLTK(coord, keys.ltk);
 }

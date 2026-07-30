@@ -333,8 +333,17 @@ export function labelToken(ltk: Uint8Array, label: string): string {
 // board page that cannot seal is read-only on every board created the normal
 // way. board/writeevents.ts refused such a write outright rather than
 // downgrade the card to plaintext (the right call, and still the fallback when
-// no key is held); this is what makes the refusal unnecessary when a grant or a
-// key-bearing link put the CEK in memory.
+// no key is held); this is what makes the refusal unnecessary once a GRANT put
+// the CEK in memory.
+//
+// A KEY-BEARING LINK IS NOT THE OTHER WAY IN, and it is worth being exact about
+// that because the read side treats grants and links as interchangeable sources
+// of a CEK. A `--with-key` link's session is read-only by construction (cek=
+// implies pk= implies `method: "readOnly"` implies no signer), so it holds the
+// key this module needs and still never reaches a seal: every write is refused
+// at whyReadOnly()/applyNow() before an event is built. Witnessed by
+// main.fragmentkey.test.ts's "a LINK-KEY session holds the board's CEK and still
+// writes NOTHING". The only session that seals is a GRANT session.
 
 /**
  * SealEnvelope is the per-board sealing material a confidential WRITE needs —

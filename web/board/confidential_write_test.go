@@ -3,10 +3,19 @@ package board
 // The CONFIDENTIAL write round trip, both directions, in one test (ready-191).
 //
 // THE PROBLEM THIS CLOSES. `rd init` defaults to a CONFIDENTIAL board, and
-// web/board's write path refused outright on such a board because the page had no
-// seal path — so the browser write path worked on `--public` boards ONLY and
-// every real project board was read-only in the browser. The refusal was right;
-// what was missing was the seal that makes it unnecessary.
+// web/board's write path used to refuse outright on such a board because the page
+// had no seal path — so the browser write path worked on `--public` boards ONLY
+// and every real project board was read-only in the browser. The refusal was
+// right; what was missing was the seal that makes it unnecessary. It is here now,
+// which is what this file tests, and the refusal has narrowed to `confidential &&
+// !enc` (no key in the session) rather than disappearing.
+//
+// THE LIVE COUNTERPART: scripts/live-write-roundtrip.mjs --confidential performs
+// all seven board operations in a REAL Chromium against wss://relay.3dl.network
+// on a board created by a plain `rd init`, and reads back with an independent rd
+// in a clean RD_HOME. This test is the deterministic, CI-runnable half; that
+// script is the one that can support the "a real browser" clause. Neither
+// substitutes for the other.
 //
 // WHY THIS IS NOT A VECTOR. testdata/write.vectors.json's own known_gaps records
 // that confidential boards are not vector-covered on the GO side either: every
@@ -58,9 +67,12 @@ const (
 	confWaiting = "SENTINEL-WAITING-c05f-the relay allowlist"
 	confLabelA  = "SENTINEL-LABEL-2d18"
 	confLabelB  = "SENTINEL-LABEL-9fe6"
-	confReason  = "SENTINEL-REASON-4ac2-moved from the browser"
-	confBoardD  = "confwrite"
-	confItemID  = "conf-w1"
+	// Added by the BROWSER in the no-LTK test below, so it exists on the wire only
+	// if that write happened.
+	confLabelC = "SENTINEL-LABEL-8b2a"
+	confReason = "SENTINEL-REASON-4ac2-moved from the browser"
+	confBoardD = "confwrite"
+	confItemID = "conf-w1"
 )
 
 // browserEvent is one unsigned event the browser produced, plus the id it
@@ -318,6 +330,143 @@ func TestBrowserSealedWriteIsReadByRD(t *testing.T) {
 	}
 	if strings.Contains(deaf.Title, "SENTINEL") || strings.Contains(deaf.Context, "SENTINEL") {
 		t.Errorf("a reader holding NO key read the free text: title=%q context=%q", deaf.Title, deaf.Context)
+	}
+}
+
+// TestBrowserAndRDAgreeWhenNoLTKIsHeld pins the OTHER label branch, the one the
+// test above cannot reach because it always injects an LTK (ready-191, veracity
+// round 4).
+//
+// THE STATE: a confidential board where the writing session holds the CEK but NO
+// label-token key. It is reachable in production from a grant that carries no
+// `ltk` tag, and it is the state EVERY link-key session would be in if a link
+// could write at all (cmd/rd/board.go stopped emitting ltk= on least-privilege
+// grounds). The worry it raises is a wire divergence: if rd emits HMAC label
+// tokens here and the browser emits nothing — or worse, the label in the clear —
+// then a relay's `#l` equality filter silently stops matching across writers, and
+// nothing anywhere reports a fault.
+//
+// THE ANSWER, asserted rather than argued: BOTH implementations emit NO `l` tag
+// in this state. rd takes nostrwire.go's `case spec.Enc != nil:` branch
+// ("Confidential board with NO LTK: emit NO clear l tag") and the browser takes
+// writeevents.ts's matching one. The labels still ride inside the sealed body, so
+// nothing is lost — which is the half this test proves by folding the browser's
+// card back through rd's real projection and finding both labels intact.
+//
+// (The separate question of whether a LINK-KEY session may write at all is ruled
+// on and witnessed in src/main.fragmentkey.test.ts: it may not — it holds no
+// signer, so it never reaches this branch. This test covers the residual case
+// that CAN reach it.)
+func TestBrowserAndRDAgreeWhenNoLTKIsHeld(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatalf("node not found on PATH — required to run the browser's real write path: %v", err)
+	}
+	ensureNodeModules(t)
+
+	key, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	owner := key.PubKeyHex()
+	const boardD = "confnoltk"
+	const itemID = "conf-noltk-1"
+	coord := rdsync.BoardCoord(owner, boardD)
+
+	var cek [32]byte
+	if _, err := rand.Read(cek[:]); err != nil {
+		t.Fatalf("mint CEK: %v", err)
+	}
+	// LTK deliberately nil — that is the whole point of this test.
+	env := &rdsync.Envelope{CEK: cek, Epoch: 1}
+
+	const tBoard, tCard, tWrite = 1750200000, 1750200100, 1750200200
+	board, err := rdsync.BuildBoardEvent(key, rdsync.BoardSpec{
+		BoardD: boardD, Title: "No-LTK Board", Maintainers: []string{owner},
+	}, tBoard)
+	if err != nil {
+		t.Fatalf("build board: %v", err)
+	}
+	rdCard, err := rdsync.BuildCardEvent(key, rdsync.CardSpec{
+		ItemID: itemID, Title: confTitle, Context: confContext, BoardD: boardD,
+		BoardAuthor: owner, Status: "inbox", Priority: "p1", Type: "task",
+		Labels: []string{confLabelA, confLabelB},
+		Enc:    env,
+	}, tCard)
+	if err != nil {
+		t.Fatalf("build rd's card: %v", err)
+	}
+
+	// RD'S OWN ANSWER FIRST, so the browser is compared against a measured value
+	// and not against this test's opinion of what rd does.
+	if got := tagVals(rdCard, "l"); len(got) != 0 {
+		t.Fatalf("rd emitted %v as l tags with no LTK held — this test's premise is wrong, fix it before "+
+			"reading anything below as a browser defect", got)
+	}
+
+	out := runBrowserWrite(t, browserInput{
+		Signer:      owner,
+		BoardAuthor: owner,
+		BoardD:      boardD,
+		BoardCoord:  coord,
+		CEKHex:      hex.EncodeToString(cek[:]),
+		LTKHex:      "", // no label-token key in this session
+		Epoch:       1,
+		CreatedAt:   tWrite,
+		Snapshot:    []*nostr.Event{board, rdCard},
+		// label_add, deliberately: it is the operation whose output the l-tag
+		// branch decides, so a divergence would land in the event this op produces.
+		Op: map[string]any{"op": "label_add", "itemId": itemID, "label": confLabelC},
+	})
+	if out.ViewBefore == nil || out.ViewBefore.Redacted || out.ViewBefore.Title != confTitle {
+		t.Fatalf("the browser did not open rd's card (%+v) — the write below would be built from placeholders",
+			out.ViewBefore)
+	}
+
+	signed := make([]*nostr.Event, 0, len(out.Events))
+	for i, be := range out.Events {
+		e := &nostr.Event{Kind: be.Kind, CreatedAt: be.CreatedAt, Tags: be.Tags, Content: be.Content}
+		if err := e.Sign(key); err != nil {
+			t.Fatalf("event %d: sign: %v", i, err)
+		}
+		if e.ID != be.ID {
+			t.Fatalf("event %d: id disagreement browser=%s rd=%s", i, be.ID, e.ID)
+		}
+		signed = append(signed, e)
+	}
+
+	// THE AGREEMENT: neither writer emits an l tag, and neither leaks the label.
+	browserCard := signed[0]
+	if got := tagVals(browserCard, "l"); len(got) != 0 {
+		t.Errorf("the browser emitted %v as l tags with no LTK held; rd emitted none for the same board — "+
+			"a relay's #l equality filter would stop matching across the two writers", got)
+	}
+	wire := mustJSON(t, signed)
+	for _, secret := range []string{confTitle, confContext, confLabelA, confLabelB, confLabelC} {
+		if strings.Contains(wire, secret) {
+			t.Errorf("PLAINTEXT ON THE WIRE with no LTK held: %q appears in the published events\n%s", secret, wire)
+		}
+	}
+
+	// NOT VACUOUS: the labels are not simply gone. They rode inside the sealed
+	// body and rd reads them back — so "no l tag" is a tokenization decision, not
+	// data loss.
+	items := rdsync.ProjectItems(append([]*nostr.Event{board, rdCard}, signed...), rdsync.ProjectOptions{
+		PinnedBoard: coord,
+		Decryptor:   fixedCEK{coord: coord, epoch: 1, cek: cek},
+	})
+	item, ok := items[itemID]
+	if !ok {
+		t.Fatalf("rd's projection lost %s entirely", itemID)
+	}
+	if item.Redacted {
+		t.Fatalf("rd could not decrypt the browser's no-LTK card: title=%q", item.Title)
+	}
+	wantLabels := []string{confLabelA, confLabelB, confLabelC}
+	if !equalStrings(item.Labels, wantLabels) {
+		t.Errorf("labels lost from the sealed body: got %v want %v", item.Labels, wantLabels)
+	}
+	if item.Title != confTitle || item.Context != confContext {
+		t.Errorf("round trip lost free text: title=%q context=%q", item.Title, item.Context)
 	}
 }
 
