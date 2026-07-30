@@ -182,6 +182,14 @@ cmd_clear() {
 
 main() {
   local cmd="${1:-push}"
+  # `git stash -m msg` (no explicit subcommand) is valid git and defaults to
+  # push, so `git wtstash -m msg` must too. Without this, an option in first
+  # position was reported as an "unsupported subcommand" and the caller's
+  # changes were left unstashed — found probing the installed guard for real.
+  if [[ "$cmd" == -* ]]; then
+    cmd_push "$@"
+    return
+  fi
   [[ $# -gt 0 ]] && shift
   case "$cmd" in
     push) cmd_push "$@" ;;

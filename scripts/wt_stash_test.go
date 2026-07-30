@@ -568,6 +568,41 @@ func TestWtStash_WorktreesDoNotClobberEachOther(t *testing.T) {
 	}
 }
 
+// TestWtStash_PushAcceptsOptionsInFirstPosition: `git stash -m msg` is valid
+// git and defaults to push, so the replacement must accept the same shape.
+// It did not — it reported "unsupported subcommand '-m'" and left the
+// caller's changes unstashed, which is how an agent told to stop using
+// `git stash` ends up with neither command working. Found by probing the
+// installed guard in the live repo, not by reading the script.
+func TestWtStash_PushAcceptsOptionsInFirstPosition(t *testing.T) {
+	base := setupBaseRepo(t)
+	wtA := filepath.Join(t.TempDir(), "wt-a")
+	mustAddWorktree(t, base, wtA, "work/a")
+	mustInstallGuard(t, scriptsDir(t), base)
+
+	mustWriteWork(t, wtA, "option-form work\n")
+	out := mustGit(t, wtA, "wtstash", "-m", "message via option")
+	if !strings.Contains(out, "Saved worktree-scoped stash") {
+		t.Fatalf("`git wtstash -m msg` should push, got: %s", out)
+	}
+	if got := mustReadWork(t, wtA); got != "baseline\n" {
+		t.Fatalf("working tree not reset after push: %q", got)
+	}
+	list := mustGit(t, wtA, "wtstash", "list")
+	if !strings.Contains(list, "message via option") {
+		t.Fatalf("message not carried onto the entry: %q", list)
+	}
+	mustGit(t, wtA, "wtstash", "pop")
+	if got := mustReadWork(t, wtA); got != "option-form work\n" {
+		t.Fatalf("pop did not restore the work: %q", got)
+	}
+	// A genuinely unknown subcommand must still be rejected, not silently
+	// swallowed as a push.
+	if out, err := gitOut(wtA, "wtstash", "bogus"); err == nil {
+		t.Fatalf("unknown subcommand should fail, got: %s", out)
+	}
+}
+
 // TestWtStash_ConcurrentPushPopAcrossWorktreesStaysIsolated is the DONE
 // condition's proof: it actually runs two worktrees stashing AT THE SAME
 // TIME (real OS processes, released off a shared start barrier, not just
