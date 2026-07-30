@@ -887,20 +887,30 @@ reachable case is a log that never received the earliest grants — a fresh `rd 
 or clone whose sync only ever met an omitting or lossy relay, or the rotated-board
 case above.
 
-**The write path carries the other half** (`sealedEventCreatedAt`,
+**The write path carries the other half** (`sealedItemCreatedAt`,
 `cmd/rd/confidential.go`): a sealed event must never be stamped BEFORE the cutover
 of the board it seals under, because rd's own bootstrap otherwise manufactures the
 TIME witness against itself — §16.7's `cutoverCreatedAt` stamps the CEK self-grant
 at `max(log)+1` so a same-second plaintext card is still grandfathered, one second
 AFTER the event that same command seals at `now`. That board then fails closed on
 every subsequent read, dropping the grandfathered history the stamp existed to
-preserve, with no relay misbehaviour anywhere. The floor therefore applies at EVERY
-sealed write site, not just card creation: §18.1 cards (kind 30302) and §11.14
-status events alike carry the `enc` / `cek_epoch` markers and the board `a` tag, and
-the TIME witness admits a contradicting event of ANY kind, so an `rd done` or an
-`rd edit` racing `rd confidential enable` in the same wall-clock second poisons the
-board exactly as a create would. The write clock is floored at the cutover at each
-of those sites to remove the contradiction at its source.
+preserve, with no relay misbehaviour anywhere.
+
+The floor therefore applies at EVERY sealed write site, not just card creation:
+§18.1 cards (kind 30302) and NIP-34 kind-1630 status events alike carry the `enc` /
+`cek_epoch` markers and the board coordinate, and `grantsWithheld` is KIND-BLIND, so
+an `rd claim` / `rd done` or a card-only edit racing `rd confidential enable` in the
+same wall-clock second poisons the board exactly as a create would. Note the status
+event carries the board coordinate as its SECOND `a` tag — the first is the card's
+own `30302:<signer>:<itemID>` — which is why `boardCoordOf` scans every `a` tag
+rather than reading the first (a reader that read only the first would silently
+exempt every status event from the TIME witness). A create is armed by default
+because a new item's drift scope is empty and so stamps at `now`, while a REPUBLISH
+stamps at `max(item scope)+1` and collides only when the log holds activity newer
+than that item's own last event; the three sites are witnessed independently by
+`TestConfidentialEnableMigration`, `TestConfidentialEnableStatusChangeSameSecond`
+and `TestConfidentialEnableCardEditSameSecond` (`cmd/rd/confidential_test.go`), each
+red when its own site alone is reverted to the unfloored clock.
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
 reader holds (`pkg/sync/keydist.go:204-218`). A member that missed a rotation

@@ -7,6 +7,7 @@ package main
 // against the on-disk event log.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,6 +222,226 @@ func TestConfidentialEnableMigration(t *testing.T) {
 			t.Fatalf("sealed card %s stamped %d, BEFORE its own board's cutover %d — §11.13a TIME witness", d, e.CreatedAt, cut)
 		}
 	}
+}
+
+// ----------------------------------------------------------------------------
+// §11.13a write-side floor, the two REPUBLISH sites (ready-9a6 round 2).
+//
+// TestConfidentialEnableMigration above covers only the CREATE site
+// (nostrwrite.go's runCreateNostr). The floor is wired into two more:
+// publishItemStatusChangeNostr (`rd claim` / `rd done` / …) and
+// publishItemCardEditNostr (`rd label add` / `rd update` …). Those are NOT dead
+// code for §11.13a: BuildStatusEventWithIssueRoot copies the card's enc /
+// cek_epoch markers and the board `a` tag onto the kind-1630 STATUS event
+// (pkg/sync/nostrwire.go), and grantsWithheld (pkg/sync/keydist.go) admits ANY
+// verified confidential event on the coordinate as a TIME witness regardless of
+// KIND. So a status close or a card edit racing `rd confidential enable` inside
+// one wall-clock second manufactures the witness against rd's own board exactly
+// as the create path did.
+//
+// WHY A REPUBLISH NEEDS A GAP TO BE ARMED, and why the decoy below exists. A
+// CREATE stamps at `now` because the new item's drift scope is empty, while
+// cutoverCreatedAt stamps the self-grant at max(WHOLE log)+1 — the create site is
+// therefore armed by default. A REPUBLISH stamps at max(this item's scope)+1, so
+// it collides with the cutover only when some OTHER event in the log is NEWER
+// than this item's own last event when confidentiality is enabled. That is
+// ordinary board activity: a second item touched more recently than the one being
+// closed. armSameSecondCutoverRace builds exactly that state out of real command
+// bodies, and asserts the arm is live before the operation under test runs — so a
+// wall-clock tick that disarms the race fails LOUDLY here instead of passing
+// vacuously.
+// ----------------------------------------------------------------------------
+
+// armSameSecondCutoverRace builds a board that has just been switched to
+// confidential in the same wall-clock second as ordinary activity, and returns
+// the id of an item whose next republish would — without the floor — be stamped
+// strictly BEFORE the board's cutover. decoyID stays plaintext and untouched
+// after the switch, so it is the grandfathered card a contradiction would drop.
+func armSameSecondCutoverRace(t *testing.T) (dir, targetID, decoyID, coord string, cutover int64) {
+	t.Helper()
+	dir = setupNostrCmdTest(t)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+	boardD := projectPrefix(dir)
+	coord = rdSync.BoardCoord(owner, boardD)
+	// Start PUBLIC, exactly as TestConfidentialEnableMigration does.
+	if err := rdconfig.SaveSyncConfig(dir, &rdconfig.SyncConfig{ProjectName: "project", Board: coord, Public: true}); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+	board := rdSync.BoardSpec{BoardD: boardD, Title: "project", Maintainers: []string{owner}}
+	be, err := rdSync.BuildBoardEvent(k, board, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	if _, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).AppendUnique([]*nostr.Event{be}); err != nil {
+		t.Fatalf("append board event: %v", err)
+	}
+
+	targetID, err = runCreateNostr(mustDir(t), nostrCreateSpec{title: "TARGET plaintext item", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	decoyID, err = runCreateNostr(mustDir(t), nostrCreateSpec{title: "DECOY plaintext item", itemType: "task", priority: "p3"})
+	if err != nil {
+		t.Fatalf("create decoy: %v", err)
+	}
+	// Ordinary activity on the OTHER item, which the per-item drift clock stamps at
+	// max(decoy scope)+1 each time. Four of them put the whole-log maximum four
+	// seconds above the target's own last event, so the race stays armed even if the
+	// test straddles a second boundary or three.
+	for i := 0; i < 4; i++ {
+		if err := runLabelAddNostr(decoyID, fmt.Sprintf("busy-%d", i)); err != nil {
+			t.Fatalf("decoy label add %d: %v", i, err)
+		}
+	}
+
+	// `rd confidential enable`: mark the config, then bootstrap the CEK self-grant
+	// at cutoverCreatedAt = max(whole log)+1.
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	cfg.Public = false
+	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
+		t.Fatalf("save confidential cfg: %v", err)
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		t.Fatalf("publisher: %v (ok=%v)", err, ok)
+	}
+	if _, err := boardConfidentialEnvelope(dir, pub, owner, boardD); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	cutover, ok = rdSync.DeriveBoardKeyring(events, k, owner, boardD).Cutover(coord)
+	if !ok || cutover == 0 {
+		t.Fatalf("board already contradicts its own cutover before the operation under test: (%d, %v)", cutover, ok)
+	}
+
+	// THE ARM. This is what the unfloored per-item clock would stamp the next
+	// republish of targetID with. If it is not strictly below the cutover there is
+	// no TIME witness to manufacture and the test would pass for the wrong reason.
+	unfloored := nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(targetID))
+	if unfloored >= cutover {
+		t.Fatalf("race not armed: unfloored write clock %d is not below cutover %d — the assertion below could not fail", unfloored, cutover)
+	}
+	return dir, targetID, decoyID, coord, cutover
+}
+
+// sealedEventKindsOnBoard counts the confidential events the log carries on the
+// board coordinate, keyed by KIND, using exactly grantsWithheld's admission test
+// (pkg/sync/keydist.go over envelope.go's isConfidential / boardCoordOf): an
+// `enc` marker plus SOME "a" tag equal to the board coordinate. Reading only the
+// FIRST "a" tag would silently drop every kind-1630 status event, whose first
+// "a" is the CARD coordinate (30302:…) and whose board coordinate is the second,
+// purely additive one BuildStatusEventWithIssueRoot appends (ready-7ec).
+func sealedEventKindsOnBoard(events []*nostr.Event, coord string) map[int][]*nostr.Event {
+	out := map[int][]*nostr.Event{}
+	for _, e := range events {
+		if _, sealed := tagVal(e.Tags, "enc"); !sealed {
+			continue
+		}
+		onBoard := false
+		for _, tg := range e.Tags {
+			if len(tg) >= 2 && tg[0] == "a" && tg[1] == coord {
+				onBoard = true
+				break
+			}
+		}
+		if !onBoard {
+			continue
+		}
+		out[e.Kind] = append(out[e.Kind], e)
+	}
+	return out
+}
+
+// assertCutoverUncontradicted is the §11.13a read-side consequence: NO verified
+// sealed event of ANY KIND on the board may predate the board's cutover, the
+// reader must still believe that cutover, and the plaintext card it grandfathers
+// must still project. wantKinds are the sealed event kinds the operation under
+// test must actually have produced — without them the sweep below is vacuous.
+func assertCutoverUncontradicted(t *testing.T, dir, decoyID, coord string, cutover int64, wantKinds ...int) {
+	t.Helper()
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+	boardD := projectPrefix(dir)
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	byKind := sealedEventKindsOnBoard(events, coord)
+	for _, want := range wantKinds {
+		if len(byKind[want]) == 0 {
+			t.Fatalf("no sealed kind-%d event on %s — the operation under test did not exercise the path this arm exists for", want, coord)
+		}
+	}
+	// Kind-BLIND, matching grantsWithheld: the 30302 card and the 1630 status event
+	// both carry enc/cek_epoch and the board coordinate, and EITHER one testifies.
+	for kind, evs := range byKind {
+		for _, e := range evs {
+			if e.CreatedAt < cutover {
+				d, _ := tagVal(e.Tags, "d")
+				t.Errorf("sealed kind-%d event (d=%q) stamped %d, BEFORE its own board's cutover %d — §11.13a TIME witness manufactured by rd's own write path",
+					kind, d, e.CreatedAt, cutover)
+			}
+		}
+	}
+
+	// End-to-end: the reader still believes the cutover, and the grandfathered
+	// plaintext card the cutover exists to preserve still projects.
+	got, ok := rdSync.DeriveBoardKeyring(events, k, owner, boardD).Cutover(coord)
+	if !ok || got != cutover {
+		t.Fatalf("reader refuses the board's own cutover after the write: Cutover = (%d, %v), want (%d, true)", got, ok, cutover)
+	}
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if it := byID[decoyID]; it == nil || it.Title != "DECOY plaintext item" {
+		t.Fatalf("grandfathered pre-cutover card no longer readable: %+v", it)
+	}
+}
+
+// TestConfidentialEnableStatusChangeSameSecond pins the floor at
+// publishItemStatusChangeNostr (cmd/rd/nostr.go). `rd claim` republishes the card
+// AND a kind-1630 status event under the same stamp; both carry the sealed
+// board's enc marker, so either one predating the cutover poisons the board.
+func TestConfidentialEnableStatusChangeSameSecond(t *testing.T) {
+	dir, targetID, decoyID, coord, cutover := armSameSecondCutoverRace(t)
+
+	if err := runClaimNostr(targetID, "picking this up in the same second as the switch"); err != nil {
+		t.Fatalf("runClaimNostr: %v", err)
+	}
+
+	// Both the re-sealed 30302 card AND the kind-1630 status event must land at or
+	// after the cutover — the status event is the one the create-path arm can never
+	// reach, and it is admissible testimony because grantsWithheld is kind-blind.
+	assertCutoverUncontradicted(t, dir, decoyID, coord, cutover, 30302, 1630)
+}
+
+// TestConfidentialEnableCardEditSameSecond pins the floor at
+// publishItemCardEditNostr (cmd/rd/nostr.go). `rd label add` republishes the
+// re-sealed card with NO status event, so this arm is red for that site alone.
+func TestConfidentialEnableCardEditSameSecond(t *testing.T) {
+	dir, targetID, decoyID, coord, cutover := armSameSecondCutoverRace(t)
+
+	if err := runLabelAddNostr(targetID, "urgent"); err != nil {
+		t.Fatalf("runLabelAddNostr: %v", err)
+	}
+
+	assertCutoverUncontradicted(t, dir, decoyID, coord, cutover, 30302)
 }
 
 // TestTwoIdentityConfidentialCLI is the two-identity CLI end-to-end (ready-deb):

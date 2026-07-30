@@ -544,8 +544,21 @@ func rekeyBoardOnRevoke(dir string, pub *rdSync.Publisher, boardAuthor, boardD, 
 // never quarantined), so the floor is the minimum move that removes the
 // contradiction at the source.
 //
+// EVERY SEALED WRITE SITE, NOT JUST CREATE. Three call sites pass through here:
+// publishItemFullCreateNostr (cmd/rd/nostrwrite.go), publishItemStatusChangeNostr
+// and publishItemCardEditNostr (cmd/rd/nostr.go). grantsWithheld is KIND-BLIND, and
+// BuildStatusEventWithIssueRoot copies the card's enc/cek_epoch markers and the
+// board coordinate onto the kind-1630 status event, so a status change testifies
+// exactly as a card does. The CREATE site is armed by default (a new item's drift
+// scope is empty, so the clock returns `now`, below a cutover stamped max(log)+1);
+// a REPUBLISH stamps at max(item scope)+1 and so collides only when the log holds
+// activity NEWER than that item's own last event when confidentiality is enabled —
+// ordinary board traffic. Witnessed per-site by TestConfidentialEnableMigration,
+// TestConfidentialEnableStatusChangeSameSecond and
+// TestConfidentialEnableCardEditSameSecond (cmd/rd/confidential_test.go).
+//
 // sealed=false (plaintext board, or a card this write did not seal) returns the
-// unfloored instant: only a SEALED card can testify, and a plaintext board has no
+// unfloored instant: only a SEALED event can testify, and a plaintext board has no
 // cutover to floor at.
 func sealedItemCreatedAt(dir string, pub *rdSync.Publisher, itemID string, sealed bool) int64 {
 	at := nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(itemID))
