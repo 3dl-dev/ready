@@ -299,6 +299,37 @@ export function confidentialityOf(
   events: NostrEvent[],
   hasLinkKeys: boolean,
 ): BoardConfidentiality {
+  // THE OWNER'S OWN SIGNED ANSWER OUTRANKS EVERY WITNESS, and it is the only
+  // thing that does (ready-475, §11.13a). Each witness below exists to detect
+  // that the DERIVED cutover — a minimum over the grants that arrived — is later
+  // than the truth; none of them can say what the truth IS. A verified
+  // `confidential_since` on the board's own kind-30301 definition is the owner,
+  // the same key that mints every CEK, stating it, so there is nothing left for
+  // testimony to establish and the witnesses are not consulted.
+  //
+  // AGAINST THE SERVED GRANTS IT CAN ONLY TIGHTEN: keyring.cutover carries the
+  // assertion as a MINIMUM against the derived instant (keyring.ts's
+  // noteConfidentialSince), so wherever a cutover WAS derived the gate below can
+  // only quarantine more than the grants alone would, never less.
+  //
+  // IT DOES WIDEN ONE CASE, DELIBERATELY, and pretending otherwise would be a
+  // lie in a security comment: on a board with NO served grant this returns
+  // "confidential" at the asserted instant where the `no-grant` arm at the bottom
+  // of this function would have returned "unknown" — which grandfathers nothing —
+  // so the board's genuinely pre-cutover plaintext becomes visible. That is the
+  // point of the mechanism and it is authorised by construction, because the ONLY
+  // input that can produce it is the board owner's own signature over their own
+  // coordinate. A relay cannot forge one (no key), edit one (the tag is inside
+  // the signed id), re-author one (a kind-30301's coordinate embeds its author),
+  // or post-date one (assertedConfidentialSince takes the MINIMUM over
+  // definitions, so replaying an older revision only moves the instant earlier).
+  // The owner is already the authz root for every CEK on the board (§11.12), so
+  // this adds no trust root — and WITHHOLDING the definition leaves this null and
+  // runs every line below exactly as today, which is why omission gains an
+  // attacker nothing. What an assertion never confers is READ ACCESS: no key
+  // arrives with it, so every sealed card still renders the placeholder
+  // (confidentiality.test.ts, "an assertion with NO GRANTS ...").
+  if (keyring.confidentialSince(coord) !== null) return { state: "confidential", why: null };
   const ev = sealedEvidenceOf(events, coord);
   const cutover = keyring.cutover(coord);
   if (cutover !== null) {

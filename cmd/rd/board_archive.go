@@ -178,9 +178,16 @@ func runBoardArchiveToggle(cmd *cobra.Command, arg string, archived bool) error 
 
 	spec := rdSync.BoardSpecFromEvent(winner)
 	spec.Archived = archived
+	// §16.3's read-modify-write rule reaches the cutover assertion too
+	// (ready-475): BoardSpec does not model `confidential_since`, so it is
+	// carried across explicitly. Dropping it here would put the board back on the
+	// derived-cutover path — and, on a board whose log contradicts that
+	// derivation, back to withholding its whole plaintext history — as a silent
+	// side effect of archiving.
+	since, _ := rdSync.BoardConfidentialSince(winner)
 
 	createdAt := nostrNextCreatedAt(log, rdSync.BoardDriftScope(boardD))
-	ev, err := rdSync.BuildBoardEvent(k, spec, createdAt)
+	ev, err := rdSync.BuildBoardEventWithConfidentialSince(k, spec, since, createdAt)
 	if err != nil {
 		return err
 	}

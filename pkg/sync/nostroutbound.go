@@ -182,7 +182,7 @@ func (p *Publisher) PublishItemWithReason(ctx context.Context, board *BoardSpec,
 
 	var events []*nostr.Event
 	if board != nil {
-		be, err := BuildBoardEvent(p.Key, *board, createdAt)
+		be, err := p.buildBoardDefinition(*board, createdAt) // §11.13a: carries confidential_since forward
 		if err != nil {
 			return res, err
 		}
