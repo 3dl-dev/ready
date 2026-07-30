@@ -47,12 +47,40 @@ test("the harness list is derived from the tree and is not empty", () => {
   expect(harnesses.length).toBeGreaterThanOrEqual(5);
 });
 
-test("at least one harness provisions a board (or this whole file is vacuous)", () => {
-  expect(harnesses.filter(createsBoard).map((h) => h.name)).toEqual([
-    "live-roundtrip-both-ways.mjs",
-    "live-stranger-walk.mjs",
-    "live-write-roundtrip.mjs",
-  ]);
+/** Every harness known to provision a board. Deliberately a FLOOR, not an
+ * exact list: a harness added tomorrow is covered by the describe.each below
+ * the moment it is written, but a harness that DROPS out of `createsBoard`
+ * because the detector drifted must fail here rather than quietly stop being
+ * checked. */
+const KNOWN_BOARD_CREATORS = [
+  "live-cache.mjs",
+  "live-roundtrip-both-ways.mjs",
+  "live-stranger-walk.mjs",
+  "live-write-roundtrip.mjs",
+];
+
+test("every harness known to provision a board is still detected as one", () => {
+  const detected = harnesses.filter(createsBoard).map((h) => h.name);
+  for (const name of KNOWN_BOARD_CREATORS) expect(detected).toContain(name);
+});
+
+/**
+ * A SECOND, INDEPENDENT DETECTOR — because the first one was scoped to what its
+ * author already knew about. `createsBoard` looks for the `rd init` call;
+ * `namesABoard` looks for the `BOARD_D` the harness gives that board, which is
+ * the same fact reached by a different shape and is what stray-boards.mjs reads
+ * to recognise the strays on the relay.
+ *
+ * They must agree. A harness that names a board but never inits it (or the
+ * reverse) means one of the two detectors has drifted, and a drifted detector
+ * is how "EVERY live harness is covered" comes to be true by definition: the
+ * set shrinks to the files that still match, and the check goes green over a
+ * harness it stopped looking at.
+ */
+const namesABoard = (h) => /\bBOARD_D\s*=/.test(h.src);
+
+test("the `rd init` detector and the BOARD_D detector name the same harnesses", () => {
+  expect(harnesses.filter(namesABoard).map((h) => h.name)).toEqual(harnesses.filter(createsBoard).map((h) => h.name));
 });
 
 describe.each(harnesses.filter(createsBoard).map((h) => [h.name, h]))(

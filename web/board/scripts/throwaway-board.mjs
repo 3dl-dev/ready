@@ -59,6 +59,25 @@
  * that suite goes red — which is the point: before this module, deleting the
  * cleanup turned nothing red anywhere.
  *
+ * MEASURED, NOT ASSERTED (2026-07-30). Every live harness in web/board/scripts
+ * was run against wss://relay.3dl.network with this guard in place — the four
+ * that provision a board (live-write-roundtrip public and confidential,
+ * live-roundtrip-both-ways public and confidential, live-stranger-walk,
+ * live-cache and live-cache --only a) and the two that do not (live-portfolio,
+ * live-portfolio-timing). Every run printed `board count unchanged, 25 before
+ * and 25 after`, and the owner's portfolio measured 25 unarchived boards before
+ * the sweep and 25 after it. Two of those runs FAILED partway (an unrelated
+ * rail defect in live-write-roundtrip) and cleaned up anyway, which is the path
+ * a `finally` clause exists for and the one the earlier attempts never proved.
+ *
+ * WHAT THIS MODULE DOES NOT COVER, stated here because a reader will otherwise
+ * assume it does. Only the JS harnesses under web/board/scripts are bound to
+ * it. The Go live-relay tests (`RD_NOSTR_LIVE_RELAY=1`) publish their own
+ * per-run boards and have no cleanup: 11 of the 17 strays swept on 2026-07-30
+ * came from pkg/sync's live tests, and their next run will leave more.
+ * `archive-stray-boards.mjs` recognises and sweeps them — that is cleanup, not
+ * prevention. See ready-153's follow-up item.
+ *
  * RELAY MEASUREMENT DISCIPLINE. The walk below is kind-only, paged backwards
  * with `until` at limit 500, and NEVER uses an `authors` filter: an `authors`
  * filter silently under-returns on wss://relay.3dl.network (measured 42/56 vs
@@ -76,6 +95,32 @@ export const KIND_BOARD = 30301;
  * real count, and bounds a pathological relay. */
 export const PAGE_LIMIT = 500;
 export const MAX_PAGES = 40;
+
+/**
+ * READ_BACK_TIMEOUT_MS — how long `close()` waits for the relay to start
+ * serving a board this run published, before reporting it as never served.
+ *
+ * THIS NUMBER IS MEASURED, NOT ASSUMED. It decides a real verdict — past it, a
+ * board the relay has not shown fails the run — so "30s feels like enough"
+ * written in a comment is not support for it. Measured against
+ * wss://relay.3dl.network on 2026-07-30, three trials, by
+ * `rd init` + first write + polling the same walk this module uses:
+ *
+ *     board coordinate served after the run's first write:  139ms 157ms 170ms
+ *     archived marker served after `rd board archive`:       148ms 153ms 193ms
+ *
+ * (The same run also re-confirmed that `rd init` plus `rd relay flush` puts
+ * NOTHING on the relay — the board first appears on the run's first write. All
+ * three trials: `after rd init alone, relay serves the board: false`.)
+ *
+ * Worst observed is 193ms, and a whole walk costs ~250ms, so both halves are
+ * one poll. 30000ms is ~150x the worst measurement — chosen as a margin over a
+ * measured figure rather than as a guess, and large enough that reaching it
+ * means the relay is not going to serve the board, not that it is slow today.
+ * If the relay's real behaviour ever moves, re-measure and move this with it;
+ * do not raise it to make a run pass.
+ */
+export const READ_BACK_TIMEOUT_MS = 30000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -285,7 +330,7 @@ export async function openThrowawayBoardGuard({ relay, ownerPubkey, log = () => 
       cwd,
       home,
       exec = execFileSync,
-      readBackTimeoutMs = 30000,
+      readBackTimeoutMs = READ_BACK_TIMEOUT_MS,
       readBackIntervalMs = 2000,
       now = () => Date.now(),
       wait = sleep,
