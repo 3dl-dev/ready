@@ -72,6 +72,7 @@ import {
   OWNER_SEC as CONF_OWNER_SEC,
   CEK_EPOCH1,
   CEK_EPOCH2,
+  LTK as CONF_LTK,
   CUTOVER as CONF_CUTOVER,
   boardEvent as confBoardEvent,
   cards as confCards,
@@ -81,7 +82,7 @@ import {
 // ready-191 rework: reading the browser's own sealed write back through the real
 // fold, as an independent key-holder would. Same seam main.ts projects through.
 import { foldItemSource } from "./lib/itemsource";
-import { PLACEHOLDER, type BoardDecryptor, type EncryptedBoardSet } from "./lib/envelope";
+import { PLACEHOLDER, labelToken, type BoardDecryptor, type EncryptedBoardSet } from "./lib/envelope";
 import { hexToBytes } from "./lib/sha256";
 import {
   OWNER,
@@ -1345,6 +1346,33 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
     // below for why the marker's presence alone is not enough.
     expect(card.tags).toContainEqual(["cek_epoch", "2"]);
     expect(JSON.stringify(card)).not.toContain(conf1.title);
+
+    // ── ready-191 rework: WHICH LTK the labels were tokenized under ──────────
+    //
+    // The sibling of the epoch line, and the same blind spot. main.ts's
+    // `ltk: keyring.ltk(b.coord)` was witnessed by nothing: replacing it with
+    // new Uint8Array(32).fill(7) left the whole suite green, and `undefined` —
+    // which drops the `l` tags entirely — was green too. The Go conformance test
+    // asserts the token FORMAT but INJECTS the LTK, so it never sees main.ts's
+    // SELECTION.
+    //
+    // WHAT A WRONG LTK COSTS: the tokens are opaque, so a card tokenized under
+    // the wrong key looks exactly as correct as a right one on the wire and in
+    // the DOM. What breaks is the relay-side `#l` equality filter these tokens
+    // exist for — the browser's "crypto" and rd's "crypto" stop being the same
+    // string, so a label query silently returns a board missing every card the
+    // browser wrote, with nothing anywhere reporting a fault.
+    //
+    // Asserted against the FIXTURE's LTK (the one the Go writer used to seal the
+    // cards this page just read), not against anything the page produced — so
+    // this is a cross-implementation agreement, not self-consistency.
+    expect(conf1.labels).toEqual(["crypto", "board"]);
+    expect(card.tags).toContainEqual(["l", labelToken(hexToBytes(CONF_LTK), "crypto")]);
+    expect(card.tags).toContainEqual(["l", labelToken(hexToBytes(CONF_LTK), "board")]);
+    // ANTI-TAUTOLOGY: the tokens are not the label text — the clear labels never
+    // went on the wire, which is the OTHER half of what tokenizing is for.
+    expect(card.tags).not.toContainEqual(["l", "crypto"]);
+    expect(card.tags).not.toContainEqual(["l", "board"]);
   });
 
   // ── ready-191 rework: WHICH epoch the seal used ───────────────────────────
