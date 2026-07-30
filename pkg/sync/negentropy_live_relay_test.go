@@ -44,8 +44,10 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	relay := liveRelayURL(t)
 	t.Logf("live relay: %s", relay)
 
-	// Shared portfolio identity across both machines (the multi-machine model).
-	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	// Shared portfolio identity across both machines (the multi-machine model):
+	// both sides must sign as the SAME author for convergence to mean anything,
+	// so this needs a stable key (see liveRelayKey). NOT rd's retired ready-266
+	// fence.
 	k := liveRelayKey(t)
 	run := time.Now().UnixNano()
 	idX := fmt.Sprintf("ready-797-X-%d", run)
@@ -112,7 +114,8 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	}
 	relay := liveRelayURL(t)
 
-	// Allowlisted portfolio key: the locked relays reject non-admitted authors (ready-266).
+	// Stable portfolio key: this proof reads its own writes back, so it needs a
+	// stable author (see liveRelayKey). NOT rd's retired ready-266 fence.
 	k := liveRelayKey(t)
 	dir := t.TempDir()
 	log := NewNostrLog(filepath.Join(dir, NostrLogFile))
@@ -166,12 +169,18 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 // download path: an event the relay legitimately serves is REJECTED from the local
 // authoritative log when its author is NOT in the syncing machine's web-of-trust set
 // — the client-side gate stands even against an honest relay, so it also stands
-// against a permissive/hostile one that ignores the write-allowlist (ready-266).
+// against a permissive/hostile one.
 //
-// The locked relays reject non-allowlisted WRITES, so we cannot place a
-// genuinely-foreign event on the relay. We invert the roles instead: publish item X
-// with the ALLOWLISTED key (accepted + stored), then have a fresh machine negentropy-
-// sync with a trust set that DOES NOT include that author. The relay serves X over
+// This proof uses ROLE INVERSION rather than a genuinely-foreign author: publish
+// item X with THIS machine's key (accepted + stored), then have a fresh machine
+// negentropy-sync with a trust set that DOES NOT include that author. When it was
+// written, rd's relay write-allowlist (ready-266) made a genuinely-foreign write
+// impossible; ready-5fd RETIRED that fence and the LAN relays now accept a
+// never-granted key, so the stronger form is available and is exercised by the
+// sibling proof TestLiveRelay_OpenRelayIngestionTrustGate (nostr_live_relay_test.go),
+// which puts a real intruder-authored event on the real relay. This one is kept for
+// the NEGENTROPY download path specifically, which that proof does not cover. The
+// inversion is sound either way: the relay serves X over
 // the download, and the gate must drop it before AppendUnique — proving the download
 // admission is gated on the SYNCING machine's trust set, not on what the relay serves.
 // Re-syncing with the author admitted then downloads X, proving the gate was the only
@@ -181,7 +190,7 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live negentropy-download trust-gate proof")
 	}
 	relay := liveRelayURL(t)
-	k := liveRelayKey(t) // allowlisted author — its writes are accepted by the relay
+	k := liveRelayKey(t) // stable author — the proof reads its own writes back
 
 	// A pubkey the syncing machine does NOT trust (never authored anything here).
 	stranger, err := nostr.GenerateKey()

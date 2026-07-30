@@ -36,8 +36,10 @@ func TestLiveRelay_Negentropy(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	// Sign with the allowlisted portfolio key (ready-266): the locked relays
-	// reject non-admitted authors, so uploads must use an admitted key.
+	// Sign with this machine's stable portfolio key: the proof reconciles
+	// against its OWN published set, so it needs a stable author (and a
+	// tenant-restricted relay admits only keys its own operator allowed). NOT
+	// rd's retired ready-266 write-allowlist — see liveRelayKey.
 	k := liveRelayKey(t)
 
 	// A unique "d" tag namespace so this run's events are isolated from prior runs.

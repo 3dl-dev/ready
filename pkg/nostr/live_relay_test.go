@@ -35,8 +35,10 @@ func TestLiveRelay_PublishFetchVerifyTamper(t *testing.T) {
 		relay = urls[0]
 	}
 
-	// Sign with the allowlisted portfolio key: the locked relays reject any
-	// non-admitted author (ready-266), so a throwaway key would be refused.
+	// Sign with this machine's stable portfolio key: the proof publishes and
+	// then reads its OWN write back, so it needs a stable author (and a
+	// tenant-restricted relay admits only keys its own operator allowed). NOT
+	// rd's retired ready-266 write-allowlist — see liveRelayKey.
 	k := liveRelayKey(t)
 
 	e := &Event{

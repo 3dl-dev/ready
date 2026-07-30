@@ -37,8 +37,8 @@ func TestLiveRelay_BoardPublishConverges(t *testing.T) {
 	}
 	t.Logf("live relay: %s", relay)
 
-	// Allowlisted portfolio key: the locked relays reject non-admitted authors
-	// (ready-266).
+	// Stable portfolio key: this proof reads its own writes back, so it needs a
+	// stable author (see liveRelayKey). NOT rd's retired ready-266 fence.
 	k := liveRelayKey(t)
 	dir := t.TempDir()
 	log := NewNostrLog(filepath.Join(dir, ".ready", NostrLogFile))
