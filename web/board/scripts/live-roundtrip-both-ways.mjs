@@ -401,10 +401,14 @@ async function main() {
 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "rd-4359-"));
   const cleanup = [];
+  // Hoisted out of the try block so the `finally` clause below can archive the
+  // throwaway board EVEN WHEN THE SCRIPT FAILS PARTWAY — a red run must not
+  // leave a permanent stray in the owner's portfolio (ready-153).
+  let rdBin, projectDir, writerHome, coord;
 
   try {
     step("build rd from this tree");
-    const rdBin = path.join(tmp, "rd");
+    rdBin = path.join(tmp, "rd");
     execFileSync("go", ["build", "-o", rdBin, "./cmd/rd"], { cwd: REPO_ROOT, stdio: "inherit" });
 
     step("prepare the injected signer (REAL secp256k1 — see this file's header)");
@@ -420,7 +424,7 @@ async function main() {
     const esbuild = (await import("esbuild")).default ?? (await import("esbuild"));
 
     step(`provision the throwaway board (owner key, ${CONFIDENTIAL ? "CONFIDENTIAL" : "PUBLIC"}, fresh board-d)`);
-    const writerHome = path.join(tmp, "writer-home");
+    writerHome = path.join(tmp, "writer-home");
     mkdirSync(writerHome, { recursive: true });
     const idPath = path.join(
       process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
@@ -429,7 +433,7 @@ async function main() {
     const identity = JSON.parse(readFileSync(idPath, "utf8"));
     writeFileSync(path.join(writerHome, "nostr-identity.json"), JSON.stringify(identity), { mode: 0o600 });
 
-    const projectDir = path.join(tmp, BOARD_D);
+    projectDir = path.join(tmp, BOARD_D);
     mkdirSync(projectDir, { recursive: true });
     const initOut = JSON.parse(
       rd(rdBin, projectDir, writerHome, [
@@ -443,7 +447,7 @@ async function main() {
         "--json",
       ]),
     );
-    const coord = initOut.board;
+    coord = initOut.board;
     const owner = initOut.owner;
     log(`  board ${coord}`);
 
@@ -727,6 +731,20 @@ async function main() {
         c();
       } catch {
         /* best effort */
+      }
+    }
+    // ready-153: this board exists ONLY to be thrown away. Archived here, in
+    // `finally` rather than after a happy-path return, so a run that fails
+    // partway (or even before Chromium ever opens) still does not leave a
+    // permanent stray in the owner's portfolio. `rd board archive` only
+    // republishes the board's own kind-30301 definition — every card and
+    // status event already written is untouched.
+    if (coord && rdBin) {
+      try {
+        rd(rdBin, projectDir, writerHome, ["board", "archive", coord]);
+        log(`  archived throwaway board ${coord}`);
+      } catch (err) {
+        console.error(`WARNING: could not archive throwaway board ${coord}: ${err.message}`);
       }
     }
     if (KEEP) log(`\nkept: ${tmp}`);
