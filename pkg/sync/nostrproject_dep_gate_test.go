@@ -32,6 +32,18 @@ func buildCard(t *testing.T, k *nostr.Key, spec CardSpec, createdAt int64) *nost
 	return e
 }
 
+// buildStatusEvent is a small test helper: build+sign a NIP-34 status event for
+// itemID, fatal on error. Used to drive an item to a status the card's own "s"
+// tag does not declare — the status-authority path, not the card-tag fallback.
+func buildStatusEvent(t *testing.T, k *nostr.Key, itemID, rdStatus, reason string, createdAt int64) *nostr.Event {
+	t.Helper()
+	e, err := BuildStatusEvent(k, itemID, rdStatus, "", reason, createdAt)
+	if err != nil {
+		t.Fatalf("build status event %s -> %s: %v", itemID, rdStatus, err)
+	}
+	return e
+}
+
 // TestNostrProjection_DepChain mirrors pkg/state's TestDerive_DepTreeChain: a
 // 3-item chain (t01 blocks t02 blocks t03) produces the same BlockedBy/Blocks/
 // Status relationships when derived from nostr cards instead of campfire
@@ -206,6 +218,67 @@ func TestNostrProjection_GateResolved(t *testing.T) {
 	}
 	if views.GatesFilter()(item) {
 		t.Error("expected resolved item to no longer appear in the gates view")
+	}
+}
+
+// TestNostrProjection_TerminalItemClearsLiveGateFields is the DIRECT pin for the
+// `case state.IsTerminal(item):` branch of applyDepAndGateStatus (ready-d19).
+//
+// WHY IT EXISTS AS ITS OWN TEST: the shape it guards — a winning card that still
+// declares waiting_type/waiting_on/gate while an authoritative status event has
+// moved the item to a terminal status — is UNREACHABLE from `rd gates`,
+// `rd approve` and `rd reject`, because each of those refuses a terminal item on
+// its own status guard, and views.GatesFilter excludes a terminal item on ITS own
+// status clause. So every CLI-level assertion about a closed-while-gated item
+// stays green whether or not this branch exists: the branch is real but does not
+// discriminate at that altitude. ready-d19's first round asserted at the CLI
+// altitude and wrongly recorded the branch as covered. Deleting the branch makes
+// exactly this test (and the gate_terminal_clears_all_but_gate fold vector) fail.
+//
+// The contract is asymmetric on purpose and matches the fold spec (§9.5/§15.5):
+// waiting_on / waiting_type / waiting_since / gate_msg_id are cleared — the item
+// carries no LIVE escalation — but `gate` is RETAINED, so `rd show` can still
+// report which escalation category the item died under.
+func TestNostrProjection_TerminalItemClearsLiveGateFields(t *testing.T) {
+	for _, terminal := range []string{state.StatusDone, state.StatusCancelled, state.StatusFailed} {
+		t.Run(terminal, func(t *testing.T) {
+			k := testKey(t)
+			// The card is the one written while the item was genuinely gated: it
+			// still carries every gate/wait tag. The later status event closes it.
+			card := buildCard(t, k, CardSpec{
+				ItemID: "ready-t01", Title: "Closed while gated", Status: state.StatusWaiting,
+				Priority: "p0", Type: "decision", BoardD: "ready",
+				Gate: "design", WaitingType: "gate", WaitingOn: "a ruling that never came",
+			}, 1700001000)
+			closed := buildStatusEvent(t, k, "ready-t01", terminal, "closing anyway", 1700002000)
+
+			items := ProjectItems([]*nostr.Event{card, closed}, ProjectOptions{Maintainers: map[string]bool{k.PubKeyHex(): true}})
+			item := items["ready-t01"]
+			if item == nil {
+				t.Fatal("ready-t01 not projected")
+			}
+			if item.Status != terminal {
+				t.Fatalf("status = %q; want %q (fixture precondition: the status event must win)", item.Status, terminal)
+			}
+			// The four LIVE-escalation fields must be gone. Each is asserted
+			// separately so a partial clear names the field it missed.
+			if item.WaitingType != "" {
+				t.Errorf("terminal item retains WaitingType=%q; a closed item carries no live gate", item.WaitingType)
+			}
+			if item.WaitingOn != "" {
+				t.Errorf("terminal item retains WaitingOn=%q; a closed item carries no live gate", item.WaitingOn)
+			}
+			if item.WaitingSince != "" {
+				t.Errorf("terminal item retains WaitingSince=%q; a closed item carries no live gate", item.WaitingSince)
+			}
+			if item.GateMsgID != "" {
+				t.Errorf("terminal item retains GateMsgID=%q; this is the field views.GatesFilter keys on, and a consumer whose status clause is weaker than Go's (e.g. the browser gate rail) would surface an unresolvable escalation", item.GateMsgID)
+			}
+			// ...but `gate` is deliberately retained (fold spec §9.5/§15.5).
+			if item.Gate != "design" {
+				t.Errorf("Gate = %q; want %q retained so rd show still reports the escalation category the item died under", item.Gate, "design")
+			}
+		})
 	}
 }
 

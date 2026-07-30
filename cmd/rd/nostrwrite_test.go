@@ -1046,10 +1046,29 @@ func TestNostrNative_GateLifecycle_ScheduledItem(t *testing.T) {
 // (ready-e0e's point 3, generalized here to every terminal state rather than just
 // the one it happened to be fixed for); rd gates must never list a terminal item;
 // and rd approve / rd reject must both refuse a terminal item — including one
-// that WAS gated right up until it closed, which proves the terminal branch of
-// applyDepAndGateStatus (which clears WaitingType/WaitingOn/GateMsgID for every
-// terminal item) actually reaches the close path, not merely a freshly-created
-// terminal fixture that never had gate fields to begin with.
+// that WAS gated right up until it closed.
+//
+// WHAT THIS TEST DOES AND DOES NOT PIN (corrected after ready-d19's round-1
+// veracity audit; the original version of this comment overclaimed and the
+// claim was falsified by mutation):
+//
+//   - The gate/approve/reject REFUSALS are pinned here: they are enforced by
+//     those commands' own terminal-status guards, and deleting a guard reddens
+//     the corresponding line below.
+//   - The `rd gates` EXCLUSION below does NOT pin views.GatesFilter's status
+//     clause. Deleting that clause outright leaves this assertion green, because
+//     the terminal branch of pkg/sync.applyDepAndGateStatus has already emptied
+//     GateMsgID by the time the filter runs, and the filter's GateMsgID conjunct
+//     excludes the row on its own. The status clause is unfalsifiable at this
+//     altitude and is pinned per-status by
+//     pkg/views.TestGatesFilter_StatusClauseIsExhaustive.
+//   - The live-gate-field assertion below DOES pin the terminal branch of
+//     applyDepAndGateStatus end-to-end: deleting that branch reddens it for all
+//     three resolutions, because `rd close` republishes the card with its
+//     waiting_type/waiting_on tags intact and only the projection clears them.
+//     The branch is additionally pinned per-status by
+//     pkg/sync.TestNostrProjection_TerminalItemClearsLiveGateFields and by the
+//     gate_terminal_clears_all_but_gate fold conformance vector.
 func TestNostrNative_GateApproveReject_TerminalStates(t *testing.T) {
 	for _, resolution := range []string{"done", "cancelled", "failed"} {
 		t.Run(resolution, func(t *testing.T) {
@@ -1072,6 +1091,14 @@ func TestNostrNative_GateApproveReject_TerminalStates(t *testing.T) {
 			it, _ := nostrResolveItem(id)
 			if !state.IsTerminal(it) {
 				t.Fatalf("status = %q after close(%s); want terminal", it.Status, resolution)
+			}
+			// The live-escalation fields must not survive the close. Pinned
+			// directly (and per-status) by
+			// pkg/sync.TestNostrProjection_TerminalItemClearsLiveGateFields; asserted
+			// here too so the END-TO-END write path is known to produce the shape
+			// that test builds by hand.
+			if it.WaitingType != "" || it.WaitingOn != "" || it.GateMsgID != "" {
+				t.Fatalf("closed-while-gated item retains live gate fields: waitingType=%q waitingOn=%q gateMsgID=%q", it.WaitingType, it.WaitingOn, it.GateMsgID)
 			}
 
 			if err := runGateNostr(id, "design", "too late"); err == nil {
