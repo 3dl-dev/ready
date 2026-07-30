@@ -81,45 +81,52 @@ fi
 
 # --- locate the subcommand, skipping git's global options ---------------
 # Global options that consume the FOLLOWING argument. `git -C dir stash pop`
-# must not be read as subcommand "dir".
+# must not be read as subcommand "dir". (`--exec-path` is deliberately absent:
+# its valued form is `--exec-path=<path>`, a single token.)
 _takes_value() {
   case "$1" in
-    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env | --exec-path) return 0 ;;
+    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env) return 0 ;;
     *) return 1 ;;
   esac
 }
 
+args=("$@")
 subcmd=""
-stash_verb=""
-seen_subcmd=false
-skip_next=false
-for arg in "$@"; do
-  if [[ "$skip_next" == true ]]; then
-    skip_next=false
+next_arg=""
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  arg="${args[$i]}"
+  if _takes_value "$arg"; then
+    i=$((i + 2))
     continue
   fi
-  if [[ "$seen_subcmd" == false ]]; then
-    if _takes_value "$arg"; then
-      skip_next=true
-      continue
-    fi
-    [[ "$arg" == -* ]] && continue
-    subcmd="$arg"
-    seen_subcmd=true
+  if [[ "$arg" == -* ]]; then
+    i=$((i + 1))
     continue
   fi
-  # First non-option argument after `stash` is the stash verb.
-  if [[ -z "$stash_verb" && "$arg" != -* ]]; then
-    stash_verb="$arg"
+  subcmd="$arg"
+  if [[ $((i + 1)) -lt ${#args[@]} ]]; then
+    next_arg="${args[$((i + 1))]}"
   fi
+  break
 done
 
 if [[ "$subcmd" != "stash" ]]; then
   exec "$REAL_GIT" "$@"
 fi
 
-# `git stash` with no verb means `git stash push`.
-[[ -n "$stash_verb" ]] || stash_verb="push"
+# git's own rule: the token immediately after `stash` is the subcommand, and
+# ONLY that token. If it is an option, or anything git would not recognise as
+# a stash subcommand, this is the implicit-push form. Scanning further for the
+# "first non-option argument" instead would read `git stash -m list` — which
+# git executes as a PUSH with the message "list" — as a harmless `list`, and
+# let it onto the shared stack. Fail closed: unknown means push.
+stash_verb="push"
+case "$next_arg" in
+  push | save | list | show | apply | pop | drop | clear | create | store | branch)
+    stash_verb="$next_arg"
+    ;;
+esac
 
 case "$stash_verb" in
   # Read-only against the shared stack: no ref write, no index write.

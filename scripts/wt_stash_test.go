@@ -1030,6 +1030,48 @@ func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
 	}
 }
 
+// TestStashGuard_PathShimReadsTheVerbTheWayGitDoes covers the fail-open hole
+// found by probing the shim instead of reading it. An earlier version took the
+// first NON-OPTION argument after `stash` as the verb, so `git stash -m list`
+// — which git executes as a push with the message "list" — was read as a
+// harmless `list` and let straight onto the shared stack. git's actual rule is
+// that only the token immediately after `stash` is the subcommand, so anything
+// else is the implicit-push form.
+func TestStashGuard_PathShimReadsTheVerbTheWayGitDoes(t *testing.T) {
+	root := repoRootDir(t)
+	env := envWithPath(filepath.Join(root, "scripts", "git-shim"))
+
+	for _, tc := range []struct {
+		cmd     string
+		refused bool
+	}{
+		{"git stash", true},                 // implicit push
+		{"git stash -m list", true},         // push whose MESSAGE is "list"
+		{"git stash -m show", true},         // push whose MESSAGE is "show"
+		{"git stash --keep-index", true},    // push with an option first
+		{"git stash -u", true},              // push with untracked files
+		{"git stash list", false},           // genuinely read-only
+		{"git stash show", false},           // genuinely read-only
+		{"git stash apply stash@{0}", true}, // verb with an argument
+		{"git stash push -m list", true},    // explicit push
+	} {
+		repo := setupSharedStackRepo(t, root, 2)
+		out, err := bashOut(repo, env, tc.cmd)
+		gotRefused := err != nil && strings.Contains(out, "ready-f75")
+		if gotRefused != tc.refused {
+			t.Errorf("%q: refused=%v, want %v\n%s", tc.cmd, gotRefused, tc.refused, out)
+		}
+		if tc.refused {
+			if n := stashDepth(t, repo); n != 2 {
+				t.Errorf("%q: reached the shared stack (depth %d, want 2)", tc.cmd, n)
+			}
+			if got := mustReadFile(t, repo, "mine.txt"); got != "precious\n" {
+				t.Errorf("%q: lost the caller's uncommitted work: %q", tc.cmd, got)
+			}
+		}
+	}
+}
+
 // TestStashGuard_TwoShimCopiesOnPathDoNotRecurse: the installer materialises a
 // SECOND copy of the shim inside .git, so an operator who puts both that
 // directory and scripts/git-shim on PATH has two wrappers that would each
