@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# post-checkout — ready-f75 stash guard (self-installation half).
+#
+# `git worktree add` runs the post-checkout hook, inside the newly created
+# worktree, with the old-HEAD argument all-zeroes (measured on git 2.43).
+# That makes post-checkout the WORKTREE-CREATION PATH, in git itself, which
+# is where the guard has to hook in: the review that sent this item back
+# found the guard existed as four files nobody ran — no Makefile target, no
+# CI step, and .git/hooks/reference-transaction simply absent across 57 live
+# worktrees. A guard a human has to remember to install does not meet the
+# done condition.
+#
+# So on every checkout, and in particular on every `git worktree add`, this
+# re-asserts the guard: it verifies the reference-transaction hook is present
+# AND actually fired by git (core.hooksPath can point somewhere else), and
+# reinstalls it if it drifted or was removed.
+#
+# It NEVER fails the checkout. A checkout that half-happened because a guard
+# script errored would be worse than the hazard. Failures are printed loudly
+# on stderr and the hook still exits 0.
+#
+# ready-f75 stash guard
+set -uo pipefail
+
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+[[ -n "$common_dir" ]] || exit 0
+case "$common_dir" in
+  /*) : ;;
+  *) common_dir="$(pwd)/$common_dir" ;;
+esac
+
+installer="$common_dir/f75-stash-guard/install.sh"
+[[ -x "$installer" ]] || exit 0
+
+old_head="${1:-}"
+# A fresh worktree (or fresh clone checkout) reports an all-zero old HEAD.
+# Speak up there — that agent is about to start work and should know the
+# guard is on and what to use instead of `git stash`. On ordinary branch
+# switches, stay quiet unless something is wrong.
+if [[ "$old_head" =~ ^0+$ ]]; then
+  "$installer" --new-worktree >&2 || true
+else
+  "$installer" --quiet >&2 || true
+fi
+
+exit 0

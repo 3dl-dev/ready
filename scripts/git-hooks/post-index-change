@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# post-index-change — ready-f75 stash guard (detection half).
+#
+# `git stash apply` opens NO ref transaction, so the reference-transaction
+# hook never sees it, and `git stash pop` applies BEFORE it drops. There is
+# no abortable pre-apply hook anywhere in git: post-index-change is the only
+# hook that fires at all, and git IGNORES its exit code (measured on git
+# 2.43 — a post-index-change returning 1 leaves `git stash apply` at exit 0
+# with the working tree already rewritten).
+#
+# So this hook cannot prevent a shared-stash apply. What it CAN do is make it
+# LOUD. The 2026-07-29 incident's defining property was silence: "Nothing
+# failed loudly here; it was caught only because one agent chose to disclose
+# it." This hook removes that property — an agent that applies or pops from
+# the shared stack now gets told, on stderr, at the moment their working tree
+# changed, that the content may be another worktree's.
+#
+# It speaks ONLY for `git stash apply` / `git stash pop`. Every other index
+# write in the repo (add, commit, checkout, reset, merge, rebase, and
+# `git wtstash`'s own internal `git stash apply <sha>`) passes silently.
+#
+# Args, per githooks(5): $1 = "1" if the working directory was updated,
+# $2 = "1" if the index was updated. We warn on the working-directory-update
+# event, which fires exactly once per apply and is the moment the damage
+# lands.
+#
+# ready-f75 stash guard
+set -uo pipefail
+
+# `git wtstash` uses `git stash create` + `git stash apply <sha>` internally
+# against its OWN per-worktree refs. That is the safe path, not the hazard.
+[[ "${RD_STASH_GUARD_INTERNAL:-}" == "1" ]] && exit 0
+
+worktree_updated="${1:-0}"
+[[ "$worktree_updated" == "1" ]] || exit 0
+
+# Which user-facing `git ...` are we inside? git runs parts of stash from
+# internal subprocesses, so walk up the process tree. Linux /proc only; on a
+# system without /proc this hook is simply silent (it can never block, so a
+# missing warning is the only cost).
+_invoking_git_cmd() {
+  local pid="$PPID" cmd ppid depth=0
+  while [[ -n "$pid" && "$pid" != "0" && "$depth" -lt 8 ]]; do
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || return 0
+    if [[ "$cmd" == *"stash"* ]]; then
+      printf '%s' "${cmd% }"
+      return 0
+    fi
+    ppid=$(sed -e 's/^.*) [A-Za-z] //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)
+    [[ "$ppid" == "$pid" ]] && return 0
+    pid="$ppid"
+    depth=$((depth + 1))
+  done
+}
+
+verb="$(_invoking_git_cmd)"
+case "$verb" in
+  *"stash apply"* | *"stash pop"*) ;;
+  *) exit 0 ;;
+esac
+
+# `git wtstash` applies by explicit SHA, never by stash@{N}. A bare
+# apply/pop (or one naming stash@{N}) is the shared-stack path.
+if [[ "$verb" != *"stash@{"* ]]; then
+  # Reject the explicit-SHA form used by wt-stash.sh: `stash apply --index
+  # --quiet <40-hex>`.
+  if [[ "$verb" =~ [0-9a-f]{40} ]]; then
+    exit 0
+  fi
+fi
+
+{
+  echo "ready-f75 stash guard: WARNING — you just applied from the SHARED stash stack."
+  echo "  invoked by: $verb"
+  echo
+  echo "refs/stash lives in the COMMON .git directory that every git worktree of"
+  echo "this repo shares, so the entry you just applied may have been created by"
+  echo "a DIFFERENT dispatched agent in a different worktree, and your working"
+  echo "tree may now contain its content mixed into yours."
+  echo
+  echo "No git hook can prevent this: 'git stash apply' opens no ref transaction,"
+  echo "and 'git stash pop' applies before it drops. This warning is the only"
+  echo "coverage git makes possible. Verify with 'git status' and 'git diff'."
+  echo
+  echo "Use 'git wtstash [push|list|pop|apply|drop|clear]' instead — it is scoped"
+  echo "to refs/worktree/wtstash/N, which git stores per worktree."
+} >&2
+
+exit 0

@@ -62,5 +62,17 @@ jobs:
       # live-relay/portfolio-key tests self-skip when the gate env var is
       # absent. CI runs the hermetic suite as-is; it does not broaden any
       # skip condition to force green, and it does not narrow one either.
+      # ready-f75: the shared-stash guard has to be ACTIVE, not merely
+      # committed. The first version of it shipped as four files that nothing
+      # ran — no Makefile target, no CI step, and .git/hooks/reference-transaction
+      # absent across 57 live worktrees. This step runs the installer against
+      # the CI checkout and fails the job if the hook does not actually fire
+      # (the installer self-verifies by attempting a write to its own canary
+      # ref and asserting the refusal), so a change that breaks installation
+      # cannot merge green. Asserted by
+      # scripts/wt_stash_test.go:TestGoTestWorkflow_ActivatesStashGuard.
+      - name: Activate the ready-f75 shared-stash guard
+        run: scripts/install-git-stash-guard.sh
+
       - name: go test ./...
         run: go test ./...

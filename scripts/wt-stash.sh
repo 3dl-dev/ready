@@ -35,11 +35,20 @@
 # name, not an override of `git stash` itself. Aliasing `stash` directly
 # does not work: git resolves its own builtins (stash, status, log, ...)
 # before consulting an alias of the same name, so such an alias is silently
-# ignored (verified empirically). The installer's reference-transaction
-# hook is what makes raw `git stash` fail loudly instead.
+# ignored (verified empirically). The installer's reference-transaction hook
+# is what makes raw `git stash` PUSH fail loudly instead; raw
+# `git stash apply`/`pop` cannot be blocked by any git hook at all and get a
+# loud post-index-change warning instead. Exact coverage, with the
+# measurements behind it, is in scripts/git-hooks/reference-transaction and
+# docs/ops/shared-git-state-audit.md.
 set -euo pipefail
 
 REF_PREFIX="refs/worktree/wtstash"
+
+# This script is the SAFE path: it calls `git stash create` (writes no ref)
+# and `git stash apply <sha>` against its own per-worktree refs. Tell the
+# guard's post-index-change hook not to warn about those.
+export RD_STASH_GUARD_INTERNAL=1
 
 _die() {
   echo "wt-stash: $*" >&2
