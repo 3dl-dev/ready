@@ -100,12 +100,22 @@ export function toUIItem(f: FoldItem, boardCoord?: string): UIItem {
 /**
  * foldItemSource projects verified events through ready-35b's conformant fold.
  *
- * On `opts.trusted: null` — which disables the read-trust gate (spec §3.4) —
- * that is correct HERE and only here: every event reaching this point has
- * already been schnorr-verified and author-filtered by discoverOwnerBoards
- * (ready-dbf done condition 4). The gate exists for callers holding unverified
- * bytes; re-applying it would put a weaker check in front of a stronger one.
- * Callers that have NOT verified must pass a real trusted set.
+ * `opts.trusted` MUST BE A REAL SET (ready-605). This comment used to say that
+ * `trusted: null` was "correct HERE and only here", because every event reaching
+ * this point has already been schnorr-verified — so the read-trust gate "would
+ * put a weaker check in front of a stronger one". THAT IS A CATEGORY ERROR, and
+ * main.ts shipped it: a signature proves AUTHORSHIP, not AUTHORITY. Any
+ * generated keypair produces events that verify, so with the gate off an
+ * ungranted key's later card for an existing item id won latest-wins in the
+ * viewer's projection — and the browser's write path rebuilds the whole card
+ * from that projection, re-signing the attacker's text under the viewer's key.
+ * Verification and read-trust answer different questions and neither substitutes
+ * for the other; discoverOwnerBoards filters WHICH BOARDS are shown, never who
+ * may author a card within one.
+ *
+ * The set every production caller passes is the grant-derived membership —
+ * deriveLevels' `levels` keys for the board, i.e. what pkg/sync's
+ * DeriveReadTrust returns in Go. See main.ts loadBoardItems.
  */
 export function foldItemSource(opts: ProjectOptions, boardCoord?: string): ItemSource {
   return {

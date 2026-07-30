@@ -268,9 +268,38 @@ function renderConnecting(root: HTMLElement): HTMLElement {
  * 1633 status, and 39301 role grants (a granted contributor's read-trust derives
  * from them).
  *
- * `trusted: null` disables the read-trust gate (spec §3.4) deliberately: the
- * fold re-verifies every event's signature itself (fold.ts, proven by the
- * forged_events_dropped vector), so the gate would be a weaker second check.
+ * READ-TRUST IS ENFORCED HERE (ready-605), and the argument that used to sit in
+ * this comment for `trusted: null` — "the fold re-verifies every event's
+ * signature itself, so the gate would be a weaker second check" — is a category
+ * error that shipped. A SIGNATURE PROVES AUTHORSHIP, NOT AUTHORITY: any
+ * generated keypair produces events that verify. With the gate off, an ungranted
+ * key publishing a later kind-30302 for an EXISTING item id on this board's
+ * coordinate won latest-wins in every browser viewer's projection — and because
+ * a card write REBUILDS THE WHOLE CARD from that projection (writeevents.ts
+ * buildCardEvent), its title, context and labels were then re-signed under the
+ * VIEWER's key the moment the viewer touched that card. Nothing else caught it:
+ * relay write policy is not rd's (measured 2026-07-30, the LAN relays accept a
+ * never-granted key — ready-345), so this gate is the only one.
+ *
+ * THE SET IS GRANT-DERIVED, exactly as rd's CLI builds it (cmd/rd/nostr.go's
+ * nostrTrustSet -> pkg/sync/rolegrant.go's DeriveReadTrust): the keys of
+ * deriveLevels over the OWNER-SIGNED 39301 grants for this board — the board
+ * author (the bootstrap root, always present, which is what makes it
+ * non-circular) unioned with every cap-valid grantee, revoked keys included so
+ * their PAST events survive (the fold's §3.5 until gate drops their future
+ * ones). It is the SAME DerivedGrants object the writer's grantLevels comes
+ * from, so the page's read-trust and the writer's write-authority cannot drift
+ * apart — the ready-191 shape of defect, where the two projections disagreed.
+ *
+ * IT IS DELIBERATELY NOT UNIONED WITH `identity.pubkey`, though rd's CLI unions
+ * self. rd trusts self because self authored the events in its own local log;
+ * this page has no such log, and its identity can come from a LINK — main()
+ * mints a read-only identity from the fragment's `pk=`, and the same link
+ * chooses the relays. Trusting self here would let a crafted link name the
+ * attacker's own key as the viewer and re-admit exactly the card this gate
+ * exists to drop. Anything with a legitimate reason to write already holds a
+ * grant, so it is already in the set.
+ *
  * Failures are non-fatal — a board that will not load must not take the whole
  * page down, which is the ready-62d1 lesson applied one layer up.
  *
@@ -350,9 +379,14 @@ export async function loadBoardItems(
       if (state !== "public") confidential = true;
       if (state === "unknown") unestablished.push({ name: b.title || b.boardD, why: why ?? "no-grant" });
       const encryptedBoards = encryptedBoardsOf(keyring, state);
+      // ready-605: the read-trust set for THIS board, derived once from the
+      // owner-signed authority snapshot and used by BOTH the page's projection
+      // below and the writer's own (via grantLevels). See this function's
+      // header for why it is grant-derived and why self is not in it.
+      const grants = deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD);
       const src = foldItemSource(
         {
-          trusted: null,
+          trusted: new Set(grants.levels.keys()),
           maintainers: null,
           pinnedBoard: b.coord,
           decryptor: keyring,
@@ -393,7 +427,10 @@ export async function loadBoardItems(
         board: { ownerPubkey: b.ownerPubkey, boardD: b.boardD, title: b.title },
         relays,
         snapshot: events,
-        grantLevels: deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD).levels,
+        // The SAME derivation the read-trust set above came from — one signed
+        // source feeds both, so what this writer may publish and what the page
+        // is willing to project can never disagree (ready-605).
+        grantLevels: grants.levels,
         confidential: state !== "public",
         enc,
         // The writer projects its own view to build the next write from; it
