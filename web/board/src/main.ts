@@ -665,7 +665,7 @@ function unestablishedConfidentialityNotice(boards: UnestablishedBoard[]): strin
     .sort();
   if (withheld.length > 0) {
     parts.push(
-      `ON ${withheld.join(", ")} THE OMISSION IS PROVEN, not merely possible: a signature-verified sealed card on the board is older than the earliest grant the relays served, or names a key epoch that none of the served grants covers. ` +
+      `ON ${withheld.join(", ")} THE OMISSION IS PROVEN, not merely possible: a signature-verified sealed card on the board is older than the earliest grant the relays served, or names a key epoch BELOW the lowest epoch any served grant covers. ` +
         `Either one is only possible if grants OLDER than the ones served exist, so the instant those grants imply is too late and cannot be used. ` +
         `No relay can forge this signal — sealing a card needs a board key and signing it needs its author's key — and it cannot hide the signal without also withholding the cards that carry it.`,
     );

@@ -763,13 +763,21 @@ withheld — and it says so, distinguishing "no grant reached me" (consistent wi
 an indexing gap) from "the answer I got is internally inconsistent" (omission
 proven). Reference implementation: `web/board/src/main.ts`'s `confidentialityOf` /
 `grantsWithheld` over `BoardKeyring.grantEpochFloor`, witnessed by
-`web/board/src/main.grantsomission.test.ts`. **The residual, stated exactly:** both
-witnesses ride on the sealed cards, so a relay still defeats them by withholding
-every sealed card older than the cutover it wants to manufacture AND every one
-naming a lower epoch, on top of the grants — i.e. by serving a board whose visible
-history begins at the manufactured cutover. NIP-01 has no proof of non-omission,
-so that case is undetectable from inside one relay answer and MUST NOT be claimed
-otherwise. **The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
+`web/board/src/main.grantsomission.test.ts`. **The residual, stated exactly, and it is NOT only an attack.** Both
+witnesses ride on the sealed cards, so they are silent for any board whose visible
+sealed history begins at or after the cutover being asserted. A relay can arrange
+that by withholding, on top of the grants, every sealed card older than the cutover
+it wants to manufacture and every one naming a lower epoch. But a ROTATED board
+reaches the same state with NO relay misbehaviour anywhere: §18.1 makes a card
+addressable at `30302:<pubkey>:<itemID>` and §11.14 seals every write under
+`CurrentEpoch`, so a card revised after a rotation legitimately replaces its
+pre-rotation version at the newer epoch, while a conformant relay legitimately
+retains only each grantee's newest kind-39301. A board whose retained card versions
+all postdate its last rotation therefore sits in this gap by default. NIP-01 has no
+proof of non-omission, so the case is undetectable from inside one relay answer and
+MUST NOT be claimed otherwise — in particular, "full and partial omission are both
+detected" is FALSE as an unqualified statement and must not be repeated. Tracked as
+`ready-f6b`. **The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
 derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
