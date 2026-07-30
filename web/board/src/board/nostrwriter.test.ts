@@ -1,0 +1,209 @@
+// nostrwriter.test.ts — the write path's REFUSALS and its failure handling.
+//
+// The happy path is proved elsewhere and more strongly: writeevents.vectors.
+// test.ts pins the exact events against rd's own vector file, and
+// scripts/live-write-roundtrip.mjs performs all seven operations in a real
+// Chromium against the live relay and reads them back with an independent rd.
+// What CI cannot run (a live relay, a real browser) is what these tests cover
+// deterministically: who is refused, when the refusal happens (BEFORE anything
+// is signed), and what the writer does when the relay says no.
+import { describe, expect, it, vi } from "vitest";
+import { signNostrEvent, xOnlyPubkey } from "../lib/schnorrsign";
+import type { NostrEvent } from "../lib/nostrevent";
+import { RelayRejectedError, SignerMismatchError, type Nip07Signer } from "../lib/publish";
+import { LEVEL_CONTRIBUTOR, LEVEL_MAINTAINER } from "../lib/rolegrant";
+import type { Item } from "../lib/state";
+import { NostrBoardWriter, NotAuthorizedError } from "./nostrwriter";
+import { buildFullCreate, WriteRefusedError, type WriteEnv } from "./writeevents";
+
+const SECRET = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef";
+const OWNER = xOnlyPubkey(SECRET);
+const OTHER = "abc123deadbeefabc123deadbeefabc123deadbeefabc123deadbeefabc12300";
+const BOARD_D = "proj";
+const RELAY = "wss://relay.example/";
+
+function realSigner(secret = SECRET): Nip07Signer {
+  return {
+    async signEvent(e) {
+      return signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, secret);
+    },
+  };
+}
+
+/** A relay socket that answers every EVENT with the given OK verdict. No real
+ * network, but the FRAME SHAPE is NIP-01's: the writer must read acceptance out
+ * of ["OK", id, accepted, message], never out of "the socket didn't error". */
+function fakeRelay(accepted: boolean, message = ""): (url: string) => WebSocket {
+  return () => {
+    const sock: Record<string, unknown> = {
+      send(raw: string) {
+        const [, ev] = JSON.parse(raw) as [string, NostrEvent];
+        setTimeout(() => {
+          (sock.onmessage as (m: { data: string }) => void)?.({
+            data: JSON.stringify(["OK", ev.id, accepted, message]),
+          });
+        }, 0);
+      },
+      close() {},
+    };
+    setTimeout(() => (sock.onopen as (() => void) | undefined)?.(), 0);
+    return sock as unknown as WebSocket;
+  };
+}
+
+function seedItem(overrides: Partial<Item> = {}): { snapshot: NostrEvent[]; item: Item } {
+  const item: Item = {
+    id: "seed-1",
+    msg_id: "",
+    title: "Seed",
+    context: "",
+    type: "task",
+    priority: "p2",
+    status: "inbox",
+    for: OWNER,
+    created_at: 0n,
+    updated_at: 0n,
+    ...overrides,
+  };
+  const env: WriteEnv = {
+    signer: OWNER,
+    boardAuthor: OWNER,
+    boardD: BOARD_D,
+    boardTitle: BOARD_D,
+    items: new Map(),
+    issueEventIds: new Map(),
+    createdAt: 1_780_000_000,
+  };
+  const snapshot = buildFullCreate(env, item).map((b) =>
+    signNostrEvent({ created_at: b.created_at, kind: b.kind, tags: b.tags, content: b.content }, SECRET),
+  );
+  return { snapshot, item };
+}
+
+function makeWriter(over: Partial<ConstructorParameters<typeof NostrBoardWriter>[0]> = {}) {
+  const { snapshot } = seedItem();
+  return new NostrBoardWriter({
+    signerPubkey: OWNER,
+    signer: realSigner(),
+    board: { ownerPubkey: OWNER, boardD: BOARD_D, title: BOARD_D },
+    relays: [RELAY],
+    snapshot,
+    grantLevels: new Map([[OWNER, LEVEL_MAINTAINER]]),
+    publishOptions: { socketFactory: fakeRelay(true), timeoutMs: 2000 },
+    ...over,
+  });
+}
+
+describe("who may write (client-side, and BEFORE anything is signed)", () => {
+  it("a key with no grant on the board is refused, and the signer is never called", async () => {
+    const signEvent = vi.fn();
+    const w = makeWriter({ grantLevels: new Map([[OTHER, LEVEL_CONTRIBUTOR]]), signer: { signEvent } });
+    expect(w.whyReadOnly()).toMatch(/no write grant/i);
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(NotAuthorizedError);
+    expect(signEvent).not.toHaveBeenCalled();
+  });
+
+  it("no NIP-07 signer means read-only — and never a prompt for a key", async () => {
+    const w = makeWriter({ signer: undefined });
+    expect(w.whyReadOnly()).toMatch(/never accepts a secret key/i);
+    await expect(w.moveStatus("seed-1", "active")).rejects.toBeInstanceOf(NotAuthorizedError);
+  });
+
+  it("a CONFIDENTIAL board is refused rather than downgraded to plaintext", async () => {
+    const signEvent = vi.fn();
+    const w = makeWriter({ confidential: true, signer: { signEvent } });
+    expect(w.whyReadOnly()).toMatch(/seals its free text/i);
+    await expect(w.setTitle("seed-1", "leak me")).rejects.toBeInstanceOf(NotAuthorizedError);
+    expect(signEvent).not.toHaveBeenCalled();
+  });
+
+  it("a granted key with a signer on a public board may write", async () => {
+    const w = makeWriter();
+    expect(w.whyReadOnly()).toBeUndefined();
+    await w.claim("seed-1");
+    expect(w.items().get("seed-1")!.status).toBe("active");
+    expect(w.items().get("seed-1")!.by).toBe(OWNER);
+  });
+});
+
+describe("the relay's answer is the outcome", () => {
+  it("a rejected publish throws with the relay's own words and absorbs nothing", async () => {
+    const w = makeWriter({
+      publishOptions: {
+        socketFactory: fakeRelay(false, "restricted: pubkey is not admitted to this relay's tenant write-allowlist"),
+        timeoutMs: 2000,
+      },
+    });
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(RelayRejectedError);
+    await expect(w.claim("seed-1")).rejects.toThrow(/not admitted/);
+    // The optimistic UI's revert depends on this: a refused write must leave the
+    // writer's own view exactly where it was.
+    expect(w.items().get("seed-1")!.status).toBe("inbox");
+  });
+
+  it("a socket that never answers is a failure, not a success", async () => {
+    const w = makeWriter({
+      publishOptions: {
+        socketFactory: () => ({ send() {}, close() {} }) as unknown as WebSocket,
+        timeoutMs: 50,
+      },
+    });
+    await expect(w.moveStatus("seed-1", "active")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(w.items().get("seed-1")!.status).toBe("inbox");
+  });
+});
+
+describe("the signer is not trusted to return what it was given", () => {
+  it("an extension that rewrites created_at fails the write instead of publishing a broken anchor", async () => {
+    const w = makeWriter({
+      signer: {
+        async signEvent(e) {
+          return signNostrEvent(
+            { created_at: e.created_at + 5, kind: e.kind, tags: e.tags, content: e.content },
+            SECRET,
+          );
+        },
+      },
+    });
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(SignerMismatchError);
+    expect(w.items().get("seed-1")!.status).toBe("inbox");
+  });
+
+  it("an extension signing as a DIFFERENT key is refused", async () => {
+    const other = "0b432b2677937381aef05bb02a66ecd012773062cf3fa2549e44f58ed2401710";
+    const w = makeWriter({ signer: realSigner(other) });
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(SignerMismatchError);
+  });
+});
+
+describe("rd's own refusals hold in the browser too", () => {
+  it("claiming a terminal item is refused client-side with rd's wording", async () => {
+    const { snapshot } = seedItem({ id: "closed-1", status: "done" });
+    const w = makeWriter({ snapshot });
+    await expect(w.claim("closed-1")).rejects.toBeInstanceOf(WriteRefusedError);
+    await expect(w.claim("closed-1")).rejects.toThrow(/already done/);
+  });
+
+  it("blocked can never be set directly — it is derived", async () => {
+    const w = makeWriter();
+    await expect(w.moveStatus("seed-1", "blocked")).rejects.toThrow(/derived from dependencies/);
+  });
+});
+
+describe("§17.2 — two rapid writes to the same item are serialized", () => {
+  it("the second write is stamped strictly later, so the later intent wins", async () => {
+    const w = makeWriter();
+    // Fired without awaiting the first: both would otherwise read the same
+    // "newest event in this chain" and be stamped identically, at which point
+    // the read side breaks the tie by event id — a coin flip.
+    const a = w.claim("seed-1", "first");
+    const b = w.close("seed-1", "done", "second");
+    await Promise.all([a, b]);
+    const stamps = w
+      .items()
+      .get("seed-1")!
+      .history!.map((h) => h.timestamp);
+    expect(new Set(stamps).size).toBe(stamps.length);
+    expect(w.items().get("seed-1")!.status).toBe("done");
+  });
+});
