@@ -140,15 +140,46 @@ function nearestEpicAncestor(item: Item, itemsById: Map<string, Item>, epicIds: 
 }
 
 /**
+ * hasLiveBlocker mirrors the fold's §8.2 + §8.4 for ONE item: an edge whose
+ * blocker is not present in this projection is dropped silently (§8.2), and a
+ * surviving edge whose BLOCKER is non-terminal forces `blocked` (§8.4).
+ *
+ * It exists so the optimistic patch can answer "will the next fold call this
+ * item blocked?" with the fold's own rule rather than a guess. Exported for the
+ * same reason applyGateResolution is: the answer decides a status, and a status
+ * the board shows that the fold will contradict is the failure mode §22.2 spells
+ * out in words ("the item snaps back on the next read").
+ */
+export function hasLiveBlocker(item: Item, itemsById: Map<string, Item>): boolean {
+  for (const blockerId of item.blockedBy ?? []) {
+    const blocker = itemsById.get(blockerId);
+    if (blocker === undefined) continue; // §8.2: unresolvable edge, dropped
+    if (!isTerminal(blocker)) return true; // §8.4
+  }
+  return false;
+}
+
+/**
  * applyGateResolution is the OPTIMISTIC half of resolving a gate (ready-186):
  * what the board shows the instant the human rules, before the relay has said
  * anything. It mirrors board-fold-spec.md §22.2 / §22.3 field for field.
  *
  * §22.2 APPROVE clears ALL FIVE gate fields — Gate, WaitingType, WaitingOn,
- * WaitingSince, GateMsgID — and sets `active`. Clearing only `status` would
- * empty the rail (its predicate reads `status`) while leaving an item the fold
- * can never produce: active AND still declaring a gate. The next projection to
- * arrive would then disagree with the board for reasons no test could name.
+ * WaitingSince, GateMsgID. Clearing only `status` would empty the rail (its
+ * predicate reads `status`) while leaving an item the fold can never produce:
+ * active AND still declaring a gate. The next projection to arrive would then
+ * disagree with the board for reasons no test could name.
+ *
+ * THE RESULTING STATUS IS NOT UNCONDITIONALLY `active`. §22.2/§9.2: "If the item
+ * is still blocked, §8.4 recomputes Status=blocked on the next fold regardless of
+ * the published `active` — the gate clears, the block does not, until the blocker
+ * itself closes." Blocked-and-gated is the ORDINARY shape of a design gate
+ * (§9.7), so an unconditional `active` would slide the card into Moving and let
+ * it snap back to Blocked on the next read — the page telling the human
+ * something the fold never agreed to. `itemsById` is the projection the item was
+ * read from, and it is REQUIRED rather than defaulted: a caller with no index is
+ * a caller that cannot know, and silently answering "not blocked" for it is the
+ * bug this parameter exists to make impossible.
  *
  * §22.3 REJECT changes NO field: the gate stays open and the ruling survives as
  * history, so the item stays in the rail exactly as `rd gates` still lists it.
@@ -160,9 +191,9 @@ function nearestEpicAncestor(item: Item, itemsById: Map<string, Item>, epicIds: 
  * identical on screen. That is precisely the shape of unwitnessed selection
  * ready-191 shipped three of, and the export is what makes it measurable.
  */
-export function applyGateResolution(item: Item, approve: boolean): void {
+export function applyGateResolution(item: Item, approve: boolean, itemsById: Map<string, Item>): void {
   if (!approve) return;
-  item.status = "active";
+  item.status = hasLiveBlocker(item, itemsById) ? "blocked" : "active";
   item.gate = undefined;
   item.waitingType = undefined;
   item.waitingOn = undefined;
@@ -432,9 +463,13 @@ export class BoardWorkspace {
       this.render();
       return;
     }
+    // The index is built from the CURRENT projection, before the patch, so
+    // §8.4's "is a non-terminal blocker still standing" is answered against the
+    // same items the fold would see.
+    const itemsById = byId(this.items);
     await this.optimistic(
       itemId,
-      (it) => applyGateResolution(it, approve),
+      (it) => applyGateResolution(it, approve, itemsById),
       () => this.writer.resolveGate(itemId, approve, reason.trim()),
     );
   }

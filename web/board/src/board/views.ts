@@ -45,11 +45,26 @@ export function overdueFilter(now: Date = new Date()): Filter {
   };
 }
 
-/** Mirror of views.GatesFilter (pkg/views/views.go:175-181, §13.10): status
- * === "waiting" AND waitingType === "gate" AND gateMsgId non-empty. All three
- * conjuncts matter (§13.10) — this is the gate rail's membership predicate. */
+/** Mirror of views.GatesFilter (pkg/views/views.go:175-181, §13.10): status is
+ * "waiting" OR "blocked", AND waitingType === "gate", AND gateMsgId non-empty.
+ * All three conjuncts matter (§13.10) — this is the gate rail's membership
+ * predicate.
+ *
+ * ready-186: `blocked` was missing here while the OTHER port of this same
+ * predicate (../lib/views.ts) and the Go original both admitted it. The
+ * consequence was not cosmetic: blocked-and-gated is the ORDINARY shape of a
+ * design gate (§9.7 — the ruling is usually what unblocks the chain), so such an
+ * item was listed by `rd gates`, resolvable by `rd approve` (§9.2's
+ * `Status ∈ {waiting, blocked}`), and yet never appeared in the rail — and the
+ * detail pane's banner reads this same predicate, so the browser offered NO
+ * ruling affordance for it at all. The rail's membership is GatesFilter's, not
+ * a narrower hand-rolled one; that is what §13's preamble means by "an
+ * independent client that renders different membership has diverged". */
 export function gatesFilter(): Filter {
-  return (item) => item.status === "waiting" && item.waitingType === "gate" && !!item.gateMsgId;
+  return (item) =>
+    (item.status === "waiting" || item.status === "blocked") &&
+    item.waitingType === "gate" &&
+    !!item.gateMsgId;
 }
 
 /** Mirror of views.FocusFilter (pkg/views/views.go:185-196, §13.11):

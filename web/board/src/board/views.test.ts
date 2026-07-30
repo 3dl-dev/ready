@@ -5,6 +5,12 @@
 import { describe, expect, it } from "vitest";
 import { makeItem } from "./testitem";
 import { apply, columnize, gatesFilter, labelFilter, pendingFilter, readyFilter, workFilter } from "./views";
+// ready-186: this repo carries TWO TypeScript ports of GatesFilter. They
+// disagreed — ../lib/views.ts admitted `blocked` (citing ready-e0e) and this
+// directory's did not — and nothing compared them, so the divergence was
+// invisible to both suites. The cross-port case below is that comparison.
+import { gatesFilter as libGatesFilter } from "../lib/views";
+import type { Item as LibItem } from "../lib/state";
 
 describe("readyFilter", () => {
   it("mirrors views.ReadyFilter: not terminal, not blocked, not scheduled", () => {
@@ -46,12 +52,52 @@ describe("pendingFilter", () => {
 });
 
 describe("gatesFilter", () => {
-  it("mirrors views.GatesFilter: waiting AND waitingType=gate AND gateMsgId non-empty — all three conjuncts matter", () => {
+  it("mirrors views.GatesFilter: (waiting OR blocked) AND waitingType=gate AND gateMsgId non-empty — all three conjuncts matter", () => {
     const f = gatesFilter();
     expect(f(makeItem({ status: "waiting", waitingType: "gate", gateMsgId: "abc" }))).toBe(true);
     expect(f(makeItem({ status: "waiting", waitingType: "gate", gateMsgId: "" }))).toBe(false);
     expect(f(makeItem({ status: "waiting", waitingType: "human", gateMsgId: "abc" }))).toBe(false);
     expect(f(makeItem({ status: "active", waitingType: "gate", gateMsgId: "abc" }))).toBe(false);
+  });
+
+  // ready-186 / ready-e0e. §13.10 widened the first conjunct from `waiting`-only,
+  // and §9.7 says the gate fields SURVIVE blocking, so blocked-and-gated is a
+  // state the fold really produces — it is the ordinary shape of a design gate,
+  // since the ruling is usually what unblocks the chain. This port dropped it
+  // while ../lib/views.ts and pkg/views/views.go both kept it.
+  it("admits BLOCKED and gated — the ordinary design gate, not an edge case (§13.10, ready-e0e)", () => {
+    const f = gatesFilter();
+    expect(f(makeItem({ status: "blocked", waitingType: "gate", gateMsgId: "abc" }))).toBe(true);
+    // …and the other two conjuncts still bite on a blocked item.
+    expect(f(makeItem({ status: "blocked", waitingType: "gate", gateMsgId: "" }))).toBe(false);
+    expect(f(makeItem({ status: "blocked", waitingType: "human", gateMsgId: "abc" }))).toBe(false);
+    // A merely blocked item — no gate declared at all — is NOT in the gates view.
+    expect(f(makeItem({ status: "blocked" }))).toBe(false);
+  });
+
+  it("agrees with the repo's OTHER port of the same predicate, item for item", () => {
+    const mine = gatesFilter();
+    const theirs = libGatesFilter();
+    const cases: { status: string; waitingType?: string; gateMsgId?: string }[] = [
+      { status: "waiting", waitingType: "gate", gateMsgId: "abc" },
+      { status: "blocked", waitingType: "gate", gateMsgId: "abc" },
+      { status: "blocked", waitingType: "gate", gateMsgId: "" },
+      { status: "blocked", waitingType: "human", gateMsgId: "abc" },
+      { status: "blocked" },
+      { status: "active", waitingType: "gate", gateMsgId: "abc" },
+      { status: "scheduled", waitingType: "gate", gateMsgId: "abc" },
+      { status: "done", waitingType: "gate", gateMsgId: "abc" },
+      { status: "inbox", waitingType: "gate", gateMsgId: "abc" },
+    ];
+    for (const c of cases) {
+      const board = makeItem({ status: c.status, waitingType: c.waitingType, gateMsgId: c.gateMsgId });
+      const lib = {
+        ...board,
+        waiting_type: c.waitingType,
+        gate_msg_id: c.gateMsgId,
+      } as unknown as LibItem;
+      expect(`${JSON.stringify(c)} -> ${mine(board)}`).toBe(`${JSON.stringify(c)} -> ${theirs(lib)}`);
+    }
   });
 });
 

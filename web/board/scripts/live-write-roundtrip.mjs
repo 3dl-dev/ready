@@ -103,6 +103,18 @@
 //     signed gate-resolve from that key is dropped by §3.4 read-trust, proven by
 //     splicing it into an independent reader's relay-sourced log and re-folding.
 //
+// AND THE SHAPE THAT MAKES CLAUSES 3 AND 5 FALSIFIABLE. Every gate this script
+// used to seed was `waiting`, so "the item became workable" and "the rail
+// collapsed" could both be true of a board whose optimistic patch ignored §8.4
+// entirely. A BLOCKED-and-gated seed (§9.7 — the ordinary design gate; the ruling
+// is usually what unblocks the chain) is now seeded and ruled on from the rail,
+// and it asserts the two things only that shape can: that the rail's membership
+// really is views.GatesFilter's (§13.10 admits `blocked`; a narrower predicate
+// leaves the item with NO ruling affordance in the browser, while `rd approve`
+// resolves it fine), and that the approved card does NOT slide into Moving —
+// §22.2's "if the item is still blocked, §8.4 recomputes Status=blocked on the
+// next fold regardless of the published `active`".
+//
 // WHY THE READ-SIDE HALF IS SPLICED IN RATHER THAN PUBLISHED. wss://relay.3dl.network
 // enforces a tenant write-allowlist, so an ungranted key's event never reaches
 // the relay at all (that refusal is asserted too, separately). Splicing the same
@@ -773,6 +785,17 @@ async function main() {
       // "the last one" a real state rather than an artefact of there only ever
       // having been one.
       gateLast: `${BOARD_D}-gatelast`,
+      // BLOCKED AND GATED — the ordinary shape of a design gate, and the shape
+      // this script's first round could not observe at all. Every gate above is
+      // `waiting`, which made clauses 3 and 5 UNFALSIFIABLE for the one case
+      // §22.2 singles out in words: "if the item is still blocked, §8.4
+      // recomputes Status=blocked on the next fold regardless of the published
+      // `active`". A page that slid this card into Moving would have been green
+      // here. gateBlockedDep is its live (non-terminal) blocker; it is CLAIMED at
+      // seed time so it sits in Moving rather than adding a seventh card to the
+      // Ready column, where the CARD_CAP disclosure would hide one.
+      gateBlocked: `${BOARD_D}-gateblk`,
+      gateBlockedDep: `${BOARD_D}-gateblkdep`,
       rapid: `${BOARD_D}-rapid`,
       reject: `${BOARD_D}-reject`,
       // ready-191: written by RD, carrying the SAME label the browser adds to
@@ -808,6 +831,21 @@ async function main() {
         "needs a browser ruling",
       ]);
     }
+    // The blocked-and-gated seed, in the order the state actually arises: the
+    // dependency is wired FIRST (so §8.4 derives `blocked`), and the gate is
+    // raised on top of it. §9.7 keeps the gate fields under the block, and §9.1's
+    // own post-check accepts `blocked` — so this is a state rd produces and rd
+    // considers pending, which is exactly why the board has to as well.
+    rd(rdBin, projectDir, writerHome, ["claim", ids.gateBlockedDep, "--reason", "the blocker is live work"]);
+    rd(rdBin, projectDir, writerHome, ["dep", "add", ids.gateBlocked, ids.gateBlockedDep]);
+    rd(rdBin, projectDir, writerHome, [
+      "gate",
+      ids.gateBlocked,
+      "--gate-type",
+      "design",
+      "--description",
+      "needs a browser ruling while still blocked",
+    ]);
     if (readerKey) {
       // The owner wraps this board's CEK to the reader's pubkey. `rd grant` IS
       // the whole invite — there is no relay-side admission involved.
@@ -1080,6 +1118,112 @@ async function main() {
       log(`  'rd gates' on the independent reader: ${JSON.stringify([...stillGated])}`);
       log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
       results.push({ n: 7, name: "approve leaves rd gates, clears Gate/GateMsgID, unblocks the item live", id: ids.gateOk, ok, problems });
+    }
+
+    // ── 7b: THE BLOCKED-AND-GATED CASE, which is the ORDINARY one ────────────
+    //
+    // Everything above rules on a `waiting` gate. §13.10 admits `blocked` too and
+    // §9.2/§22.2 make it approvable, and blocked-and-gated is the NORMAL shape of
+    // a design gate because the ruling is usually what unblocks the chain. Two
+    // things are only falsifiable here:
+    //
+    //   MEMBERSHIP — `rd gates` lists this item (asserted on the independent
+    //   reader FIRST, so "the rail should show it" is rd's claim, not this
+    //   script's). If the rail's predicate is narrower than GatesFilter, the item
+    //   has no ruling affordance in the browser at all and the run fails below.
+    //
+    //   THE SNAP-BACK — §22.2: "if the item is still blocked, §8.4 recomputes
+    //   Status=blocked on the next fold regardless of the published `active`."
+    //   So the card must NOT move to Moving. The page never re-folds after load,
+    //   which is what makes the live DOM a real witness here: whatever the
+    //   optimistic patch decided is still on screen when this is read.
+    const BLOCKED_APPROVE_REASON = "approved while still blocked — the block is not mine to clear";
+    {
+      const problems = [];
+
+      // rd's own verdict on the seed, before the browser is asked anything.
+      const beforeTag = `gateblk-before-${RUN}`;
+      const beforeItems = independentRead(rdBin, tmp, coord, beforeTag, readerKey);
+      const beforeGates = readerGateIds(rdBin, tmp, beforeTag);
+      const seed = beforeItems.get(ids.gateBlocked);
+      const blocker = beforeItems.get(ids.gateBlockedDep);
+      if (seed?.status !== "blocked") problems.push(`the seed is status=${JSON.stringify(seed?.status)}, want "blocked" — this case is not set up`);
+      if ((seed?.gate_msg_id ?? "") === "") problems.push("the seed carries no GateMsgID — §9.7 did not retain the gate under the block");
+      if (["done", "cancelled", "failed"].includes(blocker?.status)) {
+        problems.push(`the blocker is ${blocker?.status} — nothing would keep the item blocked, so the assertion below is vacuous`);
+      }
+      if (!beforeGates.has(ids.gateBlocked)) {
+        problems.push("'rd gates' does not list the blocked-and-gated seed — the divergence below cannot be attributed to the board");
+      }
+
+      step("ready-186: a BLOCKED-and-gated item is rulable FROM THE RAIL (§13.10), and does not snap back (§22.2)");
+      const railBefore = await railState(cdp);
+      const columnBefore = await columnOfCard(cdp, ids.gateBlocked);
+      const inRail = railBefore.ids.includes(ids.gateBlocked);
+      if (!inRail) {
+        problems.push(
+          `'rd gates' lists ${ids.gateBlocked} but the BOARD's rail does not (rail: ${JSON.stringify(railBefore.ids)}) — ` +
+            "the rail's membership predicate is narrower than views.GatesFilter, so this gate has no ruling affordance in the browser",
+        );
+      }
+
+      let message = "";
+      if (inRail) {
+        await resolveGateInRail(cdp, ids.gateBlocked, true, BLOCKED_APPROVE_REASON);
+        message = await settle(cdp);
+        if (message) log(`  page reported: ${message}`);
+      }
+
+      const afterTag = `gateblk-after-${RUN}`;
+      const afterItems = independentRead(rdBin, tmp, coord, afterTag, readerKey);
+      const afterGates = readerGateIds(rdBin, tmp, afterTag);
+      const after = afterItems.get(ids.gateBlocked);
+      if (inRail) {
+        // Clause 2, on the fold: all the gate fields clear…
+        for (const field of ["gate", "gate_msg_id", "waiting_type"]) {
+          if ((after?.[field] ?? "") !== "") problems.push(`${field} = ${JSON.stringify(after?.[field])} after approve, want cleared`);
+        }
+        // …and clause 1: the gate leaves `rd gates` even though the item stays blocked.
+        if (afterGates.has(ids.gateBlocked)) problems.push(`${ids.gateBlocked} is STILL listed by 'rd gates' after an approve`);
+        // §8.4: the BLOCK survives the ruling. This is the assertion the
+        // waiting-only seeds could not make.
+        if (after?.status !== "blocked") {
+          problems.push(`the independent fold projects status=${JSON.stringify(after?.status)}, want "blocked" (§8.4 outlives §22.2's published "active")`);
+        }
+        // Clause 5: the ruling and its actor are in history.
+        const last = (after?.history ?? []).at(-1);
+        if (last?.note !== BLOCKED_APPROVE_REASON) problems.push(`history note is ${JSON.stringify(last?.note)}, want ${JSON.stringify(BLOCKED_APPROVE_REASON)}`);
+        if (last?.changed_by !== owner) problems.push(`ruling attributed to ${JSON.stringify(last?.changed_by)}, want ${owner}`);
+
+        // Clause 3, off the LIVE DOM: the rail dropped it with no reload, and the
+        // card did NOT slide into Moving — because the fold, read above, says
+        // blocked. A board that disagreed with that projection is the failure
+        // §22.2 describes.
+        const railAfter = await railState(cdp);
+        if (railAfter.ids.includes(ids.gateBlocked)) problems.push("the rail still lists the resolved gate — the board did not reflect it");
+        const columnAfter = await columnOfCard(cdp, ids.gateBlocked);
+        if (columnAfter !== "blocked") {
+          problems.push(
+            `the board shows the approved-but-still-blocked card in column ${JSON.stringify(columnAfter)}; the independent fold says ` +
+              `status=${JSON.stringify(after?.status)}, so the card must stay in "blocked" — it would snap back on the next read`,
+          );
+        }
+        log(`  rail: ${JSON.stringify(railBefore.ids)} -> ${JSON.stringify(railAfter.ids)}`);
+        log(`  card column: ${columnBefore} -> ${columnAfter} (must stay "blocked": the gate cleared, the block did not)`);
+        log(`  independent fold: status=${after?.status} gate=${JSON.stringify(after?.gate)} gate_msg_id=${JSON.stringify(after?.gate_msg_id)}`);
+        log(`  'rd gates' independently: ${JSON.stringify([...afterGates])}`);
+      }
+
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({
+        n: 7,
+        name: "a BLOCKED-and-gated item is rulable from the rail and stays blocked afterwards",
+        id: ids.gateBlocked,
+        ok,
+        problems,
+      });
     }
 
     step("ready-186 clause 4: an EMPTY reason resolves nothing, publishes nothing");
