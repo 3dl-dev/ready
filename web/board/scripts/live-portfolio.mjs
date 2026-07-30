@@ -540,7 +540,29 @@ async function main() {
       return true;
     `);
     await waitFor(cdp, `document.querySelector(".node[data-board-coord]")`, "the portfolio's board list", 600000);
-    log(`  workspace painted in ${((Date.now() - paintStart) / 1000).toFixed(1)}s`);
+    const firstPaint = Date.now() - paintStart;
+    log(`  workspace painted in ${(firstPaint / 1000).toFixed(1)}s`);
+
+    // ready-fe4 MADE THE PAINT AND THE LOAD TWO DIFFERENT INSTANTS, and this
+    // wait is why every count below is still a count.
+    //
+    // Until that item, the board list appeared only when every board had
+    // finished loading, so "a node exists" and "the load is done" were the same
+    // event and the assertions could start the moment the first node appeared.
+    // The page now mounts the tree as soon as DISCOVERY answers and fills each
+    // board in as it lands — measured on this relay 2026-07-30, 2.0s to the tree
+    // against 97.2s for the whole load — so sampling at the old signal reads
+    // every board at count 0 with a state of "stale", and this script PASSED a
+    // page that had loaded nothing at all. That is a vacuous run, and it is the
+    // failure mode this file exists to prevent, so the settle signal is now
+    // explicit: NO board node may still be marked "stale".
+    await waitFor(
+      cdp,
+      `document.querySelectorAll('.node[data-board-coord][data-board-state="stale"]').length === 0`,
+      "every board to finish loading (no node still marked stale)",
+      1800000,
+    );
+    log(`  every board settled in ${((Date.now() - paintStart) / 1000).toFixed(1)}s`);
 
     const page = await cdp.evaluate(`
       return [...document.querySelectorAll(".node[data-board-coord]")].map((n) => ({

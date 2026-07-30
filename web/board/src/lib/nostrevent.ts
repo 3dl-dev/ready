@@ -91,13 +91,71 @@ export function computeEventId(e: Pick<NostrEvent, "pubkey" | "created_at" | "ki
 }
 
 /**
+ * VERIFICATION MEMO (ready-fe4). BIP-340 verification in this bundle is
+ * hand-rolled BigInt curve arithmetic (secp256k1.ts, validated against the
+ * official bitcoin/bips vectors), so ONE verifyEvent call costs ~2ms — and the
+ * load path calls it on the same event several times over: the fold's
+ * verifiedEvents, sealedEvidenceOf's own check, deriveBoardKeyring's CHECK 1,
+ * deriveLevels' per-grant check, and the writer's re-projection each verify the
+ * same snapshot independently, on purpose (each module refuses to trust its
+ * caller). Measured against wss://relay.3dl.network 2026-07-30 over 12 of the
+ * owner's boards: 69.1s to load, of which only 8.3s was the relay. The other
+ * 60.8s was this function, run repeatedly on bytes it had already ruled on.
+ *
+ * THE MEMO REMOVES NO CHECK. It is keyed on eventIdentity — the FULL content
+ * plus the signature, the same key dedupeExact uses and for the same ready-dd5
+ * reason — so a forgery that reuses a genuine event's id but changes any other
+ * field gets a different key and is verified on its own merits. Two events that
+ * share a key are byte-identical, and verifyEvent is a pure function of those
+ * bytes, so serving a remembered answer is indistinguishable from recomputing
+ * it. Keying on `e.id` INSTEAD would be a real vulnerability (a forgery
+ * inheriting a genuine event's verdict), which is why it is not the key.
+ *
+ * The cap is a memory bound, not a policy: a portfolio session folds tens of
+ * thousands of events and this map would otherwise grow for the life of the
+ * page. Overflow clears rather than evicting one entry, which costs a re-verify
+ * and keeps this file free of an LRU.
+ */
+const VERIFY_MEMO_MAX = 250_000;
+const verifyMemo = new Map<string, boolean>();
+
+/** resetVerifyMemo drops every remembered verdict. EXPORTED FOR TESTS: a suite
+ * that wants to observe the real cost, or that reuses one event object across
+ * cases, must be able to start from empty. Production never calls it. */
+export function resetVerifyMemo(): void {
+  verifyMemo.clear();
+}
+
+/**
  * verifyEvent mirrors event.go's (*Event).Verify: re-derives the id from the
  * canonical serialization AND checks the BIP-340 schnorr signature against
  * the event's own pubkey. Returns false (never throws) for any malformed or
  * tampered event — a relay is untrusted, so this must fail closed on garbage
  * input, not crash the discovery loop that calls it once per relay event.
+ *
+ * Results are memoized by full content; see VERIFICATION MEMO above for why
+ * that is not a weakening.
  */
 export function verifyEvent(e: NostrEvent): boolean {
+  let key: string | undefined;
+  try {
+    key = eventIdentity(e);
+  } catch {
+    key = undefined; // unserializable input: verify it the long way, memo nothing
+  }
+  if (key !== undefined) {
+    const memo = verifyMemo.get(key);
+    if (memo !== undefined) return memo;
+  }
+  const ok = verifyEventUncached(e);
+  if (key !== undefined) {
+    if (verifyMemo.size >= VERIFY_MEMO_MAX) verifyMemo.clear();
+    verifyMemo.set(key, ok);
+  }
+  return ok;
+}
+
+function verifyEventUncached(e: NostrEvent): boolean {
   try {
     const wantId = computeEventId(e);
     if (e.id !== wantId) return false;

@@ -56,6 +56,8 @@ node scripts/live-parity.mjs                        # the fold agrees with rd, l
 node scripts/live-write-roundtrip.mjs [--confidential]   # the 7 write ops, read back independently
 node scripts/live-roundtrip-both-ways.mjs [--confidential]  # both directions (ready-4359)
 node scripts/live-stranger-walk.mjs                 # the 8-step stranger walk (ready-48f)
+node scripts/live-portfolio.mjs                     # every board on one page (ready-27b)
+node scripts/live-cache.mjs [--only a|b]            # cold vs WARM, and a stale cache losing (ready-fe4)
 ```
 
 `live-stranger-walk.mjs` is the one that uses a **real NIP-07 extension**. It
@@ -79,6 +81,21 @@ the right actor and reason; then the **rd CLI** changes the board and the
 still-open browser shows it through its live subscription, with no reload — the
 page's `window` sentinel is checked afterwards, because "it reloaded itself"
 would explain the same screen.
+
+`live-cache.mjs` is ready-fe4's, and it measures the cache the only way a cache
+can honestly be measured: **cold against warm**, same build, same relay, one
+visit apart. Part A opens the operator's real portfolio twice in one Chromium
+profile and stamps every instant *inside* the page — a `MutationObserver` marks
+the mutation that put the first card in the DOM, and a `WebSocket` subclass
+installed before any page script marks the first inbound relay frame, so "paints
+before any relay round-trip completes" is checked rather than assumed. Part B
+proves condition 4 by the method the condition names: the board is loaded once
+so it caches, the browser leaves, the **rd CLI renames an item**, and the next
+visit paints the *stale* title from localStorage (asserted at the first-paint
+instant — a cache that painted nothing could not lose to anything) and then, in
+that same document, converges to the newer one. A second rename lands while the
+page is on screen. A `window` sentinel is checked after both, because "it
+reloaded itself" would explain the same screen.
 
 The deterministic halves of the same guarantees run in CI:
 `src/lib/relaylive.test.ts`, `src/main.live.test.ts`,

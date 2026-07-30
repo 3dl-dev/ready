@@ -42,7 +42,7 @@ export interface BoardRef {
    * portfolio view's whole subject is several boards at once, and a portfolio-
    * wide sentence cannot answer "is what I am seeing THIS project's work?".
    */
-  state?: "open" | "withholding" | "sealed" | "unreadable-grant" | "failed";
+  state?: "open" | "withholding" | "sealed" | "unreadable-grant" | "failed" | "stale";
   /** One sentence a person can act on, shown in the board-status list. */
   detail?: string;
 }
@@ -59,6 +59,13 @@ const BOARD_STATE_LABEL: Record<NonNullable<BoardRef["state"]>, string> = {
   sealed: "sealed",
   "unreadable-grant": "key unreadable",
   failed: "did not load",
+  // ready-fe4. The board is painted from this browser's PREVIOUS visit, or has
+  // not been read yet in this session, and the count beside it is therefore not
+  // a claim this session can make. It reads "from cache" and not "loading"
+  // because the distinction the reader needs is not "wait a moment" but "this
+  // number is not from the relay" — the same reason "items withheld" is not
+  // "partial".
+  stale: "from cache",
 };
 
 export interface WorkspaceOptions {
@@ -251,12 +258,12 @@ export class BoardWorkspace {
   private readonly container: HTMLElement;
   private readonly writer: BoardWriter;
   private readonly viewerId?: string;
-  private readonly boards: BoardRef[];
-  private readonly boardTitles: Map<string, string>;
-  private readonly boardByCoord: Map<string, BoardRef>;
+  private boards: BoardRef[];
+  private boardTitles: Map<string, string>;
+  private boardByCoord: Map<string, BoardRef>;
   private readonly identityLine?: string;
   private readonly emptyBoardsNote?: string;
-  private readonly notice?: string;
+  private notice?: string;
 
   private swimlane: SwimlaneMode = "project";
   private filters: FilterState = {};
@@ -317,6 +324,42 @@ export class BoardWorkspace {
   setItems(items: Item[]): void {
     const focus = this.captureFocusedField();
     this.items = items;
+    this.render();
+    this.restoreFocusedField(focus);
+  }
+
+  /**
+   * setBoards replaces the board list — the left tree's project nodes, their
+   * load states and the board-status list — and re-renders (ready-fe4).
+   *
+   * IT EXISTS BECAUSE THE BOARD LIST IS NOW PROGRESSIVE. The page paints from
+   * cache before any relay answer and then reconciles board by board, so a
+   * node's state legitimately changes under the reader: a board painted from a
+   * cached "open" entry may reconcile to "withholding", and a cached board may
+   * reconcile to "failed". Leaving the tree at its cached states would leave
+   * ready-27b's per-board claim asserting something the current load did not
+   * establish, which is the exact defect that item closed. Focus is preserved
+   * the same way setItems preserves it, and for the same reason.
+   */
+  setBoards(boards: BoardRef[]): void {
+    const focus = this.captureFocusedField();
+    this.boards = boards;
+    this.boardTitles = new Map(boards.map((b) => [b.coord, b.title]));
+    this.boardByCoord = new Map(boards.map((b) => [b.coord, b]));
+    this.render();
+    this.restoreFocusedField(focus);
+  }
+
+  /**
+   * setNotice replaces the portfolio-wide paragraph above the board and
+   * re-renders (ready-fe4). Same reason as setBoards: the notice states what
+   * this session could and could not establish, and a load that has replaced
+   * every cached item must be able to replace the sentence that described them.
+   * `undefined` removes the paragraph entirely.
+   */
+  setNotice(notice: string | undefined): void {
+    const focus = this.captureFocusedField();
+    this.notice = notice;
     this.render();
     this.restoreFocusedField(focus);
   }
@@ -1610,13 +1653,28 @@ export class BoardWorkspace {
     return section;
   }
 
+  /**
+   * THE FOOTER IS A CLAIM, so ready-fe4 had to change it. It used to end
+   * "Nothing is cached in this browser — the page is rebuilt from those events
+   * on every load", which was true when it was written and is now false: the
+   * page paints from a per-pubkey localStorage projection before its first relay
+   * round-trip. A sentence that a reader could use to decide what their browser
+   * profile contains must not survive the change that falsified it.
+   *
+   * What replaces it says exactly what is true: what IS kept (this browser's
+   * last projection of these boards), what is NOT (nothing that can decrypt
+   * anything), and that what is on screen once the load settles came from the
+   * relay. While a board is still showing its cached paint its own tree node
+   * says so — see BOARD_STATE_LABEL's "from cache".
+   */
   private buildFooter(): HTMLElement {
     const foot = el("div", { className: "board-foot" });
     const n = this.projectCount();
     foot.append(
       el("b", { textContent: "Live board." }),
       ` Reading ${n} board${n === 1 ? "" : "s"} of signed events straight from your relays. ` +
-        "Nothing is cached in this browser — the page is rebuilt from those events on every load.",
+        "This browser keeps its last projection of these boards, under your own pubkey, so the page can paint before the relays answer — " +
+        "no keys and nothing that could decrypt anything are kept. Every card here is replaced by this session's own read as it lands.",
     );
     return foot;
   }

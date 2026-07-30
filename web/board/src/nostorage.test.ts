@@ -10,13 +10,37 @@
 // persistence API. Between them, "nothing was persisted on this path" and
 // "nothing can persist on any path" cover the claim.
 //
-// THE DECISION THIS RECORDS (the item asks for it explicitly): there is NO
-// plaintext-title cache. The item permits one if it is scoped per logged-in
-// pubkey and the decision is written down; the choice made here is the stricter
-// one — cache nothing. The keyring and every decrypted title are rebuilt from
-// signed relay events on each load. The cost is one extension prompt per load;
-// what it buys is that a stolen or shared browser profile contains no board
-// keys and no board text, and that there is no cache-scoping bug to have.
+// THE DECISION THIS RECORDS, AS AMENDED BY ready-fe4. ready-c4b's condition 6
+// permits a cache "if it is scoped per logged-in pubkey and the decision is
+// written down", and the choice made at the time was the stricter one — cache
+// nothing — implemented as a TOTAL ban on naming a persistence API. ready-fe4
+// takes the permitted option, with the reason measured: the portfolio view's
+// first paint against the live relay was 97.2 SECONDS across 75 boards, of which
+// the relay was a small minority (8.3s of 69.1s over 12 boards) and the rest was
+// BIP-340 verification at 3.49ms an event. A page that makes its owner stare at
+// a blank screen for a minute and a half is not a security posture, it is an
+// unusable page, and ready-fe4 conditions 3 and 5 name the storage
+// ("localStorage/IndexedDB, NOT sessionStorage") and the scoping ("keyed per
+// logged-in pubkey ... discarded on logout") explicitly.
+//
+// SO THE BAN NARROWS TO A ONE-FILE EXEMPTION AND CONDITION 6 ITSELF DOES NOT
+// MOVE. What condition 6 says is "No SECRET MATERIAL is ever written to
+// localStorage/IndexedDB/sessionStorage", and that is unchanged and now actually
+// exercised rather than vacuous: lib/boardcache.ts decides what is written, is
+// still scanned line by line here, and names no persistence API at all — it
+// takes the store as a parameter. What it writes for key material is CEK EPOCH
+// NUMBERS and never a key, never a hash of one (see gateFingerprint's own note
+// on why a digest of a CEK would be a verifier for a guessed one). The
+// behavioural guards — main.portfolio.test.ts's "no key material reaches browser
+// storage", main.confidential.test.ts's storage sweep, and main.cache.test.ts's
+// confidential round trip — went from covering a page that wrote NOTHING to
+// covering a page that writes a board projection on every load, which is the
+// only condition under which they were ever evidence.
+//
+// The exemption is ONE named file, guarded below by its own test: it must be
+// tiny, it must name only the API it exists to name, and it must contain no key
+// material. A second exemption is a decision to be made by a human, not a line
+// to be added.
 //
 // Test-only modules are exempt from the scan and named individually rather than
 // matched by pattern, so adding a new shipped module cannot accidentally land in
@@ -29,6 +53,13 @@ import { describe, expect, it } from "vitest";
 /** Modules that exist only for tests and are never reachable from index.html ->
  * main.ts, so they are never bundled into dist/. */
 const TEST_ONLY = new Set(["lib/boardevents.fixtures.ts", "lib/confidential.fixtures.ts", "lib/fakesigner.ts", "lib/nip44ref.ts"]);
+
+/**
+ * The ONE shipped module permitted to name a persistence API (ready-fe4). It is
+ * exempt from the scan below and subject to a stricter test of its own, because
+ * an exemption nobody checks is a hole.
+ */
+const STORAGE_ADAPTER = "lib/localcachestorage.ts";
 
 const PERSISTENCE_APIS = ["localStorage", "sessionStorage", "indexedDB", "openDatabase", "document.cookie"];
 
@@ -68,9 +99,36 @@ describe("no shipped module can persist anything (done condition 6, structural)"
     for (const exempt of TEST_ONLY) expect(names).not.toContain(exempt);
   });
 
-  it.each(PERSISTENCE_APIS)("no shipped module references %s", (api) => {
+  it.each(PERSISTENCE_APIS)("no shipped module except the one storage adapter references %s", (api) => {
     for (const s of sources) {
-      expect(s.code, `${s.name} references ${api} — see this file's header: the board caches NOTHING`).not.toContain(api);
+      if (s.name === STORAGE_ADAPTER) continue;
+      expect(
+        s.code,
+        `${s.name} references ${api} — see this file's header: exactly one module (${STORAGE_ADAPTER}) may, and it must be the one that decides NOTHING`,
+      ).not.toContain(api);
+    }
+  });
+
+  it(`the exemption is real: ${STORAGE_ADAPTER} is scanned, not merely skipped`, () => {
+    const adapter = sources.find((s) => s.name === STORAGE_ADAPTER);
+    expect(adapter, `${STORAGE_ADAPTER} must exist — an exemption for a file that is gone is dead weight that a future module could inherit`).toBeDefined();
+  });
+
+  it("the exempt adapter names ONE api, holds no logic, and carries no key material", () => {
+    const adapter = sources.find((s) => s.name === STORAGE_ADAPTER)!;
+    // It may name localStorage. It may name nothing else: a "while I am here"
+    // sessionStorage or indexedDB path would be a second storage decision made
+    // inside the exemption rather than in front of a human.
+    for (const api of PERSISTENCE_APIS) {
+      if (api === "localStorage") continue;
+      expect(adapter.code, `${STORAGE_ADAPTER} must not reach for ${api}`).not.toContain(api);
+    }
+    // It is an ADAPTER. Anything that decides WHAT is stored belongs in
+    // boardcache.ts, which this file's scan still covers in full.
+    const codeLines = adapter.code.split("\n").filter((l) => l.trim() !== "").length;
+    expect(codeLines, `${STORAGE_ADAPTER} has grown logic — move it to boardcache.ts, which is scanned`).toBeLessThan(20);
+    for (const forbidden of ["cek", "secret", "nsec", "nip44", "decrypt", "setItem"]) {
+      expect(adapter.code.toLowerCase(), `${STORAGE_ADAPTER} must not touch ${forbidden}`).not.toContain(forbidden);
     }
   });
 

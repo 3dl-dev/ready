@@ -69,9 +69,25 @@ import {
 import { PLACEHOLDER } from "./lib/envelope";
 import { verifiedEvents } from "./lib/nostrevent";
 import { foldItemSource, type ItemSource } from "./lib/itemsource";
-import { mountBoardWorkspace } from "./board/render";
+import { mountBoardWorkspace, type BoardRef, type BoardWorkspace } from "./board/render";
 import type { Item } from "./board/types";
+import type { BoardStatus } from "./lib/boardstate";
+import {
+  admissibleBoards,
+  gateFingerprint,
+  openBoardCache,
+  pruneView,
+  scopeKey,
+  DEFAULT_LIMITS,
+  type BoardCache,
+  type CacheStorage,
+  type CachedBoard,
+  type CachedView,
+} from "./lib/boardcache";
+import { browserCacheStorage } from "./lib/localcachestorage";
 import "./board/board.css";
+
+export type { BoardLoadState, BoardStatus } from "./lib/boardstate";
 
 export interface Identity {
   pubkey: string;
@@ -118,6 +134,22 @@ export interface BoardDeps {
     filter: NostrFilter,
     opts: LiveSubscriptionOptions,
   ) => LiveSubscription;
+  /**
+   * cacheStorage resolves the store the warm paint reads and the settled load
+   * writes (ready-fe4). Production supplies window.localStorage through
+   * lib/localcachestorage.ts — the one file in the bundle that names a
+   * persistence API.
+   *
+   * IT IS OPTIONAL SO THAT OMITTING IT MEANS "NO CACHE", NEVER "REACH FOR THE
+   * REAL ONE", for the same reason subscribeEvents is optional: every board test
+   * in this suite builds its own BoardDeps literal, and a required field with a
+   * real-storage default would have them all sharing jsdom's localStorage across
+   * cases and painting one test's board into another's. A cache-less page is
+   * exactly the page ready-27b shipped, so the fallback is a working page and
+   * not a degraded one. The production wiring is pinned separately, by
+   * main.cache.test.ts asserting defaultDeps carries it.
+   */
+  cacheStorage?: () => CacheStorage | undefined;
 }
 
 /** Production wiring: same-origin relays.json + the real WebSocket client +
@@ -127,6 +159,7 @@ export const defaultDeps: BoardDeps = {
   fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
   keyUnwrapper: (identity) => (canSign(identity.auth) ? nip07KeyUnwrapper(nip44Provider()) : neverUnwraps),
   subscribeEvents: (relays, filter, opts) => subscribeToRelays(relays, filter, opts),
+  cacheStorage: () => browserCacheStorage(),
 };
 
 /**
@@ -339,8 +372,60 @@ function renderConnecting(root: HTMLElement): HTMLElement {
  * established AND why, which is a different statement and gets its own sentences
  * in the UI: see confidentialityOf and unestablishedConfidentialityNotice.
  *
+ * ONE BOARD AT A TIME, SEVERAL BOARDS AT ONCE (ready-fe4). The loop used to be
+ * strictly serial: fetch board 1, fold board 1, fetch board 2… Measured against
+ * wss://relay.3dl.network on 2026-07-30 over 39 boards, that is 73.1s before the
+ * reader sees ANYTHING, because nothing is on screen until the last board lands.
+ * Two changes, neither of which touches a gate:
+ *
+ *   - FETCHES OVERLAP, bounded by BOARD_FETCH_CONCURRENCY. The relay half of the
+ *     load (measured: 8.3s of 69.1s over 12 boards) now runs while the CPU half
+ *     folds, instead of after it. It is bounded and not unbounded because 39
+ *     simultaneous sockets to one relay is a different kind of rude.
+ *   - EACH BOARD IS REPORTED THE MOMENT IT IS DONE, through `onBoard`. The fold
+ *     is single-threaded and CPU-bound — BIP-340 verification is 3.49ms per
+ *     event through secp256k1.ts's BigInt arithmetic — so the total will always
+ *     be tens of seconds on a portfolio this size. What the reader gets back is
+ *     the first board in about a second and the rest streaming in.
+ *
+ * THE FOLD STILL RUNS BOARD-BY-BOARD, IN ORDER. Only the fetches overlap. That
+ * is deliberate: every board's projection depends on its own keyring and its own
+ * confidentiality verdict, and interleaving those derivations would make the
+ * order in which relays happened to answer part of what the page decides.
+ *
  * EXPORTED FOR TESTS ONLY.
  */
+export interface LoadBoardOptions {
+  /** Called with one board's completed contribution the moment it is folded, so
+   * the page can paint it without waiting for the others. */
+  onBoard?: (result: {
+    coord: string;
+    items: Item[];
+    status: BoardStatus;
+    /** The verdict the fold ran under, carried because the CACHE has to record
+     * it and the BoardStatus cannot stand in for it: a confidential board this
+     * session holds a key for reports status "open", and an entry that recorded
+     * that as "public" would be paintable into a session holding no key at all
+     * (boardcache.ts's admissibleBoards). */
+    confidentiality: Confidentiality;
+    /** The newest created_at this board's snapshot carried — the high-water mark
+     * recorded with the cache entry, and the same number the live subscription
+     * reconnects on (LiveBoard.newest). */
+    newest: number;
+  }) => void;
+  /** Overrides BOARD_FETCH_CONCURRENCY. Nothing in production sets it. */
+  concurrency?: number;
+}
+
+/**
+ * How many board fetches may be in flight at once. Six is chosen against the
+ * measured shape of the load, not tuned: the relay half is ~0.7s per board and
+ * the fold half ~3s per board, so six in flight keeps the next board's events
+ * always waiting when the fold finishes the current one, with no more sockets
+ * open to one relay than a browser opens to one origin anyway.
+ */
+const BOARD_FETCH_CONCURRENCY = 6;
+
 export async function loadBoardItems(
   boards: DiscoveredBoard[],
   relays: string[],
@@ -349,6 +434,7 @@ export async function loadBoardItems(
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
   fragmentKeys?: PortfolioKeys,
+  options: LoadBoardOptions = {},
 ): Promise<{
   items: Item[];
   confidential: boolean;
@@ -366,14 +452,33 @@ export async function loadBoardItems(
   const unwrap = deps.keyUnwrapper(identity);
   const signing = canSign(identity.auth);
 
-  for (const b of boards) {
-    try {
-      const events = await deps.fetchEvents(
-        relays,
+  // ready-fe4: the fetches, started ahead of the fold, at most
+  // BOARD_FETCH_CONCURRENCY in flight. A rejected fetch is held here and
+  // re-thrown inside the per-board try below, so a board whose relay answer
+  // fails still gets its "failed" status rather than an unhandled rejection.
+  const inflight = new Map<number, Promise<NostrEvent[]>>();
+  const startFetch = (index: number): void => {
+    const b = boards[index];
+    if (!b || inflight.has(index)) return;
+    inflight.set(
+      index,
+      deps
         // Kinds mirror pkg/sync/nostrinbound.go's BoardSyncFilter exactly.
-        { kinds: BOARD_KINDS, "#a": [b.coord] },
-        { onStatus },
-      );
+        .fetchEvents(relays, { kinds: BOARD_KINDS, "#a": [b.coord] }, { onStatus })
+        .catch((err: unknown) => Promise.reject(err instanceof Error ? err : new Error(String(err)))),
+    );
+  };
+  const lookahead = Math.max(1, options.concurrency ?? BOARD_FETCH_CONCURRENCY);
+  for (let i = 0; i < Math.min(lookahead, boards.length); i++) startFetch(i);
+
+  for (let index = 0; index < boards.length; index++) {
+    const b = boards[index];
+    startFetch(index);
+    startFetch(index + lookahead);
+    try {
+      const pending = inflight.get(index);
+      const events = pending === undefined ? [] : await pending;
+      inflight.delete(index);
       /**
        * deriveRead is the WHOLE read-side derivation for this board, in ONE
        * place: keyring, confidentiality decision, quarantine set, read-trust set
@@ -480,11 +585,15 @@ export async function loadBoardItems(
       // produced these items (same options, same keyring: a re-fold under
       // different options would be a second, divergent projection), and the
       // writer whose snapshot must stay in step with it.
+      const newest = events.reduce(
+        (max, e) => (typeof e.created_at === "number" && e.created_at > max ? e.created_at : max),
+        0,
+      );
       const lb: LiveBoard = {
         coord: b.coord,
         events: [...events],
         seen: new Set(events.map(eventIdentity)),
-        newest: events.reduce((max, e) => (typeof e.created_at === "number" && e.created_at > max ? e.created_at : max), 0),
+        newest,
         items: boardItems,
         src,
         writer,
@@ -506,8 +615,15 @@ export async function loadBoardItems(
       // here because this is the only place the board's own keyring, its
       // confidentiality verdict and this session's signing capability are all in
       // scope at once. See boardStatusOf.
-      status.push(boardStatusOf(b, state, keyring, signing));
+      const boardStatus = boardStatusOf(b, state, keyring, signing);
+      status.push(boardStatus);
+      // ready-fe4: this board is DONE — paint it now rather than after the rest.
+      // The callback is invoked with the board's OWN admitted items, never with
+      // the accumulator, so a consumer cannot mistake a partial view for a
+      // complete one.
+      options.onBoard?.({ coord: b.coord, items: boardItems, status: boardStatus, confidentiality: state, newest });
     } catch (err) {
+      inflight.delete(index);
       // ready-27b: a board that will not load is REPORTED, not dropped. The
       // others still render — that stance is unchanged, and it is the ready-62d1
       // lesson one layer up — but the board keeps its node in the left tree and
@@ -516,58 +632,25 @@ export async function loadBoardItems(
       // which is the page asserting "this board has no work" about a board it
       // never managed to read: the one outcome the portfolio view must never
       // produce, because it is indistinguishable from the truth.
-      status.push({
+      const failed: BoardStatus = {
         coord: b.coord,
         name: b.title || b.boardD,
         state: "failed",
         detail:
           `This board did not load: ${err instanceof Error ? err.message : String(err)}. ` +
           `Its cards are NOT shown and its count here is not a count of its work — reload, or check the relays in this link.`,
-      });
+      };
+      status.push(failed);
+      // ready-fe4: reported through the SAME channel a successful board is, with
+      // zero items. That is what evicts this board's CACHED items from the paint
+      // — a board that has just failed to load must not keep showing the cards a
+      // previous session read off it under a node that now says the load failed.
+      // A board that did not load has no verdict; "unknown" is the fail-closed
+      // stand-in, and `save` refuses to cache a failed board at all.
+      options.onBoard?.({ coord: b.coord, items: [], status: failed, confidentiality: "unknown", newest: 0 });
     }
   }
   return { items: out, confidential, unestablished, writers, live, status };
-}
-
-/**
- * BoardLoadState is the per-board answer the portfolio view owes its reader
- * (ready-27b). A portfolio is a list of boards from different owners with
- * different keys, and the aggregate notices (confidentialNotice and friends)
- * state portfolio-wide totals — "N of M titles were decrypted" — which is the
- * right sentence for the view and the wrong one for a board. A reader looking at
- * a project's node has one question, "is what I am seeing this project's work?",
- * and only a per-board answer can answer it.
- *
- *  - "open": the board's items are here as they are on the relay. Public, or
- *    confidential with a key this session holds.
- *  - "withholding": the board is confidential and this page could NOT establish
- *    WHEN it became confidential, so the fold withholds every card on it that is
- *    not a sealed envelope (encryptedBoardsOf on "unknown"). The count beside
- *    such a board is LOWER than the board's real item count and nothing else
- *    about the node says so. MEASURED, not hypothetical: on 2026-07-30 the live
- *    `ready` board served 536 distinct cards, 369 of them sealed, and the page
- *    showed 369 under a node reading "open" while `rd list --json` in that
- *    project said 536.
- *  - "sealed": confidential, and no key for it reached this session. Its cards
- *    render as [encrypted] placeholders.
- *  - "unreadable-grant": confidential, and an owner-signed grant NAMING THIS KEY
- *    reached the page but this browser could not open it. Distinct from "sealed"
- *    because the reader is entitled to this board and the fix is not a new grant
- *    — see BoardKeyring.granteeGrants.
- *  - "failed": the board's own event fetch or fold threw. NOTHING is known about
- *    its contents, including whether it is empty.
- */
-export type BoardLoadState = "open" | "withholding" | "sealed" | "unreadable-grant" | "failed";
-
-/** BoardStatus is one board's load outcome, in the reader's own words. `name` is
- * the board's signed title (never its coordinate — a coordinate is provenance,
- * not a name), falling back to its d-tag when the title is itself sealed. */
-export interface BoardStatus {
-  coord: string;
-  name: string;
-  state: BoardLoadState;
-  /** One sentence a person can act on. Empty for "open". */
-  detail: string;
 }
 
 /**
@@ -1119,6 +1202,320 @@ function safeEncodeNpub(pubkeyHex: string): string {
   }
 }
 
+/** What a tree node says while its board is painted from the previous visit
+ * rather than from this session's own read. Both sentences refuse to let the
+ * count be read as a claim about the project's work — the ready-27b rule, one
+ * state further out. */
+/** Milliseconds of quiet before the workspace is rebuilt for boards that have
+ * landed. Same value and same reason as LIVE_COALESCE_MS: short enough that a
+ * human reads it as immediate, long enough that a burst of boards costs one
+ * render instead of one each. */
+const REPAINT_COALESCE_MS = 150;
+
+const STALE_DETAIL_CACHED =
+  "THE CARDS SHOWN FOR THIS BOARD ARE FROM THIS BROWSER'S LAST VISIT, not from this session's own read of the relay. " +
+  "They are being re-read now; the count, and every state above, may change when the answer lands. Nothing here is a claim about the board as it is right now.";
+const STALE_DETAIL_UNREAD =
+  "This board has not been read yet in this session, so its cards are NOT shown and the count beside it is not a count of its work. " +
+  "It is being read now.";
+
+/**
+ * BoardView owns everything on screen between the first paint and the settled
+ * load: the workspace, which board's items are showing, and the maps the writer
+ * routes through (ready-fe4).
+ *
+ * WHY IT IS AN OBJECT AND NOT MORE LOCALS IN afterLogin. The page now paints
+ * three times over one load — from cache, then per board as each lands, then
+ * settled — and every one of those paints has to agree about which items belong
+ * to which board, which boards have a writer, and what each tree node is
+ * entitled to claim. Holding that in one place is what makes "a cached board is
+ * REPLACED, never merged" a single line (reconcileOne) instead of a rule spread
+ * across three call sites.
+ *
+ * THE ONE INVARIANT WORTH STATING: `painted` is keyed by board coordinate and
+ * every write to it is a whole-board REPLACE. Nothing here merges a fresh fold
+ * into a cached one, because a merge is how a card the current fold WITHHELD
+ * (ready-475 is chasing 167 such cards on the live `ready` board) would survive
+ * from a stale entry. When a board's own load finishes, that board shows exactly
+ * what the fold admitted and nothing else.
+ */
+interface BoardView {
+  /** Read the cache and mount what this session may paint. No awaits. */
+  paintFromCache(): void;
+  /** Drop everything the freshly discovered board set does not cover. */
+  reconcileBoards(boards: DiscoveredBoard[]): void;
+  /** Replace ONE board's items and tree node with its completed load. */
+  reconcileOne(r: {
+    coord: string;
+    items: Item[];
+    status: BoardStatus;
+    confidentiality: Confidentiality;
+    newest: number;
+  }): void;
+  /** Replace every item (the live-subscription path) and keep routing correct. */
+  replaceAll(items: Item[]): void;
+  /** The load is complete: attach the real writers, the notice, the states. */
+  settle(args: { writers: Map<string, NostrBoardWriter>; notice: string; status: BoardStatus[] }): BoardWorkspace;
+  /** Write what is now on screen back for the next visit. */
+  save(status: BoardStatus[], notice: string): void;
+}
+
+function boardView(
+  root: HTMLElement,
+  identity: Identity,
+  fragment: ParsedFragment,
+  deps: BoardDeps,
+  linkKeys: PortfolioKeys | undefined,
+): BoardView {
+  const signing = canSign(identity.auth);
+  // THE SCOPE NAMES THE BOARD WHENEVER THE LINK DOES — both link shapes that
+  // name one, `#board=` and ready-48f's claim link. A claim link's cache filed
+  // under a bare "claim" would be shared by every claim link this viewer opens,
+  // and two claim links for two boards carry no key material to tell apart, so
+  // their fingerprints would match and board A's cards would paint onto board
+  // B's page for the length of one discovery round-trip.
+  const scope = scopeKey(
+    fragment.kind,
+    fragment.kind === "board" ? fragment.board : fragment.kind === "claim" ? fragment.payload.board : "",
+  );
+  const storage = deps.cacheStorage?.();
+  const cache: BoardCache | undefined = storage ? openBoardCache(storage, identity.pubkey, scope) : undefined;
+
+  /** coord -> the items currently on screen for that board. Replace-only. */
+  const painted = new Map<string, Item[]>();
+  /** coord -> the tree node currently on screen for that board. */
+  const refs = new Map<string, BoardRef>();
+  /** coord -> newest created_at folded, for the next visit's cache entry. */
+  const high = new Map<string, number>();
+  /** coord -> the confidentiality verdict this session's fold used. */
+  const states = new Map<string, Confidentiality>();
+  // Both maps are handed to boardScopedWriter ONCE and MUTATED afterwards, so
+  // the writer the workspace holds stays correct as boards arrive. Empty at the
+  // cached paint is exactly right: no board has finished loading, so every write
+  // is refused ("Read-only: no board finished loading.") and a cached card
+  // cannot be dragged into a publish against authority this session has not
+  // re-established.
+  const writers = new Map<string, NostrBoardWriter>();
+  const itemBoard = new Map<string, string>();
+
+  let workspace: BoardWorkspace | undefined;
+  const allItems = (): Item[] => {
+    const out: Item[] = [];
+    for (const list of painted.values()) out.push(...list);
+    return out;
+  };
+  const reindex = (items: Item[]): void => {
+    for (const i of items) if (i.boardCoord) itemBoard.set(i.id, i.boardCoord);
+  };
+
+  const mount = (notice: string | undefined): void => {
+    const items = allItems();
+    reindex(items);
+    workspace = mountBoardWorkspace(root, items, {
+      writer: boardScopedWriter(writers, itemBoard),
+      viewerId: identity.pubkey,
+      boards: [...refs.values()],
+      identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${signing ? "" : " (read-only)"}`,
+      emptyBoardsNote: "No boards found.",
+      notice,
+    });
+  };
+
+  const repaintNow = (): void => {
+    pendingRepaint = undefined;
+    if (workspace === undefined) return;
+    const items = allItems();
+    reindex(items);
+    workspace.setBoards([...refs.values()]);
+    workspace.setItems(items);
+  };
+
+  /**
+   * COALESCED, for the same reason startLiveUpdates coalesces its re-folds and
+   * with the same constant. render() rebuilds the whole workspace, and a
+   * 79-board portfolio settles 79 times over a load; repainting synchronously on
+   * each one would rebuild a DOM of thousands of cards 79 times and put the
+   * rendering cost back where the fetch concurrency just took it out of. The
+   * delay is invisible to a person and the FIRST paint is never delayed by it —
+   * mount() is synchronous, and settle() flushes.
+   */
+  let pendingRepaint: ReturnType<typeof setTimeout> | undefined;
+  const repaint = (): void => {
+    if (workspace === undefined) return;
+    if (pendingRepaint === undefined) pendingRepaint = setTimeout(repaintNow, REPAINT_COALESCE_MS);
+  };
+  const flushRepaint = (): void => {
+    if (pendingRepaint !== undefined) clearTimeout(pendingRepaint);
+    repaintNow();
+  };
+
+  return {
+    paintFromCache(): void {
+      const stored = cache?.read();
+      if (!stored) return;
+      // THE GATE. Only the boards whose admitting decision this session would
+      // put the same inputs to; see boardcache.ts's gateFingerprint.
+      const admissible = admissibleBoards(stored, {
+        viewer: identity.pubkey,
+        signing,
+        keysFor: (coord) => linkKeys?.get(coord),
+      });
+      if (admissible.length === 0) return;
+      // The notice is a statement about the WHOLE view — "24 boards in this
+      // view are confidential", with names. Painting it beside a subset would
+      // have it naming boards that are not on screen, so it travels only when
+      // the subset is the whole set. The per-board detail below always travels.
+      const wholeView = admissible.length === stored.boards.length;
+      for (const b of admissible) {
+        painted.set(b.coord, b.items);
+        high.set(b.coord, b.high);
+        states.set(b.coord, b.state);
+        refs.set(b.coord, {
+          coord: b.coord,
+          title: b.title || "(confidential board)",
+          state: "stale",
+          detail: STALE_DETAIL_CACHED,
+        });
+      }
+      mount(wholeView ? stored.notice : undefined);
+    },
+
+    reconcileBoards(boards: DiscoveredBoard[]): void {
+      const discovered = new Set(boards.map((b) => b.coord));
+      for (const coord of [...painted.keys()]) {
+        if (!discovered.has(coord)) {
+          painted.delete(coord);
+          refs.delete(coord);
+          high.delete(coord);
+          states.delete(coord);
+        }
+      }
+      for (const b of boards) {
+        if (refs.has(b.coord)) {
+          refs.set(b.coord, { ...refs.get(b.coord)!, title: b.title || refs.get(b.coord)!.title });
+          continue;
+        }
+        refs.set(b.coord, {
+          coord: b.coord,
+          title: b.title || "(confidential board)",
+          state: "stale",
+          detail: STALE_DETAIL_UNREAD,
+        });
+      }
+      if (workspace === undefined) {
+        // Nothing was admissible from cache, so this is the first thing on
+        // screen. Mount now: the tree of boards, every node saying it has not
+        // been read, is a truer "connecting…" than the sentence it replaces.
+        if (refs.size > 0) mount(undefined);
+        return;
+      }
+      // FLUSH: this call REMOVES boards the current discovery did not find, and
+      // a board that is gone must leave the screen at once rather than linger
+      // for a coalesce interval.
+      flushRepaint();
+    },
+
+    reconcileOne(r): void {
+      // REPLACE. Not merge — see the invariant in this interface's doc.
+      painted.set(r.coord, r.items);
+      states.set(r.coord, r.confidentiality);
+      high.set(r.coord, r.newest);
+      refs.set(r.coord, {
+        coord: r.coord,
+        title: refs.get(r.coord)?.title ?? r.status.name,
+        state: r.status.state,
+        detail: r.status.detail,
+      });
+      if (workspace === undefined) mount(undefined);
+      else repaint();
+    },
+
+    replaceAll(items: Item[]): void {
+      painted.clear();
+      for (const i of items) {
+        const coord = i.boardCoord ?? "";
+        const list = painted.get(coord);
+        if (list) list.push(i);
+        else painted.set(coord, [i]);
+      }
+      reindex(items);
+    },
+
+    settle({ writers: fresh, notice, status }): BoardWorkspace {
+      for (const [coord, w] of fresh) writers.set(coord, w);
+      const statusOf = new Map(status.map((s) => [s.coord, s]));
+      for (const [coord, ref] of refs) {
+        const s = statusOf.get(coord);
+        refs.set(coord, {
+          ...ref,
+          state: s?.state ?? "failed",
+          detail:
+            s?.detail ??
+            "This board did not load and reported no reason, so nothing here describes its contents.",
+        });
+      }
+      if (workspace === undefined) mount(notice !== "" ? notice : undefined);
+      else {
+        // FLUSH, not schedule: the load is over, so the very next thing the
+        // caller (and any test) reads off the DOM must be the settled board and
+        // not whatever the last coalesced tick left there.
+        flushRepaint();
+        workspace.setNotice(notice !== "" ? notice : undefined);
+      }
+      return workspace!;
+    },
+
+    save(status: BoardStatus[], notice: string): void {
+      if (!cache) return;
+      const statusOf = new Map(status.map((s) => [s.coord, s]));
+      const now = Date.now();
+      const boards: CachedBoard[] = [];
+      for (const [coord, items] of painted) {
+        const s = statusOf.get(coord);
+        // A board this session did NOT successfully read contributes nothing:
+        // caching a "failed" node's (empty) items would be caching an absence,
+        // and caching a board whose status never arrived would be caching an
+        // answer nobody gave.
+        const verdict = states.get(coord);
+        if (!s || s.state === "failed" || verdict === undefined) continue;
+        // A board whose cutover this session could NOT establish is never
+        // cached, and an existing entry for it is therefore dropped by this
+        // write. "unknown" is precisely the verdict that says the grants which
+        // reached this page do not add up (ready-daf/ready-f6b), so its admitted
+        // items are the ones whose admission is least worth repeating: a
+        // grandfathered cleartext card admitted under a cutover a LATER session
+        // proves was manufactured must not keep painting from local bytes. The
+        // reader loses the warm paint on exactly the boards the page already
+        // tells them it cannot vouch for.
+        if (verdict === "unknown") continue;
+        boards.push({
+          coord,
+          title: refs.get(coord)?.title ?? s.name,
+          // THE FOLD'S OWN VERDICT, carried through onBoard — never inferred
+          // from the load state. A confidential board this session holds a key
+          // for loads "open", and recording that as "public" would make its
+          // decrypted titles paintable into a session with no key path at all.
+          state: verdict,
+          boardState: s.state,
+          detail: s.detail,
+          gate: gateFingerprint({ viewer: identity.pubkey, signing, linkKeys: linkKeys?.get(coord) }),
+          high: high.get(coord) ?? 0,
+          items,
+        });
+      }
+      const view: CachedView = {
+        v: 1,
+        viewer: identity.pubkey,
+        scope,
+        savedAt: now,
+        notice: notice !== "" ? notice : undefined,
+        boards,
+      };
+      cache.write(pruneView(view, { ...DEFAULT_LIMITS, now }));
+    },
+  };
+}
+
 /**
  * The live subscription belonging to the board currently on screen, closed
  * before another one is mounted. afterLogin can run more than once in a session
@@ -1181,6 +1578,15 @@ export async function afterLogin(
   const onStatus = (e: RelayStatusEvent) => {
     connecting.textContent = `Connecting to ${e.relay}… (${e.status}${e.attempt > 0 ? `, attempt ${e.attempt + 1}` : ""})`;
   };
+
+  // ready-fe4: EVERYTHING FROM HERE TO paintFromCache() RUNS WITH NO `await`.
+  // That is the whole point of the warm paint — the first relay round-trip on
+  // this page is a WebSocket to a scale-to-zero relay that can take ~12s to
+  // answer, so anything that waits on it has already lost. localStorage is
+  // synchronous; the cached board is on screen before the socket is dialled.
+  const linkKeys = fragmentKeyMap(fragment);
+  const view = boardView(mount, identity, fragment, deps, linkKeys);
+  view.paintFromCache();
 
   try {
     let relays: string[];
@@ -1263,7 +1669,13 @@ export async function afterLogin(
       boards = discoverOwnerBoards(authorityEvents, [identity.pubkey]);
     }
 
-    const linkKeys = fragmentKeyMap(fragment);
+    // ready-fe4: the discovered board set REPLACES whatever the cache painted.
+    // A board that is no longer discoverable — unpublished, archived, or simply
+    // outside this link's scope — must lose its node and its cards here, before
+    // a single fresh event has been folded, because from this moment the page
+    // has a current answer to "which boards" and the cached one is superseded.
+    view.reconcileBoards(boards);
+
     const { items, confidential, unestablished, writers, live, status } = await loadBoardItems(
       boards,
       relays,
@@ -1272,6 +1684,9 @@ export async function afterLogin(
       deps,
       onStatus,
       linkKeys,
+      // ready-fe4: each board lands as it finishes. The cached items for that
+      // board are REPLACED, never merged — see BoardView.reconcileOne.
+      { onBoard: (r) => view.reconcileOne(r) },
     );
     connecting.remove();
 
@@ -1284,37 +1699,11 @@ export async function afterLogin(
       .filter((s) => s !== "")
       .join(" ");
 
-    // ready-4359: MUTATED, not rebuilt, when a live update arrives. It answers
-    // "which board does this item live on" for every write, so an item the rd
-    // CLI creates after this page loaded would otherwise render on the board and
-    // be unwritable ("no writable board is loaded for item …") — the page
-    // showing work it silently cannot act on.
-    const itemBoard = new Map(items.filter((i) => i.boardCoord).map((i) => [i.id, i.boardCoord!]));
-
-    // ready-27b: every discovered board reaches the workspace CARRYING ITS OWN
-    // LOAD OUTCOME. A board that failed to load, or that this session holds no
-    // key for, is still in this list — vanishing from the portfolio and
-    // rendering as an empty board are the two dishonest outcomes, and both are
-    // what happens when the outcome is not carried alongside the board.
-    const statusOf = new Map(status.map((s) => [s.coord, s]));
-    // ready-48f: `mount` is root unless a claim link is open, in which case the
-    // awaiting-authorization panel owns the top of the page and the board
-    // mounts beneath it.
-    const workspace = mountBoardWorkspace(mount, items, {
-      writer: boardScopedWriter(writers, itemBoard),
-      viewerId: identity.pubkey,
-      boards: boards.map((b) => ({
-        coord: b.coord,
-        title: b.title || "(confidential board)",
-        state: statusOf.get(b.coord)?.state ?? "failed",
-        detail:
-          statusOf.get(b.coord)?.detail ??
-          "This board did not load and reported no reason, so nothing here describes its contents.",
-      })),
-      identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${canSign(identity.auth) ? "" : " (read-only)"}`,
-      emptyBoardsNote: "No boards found.",
-      notice: notice !== "" ? notice : undefined,
-    });
+    // ready-fe4: the load is complete, so what is on screen is now exactly what
+    // this session's own fold produced — nothing cached survives — and THAT is
+    // what gets written back for the next visit.
+    const workspace = view.settle({ writers, notice, status });
+    view.save(status, notice);
 
     // ready-48f: the panel is a statement about THIS key's standing on the
     // board, so it is driven by the derived grant levels — the same
@@ -1338,7 +1727,12 @@ export async function afterLogin(
           relays,
           subscribe: deps.subscribeEvents,
           onItems: (next) => {
-            for (const i of next) if (i.boardCoord) itemBoard.set(i.id, i.boardCoord);
+            // ready-fe4: the BoardView owns the item -> board index the writer
+            // routes through, so the live path hands it the new projection
+            // rather than mutating a map of its own. Same reason ready-4359
+            // mutated rather than rebuilt: an item the rd CLI creates after this
+            // page loaded must be writable, not merely visible.
+            view.replaceAll(next);
             workspace.setItems(next);
             dropAwaitingPanel();
           },
