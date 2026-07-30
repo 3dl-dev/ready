@@ -60,7 +60,13 @@ with a "N more" line past the cap. --flat prints the pre-ready-e88 flat list
 instead. --json and piped (non-TTY) output are unaffected either way.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewName, _ := cmd.Flags().GetString("view")
-		forFilter, _ := cmd.Flags().GetString("for")
+		// ready-3e1: --for is a PARTY token (pubkey | email | agent id), so it
+		// normalizes through the guarded normalizePartyToken rather than
+		// normalizeHexPubkey. Unnormalized, an uppercase pubkey misses
+		// nostrPartyIdentitySet's map lookup and then idset[item.For] — the caller
+		// is told "nothing ready" about their own queue.
+		forFilterRaw, _ := cmd.Flags().GetString("for")
+		forFilter := normalizePartyToken(forFilterRaw)
 		projectFilter, _ := cmd.Flags().GetString("project")
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")
@@ -174,6 +180,16 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 				if len(scopeKey) != 64 || !isHex(scopeKey) {
 					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
 				}
+				// ready-3e1: normalize before the gate. nostrScopeForKey
+				// (cmd/rd/sessions.go) byte-compares its argument against the
+				// board owner pubkey and indexes the DeriveLevels map with it;
+				// both keys are canonical lowercase because they come from
+				// signed events. isHex above accepts A-F as a FORMAT check, so
+				// an uppercase --scope for a genuinely granted key misses the
+				// map and the gate DENIES it with "no active grant ... (not a
+				// granted identity)" — the same silent-wrong-answer class as
+				// the dead grant, in the read direction.
+				scopeKey = normalizeHexPubkey(scopeKey)
 				allowed, note := nostrScopeForKey(scopeKey)
 				if !allowed {
 					// Stderr is a separate stream from stdout, so this note is

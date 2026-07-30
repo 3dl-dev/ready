@@ -72,6 +72,34 @@ func publishRoleGrant(grantee, role, label string, from int64, claim string) (rd
 	if len(grantee) != 64 || !isHex(grantee) {
 		return rdSync.PublishResult{}, fmt.Errorf("grantee %q is not a valid pubkey: must be a 64-character hex string", grantee)
 	}
+	// ready-3e1: normalize to lowercase. isHex above accepts A-F as a FORMAT
+	// check, but the grantee's real event pubkey (nostr.Key.PubKeyHex()) is
+	// always lowercase, and that lowercase string is what the p/d tags below and
+	// DeriveLevels/InviteGrantValid compare against. An uppercase or mixed-case
+	// grantee reaching BuildRoleGrantEvent unnormalized would publish a grant
+	// whose p tag can never equal the grantee's actual pubkey — a silently dead
+	// grant reported as success. This is the single point every grant-issuing
+	// path (`rd grant`, `rd revoke`, `rd kill`, `rd board share`, `rd grant
+	// --all-boards`) funnels through, since publishRoleGrant is only ever
+	// called from runNostrGrantRevoke.
+	//
+	// THIS LINE ALSO CARRIES A CONFIDENTIALITY PROPERTY, not just a dead-grant
+	// one — pinned by TestConfidentialRevokeUppercaseGrantee_WithholdsNewEpochCEK
+	// (cmd/rd/confidential_test.go), which goes red if it is removed. On a
+	// confidential board, `rd revoke` publishes the revocation and then rekeys:
+	// rekeyBoardOnRevoke → rotationMembership (cmd/rd/confidential.go) decides
+	// who receives the NEW epoch CEK by reading the level of each grant holder
+	// out of the log THIS function just wrote. Unnormalized, an uppercase
+	// revoke files level[UPPER]=revoked and leaves level[lower]=contributor
+	// standing, so the revoked key is classified as a live member and the owner
+	// signs it a fresh grant at cek_epoch=2 carrying the wrapped new CEK. The
+	// revoked key then reads every card written AFTER its revocation: forward
+	// secrecy is silently not delivered, while `rd revoke` prints "they can no
+	// longer read or write". rotationMembership's own `exclude` argument does
+	// NOT save it (that string is the same uppercase input, so it matches no
+	// holder either) — normalizing HERE, before the grant is signed, is what
+	// makes the level lookup land on the revoked key.
+	grantee = normalizeHexPubkey(grantee)
 	if !nostrWriteActive() {
 		return rdSync.PublishResult{}, fmt.Errorf("nostr publish path is disabled; set RD_NOSTR=1 or run on a nostr-native project")
 	}
@@ -376,6 +404,17 @@ func runLinkOrPinBoard(cmd *cobra.Command, args []string) error {
 	if len(owner) != 64 || !isHex(owner) {
 		return fmt.Errorf("owner %q is not a valid pubkey (64 hex chars)", owner)
 	}
+	// ready-3e1: normalize the owner before it becomes a board coordinate. isHex
+	// above is a case-insensitive FORMAT check, and `owner` here comes straight
+	// from either the positional `30301:<owner>:<d>` argument or --owner — both
+	// as-typed human input (the nostrKey() branch above is already canonical).
+	// The coordinate built below is written to .ready/config.json AND the
+	// committed .ready/board.json, and is matched byte-for-byte against the
+	// board event's author pubkey (always lowercase), so an uppercase owner
+	// pins this project to a coordinate that resolves to nothing — reads return
+	// an empty board and writes go to a board nobody else reads — and the
+	// dead pin then travels to every clone of the repo.
+	owner = normalizeHexPubkey(owner)
 	if boardD == "" {
 		boardD = projectPrefix(dir)
 	}

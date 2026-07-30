@@ -24,7 +24,13 @@ Example:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		itemID := args[0]
-		to, _ := cmd.Flags().GetString("to")
+		// ready-3e1: --to is a PARTY token that runDelegateNostr assigns to item.By
+		// and signs into the card's by tag — signed and distributed, same shape as
+		// `rd create --by`. Normalized at the entry point via the guarded
+		// normalizePartyToken (the flag's own help text lists emails, agent ids and
+		// cf:// URIs alongside pubkeys, which is exactly why the guard is needed).
+		toRaw, _ := cmd.Flags().GetString("to")
+		to := normalizePartyToken(toRaw)
 		reason, _ := cmd.Flags().GetString("reason")
 
 		if to == "" {

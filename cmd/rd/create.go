@@ -102,8 +102,18 @@ Note: use --context for descriptions, not --description.`,
 		itemType, _ := cmd.Flags().GetString("type")
 		level, _ := cmd.Flags().GetString("level")
 		project, _ := cmd.Flags().GetString("project")
-		forParty, _ := cmd.Flags().GetString("for")
-		by, _ := cmd.Flags().GetString("by")
+		// ready-3e1: --for/--by are canonicalized AT THE ENTRY POINT, before the
+		// value can reach a signed event. These two tags are the highest-stakes
+		// site in the sweep: an uppercase pubkey here is written into the
+		// kind-30302 card and travels to every reader of the board, permanently.
+		// pkg/views matches by byte-set membership (idset[item.For]), so the real
+		// holder of the key sees "nothing ready" on every machine while rd reports
+		// the item created. The guard inside normalizePartyToken is load-bearing —
+		// a party token may equally be an email or an agent id.
+		forPartyRaw, _ := cmd.Flags().GetString("for")
+		byRaw, _ := cmd.Flags().GetString("by")
+		forParty := normalizePartyToken(forPartyRaw)
+		by := normalizePartyToken(byRaw)
 		priority, _ := cmd.Flags().GetString("priority")
 		parentID, _ := cmd.Flags().GetString("parent-id")
 		eta, _ := cmd.Flags().GetString("eta")
