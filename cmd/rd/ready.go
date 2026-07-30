@@ -160,20 +160,51 @@ instead. --json and piped (non-TTY) output are unaffected either way.`,
 			// grant-holder is authorized to claim, derived from the signed
 			// kind-39301 role-grants (ready-cb6 I7). The board owner is always
 			// allowed; otherwise the key needs a live contributor/maintainer grant.
+			//
+			// scopeGateDenied (ready-497 rework) records whether THIS gate is what
+			// zeroed `items`. printIdentityScopeHint's recompute re-derives every
+			// other filter that ran above it (view, project, label) over fullItems,
+			// but it cannot re-derive this one -- nostrScopeForKey depends on the
+			// grant-holder key, which the identity-blind recompute has no notion
+			// of. Left unguarded, a denied scope key would make the hint claim
+			// identity scope hid the board when the true, already-reported cause
+			// was the scope gate (`note`, printed just below).
+			scopeGateDenied := false
 			if scopeKey != "" {
 				if len(scopeKey) != 64 || !isHex(scopeKey) {
 					return fmt.Errorf("invalid --scope pubkey %q: must be a 64-character hex string", scopeKey)
 				}
 				allowed, note := nostrScopeForKey(scopeKey)
 				if !allowed {
-					if !jsonOutput {
-						fmt.Fprintln(os.Stderr, note)
-					}
+					// Stderr is a separate stream from stdout, so this note is
+					// safe to print unconditionally -- including in --json mode,
+					// where stdout must stay a clean JSON document but the
+					// diagnostic still needs to reach the user (ready-497
+					// rework #1: the old `if !jsonOutput` guard here made the
+					// --json path fully silent on a denied scope, since
+					// printIdentityScopeHint also defers to this note via
+					// scopeGateDenied and never fires itself).
+					fmt.Fprintln(os.Stderr, note)
 					items = nil
+					scopeGateDenied = true
 				}
 			}
 
 			sortByPriorityETA(items)
+
+			// ready-497: an identity-scoped view returning bare empty output is
+			// indistinguishable from a genuinely empty board. The repro that
+			// filed this item was `rd ready` (0 bytes, exit 0) vs `rd ready
+			// --for ""` (10 items) vs `rd list` (17 open items) -- silence read
+			// as "all caught up" when 17 items existed, just not for the caller.
+			// Emit the hint to STDERR, and do it BEFORE the jsonOutput branch
+			// returns, so every downstream shape (tree, --flat, piped bare-ID,
+			// --json) gets it identically -- stderr is a separate stream from
+			// whichever of those stdout contracts is in play, so this can never
+			// corrupt --json or piped machine consumption on either path.
+			if len(items) == 0 {
+				printIdentityScopeHint(viewName, forFilter, fullItems, filter, projectFilter, labelFilters, scopeGateDenied)
+			}
 
 			if jsonOutput {
 				return outputItemsJSON(items)
@@ -237,6 +268,94 @@ func init() {
 	readyCmd.Flags().Bool("reconcile", false, "deprecated: reads auto-reconcile by default (flag kept as a no-op)")
 	_ = readyCmd.Flags().MarkHidden("reconcile")
 	rootCmd.AddCommand(readyCmd)
+}
+
+// identityBlindViewFilter returns viewName's Filter with identity scoping
+// removed -- same status/shape semantics, but not restricted to any one
+// party. For every named view EXCEPT my-work/delegated, the identity match
+// is layered on afterward in runReady (see the switch at the top of runReady
+// that scopes non-my-work/delegated views to forFilter's party), so the
+// Filter object itself (views.Named's return value) never restricted by
+// identity in the first place and is reused as-is. my-work/delegated are the
+// two views where identity is baked directly into the Filter (via
+// MyWorkFilterSet/DelegatedFilterSet's idset), so an identity-blind
+// equivalent has to be built separately here, matching each one's
+// non-identity shape (MyWorkFilterSet: idset[By] && !terminal;
+// DelegatedFilterSet: idset[For] && By set && By outside idset && active).
+func identityBlindViewFilter(viewName string, filter views.Filter) views.Filter {
+	switch viewName {
+	case views.ViewMyWork:
+		return func(item *state.Item) bool {
+			return item.By != "" && !state.IsTerminal(item)
+		}
+	case views.ViewDelegated:
+		return func(item *state.Item) bool {
+			return item.For != "" && item.By != "" && item.For != item.By && item.Status == state.StatusActive
+		}
+	default:
+		return filter
+	}
+}
+
+// printIdentityScopeHint writes a one-line stderr hint distinguishing "the
+// identity scope hid real work" (ready-497) from "the board is genuinely
+// empty". Only called when the final, fully-filtered item set is already
+// empty. It recomputes the SAME view, shaped the same way but with identity
+// scoping removed (identityBlindViewFilter), over fullItems -- the complete,
+// unfiltered project snapshot -- and re-applies the same project/label
+// filters actually in effect, so the only variable that differs from the
+// real computation is identity. If that recomputation is ALSO empty, the
+// board is genuinely empty for this view and nothing is printed (the
+// existing "nothing ready" / empty stdout behavior is unchanged). If it
+// finds items, the caller was about to report silence over a non-empty
+// board, so the hint names the identity in effect and how many items exist
+// outside its scope.
+//
+// forFilter == "" means no identity is actively narrowing the view (the
+// caller already asked for everything with --for ""), so there is nothing
+// to attribute the emptiness to and the hint does not fire.
+//
+// scopeDenied reports whether the --scope gate (nostrScopeForKey, applied by
+// the caller AFTER every filter this function reproduces) is what zeroed the
+// real item set. That gate has no identity-blind equivalent here -- the
+// recompute below has no notion of a grant-holder key -- so if the scope
+// gate is the reason items is empty, this function cannot tell whether
+// identity ALSO would have hidden something and must not guess. The caller
+// already printed the scope denial's own note, which names the real cause;
+// emitting the identity hint on top of it would misattribute an unrelated
+// gate to identity scope (ready-497 rework, live-run false positive: one
+// item For==By==self, --for self, --scope an ungranted key -- the hint fired
+// blaming identity when the scope gate was the actual and only cause).
+//
+// The project reapply's real-world reach is narrower than it looks: Item.Project
+// has no nostr wire carrier today (ready-762), so every item in fullItems has
+// Project == "" regardless of what was set before publish, and a non-empty
+// projectFilter drops all of them uniformly. Re-check this function once
+// ready-762 lands a real carrier -- a wire-carried Project reopens the
+// original false-positive concern (a --project filter hiding the caller's
+// OWN item, misattributed here to identity) as a live case again.
+func printIdentityScopeHint(viewName, forFilter string, fullItems []*state.Item, filter views.Filter, projectFilter string, labelFilters []string, scopeDenied bool) {
+	if forFilter == "" {
+		return
+	}
+	if scopeDenied {
+		return
+	}
+	blind := identityBlindViewFilter(viewName, filter)
+	hidden := views.Apply(fullItems, blind)
+	hidden = filterByProject(hidden, projectFilter)
+	for _, atom := range labelFilters {
+		hidden = views.Apply(hidden, views.LabelFilter(atom))
+	}
+	if len(hidden) == 0 {
+		return
+	}
+	suggestion := `rd ready --for ""`
+	if viewName != views.ViewReady {
+		suggestion = fmt.Sprintf("rd ready --view %s --for \"\"", viewName)
+	}
+	fmt.Fprintf(os.Stderr, "0 items %s for %s. %d item(s) exist for other parties. Try: %s\n",
+		viewName, shortKey(forFilter), len(hidden), suggestion)
 }
 
 // filterByProject returns only items matching the given project, or all items if project is empty.

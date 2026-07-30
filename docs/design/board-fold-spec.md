@@ -569,7 +569,7 @@ drop-with-warning behaviour is campfire-only (`pkg/state/state.go:610-628`,
 
 **§10.3 Confidential labels.** On a confidential board with an LTK, the clear `l`
 tag value is `hex(HMAC-SHA256(LTK, label))`
-(`labelToken`, `pkg/sync/envelope.go:307-311`; emitted at
+(`labelToken`, `pkg/sync/envelope.go:342-346`; emitted at
 `pkg/sync/nostrwire.go:304-309`). With NO LTK, a confidential card emits **no** `l`
 tag at all rather than leaking a plaintext label
 (`pkg/sync/nostrwire.go:310-314`). A granted reader replaces `Item.Labels` with
@@ -595,7 +595,7 @@ which is why tokenization needs no relay-side cooperation (frozen envelope §7).
 
 **§11.1 Marker tags.** A confidential card or status event carries exactly two new
 clear tags: `["enc","1"]` and `["cek_epoch","<int>"]`
-(`encMarkerTags`, `pkg/sync/envelope.go:341-346`; constants at `:214-223`).
+(`encMarkerTags`, `pkg/sync/envelope.go:376-381`; constants at `:249-258`).
 `isConfidential(e)` is `tagValue(e,"enc") != ""` — ANY version
 (`pkg/sync/envelope.go:159-161`).
 
@@ -634,7 +634,7 @@ path is a silent fail-closed, never an error surfaced to the user.
 **§11.7 Card placeholder rule.** When `isConfidential(card)`
 (`pkg/sync/nostrproject.go:623`): on successful decrypt, `Title`, `Context`,
 `Description`, `WaitingOn` come from the sealed `cardPayload`
-(`pkg/sync/envelope.go:246-251`), and `Labels` are replaced only if the sealed
+(`pkg/sync/envelope.go:281-286`), and `Labels` are replaced only if the sealed
 list is non-empty (`pkg/sync/nostrproject.go:624-631`). On failure: `Title`,
 `Context`, `Description` become `placeholderText` = `"[encrypted]"`
 (`pkg/sync/envelope.go:39`) and `WaitingOn` becomes `""` — hidden rather than
@@ -646,12 +646,12 @@ never exits non-zero.
 **§11.8 Status placeholder rule.** A confidential status event's `Note` is the
 decrypted `{"reason": ...}` on success, else `placeholderText`
 (`pkg/sync/nostrproject.go:409-416`; `decryptStatusReason`,
-`pkg/sync/envelope.go:198-212`). The rest of the history entry (who / when /
+`pkg/sync/envelope.go:233-247`). The rest of the history entry (who / when /
 from→to) renders regardless.
 
 **§11.9 Content wire format.** `base64Std(nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce,
 plaintext))`, fresh `crypto/rand` nonce per event
-(`sealContent`, `pkg/sync/envelope.go:262-276`; `openContent`, `:282-301`). This
+(`sealContent`, `pkg/sync/envelope.go:297-311`; `openContent`, `:317-336`). This
 restates frozen §3 and MUST NOT drift from it.
 
 **§11.10 Epoch model.** Epochs are integers `>= 1`. Bootstrap mints epoch 1
@@ -909,7 +909,7 @@ non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
 (`cmd/rd/nostr.go:978-981`) and then sorts — by priority, then ETA, then ID for
-ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:276-288`),
+ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:395-409`),
 by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
 total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
 rework added the ID tie-break).
@@ -1495,8 +1495,8 @@ each only when its source field is non-empty:
 | 16 | `for` | assignment scope | `For != ""` | `:330-332` | `For` (§5.1) |
 | 17 | `parent` | parent item id | `ParentID != ""` | `:333-335` | `ParentID` (§5.1) |
 | 18 | `due` | RFC3339 | `Due != ""` | `:336-338` | `Due` (§5.1) |
-| 19 | `enc` | `"1"` | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:341-346` | §11.1 |
-| 20 | `cek_epoch` | epoch integer | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:341-346` | §11.1 |
+| 19 | `enc` | `"1"` | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:376-381` | §11.1 |
+| 20 | `cek_epoch` | epoch integer | confidential mode | `pkg/sync/nostrwire.go:349`; `pkg/sync/envelope.go:376-381` | §11.1 |
 
 Tag ORDER is load-bearing in exactly one place: the fold reads the FIRST `a` tag
 (`tagValue`, `pkg/sync/nostrwire.go:520-527`) to resolve the item's
@@ -1511,7 +1511,7 @@ assigns to BOTH `Context` and `Description` (§5.1, §15.9).
 **§18.5 Content — confidential mode: what is sealed.** When `CardSpec.Enc` is
 non-nil, Content is replaced by the sealed blob (`pkg/sync/nostrwire.go:344-348`) and the
 two marker tags are appended (`:349`). The sealed plaintext is the JSON object
-`cardPayload` (`pkg/sync/envelope.go:244-251`) with exactly four members:
+`cardPayload` (`pkg/sync/envelope.go:279-286`) with exactly four members:
 
 | JSON key | Source | omitempty |
 |---|---|---|
@@ -1520,20 +1520,20 @@ two marker tags are appended (`:349`). The sealed plaintext is the JSON object
 | `waiting_on` | `spec.WaitingOn` | yes |
 | `labels` | `spec.Labels` | yes |
 
-built by `sealCardPayload` (`pkg/sync/envelope.go:316-328`). Write and read MUST
+built by `sealCardPayload` (`pkg/sync/envelope.go:351-363`). Write and read MUST
 agree byte-for-byte on this struct — the read side unmarshals the same type
-(`decryptCardPayload`, `:180-194`). Everything NOT in this table stays a clear
+(`decryptCardPayload`, `:193-210`). Everything NOT in this table stays a clear
 tag (§18.3): status, priority, type, assignee, deps, gate category, waiting type,
 eta, level, for, parent, due. **Sealing is free-text-only; routing is public.**
 
 **§18.6 Content wire format.** `event.Content =
 base64Std( nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce, plaintext) )` with a fresh
-`crypto/rand` nonce per call (`sealContent`, `pkg/sync/envelope.go:262-276`).
+`crypto/rand` nonce per call (`sealContent`, `pkg/sync/envelope.go:297-311`).
 This is the FROZEN envelope §3; this clause restates it, it does not amend it.
 
 **§18.7 Marker tags.** Exactly two, both always clear: `["enc","1"]` and
-`["cek_epoch","<int>"]` (`encMarkerTags`, `pkg/sync/envelope.go:341-346`;
-constants `:214-223`). `enc` MUST be the literal `"1"` — the read-side
+`["cek_epoch","<int>"]` (`encMarkerTags`, `pkg/sync/envelope.go:376-381`;
+constants `:249-258`). `enc` MUST be the literal `"1"` — the read-side
 well-formedness gate rejects any other version, absent value, unparseable epoch,
 or a body shorter than nonce+tag, and quarantines the event
 (`encWellFormed`, `pkg/sync/envelope.go:73-85`; `shouldQuarantine`, `:100-116`).
@@ -1606,7 +1606,7 @@ an empty item id (`:371-373`) and an empty status (`:374-376`) are hard errors.
 - the sealed Content + `enc`/`cek_epoch` markers when an envelope is supplied,
   REPLACING the plaintext reason before signing so the cleartext reason is never
   signed or published (`:435-443`; `sealStatusPayload` seals the JSON object
-  `{"reason": "<text>"}`, `pkg/sync/envelope.go:253-257`, `:331-337`);
+  `{"reason": "<text>"}`, `pkg/sync/envelope.go:288-292`, `:366-372`);
 - `["e", <issueEventID>, "", "root"]` — the NIP-10 marked anchor to the item's
   kind-1621 issue event, when one exists (`pkg/sync/nostrwire.go:445-450`);
 - a SECOND `a` tag carrying the BOARD coordinate `30301:<owner>:<boardD>`
@@ -1841,7 +1841,7 @@ which also validates nothing (§10.1). Filed as §27.5.
 1. **Plaintext board** (`Enc == nil`): `["l", "<atom>"]` verbatim (`pkg/sync/nostrwire.go:315-317`).
 2. **Confidential board WITH an LTK** (`Enc.LTK != nil`):
    `["l", hex(HMAC-SHA256(LTK, atom))]` — lowercase hex, no prefix
-   (`labelToken`, `pkg/sync/envelope.go:307-311`; emitted `pkg/sync/nostrwire.go:304-309`). The
+   (`labelToken`, `pkg/sync/envelope.go:342-346`; emitted `pkg/sync/nostrwire.go:304-309`). The
    plaintext atom ALSO rides inside the sealed `cardPayload.labels` for
    member-side rendering (§18.5).
 3. **Confidential board with NO LTK**: **no `l` tag at all** (`pkg/sync/nostrwire.go:310-314`). Not a
@@ -1854,8 +1854,8 @@ An empty atom is skipped in every mode (`pkg/sync/nostrwire.go:300-302`).
 **§23.4 Tokenization is equality-preserving and board-scoped.** Same atom + same
 LTK ⇒ same token, so a relay can exact-match `#l` without seeing plaintext; a
 different board's LTK yields a different token
-(`pkg/sync/envelope.go:303-306`). The LTK is stable ACROSS CEK epochs
-(`pkg/sync/envelope.go:239-241`), so a CEK rotation does not invalidate previously
+(`pkg/sync/envelope.go:338-341`). The LTK is stable ACROSS CEK epochs
+(`pkg/sync/envelope.go:274-276`), so a CEK rotation does not invalidate previously
 written label tokens. It is distributed in the same owner-signed grant as the CEK
 (`RoleGrantSpec.WrappedLTK`, `pkg/sync/rolegrant.go`; wrapped at
 `cmd/rd/confidential.go:226`, `:270`).
@@ -1926,7 +1926,7 @@ NIP-100 clients that order by `rank` breaks.
 
 **§24.4 Title on a confidential board is not a tag.** In confidential mode the
 clear `title` tag is DROPPED and the title moves into the sealed blob
-(`pkg/sync/nostrwire.go:263-265`, `pkg/sync/envelope.go:317`). So on a
+(`pkg/sync/nostrwire.go:263-265`, `pkg/sync/envelope.go:352`). So on a
 confidential board a retitle changes no visible tag at all — only `Content` and
 therefore the event id.
 

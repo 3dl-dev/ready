@@ -19,27 +19,27 @@
 import type { NostrEvent } from "./nostrevent";
 
 export const BOARD_D = "confboard";
-export const BOARD_COORD = "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard";
-export const OWNER_PUB = "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5";
-export const OWNER_SEC = "d9f1e622b579314a3f93e123493a6b0eecf662973dd8f14b6432a8c02cb1ed26";
-export const MEMBER_PUB = "3be7a22c2cc01e01a87cf24ce1f528800715787ec1af5833cc1875cb51ef8091";
-export const MEMBER_SEC = "3e8934bcf3a94ac2fe7a7c3b904084a596a601a4e04d9424e177bfddf7305648";
-export const REVOKED_PUB = "0bf4479ce15352c68eeb581d3dfd2f408778c0397e58d586f7eee7fb46b1ce7a";
-export const REVOKED_SEC = "454c05033353338c5dadef94e8dd5f4794c550c13e9f988baadd0bc764d7265a";
-export const STRANGER_PUB = "8fc268e623e6386c7f63f8ec19b10cafadcffbd42919513c5a4c7af905551f76";
-export const STRANGER_SEC = "72791386bc6a0fa6642ab238b40039152331ae44014c8eb637ec03ccaebfe8d8";
+export const BOARD_COORD = "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard";
+export const OWNER_PUB = "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e";
+export const OWNER_SEC = "c22f8fc808fefd2aaf5455e2a2475965829e7d441a89a6c34e34b9c76ef06589";
+export const MEMBER_PUB = "f9c4eb85efbffaf8a2514d5af4006aea10a386ba9129c5ee1f39d3d9756eb555";
+export const MEMBER_SEC = "e3ce037f67a3fefa0291a1d5dbf31487e6fac18b7507ce7ab690e2783aed4235";
+export const REVOKED_PUB = "2edb71c9f4fdbf71027f6b4ac87bbdc7c63018cd4bafb7ca53b6715ee28a069a";
+export const REVOKED_SEC = "5d1970e967051e199c0fd3b7739a36141dcb96fda0815f8e62d252fa24c58b0d";
+export const STRANGER_PUB = "682d6467c8992424ccae51ea11c819771cd916d848fb4002d089011f6295a251";
+export const STRANGER_SEC = "7c8f4e71e0f0f0172b7b80764064ee92eb8495d3e1892e49601f135ea8a2b7ed";
 
 /** The board-global cutover (created_at of the first CEK-bearing owner grant). */
 export const CUTOVER = 1750000100;
 
 /** Raw epoch keys, exported so envelope-level tests can seal/open without a keyring. */
-export const CEK_EPOCH1 = "3d4468516734e4c1e9c6eb9165312dc3d23cfaa67878b162cd2e76ffe6b18ce2";
-export const CEK_EPOCH2 = "e38b4a1ee2588b6dc40c48f01af5a6db1a9891d828ea72cb6ae7b873210166e6";
-export const LTK = "281311769255fef9a0ef246e745ecd2954dab329b080daf7fccaa9dce9b85a2d";
+export const CEK_EPOCH1 = "1b58f7ab058577cf86a827b9ad003b71497e700c92418c82c22c5b5a2662fc6d";
+export const CEK_EPOCH2 = "550f0790ba27f224ef3a5eb83a85500d4f88de7f708109054674eb4c86f2a3d3";
+export const LTK = "d870d1602f2220df55f5aa38fc2f629716e2c98c185e46576fd4f496e8f3912a";
 
 export const boardEvent: NostrEvent = {
-  "id": "bf4f35e3c17bd7ee6334bcdcaeea374493c37bfe36cdbeb7e1d89ab088f9d0fe",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "f080efc6dcb2c56d78e9c16fb552f5c8bcfa516ee7671461f0bf6e2679b002ce",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000000,
   "kind": 30301,
   "tags": [
@@ -53,27 +53,27 @@ export const boardEvent: NostrEvent = {
     ]
   ],
   "content": "",
-  "sig": "67904f397cf50d61831a9462501600a17b2b3575e2eaf38def5fb29a4ad82cb860a7e9e604ac42dd1a97e3aa2ae8d8736828764f0c5d5e2f0f092481bbe69f22"
+  "sig": "2ee58cc59ab3d3be9f1a562336092d5203b6f4e57d2fcd67ccb054bb3bf01df7a18e43039c4f8904f3e76483cb71d737bfb18ad2a916eff3c2e515b99d4c5b5a"
 };
 
 export const grants: NostrEvent[] = [
   {
-    "id": "87ae0801cb68d9fe911feb98577efc1f5d786622d9bc5ab80cd6fe852e799a97",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "a8bc5595b92f6d006dedf9d42cb730699aa7c276a5532618a99cff82d10e68ad",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000100,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5"
+        "confboard:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:e1"
       ],
       [
         "p",
-        "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5"
+        "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -81,7 +81,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AnS/wbkmNL+spvQM2GquwHjQ4sopCSPR7WdJC5DM0WUzKYos0ZAXMAusP6rV21YpUSs9ePav8HNUvdLYw1TOLzK5gRKJTEwK3jHRnmhwVDszLcsff64Qt8BhGM5N7Kl+6DyHOzw3284RvMBZLtfmP9ThIJiC8DiAxbp2s1iUzc3rdbk="
+        "AhC7rKOMHww1KTdTJKYOlJ5c+GuCYCqjTPKcZ+klNq6nrU8sozshppAD7R86waYGItduO4yWh0w2TUqBE2Fm3MdsPNPUfq1OdX0+W9gcplP6vjk3oyq6ilBFOJv3ZYR3cp+z1BjkUM+4S6nLNScGL7cRFVAvpnWrvsyl2wGrVCnTrRs="
       ],
       [
         "cek_epoch",
@@ -89,29 +89,29 @@ export const grants: NostrEvent[] = [
       ],
       [
         "ltk",
-        "ArNFM62NeJeNTr+tcqTd0uWcfC3SFHu78wX6V1bkWBwd5cYIZuAr5aovVOc5vVp6MLDjpAj6xLgW/WwVrLRU+cifaqwOxaVIDB9ioHaDXgwQRE2FQuyTK/brAJ0G/Gh1MtZpxt+sFCmVydxXZFcRZNusMoaJNK9WvbkTxryhe5JLGRk="
+        "Alywu8LcMUrctFA/OX6itD98ZJPhbAZaCoz2j4GtPYPCVmktYwk22R5VaXGQ4w1NDnVLFIX1my3d9UXG8qdb3XMKkthWMYL6GGF9Un3HFKqnG0HfswrnadqrdbtDv1Qcp4Q9E72INy9CC3sYdOTR3WGYliRH94cGl1q+jJxC5SUqxl4="
       ]
     ],
     "content": "",
-    "sig": "a4eff01089be406e67cf544e6491ca6a4683af12561e75cd82460aa3af038ef0218de9345a37ffd303d3bf3374016d033517441b1b885c429c10eec0903c0fb9"
+    "sig": "8b0b71ad5fcee164569daa1b55c95ae9a7d48970f004e517a3f6fcd00b329299c64a5e60faca9f91e6978c34d458c18bf4fd2c2600593fdcf2b29e9f2eef9018"
   },
   {
-    "id": "85580ff990307c62bb7f2b1625c55c6d71e34b7c5be2b6f9518c2ccd6cbaf053",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "0ab172096574d6ebe54a9b36c851fc07d2acf3a868a8b8f11f76d68919334a04",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000100,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:3be7a22c2cc01e01a87cf24ce1f528800715787ec1af5833cc1875cb51ef8091"
+        "confboard:f9c4eb85efbffaf8a2514d5af4006aea10a386ba9129c5ee1f39d3d9756eb555:e1"
       ],
       [
         "p",
-        "3be7a22c2cc01e01a87cf24ce1f528800715787ec1af5833cc1875cb51ef8091"
+        "f9c4eb85efbffaf8a2514d5af4006aea10a386ba9129c5ee1f39d3d9756eb555"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -119,7 +119,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AkyYP+GsAe3NddnL9ND+zHSNEU1H5cVkAfNxyPK/jfiBNZqrJHSqr9/44FpMccvQzzD4GGn0pH6VS+y9+syUjY+G5nRAZ7mzPUpnzoblnKtdlZbPg/ZsKSDSnkEcPgUPGLw9bJ3O4jO2WOawdH4ucjMd3c3slmso+qHIP87Dr3f7Tjc="
+        "AhL9cnb7jMskNNeAyjwgjS+8If4vfrjODxpr5xktedkO0H9ZFHCMzKlFd8CswEY0+T6m0BmM3w0siFAC9x3h+1m3i6pU0t6ksocuo11u1NhSScT7Zz79Rw8k6zew80xiMNK9IQBMbgktb8HgYAA4ZDkOkHTJ3GKiSKY3uhaMwSD1O6E="
       ],
       [
         "cek_epoch",
@@ -127,29 +127,29 @@ export const grants: NostrEvent[] = [
       ],
       [
         "ltk",
-        "At+9/GFlInVKeAOrrHSbmxsb2BU3DSssDxS/iRmIcuQBiEBeuclUJOUna8LCFw+WRPz7h59+s4pz4KljfLVKAXt178FFLjnVbSfm6xBYtgcPds2WVcgH0SZf8O3zkOyhYdwo7hDhTCuN0wunkHCAvqblaQO8gutZys1Kf48e1Vncb9Q="
+        "AolCGONu/m5L6d+EUHMb/r8QRSNzZ7XD9GbpURaKRKOHgrV295aHbEBCPsDAYBcofNxALonbnsFLWGR5gO5347w1/XYHt4aqghinAaOIjPSgAaBFd62b3tfToQd74qUaGP6HPeaEnBTKNbzha2P9ntBgkvCljImnkL3o1BxPPFx6nXY="
       ]
     ],
     "content": "",
-    "sig": "9154a1e1646c32d8d265e5768d2a261244acfab17229565eefd3ca40c366b7f1e1a19c265589e34550165793295833735e18caa5488be196dc17538f09699f75"
+    "sig": "2fd1b293cad2cc4ac0d194e1db135d5d59970a8d14b893c3bc9690f4616e8db0d4e9f3aaf8f1a5466885e307d4948f1a27dd688a260959ef603118783c989140"
   },
   {
-    "id": "5bef389060252bf126f96681afa2bdfa47cdec4767305db8976d6177e962179a",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "02ca1b3af845112d71db8684ed3c2c9626c3e874a050ba57585e498aa2d0de5f",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000100,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:0bf4479ce15352c68eeb581d3dfd2f408778c0397e58d586f7eee7fb46b1ce7a"
+        "confboard:2edb71c9f4fdbf71027f6b4ac87bbdc7c63018cd4bafb7ca53b6715ee28a069a:e1"
       ],
       [
         "p",
-        "0bf4479ce15352c68eeb581d3dfd2f408778c0397e58d586f7eee7fb46b1ce7a"
+        "2edb71c9f4fdbf71027f6b4ac87bbdc7c63018cd4bafb7ca53b6715ee28a069a"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -157,7 +157,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AgQAXCHWcMRHcDzZxnzKdywl4YMGbmfdj/JthIWQuZmNqse3AhxpWnIkdl7z9MWA+9oNbrBovf85mzDlOMDDw5AxMZ3Z4zlvb3rL2leZpMkIRoc3kk5JMp45G9+3mR3bznzItgXYoglhzkQ9e+Cq+i9NA9dlJ3wZrdjMPh2gI0lxfpI="
+        "AuURSHK+HhfFFMfLB08LUAkJuVUSj/pXSEakukV1mZpYIQhooeSAs0DXYP71hoqvL/1HupDje2x+eqxZL1F05NmjKEIVu/g7yI9hXNqQ/GdSCSzQ1P4JBkj1rvBCn4Wd8HsSlz5OkHrLspfu0Ig6h7VN/4EfiI1mpHZGCYKd/A2Hx4A="
       ],
       [
         "cek_epoch",
@@ -165,29 +165,29 @@ export const grants: NostrEvent[] = [
       ],
       [
         "ltk",
-        "AqWxd3HlGc12mUPoI/j/olWGatXv78IsQcYZapU620krszp6EqsXe0Z/ZHaHyKxyF8TsCUglXWcZZdPb12cTWj9axS/zsMNzTnGITbl9jdoTsh6AlETxi/mCT/fqSGbbiVOa7TiiOwCjxZoz4UGZS3VTrcROCbIt7RJy1/yiEvX4bWA="
+        "AoPcnSJHCGNRXQP0pz4bySloUhrMnPMBq2nTcmvGV/Uy+cInirwEtJPwTnoIb2l7o+z2bh1CEcAZAyPP3v5JQDQ7RQPLq/JjBJJhKz6WCtyR2gIkjC6jgy1UavC9UVCMRisS/4gY6995a/OmXeZOiFe45/L0RfKOF2cgMEd6S8ULpd0="
       ]
     ],
     "content": "",
-    "sig": "cad18ce39c62a9b132fe60ce2a8a1e018dc54acc910c2f5f566e21492ae82b64ec6b4e4d724ff78d853bf995014b49085b06d9e56d2c6002e9dd7a5f325117c8"
+    "sig": "0958ab19074e26444f514562a1a23a5572fdf3d47283597a8c841be57a5081a2b0463bf63dca5b86796160967b330837f011af3d29c018e7e29e6549e695d2b8"
   },
   {
-    "id": "499f340be929651af3325bc546f2ae6aa596b3da8aaed1d97402473450cb439d",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "eb7d7c03b483614903bb0aaa715d81d6d8f1623626718affcb480a818cc3b402",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000310,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5"
+        "confboard:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:e2"
       ],
       [
         "p",
-        "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5"
+        "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -195,7 +195,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AjY4CP16oK63Cck+9H2c3J2Vv4K0dItG1rr9eeuJVL9kOeewkH6LOumL3nqe1u0cueuvWNLkhHAULOKVUt99DFocbKnMK3NQtA+42DU6gpxe14H5GHnjJ8UrfOe2sbESKiqHNyQ0u6LVShZTAXHwB0TeFxzoL8V8RCZaAx4arhNBau0="
+        "Av9HpF/HqtpScgnFgVM9EA8Oy6VOngICdP5lkuqAQZEWeppoxppEdVRfkHKIeP5BxLNDgeKz73zDFpL4SscKTlPKSl0IdJ/TEElRBIcv8Rgsg8w57dn0x4Ro4EUiWI9zAbu6Wge7ij4MYDbdEZELQ9lDVQquRCOO9vSpjI6l4tEnR0w="
       ],
       [
         "cek_epoch",
@@ -203,29 +203,29 @@ export const grants: NostrEvent[] = [
       ],
       [
         "ltk",
-        "Ahh2hI0pTmQK9SIrfX0wb7euD0WCjRlZc7gIlXc1pv/85rEkpsWPgyq5QoKfxctWN0Uy4v2wCDJaVEdO6KjmlfBewRsNl71mFQ22BDwGIz5XEO6TpaSt1+4cvbK/aCuOYvAU4jyQmbdzuzTkao9Y8RdX5adDtdOVDGC4pRdfTmcjdWE="
+        "AnNE4+ByKXZ0M6edpJdzieX3p58ixSZGLY6DQPWWU8Lw1BoamwKsfTHB6HPR3s6bx3CnNrTMGso7YauKSOLeL86ESe7OT+oCUh23+86hVdbTK6pOijQh/GIk7piQbugPs9T1PvAWSvQ0tIBh3z3RKfU9/medHzRFKzm5EXOpb0jDWVY="
       ]
     ],
     "content": "",
-    "sig": "1ef36096cdf1f1aa7342f22cceb2f6fe5132755270288d059c514335bdbdafa6099f1733ece9015f65b2ef768e51541283fcdf286f3f8051103dcdbe9f7ad6aa"
+    "sig": "a1067ba9a09755b86200b7a15a492766cd21b299589c8b00a149c89060409f8a7c5771ad3e0ddd67c7e656d6c7e3fb8351b3378fb5c2f43f8718b1faa99a46ab"
   },
   {
-    "id": "293ec2dd3a09d7bbabda37b0e9791f753eddf0f02dd02e4e971d7f5c38965485",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "58ecdcf61df642d05aaee1eacbb02758dae9a9013cca5c168510f07d1f4eb661",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000310,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:3be7a22c2cc01e01a87cf24ce1f528800715787ec1af5833cc1875cb51ef8091"
+        "confboard:f9c4eb85efbffaf8a2514d5af4006aea10a386ba9129c5ee1f39d3d9756eb555:e2"
       ],
       [
         "p",
-        "3be7a22c2cc01e01a87cf24ce1f528800715787ec1af5833cc1875cb51ef8091"
+        "f9c4eb85efbffaf8a2514d5af4006aea10a386ba9129c5ee1f39d3d9756eb555"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -233,7 +233,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AhgzqdkH9nc/ZJpGQTKs06RwhWHcSgnR3GvNzfPxVF+OLvEEpGkH6KH8jC5aSUp0gmHqy2qsHGRIAeJTh1XZFMnk6ZWbg20E+ROuuOGgm+XXd06Q+NN27QGymZszaFDsBIjllhlYiGyHBR47mJem9wpfN63EjqvNx+I89RScFc65DCQ="
+        "Ar2dzAxpagxtc6+IT48vYIdCjdjgEABvtpJ6FJNb3Cdf0rXdt+M3fw8KTIMwR5iqreOG9+2JPPxon0//rluMrkYMA7BHcZ17MD3uOO+BKGQbeLjwfb8oYw+1BhODZvtJECGLkt9uygGYpQA8OA7V71KkP6ytgYRAyL7sQBY4RLhhYFE="
       ],
       [
         "cek_epoch",
@@ -241,29 +241,29 @@ export const grants: NostrEvent[] = [
       ],
       [
         "ltk",
-        "AikcucbiqBKmLlWGwyi/YxeudZWALe8tFVbAFi+Lne23Ehn9mt0CLi53e1wdqDj0oqdECw6JDwsRdLm9/ehKKcW/+GFiNvgldcHXre/RKD+/N3dRhmBZG2nT/ryuQCoTUPRo2jisTDINsYVchPPv/5FthZiIJ/YeLEjMNih9GO03DAU="
+        "ArQeh4BhmBKmlCJwoPCphUyBEGSKtnTYx4lC6zHRRV0e851Ml192nVSeGqPiknyI2fqLwnmYzm5QCpEljUhJsjldUbiFJ8EubaMZZUWVviLBZO5kU80vL5d2AqsQOB0unF8qoC51DXoFxxLqJm8pqoun6GjUuhgWoXOFc+0oIDEmKog="
       ]
     ],
     "content": "",
-    "sig": "1633671e42013ab5e84764c3d957722438dcc96371f41a3f5a1ecb6cbde7ef678acb69b8b4aa8ab1de8c8862b49bd257ffcf535d9bd8513e1b4a6c1de7507f60"
+    "sig": "cba92bb7759c4c7f5755c473c21cbee9a03008a880cb7db1e2bb564b847d22a74536680d43d5984efea0bfde00ae4298a570d57ba90199b4cdcb45a7720bb0c7"
   },
   {
-    "id": "9cb792f68b0c488e640dffe9de1923c68208f7c9504644ffe344fc1d6bc7556e",
-    "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+    "id": "7462b0ada8f161952929bbdf3f0014d42c285bbb1c0925b9d03a15e217025c43",
+    "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
     "created_at": 1750000300,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:0bf4479ce15352c68eeb581d3dfd2f408778c0397e58d586f7eee7fb46b1ce7a"
+        "confboard:2edb71c9f4fdbf71027f6b4ac87bbdc7c63018cd4bafb7ca53b6715ee28a069a"
       ],
       [
         "p",
-        "0bf4479ce15352c68eeb581d3dfd2f408778c0397e58d586f7eee7fb46b1ce7a"
+        "2edb71c9f4fdbf71027f6b4ac87bbdc7c63018cd4bafb7ca53b6715ee28a069a"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -271,25 +271,25 @@ export const grants: NostrEvent[] = [
       ]
     ],
     "content": "",
-    "sig": "737547656b27227f06252201bd609c4ac78d8acc52ce8744251855fcd44c1d295c505f230868a2dc08721bd29cb4a5015ac048a8e7026b8b3fa30366fc8e526b"
+    "sig": "9b79b298ce737e0a014f77b675b6b59f59dc2cdfdbb1bc47a541fa8d0f538ff163e67582ef880ab66565ae8356da7ab853ff69e5ef141a6b5f251a6fe033bd0f"
   },
   {
-    "id": "8419d010871be129aba0cde7cf1785ae8aefc16c0e862c6a92a88f6ca9f081aa",
-    "pubkey": "8fc268e623e6386c7f63f8ec19b10cafadcffbd42919513c5a4c7af905551f76",
+    "id": "f204620e4cb5fed3ee9fcb0ca86618342e275a3853b8ff58305049c087868d2a",
+    "pubkey": "682d6467c8992424ccae51ea11c819771cd916d848fb4002d089011f6295a251",
     "created_at": 1750000100,
     "kind": 39301,
     "tags": [
       [
         "d",
-        "confboard:8fc268e623e6386c7f63f8ec19b10cafadcffbd42919513c5a4c7af905551f76"
+        "confboard:682d6467c8992424ccae51ea11c819771cd916d848fb4002d089011f6295a251:e1"
       ],
       [
         "p",
-        "8fc268e623e6386c7f63f8ec19b10cafadcffbd42919513c5a4c7af905551f76"
+        "682d6467c8992424ccae51ea11c819771cd916d848fb4002d089011f6295a251"
       ],
       [
         "a",
-        "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+        "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
       ],
       [
         "role",
@@ -297,7 +297,7 @@ export const grants: NostrEvent[] = [
       ],
       [
         "cek",
-        "AmP/kBjnO/MIZAejMPPJJh46D5I2vNSRQRwioJwWgQT2sLSV+oIAKHOBq6g7Cj7sHhz21+aCKQgyFGJhLkUSWiMVwTmKaXSupdjJZ5XjsD45/yw1wnFFcBIp1GIxQeTgklsU+GwmrsYN6cgR9bc7HUutbJxSYsgHGSs8ke25QsDVHhw="
+        "AragiOAmTj1EkmT1xy82u5XQSuh3BKdGqUQx1LgSis+quqTF9iKRmDd5yeTv6YjHUu3elBvYLc3mJa6FI1E/ffp3ccqXYPs9FLGr7aOUS4PhY/SouxZZ99dytOyXqWeq8pLniViDz3cTxYhbqQpUFzqYIJM2XFeZSHLhZ/GGITGxJ4o="
       ],
       [
         "cek_epoch",
@@ -305,13 +305,13 @@ export const grants: NostrEvent[] = [
       ]
     ],
     "content": "",
-    "sig": "3f55329925ba1ece938a44e06982e6cb1a9a0a9907c1bc0cab8497ec532a69edb1a0df1fc76875d2a813bf59b1dbfb946bca29be1d58274709a1151b66a89299"
+    "sig": "ebed3bf468f98e254014a93f2e04c2c859cfab1dbf89e8db87fe46d504c8e4983fe91716229f08710231a2befe429cd9278026d517b2c0934b2bcecdd4935423"
   }
 ];
 
 export const cardEpoch1A: NostrEvent = {
-  "id": "df394111224cfc4f6bf4fd27a43c333baa7e17c5e5d8c07bb2c21b43b4194e51",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "ee7cd1eb1bb73918ce3ff782a8ae562f387c93c82cc8f8844fa2a7c084e84738",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000200,
   "kind": 30302,
   "tags": [
@@ -321,7 +321,7 @@ export const cardEpoch1A: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -341,11 +341,11 @@ export const cardEpoch1A: NostrEvent = {
     ],
     [
       "l",
-      "11379374f6cfd052964a16b3b928e552409b12a4e5a8cb37d5fa16f33c0abf1e"
+      "efae0ec8159c29e9051f78817c9783f38f85c4715cf73a96238d87273e83fd1d"
     ],
     [
       "l",
-      "90617a95429a7c4f27f71cfeaae691afeffb70ab3ca3156e479073c89133acb9"
+      "c953d3475b253a85cbeeee659f8efbdc26fba0a0010157c2892ae48d036b27dc"
     ],
     [
       "enc",
@@ -356,13 +356,13 @@ export const cardEpoch1A: NostrEvent = {
       "1"
     ]
   ],
-  "content": "GLM82mPPR8r0l0dffM7BMQYOu9Y4hy+O4At/se/nBnbf+ltL2gQVVsYL41B7zOjVdIzZHeG+g3E9H3OwHZ1a9ed11FXcmZR5l0WCQdPW/pwv4Sbzbye2gwC0WXtrtkOE/6xcoOk6aNjE5X9OxmGGWm32OVTDMwMMV8dEKi4JzazODdIA/GmY8l3lnof0mrF33GSYycJkLSWe+Dr6acZuADIJSg9hVmKVbxmFvqewtuAP440UTRoOZiGT9TLfNBWaNK66qq/bYVykkCul3T4dav5wxfQ=",
-  "sig": "a8279e1d3be06918ad2bbc59dc18cbcf7bbf4f1c890e3a1e29b8d62fd2489137c443a3bb5c2bf763a0a80c5e299f04866e774f44e314d9b690697b5827bf22e4"
+  "content": "2O6ZIgD7mzdSRxgQgqD3m5qXXRAdi/Cstc6tnM3bAC+iwXZD5pJIKauGbrTLL8se2WvcFTxnp0V4CwJU8d0NPSZIseg2yCxLQ5ZYd/Mcj+WmeYrS7cT5wCRyzh7m42yWOaY+9hbth2mSZtF5nHiN3A6L23fCrR+pjETohuKKSSc/EEH5GKsbccMveWM0te253DghLsC6BC44AFqYFFYyWQER5Yceq7ZaK4/h/dM+NEaVXG7dr4enM8Anebb+gNp/ntVE0lod5z2FQJiLDVbaFAflIgE=",
+  "sig": "bf1cf911d02b3d02cf0008ae80edae7c2e211df959cbbb335f3b004552fc723bbc5a0ab0d94b6a854ffb3f6d54b23293e6af2eccc85bd81f8fee2ba6d65ed152"
 };
 
 export const cardEpoch1B: NostrEvent = {
-  "id": "f869a1cb24e138456226d80105c0e7b98a9c34ba6d3076fc5da69a23ff22d4d9",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "bb5e790698ac83899ea3dc8c1b10420e5980b62ef736af7a20e8f9e5d1852a13",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000210,
   "kind": 30302,
   "tags": [
@@ -372,7 +372,7 @@ export const cardEpoch1B: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -399,13 +399,13 @@ export const cardEpoch1B: NostrEvent = {
       "1"
     ]
   ],
-  "content": "UMJcFYbPyCVn8Hsybx/7EvENIZ7eILSW5BzdqKEAoCeP1DEGQazcg4OVBRRF9+OFc7d7qL9vqUI8UWu9eGnXXZ66jaBeX/U6h124ET7bJq+nJoFb6n4SiVsNW4h8xovD1sPjKChyjuFtd+o2PUUPheEsxnyxCnAo3sRH6nY1+x8=",
-  "sig": "f46d99540498ddd2560414b5ddc6bf5121ef2500130a99755786884cf1dddaa61efc151f54bd223b2ee000cd8a65b80fbbce16e58b9b3e9a36869917b36410bf"
+  "content": "QXPgmBXwDFIGGwyZS3ZbRZ5BlP2om15iepoqL6cwBI1gb5YDZ4dLnQaPA242XEPvzgu4829TvrFlvtVgZ8ShgFW0Esf9d1VlVm/ZgqI5PxardLBRM+V/PUpivi+u1p1a5APdvWmXBHuphd4JDdH21e1BIv2eSyT+/gyt1M7iyuM=",
+  "sig": "56d7d0ddba98e29da18d07d94ae513d0d7b244cbd8078c3bcaf90ff2d5682af2b66a3d43264b77494c0ce97ead9e8b329746a02a2bb53b5e995587917813dcbb"
 };
 
 export const cardEpoch2: NostrEvent = {
-  "id": "ba469a4110a36b54db22dd4eeb59240d1af15c06ef13a89da42d5627c9b68a03",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "1057b4d3cd592905272c96af8b9dde60c720c9fde2fb9cd2217b10569ba12757",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000400,
   "kind": 30302,
   "tags": [
@@ -415,7 +415,7 @@ export const cardEpoch2: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -435,7 +435,7 @@ export const cardEpoch2: NostrEvent = {
     ],
     [
       "l",
-      "11379374f6cfd052964a16b3b928e552409b12a4e5a8cb37d5fa16f33c0abf1e"
+      "efae0ec8159c29e9051f78817c9783f38f85c4715cf73a96238d87273e83fd1d"
     ],
     [
       "enc",
@@ -446,13 +446,13 @@ export const cardEpoch2: NostrEvent = {
       "2"
     ]
   ],
-  "content": "N1pt9uU3cIpwangBUObhkqliosv9EoIsMkVwTdCtRjlyi27fihR6YKqtr9GZMWFH/S3h8q9xpGsAD5HyJcegezIC/+jvxPkBXGyqvEVmGxRxxY6mk0y43uEO/3jB7uo1gFrezTLvoRqvE9sUj34AyNGj0tSHzlwPJgA8FHivAbzHFa0rC/oonJq9RWWt/2QR9zc=",
-  "sig": "b02f227c68a334c3160484f23854637c80ed0371b1786280969f803b9a8c232d824b62fe8cf504d1e7228b775d1fd129b02a0880d6860596c203887688b49074"
+  "content": "bft7mrrlwstZAphwhDi2RiSW8hFfuhGJRZTSd+Qqaofcqkmt6ioya34ai3uOu+xzAN/EMdVzhYy1V0Bel1+iI3edYNlKGudP9maEtqWO18SZ598uMFtp4g+mQLdMkhn6Vk0Gcc6iW+wkwgO2EDxdrXoiiO1jhrMp9JMGgZcVmQk3AYyZT54yjVyiC12GmxAh1LU=",
+  "sig": "f506221f630f6b23a9ba19dbdb66e8bea0e08dc45076620a19af03987e957365af69763ecd6065a641324dd6668e17fb87fdd8e1056e53b7dd62609f5beb84aa"
 };
 
 export const cardEpochNobodyHolds: NostrEvent = {
-  "id": "bf723fbbd1b7aeeb56bfc1e31848e5d4629d87f1d39562b346baa874e3b1cae1",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "0a834324b6d2711fb797fa59669cb479b7d7d8a37aa3c00102fa6986c735dac8",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000400,
   "kind": 30302,
   "tags": [
@@ -462,7 +462,7 @@ export const cardEpochNobodyHolds: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -489,13 +489,13 @@ export const cardEpochNobodyHolds: NostrEvent = {
       "9"
     ]
   ],
-  "content": "/F1QD0qfwqxiEngvEafjja5nJXJR/0WiwFn3cocV5zjpbRv1W7ah1DEhMFrW8Mzby4crbjgmzi58u4q/azo/NKYwD7IkZWfolPI=",
-  "sig": "5d720141086bc1275ac2e8f7572d8d2cb58c824a06878f204f8c3159cb8da77998094ea44a710d9875d8b23b66c2754da9496526f2d2bdb0ebece835fa687396"
+  "content": "J2UuZMfck0vrewIz5pxjQZHo+OXTGl2txnbzQ0wVOFnJU1OXCk/cY7KdRQw561QXQu5Pd/KbPT2wQChytthkdil0ePGC/00MMEI=",
+  "sig": "4e757528f30b536c11471151f28ed4059023c6fc0ee149bb672895cb5a5ff83541004d1f5035b7803226eebf5e6bd2f6380d20039fcd661d9fbea34705d78d88"
 };
 
 export const cardSmuggledCleartext: NostrEvent = {
-  "id": "a5dde54649f7c763afbbacdcf624a539ce3fc448b602621b4ad37cb5053e0439",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "1c1780df41bd771ecffeb0c7da19fe06142505f4996671d79618038527816ca1",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000500,
   "kind": 30302,
   "tags": [
@@ -509,7 +509,7 @@ export const cardSmuggledCleartext: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -529,12 +529,12 @@ export const cardSmuggledCleartext: NostrEvent = {
     ]
   ],
   "content": "SMUGGLED CLEARTEXT BODY",
-  "sig": "2d1a56bf4394bb1ed092ed993a7f8d411a56a22a10a2aec50ef074a55458310583e5ed538a7eeadf7f9faf3fb7e1c40b9d5ba72068ab92e76aadb5873adb653b"
+  "sig": "c283d0c126240ab089ca46a828cf2030b3659b7147741aa37486d02c0014d0b796d11b306c48b45b09a33482557d1b8eaeb40350108994ffa99c48b730a0d3a8"
 };
 
 export const cardGrandfatheredPlaintext: NostrEvent = {
-  "id": "1505d86a192236a1baa48b3ecc5cafc8a9cacc5f95b2074a1e9027d8447d7bbe",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "411a722da74ec79109b117f07c0e3656dfac291c29e2cf13894b43b6934e10f6",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1749999000,
   "kind": 30302,
   "tags": [
@@ -548,7 +548,7 @@ export const cardGrandfatheredPlaintext: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -568,12 +568,12 @@ export const cardGrandfatheredPlaintext: NostrEvent = {
     ]
   ],
   "content": "Authored before the board went confidential.",
-  "sig": "6031f673b657588f48502a1de2a19209c012a8731cf18a92b3e94b9ae124ed4a11ea873455bd9e4cb6d2d15efdd7eea162694f81aafcf8d86e4f3e54c0973799"
+  "sig": "2960da59fece33034ee7073a4bd077e85dfc5b1fd5fdcd57f844e53fda45882f8a0ed49d2e0584a6aec25fe76d6a2602df6851cd58ad41993d6f9f7bcae396d3"
 };
 
 export const cardForgedSignature: NostrEvent = {
-  "id": "d8bbfa2cc7f6cc7fc533a69d6d33fe2cd88f1a2c77061ab05ad156064996345f",
-  "pubkey": "d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5",
+  "id": "097a78d9e7508a285aea452f258cc3d63bb7d14ddf05949656e8ae4afa92e6c3",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
   "created_at": 1750000200,
   "kind": 30302,
   "tags": [
@@ -583,7 +583,7 @@ export const cardForgedSignature: NostrEvent = {
     ],
     [
       "a",
-      "30301:d2f6e78d61e5a57df834b1fa4b8ab8dff7f3ab4414fc6167698ad7f25b2568f5:confboard"
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
     ],
     [
       "s",
@@ -610,8 +610,94 @@ export const cardForgedSignature: NostrEvent = {
       "1"
     ]
   ],
-  "content": "7ld0oGpyHaluls0xTKieTfIvX1v6syvmwN3tGruSav/2RKCc05kN1kiZxifSWOmigJxv73U0VT1QRj/zhfN3R5zstnkP",
-  "sig": "00b6ea8eb2a77a0f618e8ce6650d5079bdd701d181b8cfe3f405e7ec863ae53b71155dc43b2093eadcf45c868dc781742064a15ffaf6471782baf7280192232a"
+  "content": "fRpSdaYL4zBEfY/oC6/tDSYpLuIrfiw2tXXJZZX93nv1tby7iDH1mWyK054Krpy3qLyLOKSCiMhx1uiV9ngweDyQw+25",
+  "sig": "004b3ffaf97368ab01d734291c8f84d584283d117c2af0ee65e81df5d45768944f8e439280595ecab20a959b4ce03f18592e05ebf16612e1c012760d49908c09"
+};
+
+export const cardSealedNonObject: NostrEvent = {
+  "id": "026f9a5d4ab6c2f80431fd3e8996d68dae5f3e63237d9dbae12c7e1df971cd07",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
+  "created_at": 1750000220,
+  "kind": 30302,
+  "tags": [
+    [
+      "d",
+      "conf-008"
+    ],
+    [
+      "a",
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
+    ],
+    [
+      "s",
+      "active"
+    ],
+    [
+      "rank",
+      "p2"
+    ],
+    [
+      "priority",
+      "p2"
+    ],
+    [
+      "itype",
+      "task"
+    ],
+    [
+      "enc",
+      "1"
+    ],
+    [
+      "cek_epoch",
+      "1"
+    ]
+  ],
+  "content": "D23KmiC49eyF8+F52XdXoDjbpdqpmlPKvchpTSst5YLmX3bLEnXGTyfDLrjV5BB32A==",
+  "sig": "df65efac5f0949fff0be8d1ca55bdfbb1b4b6820ab0be92e3e47b2a872a6d23ac3507bfaea944a68b8caf0feb612c930ae2b0394182ab457e92adabd6f050af1"
+};
+
+export const cardSealedNoTitle: NostrEvent = {
+  "id": "7b90c87837fcd72b5730de87d796d188f798d31f04f892281eb16ccc32591d76",
+  "pubkey": "690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e",
+  "created_at": 1750000230,
+  "kind": 30302,
+  "tags": [
+    [
+      "d",
+      "conf-009"
+    ],
+    [
+      "a",
+      "30301:690c656a14b00195cdbf7b6e17dde16d57c88ca3b5888d086c16cade2b72622e:confboard"
+    ],
+    [
+      "s",
+      "active"
+    ],
+    [
+      "rank",
+      "p2"
+    ],
+    [
+      "priority",
+      "p2"
+    ],
+    [
+      "itype",
+      "task"
+    ],
+    [
+      "enc",
+      "1"
+    ],
+    [
+      "cek_epoch",
+      "1"
+    ]
+  ],
+  "content": "JV9R68ZH1UmTy65nKdL1VXUCS8HUFIp6lKUvntNtYWqEucwUwkT6qQYkqFc2ZBBAfpomAJGIBDzAOkvIKP7FIbJVFQL8ScNNbmuWDzvC",
+  "sig": "00b07a74c2c5f254578b1513c03bffca2b77921e74b705a5e2a03a9db0920f080506dcfa90877a3168781e939cc5a208e8cadc6ac1ef951dd3e5e632f00bf71f"
 };
 
 /** Every confidential card in the fixture, in relay-delivery order. */
@@ -623,6 +709,8 @@ export const cards: NostrEvent[] = [
   cardSmuggledCleartext,
   cardGrandfatheredPlaintext,
   cardForgedSignature,
+  cardSealedNonObject,
+  cardSealedNoTitle,
 ];
 
 /** The plaintext the Go writer sealed, item for item — what the browser must reproduce. */
