@@ -47,6 +47,30 @@ const (
 	tCardE2    = 1750000400
 	tPreCut    = 1749999000 // genuinely before the cutover: grandfathered plaintext
 	tPostCutPl = 1750000500 // after the cutover: smuggled cleartext, must quarantine
+
+	// ready-daf ROUND 2 — the PARTIAL-omission material. Withholding the OLDEST
+	// grants does not unset the cutover, it moves it LATER (BoardKeyring.cutover
+	// is a min over the grants that were served), so the three constants below
+	// exist to make that shift observable and detectable.
+	//
+	//	tGrantE1 .......... 1750000100  true cutover
+	//	tGapPlaintext ..... 1750000205  plaintext, AFTER the true cutover
+	//	tGrantE2 .......... 1750000310  cutover derived when epoch 1 is withheld
+	//
+	// tGapPlaintext sits strictly between them, so it is post-cutover cleartext
+	// that MUST be quarantined, yet reads as pre-cutover — and gets grandfathered
+	// in — the moment the epoch-1 grants are dropped. It is the payload of the
+	// exploit, not a witness.
+	tGapPlaintext = 1750000205
+	// A LATE grant that still names epoch 1: a member added after the rotation
+	// but given the epoch-1 key. Serving only this one leaves the epoch set
+	// covered (min epoch is still 1) while pushing the derived cutover far past
+	// the real one — the case only the created_at witness catches.
+	tGrantE1Late = 1750000600
+	// A card sealed under epoch 1 but published AFTER the rotation. Its
+	// created_at is later than any grant, so it cannot witness a too-late cutover
+	// by time; only its EPOCH does.
+	tCardE1Late = 1750000700
 )
 
 type expectedItem struct {
@@ -79,6 +103,13 @@ func run() error {
 		return err
 	}
 	stranger, err := nostr.GenerateKey()
+	if err != nil {
+		return err
+	}
+	// A member granted the epoch-1 key AFTER the rotation to epoch 2 (ready-daf
+	// round 2). Its grant is emitted separately, not in `grants`, because it is
+	// only ever served on its own.
+	latecomer, err := nostr.GenerateKey()
 	if err != nil {
 		return err
 	}
@@ -185,6 +216,16 @@ func run() error {
 	}
 	grants = append(grants, rogue)
 
+	// ready-daf round 2: an owner CEK grant for epoch 1 signed LONG AFTER the
+	// rotation. Emitted on its own (NOT in `grants`) so a test can serve exactly
+	// this one grant and nothing else: the epoch set it covers still starts at 1,
+	// so the epoch witness stays silent, while the cutover it establishes is
+	// tGrantE1Late — half an hour after the truth.
+	grantE1Late, err := grant(latecomer, rdsync.RoleContributor, cek1, 1, tGrantE1Late, false)
+	if err != nil {
+		return err
+	}
+
 	card := func(spec rdsync.CardSpec, env *rdsync.Envelope, at int64) (*nostr.Event, error) {
 		spec.BoardD, spec.BoardAuthor, spec.Enc = boardD, ownerPub, env
 		return rdsync.BuildCardEvent(owner, spec, at)
@@ -268,6 +309,36 @@ func run() error {
 	}
 	forged.Sig = "00" + forged.Sig[2:]
 
+	// ready-daf round 2 — THE EXPLOIT PAYLOAD. Owner-signed PLAINTEXT at
+	// tGapPlaintext, i.e. after the board went confidential (tGrantE1) but before
+	// the rotation (tGrantE2). Against the true cutover it is post-cutover
+	// cleartext and must be quarantined. Against the cutover a relay manufactures
+	// by withholding the epoch-1 grants it looks pre-cutover, and the fold
+	// grandfathers it — which is the fail-open this round closes. Nothing about
+	// it is forged: the real Go writer signed it with the real owner key.
+	gapSpec := rdsync.CardSpec{
+		ItemID: "conf-008", Title: "GAP CLEARTEXT TITLE",
+		Context: "GAP CLEARTEXT BODY", Status: "active", Priority: "p1", Type: "task",
+	}
+	cardGapPlaintext, err := card(gapSpec, nil, tGapPlaintext)
+	if err != nil {
+		return err
+	}
+
+	// A card sealed under epoch 1 and published AFTER the rotation (a writer with
+	// a stale keyring). It is the pure EPOCH witness: its created_at is later than
+	// every grant in the fixture, so it can never witness a too-late cutover by
+	// time — only by naming an epoch no served grant covers.
+	staleSpec := rdsync.CardSpec{
+		ItemID: "conf-009", Title: "Sealed under epoch 1 after the rotation",
+		Context: "A stale writer sealed this under the old epoch.",
+		Status:  "active", Priority: "p2", Type: "task",
+	}
+	cardE1AfterRotation, err := card(staleSpec, env1, tCardE1Late)
+	if err != nil {
+		return err
+	}
+
 	expected := []expectedItem{
 		{ID: "conf-001", Title: specE1A.Title, Context: specE1A.Context, WaitingOn: specE1A.WaitingOn, Labels: specE1A.Labels, Epoch: 1},
 		{ID: "conf-002", Title: specE1B.Title, Context: specE1B.Context, Labels: []string{}, Epoch: 1},
@@ -287,9 +358,15 @@ func run() error {
 	fmt.Fprintf(&b, "export const REVOKED_PUB = %q;\n", revoked.PubKeyHex())
 	fmt.Fprintf(&b, "export const REVOKED_SEC = %q;\n", revoked.SecretHex())
 	fmt.Fprintf(&b, "export const STRANGER_PUB = %q;\n", stranger.PubKeyHex())
-	fmt.Fprintf(&b, "export const STRANGER_SEC = %q;\n\n", stranger.SecretHex())
+	fmt.Fprintf(&b, "export const STRANGER_SEC = %q;\n", stranger.SecretHex())
+	fmt.Fprintf(&b, "export const LATECOMER_PUB = %q;\n", latecomer.PubKeyHex())
+	fmt.Fprintf(&b, "export const LATECOMER_SEC = %q;\n\n", latecomer.SecretHex())
 
 	fmt.Fprintf(&b, "/** The board-global cutover (created_at of the first CEK-bearing owner grant). */\nexport const CUTOVER = %d;\n\n", int64(tGrantE1))
+	fmt.Fprintf(&b, "/** The cutover a relay MANUFACTURES by withholding the epoch-1 grants: the\n * rotation instant, %d seconds later than the truth (ready-daf round 2). */\nexport const CUTOVER_IF_EPOCH1_WITHHELD = %d;\n\n", int64(tGrantE2-tGrantE1), int64(tGrantE2))
+	fmt.Fprintf(&b, "/** created_at of cardGapPlaintext — strictly between CUTOVER and\n * CUTOVER_IF_EPOCH1_WITHHELD. */\nexport const GAP_PLAINTEXT_AT = %d;\n\n", int64(tGapPlaintext))
+	fmt.Fprintf(&b, "/** The clear strings cardGapPlaintext carries in its TAGS and CONTENT — what must\n * never reach the DOM. Exported so the assertion cannot drift from the writer. */\nexport const GAP_PLAINTEXT_TITLE = %q;\nexport const GAP_PLAINTEXT_BODY = %q;\n\n", gapSpec.Title, gapSpec.Context)
+	fmt.Fprintf(&b, "/** The SEALED title of cardEpoch1AfterRotation — only a holder of the epoch-1 CEK\n * can produce it. */\nexport const EPOCH1_AFTER_ROTATION_TITLE = %q;\n\n", staleSpec.Title)
 	fmt.Fprintf(&b, "/** Raw epoch keys, exported so envelope-level tests can seal/open without a keyring. */\nexport const CEK_EPOCH1 = %q;\nexport const CEK_EPOCH2 = %q;\nexport const LTK = %q;\n\n",
 		hex.EncodeToString(cek1[:]), hex.EncodeToString(cek2[:]), hex.EncodeToString(ltk[:]))
 
@@ -302,6 +379,13 @@ func run() error {
 	writeEvent(&b, "cardSmuggledCleartext", cardSmuggled)
 	writeEvent(&b, "cardGrandfatheredPlaintext", cardGrandfathered)
 	writeEvent(&b, "cardForgedSignature", forged)
+
+	b.WriteString("/** ready-daf round 2: the owner CEK grant for epoch 1 signed AFTER the rotation.\n * NOT part of `grants` — served alone, it establishes a cutover far later than the\n * truth while leaving the epoch set covered from 1. */\n")
+	writeEvent(&b, "grantEpoch1Late", grantE1Late)
+	b.WriteString("/** ready-daf round 2: owner-signed PLAINTEXT authored between the true cutover\n * and the rotation. Post-cutover cleartext that a manufactured late cutover\n * grandfathers in. NOT part of `cards`. */\n")
+	writeEvent(&b, "cardGapPlaintext", cardGapPlaintext)
+	b.WriteString("/** ready-daf round 2: sealed under epoch 1, published after the rotation. Its\n * epoch is the only thing about it that witnesses a withheld grant. NOT part of\n * `cards`. */\n")
+	writeEvent(&b, "cardEpoch1AfterRotation", cardE1AfterRotation)
 
 	b.WriteString("/** Every confidential card in the fixture, in relay-delivery order. */\n")
 	b.WriteString("export const cards: NostrEvent[] = [\n  cardEpoch1A,\n  cardEpoch1B,\n  cardEpoch2,\n  cardEpochNobodyHolds,\n  cardSmuggledCleartext,\n  cardGrandfatheredPlaintext,\n  cardForgedSignature,\n];\n\n")

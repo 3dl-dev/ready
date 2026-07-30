@@ -282,4 +282,61 @@ describe("applyFragmentKeys — the `rd board --with-key` seam", () => {
     expect(kr.epochs(BOARD_COORD)).toEqual([]);
     expect(kr.ltk(BOARD_COORD)).toBeNull();
   });
+
+  it("cannot lower the GRANT EPOCH FLOOR either — that is what silences the epoch witness", async () => {
+    // ready-daf round 2. grantEpochFloor is the lowest epoch the SERVED OWNER
+    // GRANTS cover, and main.ts treats a sealed card below it as proof that older
+    // grants were withheld. A link carries whatever epochs its minter happened to
+    // hold, so if those counted towards the floor a link would DISARM that
+    // witness: hand the reader an epoch-1 key while the relay serves only
+    // epoch-2 grants, the floor drops to 1, the epoch-1 cards stop contradicting
+    // anything, and the manufactured late cutover is believed.
+    //
+    // Serve ONLY the epoch-2 grants, exactly as the exploit relay does.
+    const epoch2Only = grants.filter((g) => g.tags.some((t) => t[0] === "cek_epoch" && t[1] === "2"));
+    const kr = await deriveBoardKeyring(epoch2Only, MEMBER_PUB, OWNER_PUB, BOARD_D, unwrapperFor(MEMBER_SEC));
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBe(2);
+
+    applyFragmentKeys(kr, BOARD_COORD, { ceks: [{ epoch: 1, key: hexToBytes(CEK_EPOCH1) }] });
+    // The key is usable — reading power really was added...
+    expect(kr.cek(BOARD_COORD, 1)).not.toBeNull();
+    // ...and the floor is untouched, so the witness still bites.
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBe(2);
+  });
+});
+
+describe("grantEpochFloor: the board-global epoch floor of the SERVED owner grants", () => {
+  it("is the lowest epoch any owner CEK grant covers, whoever it is addressed to", async () => {
+    // Board-GLOBAL, like cutover: derived for a STRANGER who holds no key at all
+    // and still reports 1, because both epoch-1 and epoch-2 grants were served.
+    const kr = await deriveBoardKeyring(grants, STRANGER_PUB, OWNER_PUB, BOARD_D, neverUnwraps);
+    expect(kr.epochs(BOARD_COORD)).toEqual([]);
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBe(1);
+  });
+
+  it("rises when the OLDEST grants are withheld — the signal the epoch witness reads", async () => {
+    const epoch2Only = grants.filter((g) => g.tags.some((t) => t[0] === "cek_epoch" && t[1] === "2"));
+    const kr = await deriveBoardKeyring(epoch2Only, STRANGER_PUB, OWNER_PUB, BOARD_D, neverUnwraps);
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBe(2);
+    // The cutover moves in lockstep: later than the truth, and non-null, which is
+    // why "cutover !== null" alone could not tell the two situations apart.
+    expect(kr.cutover(BOARD_COORD)).toBeGreaterThan(CUTOVER);
+  });
+
+  it("counts NO grant that failed the owner check, so a stranger cannot lower it", async () => {
+    // The fixture's rogue grant is a stranger-signed epoch-1 grant for this
+    // board. If it counted, any pubkey could pin the floor at 1 and disarm the
+    // witness for every board it can reach.
+    const rogue = grants.filter((g) => g.pubkey !== OWNER_PUB);
+    expect(rogue.length).toBeGreaterThan(0);
+    expect(rogue.some((g) => g.tags.some((t) => t[0] === "cek_epoch" && t[1] === "1"))).toBe(true);
+    const kr = await deriveBoardKeyring(rogue, STRANGER_PUB, OWNER_PUB, BOARD_D, unwrapperFor(STRANGER_SEC));
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBeNull();
+    expect(kr.cutover(BOARD_COORD)).toBeNull();
+  });
+
+  it("is null for a board with no served grants at all", async () => {
+    const kr = await deriveBoardKeyring([], MEMBER_PUB, OWNER_PUB, BOARD_D, neverUnwraps);
+    expect(kr.grantEpochFloor(BOARD_COORD)).toBeNull();
+  });
 });

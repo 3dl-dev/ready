@@ -51,7 +51,7 @@ import { discoverOwnerBoards, parseBoardCoord, KIND_BOARD, type DiscoveredBoard 
 import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyring } from "./lib/keyring";
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 import type { EncryptedBoardSet } from "./lib/envelope";
-import { PLACEHOLDER, boardCoordOf, isConfidential } from "./lib/envelope";
+import { PLACEHOLDER, boardCoordOf, cekEpochOf, isConfidential } from "./lib/envelope";
 import { verifyEvent } from "./lib/nostrevent";
 import { foldItemSource } from "./lib/itemsource";
 import { mountBoardWorkspace } from "./board/render";
@@ -231,42 +231,148 @@ function renderConnecting(root: HTMLElement): HTMLElement {
  * the same relay-omission-as-attack shape as ready-dd5, and fail-closed is the
  * stated posture everywhere else here.
  *
+ * ROUND 2 — WHY A SERVED GRANT IS NOT ENOUGH. Round 1 read grant omission as
+ * all-or-nothing and keyed "unknown" off `cutover() === null`. But the cutover is
+ * a MINIMUM over the owner CEK grants that were SERVED (keyring.ts's noteCutover),
+ * so omission does not have to be total to work: drop only the OLDEST grants and
+ * the minimum moves LATER, cutover() returns a real instant, and this function
+ * said "confidential — established" about a cutover that is simply wrong. Every
+ * plaintext card authored between the true cutover and the manufactured one then
+ * satisfies shouldQuarantine's grandfather clause and renders in clear. Proven,
+ * not hypothetical: main.grantsomission.test.ts drives it with an owner-signed
+ * plaintext card that the unfixed code puts in the DOM. So a non-null cutover is
+ * now believed only when nothing on the board CONTRADICTS it.
+ *
  * WHAT THIS CAN AND CANNOT ESTABLISH, stated because it is easy to over-trust.
  * A browser cannot verify that a relay answered COMPLETELY — there is no proof
  * of non-omission in NIP-01 — so "public" never means "proven public", it means
- * "no evidence of confidentiality reached this page". If a relay withholds the
- * grants AND every sealed card AND the reader holds no key-bearing link, this
- * page has nothing to go on and will show a public-looking board. What is fixed
- * here is the case where evidence DID arrive and was being ignored.
+ * "no evidence of confidentiality reached this page". The residual after round 2
+ * is narrower than round 1's, and precise: BOTH witnesses below are testimony
+ * carried BY the sealed cards, so a relay defeats them only by withholding every
+ * sealed card that carries either signal — every one older than the cutover it
+ * wants to manufacture, AND every one naming an epoch below the grants it keeps —
+ * on top of the grants themselves, and with no key-bearing link in the reader's
+ * hands. That snapshot is a board with no old cards and no old epochs, i.e. one
+ * whose visible history begins at the manufactured cutover. It cannot be detected
+ * from inside a single relay answer, and saying so is the honest limit.
  */
 export type Confidentiality = "public" | "confidential" | "unknown";
 
 /**
- * sealedEvidence reports whether any event in this board's own snapshot is
- * SEALED — an owner-independent, in-band witness that the board is confidential.
+ * WhyUnestablished distinguishes the two ways the cutover fails to be known,
+ * because they are different facts about the relay answer and a reader can act on
+ * them differently.
  *
- * It is the signal that survives grant omission: a sealed card is authored and
- * signed by a board writer, so a relay can only remove it, never fabricate one
- * that opens. Sealed cards are also the reason a reader is looking at this board
- * at all, so withholding every one of them is a far more visible act than
- * dropping a handful of grants.
+ *  - "no-grant": no owner CEK grant reached this page at all. Consistent with a
+ *    lossy relay, an indexing gap, or omission — this page cannot tell which, and
+ *    must not claim to (the ready-5c5 wording rule).
+ *  - "grants-withheld": a grant DID arrive, and a signature-verified sealed card
+ *    on the same board contradicts it. Omission is then PROVEN, not merely
+ *    possible: the answer is internally inconsistent.
+ */
+type WhyUnestablished = "no-grant" | "grants-withheld";
+
+/** BoardConfidentiality is confidentialityOf's answer: the state, plus — only on
+ * "unknown" — which of the two reasons applies. */
+interface BoardConfidentiality {
+  state: Confidentiality;
+  why: WhyUnestablished | null;
+}
+
+/**
+ * SealedEvidence is everything this board's OWN snapshot testifies about its
+ * confidentiality, gathered in one pass over the verified sealed cards.
+ *
+ * Round 1 collected only `present` — the boolean enc marker — and threw the
+ * cek_epoch away. That discarded the second witness (see confidentialityOf), so
+ * the epoch is kept now.
+ */
+interface SealedEvidence {
+  /** At least one verified enc-marked event for this board was served. */
+  present: boolean;
+  /** The oldest such event's created_at, or null when there are none. */
+  earliestAt: number | null;
+  /** The lowest parseable cek_epoch among them, or null when none carries one. */
+  lowestEpoch: number | null;
+}
+
+/**
+ * sealedEvidenceOf summarizes the SEALED events in this board's snapshot — the
+ * owner-independent, in-band witness that the board is confidential.
+ *
+ * Sealed cards are the signal that survives grant omission: a sealed body can
+ * only be produced by a holder of the board CEK and is signed by its author, so a
+ * relay can remove one but can neither fabricate one nor alter what it says.
+ * Sealed cards are also the reason a reader is looking at this board at all, so
+ * withholding every one of them is a far more visible act than dropping a handful
+ * of grants.
  *
  * The signature check runs LAST because it is the expensive one and the tag
  * checks eliminate every event on a plaintext board first.
  */
-function sealedEvidence(events: NostrEvent[], coord: string): boolean {
+function sealedEvidenceOf(events: NostrEvent[], coord: string): SealedEvidence {
+  const ev: SealedEvidence = { present: false, earliestAt: null, lowestEpoch: null };
   for (const e of events) {
     if (!e || !isConfidential(e)) continue;
     if (boardCoordOf(e) !== coord) continue;
     // A relay is untrusted: an unverifiable event witnesses nothing, in either
     // direction. This is the same rule deriveBoardKeyring's CHECK 1 applies.
-    if (verifyEvent(e)) return true;
+    if (!verifyEvent(e)) continue;
+    ev.present = true;
+    if (ev.earliestAt === null || e.created_at < ev.earliestAt) ev.earliestAt = e.created_at;
+    const epoch = cekEpochOf(e);
+    if (epoch !== null && (ev.lowestEpoch === null || epoch < ev.lowestEpoch)) ev.lowestEpoch = epoch;
   }
+  return ev;
+}
+
+/**
+ * grantsWithheld decides whether a NON-NULL cutover is contradicted by the
+ * board's own sealed cards — i.e. whether grants older than the ones served are
+ * provably missing (ready-daf round 2).
+ *
+ * Omission can only ever REMOVE grants, and the cutover is a minimum, so the
+ * derived instant is always >= the truth. The fail-open case is exactly "strictly
+ * greater", and each witness below is a signature-verified reason to conclude it.
+ *
+ * WITNESS A — TIME. A verified sealed card older than the derived cutover proves
+ * the board was already confidential before that instant: something sealed it, so
+ * a CEK already existed, so an owner CEK grant older than every one served must
+ * exist. No assumption about epoch numbering is needed.
+ *
+ * WITNESS B — EPOCH. A verified sealed card naming a cek_epoch below the lowest
+ * epoch any served owner grant covers proves the grant that minted that epoch was
+ * not served — a card cannot seal under an epoch whose CEK does not exist. Epochs
+ * increase by one per rotation (keydist.go, and the fixture's epoch-1-then-2
+ * rotation), so a LOWER epoch is an OLDER grant, and an older grant moves the
+ * minimum earlier. This is the witness that catches the case witness A cannot: a
+ * stale writer's card sealed under the old epoch but published AFTER the
+ * manufactured cutover, which is newer than it and so raises no alarm by time.
+ *
+ * WHY B IS DELIBERATELY NARROWER THAN "ANY UNCOVERED EPOCH". A sealed card at an
+ * epoch ABOVE everything the served grants cover also proves a grant is missing —
+ * but a missing LATER grant cannot move a minimum, so the cutover is still right
+ * and quarantining the board would cost visibility for no security gain. The
+ * fixture's conf-004 (epoch 9, no epoch-9 grant anywhere) is exactly that shape
+ * and is pinned as an anti-tautology case.
+ *
+ * NEITHER WITNESS CAN BE FORGED, and that is what makes them usable without an
+ * authorship check on the card. A relay cannot mint a sealed body (no CEK) or
+ * sign one (no author key), and cannot rewrite created_at or cek_epoch — both are
+ * inside the signed id. It can only suppress the card, and suppressing the cards
+ * is the residual stated in the Confidentiality doc above. Being wrong in the
+ * other direction costs visibility only: the board goes to "unknown", which
+ * withholds MORE and says so out loud.
+ */
+function grantsWithheld(cutover: number, keyring: BoardKeyring, coord: string, ev: SealedEvidence): boolean {
+  if (ev.earliestAt !== null && ev.earliestAt < cutover) return true; // WITNESS A
+  const floor = keyring.grantEpochFloor(coord);
+  if (floor !== null && ev.lowestEpoch !== null && ev.lowestEpoch < floor) return true; // WITNESS B
   return false;
 }
 
 /**
- * confidentialityOf decides the three-valued state for ONE board.
+ * confidentialityOf decides the three-valued state for ONE board, and why.
  *
  * `hasLinkKeys` — this link carries a CEK filed under this coordinate — counts
  * as evidence, and is INDEPENDENT of the relay: it came out of the reader's own
@@ -274,24 +380,30 @@ function sealedEvidence(events: NostrEvent[], coord: string): boolean {
  * before printing the key (see keyring.ts's applyFragmentKeys). A link that
  * carries a board's read key is a statement that the board HAS a read key.
  *
- * Evidence only ever moves a board from "public" to "unknown" — a strictly
- * TIGHTENING direction, since "unknown" quarantines a superset of what
- * "confidential" does and grandfathers nothing (see encryptedBoardsOf). So a
- * hostile relay, or a crafted link, can use this to HIDE a public board's cards
- * behind a notice that says so out loud; it can never use it to reveal
- * something. That asymmetry is the reason evidence needs no authorship check:
- * being wrong here costs visibility, not confidentiality, and the page says
- * plainly that it could not establish the state.
+ * Evidence only ever moves a board TOWARDS "unknown" — a strictly TIGHTENING
+ * direction, since "unknown" quarantines a superset of what "confidential" does
+ * and grandfathers nothing (see encryptedBoardsOf). So a hostile relay, or a
+ * crafted link, can use this to HIDE a public board's cards behind a notice that
+ * says so out loud; it can never use it to reveal something. That asymmetry is the
+ * reason evidence needs no authorship check: being wrong here costs visibility,
+ * not confidentiality, and the page says plainly that it could not establish the
+ * state.
  */
 function confidentialityOf(
   keyring: BoardKeyring,
   coord: string,
   events: NostrEvent[],
   hasLinkKeys: boolean,
-): Confidentiality {
-  if (keyring.cutover(coord) !== null) return "confidential";
-  if (hasLinkKeys || sealedEvidence(events, coord)) return "unknown";
-  return "public";
+): BoardConfidentiality {
+  const ev = sealedEvidenceOf(events, coord);
+  const cutover = keyring.cutover(coord);
+  if (cutover !== null) {
+    return grantsWithheld(cutover, keyring, coord, ev)
+      ? { state: "unknown", why: "grants-withheld" }
+      : { state: "confidential", why: null };
+  }
+  if (hasLinkKeys || ev.present) return { state: "unknown", why: "no-grant" };
+  return { state: "public", why: null };
 }
 
 /**
@@ -314,13 +426,21 @@ function confidentialityOf(
  * `ok:false` is the bug this item fixes, and a LATE cutover (e.g.
  * MAX_SAFE_INTEGER) would grandfather every plaintext card on the board, which
  * is the same fail-open wearing a different number.
+ *
+ * ROUND 2 — THE STATE, NOT THE KEYRING, DECIDES. This used to consult
+ * keyring.cutover() FIRST and fall back to the state, which meant a cutover that
+ * confidentialityOf had already judged untrustworthy was handed to the fold
+ * anyway: state "unknown" was unreachable whenever a grant had been served, so
+ * partial omission drove the gate with the manufactured instant. The order is now
+ * inverted — "unknown" wins over any derived cutover, because "unknown" is
+ * precisely the verdict that the derived cutover must not be used.
  */
 function encryptedBoardsOf(keyring: BoardKeyring, state: Confidentiality): EncryptedBoardSet {
   return {
     cutover(coord: string): { cutover: number; ok: boolean } {
+      if (state === "unknown") return { cutover: 0, ok: true };
       const at = keyring.cutover(coord);
       if (at !== null) return { cutover: at, ok: true };
-      if (state === "unknown") return { cutover: 0, ok: true };
       return { cutover: 0, ok: false };
     },
   };
@@ -367,8 +487,8 @@ function encryptedBoardsOf(keyring: BoardKeyring, state: Confidentiality): Encry
  * any board in the view is confidential — established OR unestablished, because
  * in both cases the board IS confidential and the reader must be told. The
  * separate `unestablished` list names the boards whose cutover could not be
- * established, which is a different statement and gets its own sentence in the
- * UI: see confidentialityOf and unestablishedConfidentialityNotice.
+ * established AND why, which is a different statement and gets its own sentences
+ * in the UI: see confidentialityOf and unestablishedConfidentialityNotice.
  *
  * EXPORTED FOR TESTS ONLY.
  */
@@ -380,10 +500,10 @@ export async function loadBoardItems(
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
   fragmentKeys?: PortfolioKeys,
-): Promise<{ items: Item[]; confidential: boolean; unestablished: string[] }> {
+): Promise<{ items: Item[]; confidential: boolean; unestablished: UnestablishedBoard[] }> {
   const out: Item[] = [];
   let confidential = false;
-  const unestablished: string[] = [];
+  const unestablished: UnestablishedBoard[] = [];
   const unwrap = deps.keyUnwrapper(identity);
 
   for (const b of boards) {
@@ -414,9 +534,9 @@ export async function loadBoardItems(
       // ready-daf: three-valued, and computed from the board's OWN snapshot
       // plus the link — not from the presence of relay-supplied grants alone,
       // whose absence used to read as "public".
-      const state = confidentialityOf(keyring, b.coord, events, linkKeys !== undefined);
+      const { state, why } = confidentialityOf(keyring, b.coord, events, linkKeys !== undefined);
       if (state !== "public") confidential = true;
-      if (state === "unknown") unestablished.push(b.title || b.boardD);
+      if (state === "unknown") unestablished.push({ name: b.title || b.boardD, why: why ?? "no-grant" });
       const src = foldItemSource(
         {
           trusted: null,
@@ -493,6 +613,13 @@ function confidentialNotice(items: Item[], boardCount: number): string {
   return parts.join(" ");
 }
 
+/** UnestablishedBoard names one board whose cutover could not be established,
+ * with the reason, for the notice below. */
+interface UnestablishedBoard {
+  name: string;
+  why: WhyUnestablished;
+}
+
 /**
  * unestablishedConfidentialityNotice is the UI half of ready-daf: it says, in
  * the reader's own words, that the page could NOT establish a board's
@@ -500,29 +627,50 @@ function confidentialNotice(items: Item[], boardCount: number): string {
  * what the page did before.
  *
  * The wording is constrained the same way unservedBoardsNotice's is, and for the
- * same reason: it must claim exactly what this page can support. It CAN say "no
- * grant establishing the cutover reached this page". It CANNOT say "the owner
- * published no grant" (a relay may have omitted it) and it must not imply the
- * view is complete. Both halves are said out loud, because either alone
+ * same reason: it must claim exactly what this page can support. It CAN say "the
+ * grants that reached this page do not establish the cutover". It CANNOT say "the
+ * owner published no grant" (a relay may have omitted it) and it must not imply
+ * the view is complete. Both halves are said out loud, because either alone
  * misleads: silence reads as "public", and "confidential" alone reads as though
  * the quarantine is precise when in fact it is withholding cards it cannot
  * classify.
  *
+ * ROUND 2 ADDS A SECOND, STRONGER SENTENCE for the boards where omission is
+ * PROVEN rather than merely unruleoutable. The two are genuinely different facts
+ * and a reader acts on them differently: "no grant arrived" is consistent with an
+ * indexing gap and says nothing about the relay's honesty, whereas "a
+ * signature-verified card on this board contradicts the grants that arrived" says
+ * the answer is internally inconsistent and the relay is not serving what it
+ * holds. Collapsing them into one hedged sentence would have understated the
+ * second and overstated the first.
+ *
  * Returns "" when every confidential board's cutover was established, so the
  * ordinary case adds no paragraph.
  */
-function unestablishedConfidentialityNotice(names: string[]): string {
-  if (names.length === 0) return "";
-  const list = [...names].sort().join(", ");
+function unestablishedConfidentialityNotice(boards: UnestablishedBoard[]): string {
+  if (boards.length === 0) return "";
+  const list = [...boards.map((b) => b.name)].sort().join(", ");
   const subject =
-    names.length > 1
-      ? `${names.length} boards in this view carry confidential content`
+    boards.length > 1
+      ? `${boards.length} boards in this view carry confidential content`
       : "This board carries confidential content";
-  return (
-    `CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED: ${subject} (${list}), but no owner-signed grant saying WHEN it became confidential was served by the relays this page reached. ` +
-    `A missing event is not evidence of anything: reads here are unrestricted by design, so any relay can simply omit one. This page therefore treats the board as confidential with an UNKNOWN cutover rather than as public. ` +
-    `Every card on it that is not a sealed envelope is WITHHELD from this view, because a card published before the board went confidential cannot be told apart from cleartext published after. Do not read this view as complete, and do not read it as a public board.`
-  );
+  const parts = [
+    `CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED: ${subject} (${list}), but the owner-signed grants served by the relays this page reached do not establish WHEN it became confidential. ` +
+      `A missing event is not evidence of anything: reads here are unrestricted by design, so any relay can simply omit one. This page therefore treats the board as confidential with an UNKNOWN cutover rather than as public. ` +
+      `Every card on it that is not a sealed envelope is WITHHELD from this view, because a card published before the board went confidential cannot be told apart from cleartext published after. Do not read this view as complete, and do not read it as a public board.`,
+  ];
+  const withheld = boards
+    .filter((b) => b.why === "grants-withheld")
+    .map((b) => b.name)
+    .sort();
+  if (withheld.length > 0) {
+    parts.push(
+      `ON ${withheld.join(", ")} THE OMISSION IS PROVEN, not merely possible: a signature-verified sealed card on the board is older than the earliest grant the relays served, or names a key epoch that none of the served grants covers. ` +
+        `Either one is only possible if grants OLDER than the ones served exist, so the instant those grants imply is too late and cannot be used. ` +
+        `No relay can forge this signal — sealing a card needs a board key and signing it needs its author's key — and it cannot hide the signal without also withholding the cards that carry it.`,
+    );
+  }
+  return parts.join(" ");
 }
 
 /**

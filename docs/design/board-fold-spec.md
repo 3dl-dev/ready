@@ -724,6 +724,54 @@ is addressed to (`pkg/sync/keydist.go:172-175`). `Cutover(coord)` returning
 `ok=true` is exactly "this board is confidential"
 (`pkg/sync/keydist.go:134-140`).
 
+**§11.13a A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (`ready-daf`).** §11.13
+computes a MINIMUM over the grants a relay chose to serve, and reads on this
+transport are unrestricted by design — no relay owes a client every event it
+holds. Omission can therefore only ever REMOVE grants, so the derived instant is
+always `>= ` the true cutover, and the fail-open case is exactly "strictly
+greater": every plaintext card authored between the true cutover and the derived
+one satisfies §11.4's grandfather clause and renders in clear. `Cutover(coord)`
+returning `ok=true` means "at least one owner CEK grant reached me", NOT "this is
+when the board went confidential" — a distinction that is invisible while a client
+only ever sees complete answers, and load-bearing the moment one does not. Note
+this is not only an attack shape: kind 39301 is ADDRESSABLE and its `d` tag is
+`<boardD>:<grantee>`, so after a rotation a conformant relay retains only each
+grantee's NEWEST grant and the epoch-1 grants are legitimately gone (cf. §11.11a,
+which is a statement about what the OWNER publishes, not about what a relay
+retains).
+
+A reader MUST therefore treat a derived cutover as unusable when the board's own
+snapshot CONTRADICTS it. Two contradictions are available, both carried by the
+sealed cards themselves and both signature-verified, so a relay can suppress them
+but can neither forge nor alter them (sealing needs a board CEK, signing needs the
+author's key, and `created_at`/`cek_epoch` are inside the signed id):
+
+- **TIME.** A verified sealed event on the board OLDER than the derived cutover
+  proves the board was already confidential before that instant.
+- **EPOCH.** A verified sealed event naming a `cek_epoch` BELOW the lowest epoch
+  any served owner CEK grant covers proves that epoch's grant was not served;
+  epochs increase by one per rotation (§11.10, §11.11), so a lower epoch is an
+  older grant, and an older grant moves the minimum earlier.
+
+An epoch ABOVE everything the served grants cover is deliberately NOT a
+contradiction: it also proves a grant is missing, but a missing LATER grant cannot
+move a MINIMUM, so the cutover still stands and quarantining would cost visibility
+for no security gain. On a contradiction the state is UNKNOWN and the reader fails
+closed exactly as for "no grant at all" — gate ON, cutover `0`, so §11.4
+grandfathers nothing and every event that is not a well-formed sealed envelope is
+withheld — and it says so, distinguishing "no grant reached me" (consistent with
+an indexing gap) from "the answer I got is internally inconsistent" (omission
+proven). Reference implementation: `web/board/src/main.ts`'s `confidentialityOf` /
+`grantsWithheld` over `BoardKeyring.grantEpochFloor`, witnessed by
+`web/board/src/main.grantsomission.test.ts`. **The residual, stated exactly:** both
+witnesses ride on the sealed cards, so a relay still defeats them by withholding
+every sealed card older than the cutover it wants to manufacture AND every one
+naming a lower epoch, on top of the grants — i.e. by serving a board whose visible
+history begins at the manufactured cutover. NIP-01 has no proof of non-omission,
+so that case is undetectable from inside one relay answer and MUST NOT be claimed
+otherwise. **The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
+derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
+
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
 reader holds (`pkg/sync/keydist.go:147-161`). A member that missed a rotation
 returns a stale epoch; the owner always holds the true current one
