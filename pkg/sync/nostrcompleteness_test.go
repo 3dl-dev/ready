@@ -73,17 +73,18 @@ func TestCardSpec_RoundTripsAllFields(t *testing.T) {
 		t.Fatalf("key: %v", err)
 	}
 	src := &state.Item{
-		ID:       "ready-rt",
-		Title:    "round-trip item",
-		Type:     "task",
-		Status:   state.StatusActive,
-		Priority: "p1",
-		For:      "atlas/worker-7",
-		Level:    "human",
-		ParentID: "ready-epic",
-		ETA:      "2026-07-03T09:00:00Z",
-		Due:      "2026-07-04T09:00:00Z",
-		Labels:   []string{"security", "bug"}, // seed atoms so the registry admits them
+		ID:            "ready-rt",
+		Title:         "round-trip item",
+		Type:          "task",
+		Status:        state.StatusActive,
+		Priority:      "p1",
+		For:           "atlas/worker-7",
+		Level:         "human",
+		ParentID:      "ready-epic",
+		ETA:           "2026-07-03T09:00:00Z",
+		Due:           "2026-07-04T09:00:00Z",
+		Labels:        []string{"security", "bug"}, // seed atoms so the registry admits them
+		ClaimedDuring: "ready-4c6",
 	}
 	events := itemCardEvents(t, k, "ready", map[string]*state.Item{src.ID: src})
 	trusted := map[string]bool{k.PubKeyHex(): true}
@@ -97,6 +98,7 @@ func TestCardSpec_RoundTripsAllFields(t *testing.T) {
 		{"ParentID", got.ParentID, src.ParentID},
 		{"ETA", got.ETA, src.ETA},
 		{"Due", got.Due, src.Due},
+		{"ClaimedDuring", got.ClaimedDuring, src.ClaimedDuring},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s not preserved: got %q want %q", c.name, c.got, c.want)

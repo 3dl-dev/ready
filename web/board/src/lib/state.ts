@@ -33,6 +33,12 @@ export interface Item {
   for: string;
   by?: string;
 
+  /** claimed_during mirrors state.Item.ClaimedDuring (pkg/state/state.go
+   * ready-0103): the id of the item the CREATING identity held an active
+   * claim on at create time, stamped automatically by `rd create` only when
+   * exactly one such claim exists. Descriptive only. */
+  claimed_during?: string;
+
   priority: string;
   status: string;
   eta?: string;
@@ -139,6 +145,7 @@ export function encodeItem(item: Item): Record<string, unknown> {
   str("project", item.project);
   out.for = item.for ?? "";
   str("by", item.by);
+  str("claimed_during", item.claimed_during);
   out.priority = item.priority;
   out.status = item.status;
   str("eta", item.eta);
@@ -169,7 +176,7 @@ export function encodeItem(item: Item): Record<string, unknown> {
   arr("label_warnings", item.label_warnings);
   arr("cross_campfire_warnings", item.cross_campfire_warnings);
   // `redacted` is deliberately absent: state.Item.Redacted is `json:"-"` on the
-  // Go side (state.go:171), so emitting it here would break both the vector
+  // Go side (state.go:181), so emitting it here would break both the vector
   // comparison and live parity with `rd list --json`. Do not "complete" this
   // function by adding it. See the field's doc comment in Item.
   return out;

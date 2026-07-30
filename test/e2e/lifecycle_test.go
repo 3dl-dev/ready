@@ -267,3 +267,68 @@ func TestE2E_Show_NotFound(t *testing.T) {
 		t.Errorf("expected 'not found' in stderr, got: %q", stderr)
 	}
 }
+
+// TestE2E_Create_StampsClaimedDuring proves ready-0103's provenance primitive
+// end-to-end through the REAL publish+fold path (not a Go struct fixture): a
+// create issued while the identity holds exactly one active claim stamps that
+// item's id onto the new item's ClaimedDuring; a create issued with zero or
+// more than one active claim leaves it empty.
+func TestE2E_Create_StampsClaimedDuring(t *testing.T) {
+	e := NewEnv(t)
+
+	// Zero active claims yet: the very first item in the project stamps empty.
+	first := createItem(e, t, "First item, no claim yet", "p1", "task")
+	var firstShown Item
+	if err := e.RdJSON(&firstShown, "show", first.ID); err != nil {
+		t.Fatalf("show %s: %v", first.ID, err)
+	}
+	if firstShown.ClaimedDuring != "" {
+		t.Errorf("ClaimedDuring = %q, want empty (no active claim existed at create time)", firstShown.ClaimedDuring)
+	}
+
+	// Claim it — now exactly one active claim (by=self) exists.
+	e.RdMustSucceed("claim", first.ID)
+
+	// Create a second item while the claim is held: exactly one active claim
+	// by self exists (`first`), so it must be stamped.
+	second := createItem(e, t, "Second item, created mid-claim", "p1", "task")
+	var secondShown Item
+	if err := e.RdJSON(&secondShown, "show", second.ID); err != nil {
+		t.Fatalf("show %s: %v", second.ID, err)
+	}
+	if secondShown.ClaimedDuring != first.ID {
+		t.Errorf("ClaimedDuring = %q, want %q (the one active claim held at create time)", secondShown.ClaimedDuring, first.ID)
+	}
+
+	// Claim `second` too — now self holds TWO active claims (first, second).
+	// A create at this point is ambiguous and must stamp nothing.
+	e.RdMustSucceed("claim", second.ID)
+	third := createItem(e, t, "Third item, two claims held", "p1", "task")
+	var thirdShown Item
+	if err := e.RdJSON(&thirdShown, "show", third.ID); err != nil {
+		t.Fatalf("show %s: %v", third.ID, err)
+	}
+	if thirdShown.ClaimedDuring != "" {
+		t.Errorf("ClaimedDuring = %q, want empty (two active claims held is ambiguous)", thirdShown.ClaimedDuring)
+	}
+
+	// Descriptive only: none of this ever affected exit codes above (every
+	// RdMustSucceed/createItem call already asserts success), and rd dep tree
+	// now reports the planned/admitted split over this exact structure.
+	var tree struct {
+		Provenance struct {
+			Total    int `json:"total"`
+			Planned  int `json:"planned"`
+			Admitted int `json:"admitted"`
+		} `json:"provenance"`
+	}
+	if err := e.RdJSON(&tree, "dep", "tree", first.ID); err != nil {
+		t.Fatalf("dep tree %s: %v", first.ID, err)
+	}
+	// `first` has no Blocks/parent edges to `second`/`third` (they are
+	// siblings, not wired into its tree), so its own closure is itself alone:
+	// 1 total, planned (nothing points its ClaimedDuring at itself).
+	if tree.Provenance.Total != 1 || tree.Provenance.Planned != 1 || tree.Provenance.Admitted != 0 {
+		t.Errorf("provenance = %+v, want {Total:1 Planned:1 Admitted:0} (first has no closure members)", tree.Provenance)
+	}
+}

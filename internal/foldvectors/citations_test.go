@@ -664,7 +664,7 @@ func funcSpans(path string) (map[string]funcSpan, error) {
 var citationExceptions = map[string]string{
 	"refuseRedactedRepublish|cmd/rd/confidential_guard.go|28@decl26": "§16.9: cites the " +
 		"guard's own doc comment block; refuseRedactedRepublish is declared at :26",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|156@decl155": "§16.9: the " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|184@decl183": "§16.9: the " +
 		"refuseRedactedRepublish CALL site, the first statement of the body (:156); " +
 		"publishItemFullCreateNostr is declared at :155",
 	"publishItemStatusChangeNostr|cmd/rd/nostr.go|356@decl353": "§16.9: the " +
@@ -681,14 +681,14 @@ var citationExceptions = map[string]string{
 		"from :552 by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus)",
 	"identitySet|pkg/views/views.go|113@decl164": "§13.7: identitySet is CALLED inside " +
 		"DelegatedFilter's 3-line body (:113-115); identitySet itself is declared at :164",
-	"parseTimestampValue|pkg/state/state.go|340@decl355": "§14.6: cites the enumeration " +
+	"parseTimestampValue|pkg/state/state.go|350@decl365": "§14.6: cites the enumeration " +
 		"`parseTimestamp` / `parseTimestampValue` (:324-354) spanning BOTH funcs' " +
 		"declarations; parseTimestampValue itself is declared at :339",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|592@decl155": "§20.6: CALL site inside " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|629@decl183": "§20.6: CALL site inside " +
 		"runCreateNostr (moved :553→:566 by ready-ca3, :566→:587 by ready-500's " +
 		"first delegate/update blocked-status guard round, then :587→:592 by " +
 		"ready-500's rework round); publishItemFullCreateNostr is declared at :155",
-	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|667@decl155": "§21.x: second CALL site, " +
+	"publishItemFullCreateNostr|cmd/rd/nostrwrite.go|704@decl183": "§21.x: second CALL site, " +
 		"inside runEngageNostr (moved :628→:641 by ready-ca3, :641→:662 by " +
 		"ready-500's first guard-insertion round, then :662→:667 by ready-500's " +
 		"rework round); publishItemFullCreateNostr is declared at :155",
@@ -711,19 +711,19 @@ var citationExceptions = map[string]string{
 		"closer to the citation (`pkg/views/views.go:185-196`) than `FocusFilter` " +
 		"itself; the citation is FocusFilter's own declaration+body, FocusFilter is " +
 		"declared at :185, ReadyFilter at :60",
-	"clearOrSet|pkg/state/state.go|1030@decl1034": "§14.6: cites the enumeration " +
+	"clearOrSet|pkg/state/state.go|1040@decl1044": "§14.6: cites the enumeration " +
 		"`clearOrSet` / `ClearSentinel` (:1014-1023) spanning both the ClearSentinel " +
 		"const's declaration (:1014) and clearOrSet's own body; clearOrSet itself is " +
 		"declared at :1018",
-	"ParseCrossCampfireRef|pkg/state/state.go|1077@decl1079": "§14.8: cites the enumeration " +
+	"ParseCrossCampfireRef|pkg/state/state.go|1087@decl1089": "§14.8: cites the enumeration " +
 		"`ParseCrossCampfireRef` / `CrossCampfireRef` (:1061-1083) spanning both the " +
 		"CrossCampfireRef type's declaration and ParseCrossCampfireRef's own body; " +
 		"ParseCrossCampfireRef itself is declared at :1063",
-	"BuildCardEvent|pkg/sync/nostrwire.go|237@decl254": "§15.8: documents the FROZEN " +
+	"BuildCardEvent|pkg/sync/nostrwire.go|241@decl258": "§15.8: documents the FROZEN " +
 		"confidential-boards-envelope.md's now-stale citation for BuildCardEvent " +
 		"(claimed :237-310 when frozen); BuildCardEvent's CURRENT declaration is :254 " +
 		"(moved from :246, ready-a9b) — this entry records drift, not a live citation of :237",
-	"BuildStatusEvent|pkg/sync/nostrwire.go|319@decl370": "§15.8: documents the FROZEN " +
+	"BuildStatusEvent|pkg/sync/nostrwire.go|323@decl377": "§15.8: documents the FROZEN " +
 		"confidential-boards-envelope.md's now-stale citation for BuildStatusEvent " +
 		"(claimed :319-344 when frozen); BuildStatusEvent's CURRENT declaration is " +
 		":370 (moved from :362, ready-a9b) — this entry records drift, not a live citation of :319",
@@ -736,7 +736,7 @@ var citationExceptions = map[string]string{
 	"boardConfidentialEnvelope|cmd/rd/confidential.go|83@decl85": "§27.1-area: cites " +
 		"boardConfidentialEnvelope's OWN 6-line doc comment (:79-84, cited range :83-84), " +
 		"not its body; the func itself is declared at :85",
-	"CardCoord|pkg/sync/nostrwire.go|378@decl201": "§27.8: CALL site inside " +
+	"CardCoord|pkg/sync/nostrwire.go|385@decl205": "§27.8: CALL site inside " +
 		"BuildStatusEvent's tag-table build (`CardCoord(k.PubKeyHex(), itemID)`, :378, " +
 		"moved from :370 by ready-a9b); CardCoord itself is declared at :201 " +
 		"(moved from :196)",
@@ -749,16 +749,16 @@ var citationExceptions = map[string]string{
 		"`by` tag write (:61-63) inside BuildHistoricalStatusEvent's body; " +
 		"BuildHistoricalStatusEvent is never cited at its own declaration line " +
 		"(:49) — only via this detail range",
-	"BuildCardEvent|pkg/sync/nostrwire.go|299@decl254": "§23.3: the three " +
+	"BuildCardEvent|pkg/sync/nostrwire.go|303@decl258": "§23.3: the three " +
 		"label-emission-mode branch (:299-319, moved from :291-311 by ready-a9b) " +
 		"inside BuildCardEvent's body; BuildCardEvent's own declaration+body is " +
 		"cited exactly at :254 (§5.1, `pkg/sync/nostrwire.go:254-...`)",
-	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|451@decl424": "§11.5/§19.4: " +
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|458@decl431": "§11.5/§19.4: " +
 		"the second `a` tag (board coordinate) construction (:451-454, moved from " +
 		":443-446 by ready-a9b) inside the func's tag-table build; " +
 		"BuildStatusEventWithIssueRoot is never cited at its own declaration line " +
 		"(:424) — only via detail ranges like this one",
-	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|455@decl424": "§19.4/§24.1: " +
+	"BuildStatusEventWithIssueRoot|pkg/sync/nostrwire.go|462@decl431": "§19.4/§24.1: " +
 		"the re-sign-after-tag-mutation step (:455-462, moved from :447-454 by " +
 		"ready-a9b); BuildStatusEventWithIssueRoot is never cited at its own " +
 		"declaration line (:424) — only via detail ranges",
@@ -797,14 +797,14 @@ var citationExceptions = map[string]string{
 	"encWellFormed|pkg/sync/envelope.go|74@decl73": "§25.2: the `enc != \"1\"` " +
 		"check one line into encWellFormed's body (:74); encWellFormed's own " +
 		"declaration+body is cited exactly at :73 (§11.2, `:73-85`)",
-	"handleWorkCreate|pkg/state/state.go|581@decl572": "§15.x: a detail range " +
+	"handleWorkCreate|pkg/state/state.go|591@decl582": "§15.x: a detail range " +
 		"(:565-568) inside handleWorkCreate's body; handleWorkCreate's own " +
 		"declaration is cited exactly at :556",
 	"itemFromCard|pkg/sync/nostrproject.go|584@decl582": "§4.6: the nanosecond " +
 		"multiplication step (:584-586) inside itemFromCard's body; itemFromCard's " +
 		"own declaration+body is cited exactly at :582 (§5.1, `:582-648`, moved from " +
 		"`:562-628` by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus)",
-	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|660@decl647": "§27.x: the " +
+	"publishEngagedItemsNostr|cmd/rd/nostrwrite.go|697@decl684": "§27.x: the " +
 		"project-prefix assignment (moved :621→:634 by ready-ca3, :634→:655 by " +
 		"ready-500's first guard-insertion round, then :655→:660 by ready-500's " +
 		"rework round) inside publishEngagedItemsNostr's body; its declaration is " +
@@ -819,41 +819,41 @@ var citationExceptions = map[string]string{
 		"`setCardEnvelope` call site inside publishItemCardEditNostr's body (:428, " +
 		"moved from :406 by ready-500's rework-round guard insertion); its " +
 		"declaration+body is cited exactly at :399 (`:399-441`)",
-	"runApproveNostr|cmd/rd/nostrwrite.go|323@decl318": "§22.2 recap: a detail " +
+	"runApproveNostr|cmd/rd/nostrwrite.go|351@decl346": "§22.2 recap: a detail " +
 		"range (moved :304-309 → :318-323 by ready-ca3/ready-500's first round, " +
 		"then :318-323 → :323-328 by ready-500's rework round) inside " +
 		"runApproveNostr's body; its declaration+body is cited exactly at :318 " +
 		"(`:318-340`, and by §26.2's bare `:318`)",
-	"runCloseNostr|cmd/rd/nostrwrite.go|250@decl237": "§20.5 recap: the implicit " +
+	"runCloseNostr|cmd/rd/nostrwrite.go|278@decl265": "§20.5 recap: the implicit " +
 		"unblock call site (:247) inside runCloseNostr's body; its declaration is " +
 		"cited exactly by §26.2's bare `:234`",
-	"runCreateNostr|cmd/rd/nostrwrite.go|582@decl544": "§27.x: the `item.Project` " +
+	"runCreateNostr|cmd/rd/nostrwrite.go|618@decl572": "§27.x: the `item.Project` " +
 		"assignment (moved :543→:556 by ready-ca3, :556→:577 by ready-500's first " +
 		"guard-insertion round, then :577→:582 by ready-500's rework round) inside " +
 		"runCreateNostr's body; its declaration+body is cited exactly at :544 " +
 		"(§18.8, `:544-596`, moved from :518-570)",
-	"runDepAddNostr|cmd/rd/nostrwrite.go|370@decl369": "§21.1/§21.3 recap: the " +
+	"runDepAddNostr|cmd/rd/nostrwrite.go|398@decl397": "§21.1/§21.3 recap: the " +
 		"cross-board/read-trust guard (moved :351-353 → :365-367 by ready-500's " +
 		"first guard-insertion round, then :365-367 → :370-372 by ready-500's " +
 		"rework round) one line into runDepAddNostr's body; its declaration is " +
 		"cited exactly by §26.2's bare `:369`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|458@decl449": "§20.4/§24.7 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|486@decl477": "§20.4/§24.7 recap: the " +
 		"status-only-update detail range (moved :439-441 → :450-452 by ready-500's " +
 		"first round, then :450-452 → :458-460 by ready-500's rework round); " +
 		"runUpdateNostr's declaration " +
 		"is cited exactly by §26.2's bare `:449`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|472@decl449": "§24.1 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|500@decl477": "§24.1 recap: the " +
 		"field-rewrite block (extended to include the ready-b878 ParentID " +
 		"assignment and ready-ca3's parent-id validation, moved :443-479 → " +
 		":467-500 by ready-500's first round, then :467-500 → :472-505 by " +
 		"ready-500's rework round); " +
 		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:449`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|502@decl449": "§16.x/§24.1 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|530@decl477": "§16.x/§24.1 recap: the " +
 		"card-edit-publish detail line (moved :468→:476 by ready-ca3's parent-id " +
 		"validation block, :476→:497 by ready-500's first round, then :497→:502 " +
 		"by ready-500's rework round); " +
 		"runUpdateNostr's declaration is cited exactly by §26.2's bare `:449`",
-	"runUpdateNostr|cmd/rd/nostrwrite.go|507@decl449": "§20.4/§24.7 recap: the " +
+	"runUpdateNostr|cmd/rd/nostrwrite.go|535@decl477": "§20.4/§24.7 recap: the " +
 		"`Status=<statusTo>` assignment block (moved :473-484 → :481-492 by " +
 		"ready-ca3, :481-492 → :502-513 by ready-500's first round, then " +
 		":502-513 → :507-518 by ready-500's rework round); " +

@@ -45,7 +45,7 @@ export const AUTHORITATIVE_FOREVER = Infinity;
 
 export const KindBoard = 30301;
 
-/** BoardCoord returns "30301:<pubkey>:<boardD>" (pkg/sync/nostrwire.go:193). */
+/** BoardCoord returns "30301:<pubkey>:<boardD>" (pkg/sync/nostrwire.go:202). */
 export function boardCoord(pubkey: string, boardD: string): string {
   return `${KindBoard}:${pubkey}:${boardD}`;
 }

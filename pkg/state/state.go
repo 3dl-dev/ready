@@ -42,8 +42,8 @@ const (
 type LabelDef struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	DefinedBy   string `json:"defined_by"`  // "seed" or pubkey hex
-	DefinedAt   int64  `json:"defined_at"`  // unix nanos; 0 for seed atoms
+	DefinedBy   string `json:"defined_by"` // "seed" or pubkey hex
+	DefinedAt   int64  `json:"defined_at"` // unix nanos; 0 for seed atoms
 }
 
 // DeriveResult holds the full derived state from a campfire message log:
@@ -99,10 +99,20 @@ type Item struct {
 	Context     string `json:"context,omitempty"`
 	Description string `json:"description,omitempty"` // alias for context, for bd compatibility
 	Type        string `json:"type"`
-	Level   string `json:"level,omitempty"`
-	Project string `json:"project,omitempty"`
-	For     string `json:"for"`
-	By      string `json:"by,omitempty"`
+	Level       string `json:"level,omitempty"`
+	Project     string `json:"project,omitempty"`
+	For         string `json:"for"`
+	By          string `json:"by,omitempty"`
+
+	// ClaimedDuring is the id of the item the CREATING identity held an active
+	// claim on (status=active, by=creator) at the moment this item was
+	// created. Stamped automatically by create only (ready-0103), never by any
+	// other mutation: exactly one such claim -> stamped; zero or more than one
+	// -> left empty (ambiguous). Descriptive only, never enforced — it lets
+	// `rd dep tree` count how many of an objective's closure members were
+	// PLANNED (parented from the start) versus ADMITTED mid-dispatch (created
+	// while some agent held a claim inside the objective's own tree).
+	ClaimedDuring string `json:"claimed_during,omitempty"`
 
 	Priority string `json:"priority"`
 	Status   string `json:"status"`

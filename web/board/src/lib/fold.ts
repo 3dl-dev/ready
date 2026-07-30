@@ -123,6 +123,9 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
     for: tagValue(e, "for"),
     parent_id: tagValue(e, "parent") || undefined,
     due: tagValue(e, "due") || undefined,
+    // claimed_during (ready-0103) — additive rd-extension tag; empty/absent on
+    // old cards or a create with zero/ambiguous active claims.
+    claimed_during: tagValue(e, "claimed_during") || undefined,
   };
   const p = tagValue(e, "p");
   if (p !== "") item.by = p;
@@ -137,7 +140,7 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
       else item.waiting_on = undefined;
       if (pl.labels && pl.labels.length > 0) item.labels = pl.labels;
     } else {
-      // FAIL-CLOSED, AND MARKED — mirroring nostrproject.go:633-641. `redacted`
+      // FAIL-CLOSED, AND MARKED — mirroring nostrproject.go:636-644. `redacted`
       // is the in-band signal that stops a future write path from re-sealing this
       // placeholder as the item's real content (state.ts's Item.redacted has the
       // full argument); the read substitution alone is safe, the

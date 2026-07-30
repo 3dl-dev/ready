@@ -704,3 +704,106 @@ func TestBuildDepTree_RootNotInItems(t *testing.T) {
 		t.Errorf("root should have 0 children, got %d", len(tree.Children))
 	}
 }
+
+// TestSummarizeProvenance_RealReadyDb0Shape reproduces the STRUCTURE ready-0103's
+// note measured on the real ready-db0 dispatch (parsed by hand from 3.5MB of
+// session JSONL: of 25 items closed under that dispatch, only 4 were ready-db0's
+// own children — 16% on-objective — while most landed under a sibling milestone
+// (ready-35a, which the operator had explicitly deferred behind M1) or under no
+// parent at all). ready-db0 really does `Blocks: ready-35a` in this project (see
+// `rd show ready-db0`), so this fixture's edges are the REAL dependency shape;
+// ClaimedDuring is the only synthesized part, since the field did not exist when
+// that dispatch actually ran (rd never retroactively stamps history — ready-0103
+// is prospective-only). This test proves closureIDs/summarizeProvenance would
+// correctly flag exactly the gap the note describes: an item parented AWAY from
+// the dispatched objective (under ready-35a, or under no parent) but created
+// while its author held a claim on something INSIDE ready-db0's own tree is an
+// ADMISSION, not a plan — invisible to a parent_id-only view, visible here.
+func TestSummarizeProvenance_RealReadyDb0Shape(t *testing.T) {
+	items := map[string]*state.Item{
+		"ready-db0": {ID: "ready-db0", Status: "done", Blocks: []string{"ready-35a"}},
+		// Planned: a real child of the dispatched objective, wired in from the
+		// start. No claim to attribute — ClaimedDuring empty.
+		"ready-planned-a": {ID: "ready-planned-a", Status: "done", ParentID: "ready-db0"},
+		"ready-planned-b": {ID: "ready-planned-b", Status: "done", ParentID: "ready-db0"},
+		// ready-35a: the sibling milestone ready-db0 really blocks. Untouched by
+		// this dispatch's plan, but reachable from ready-db0's closure via Blocks
+		// — exactly like the real project.
+		"ready-35a": {ID: "ready-35a", Status: "blocked"},
+		// Admitted: parented to the SIBLING milestone (never a child of the
+		// dispatched objective), but its creator held an active claim on
+		// ready-db0 itself at create time — the mid-dispatch admission the note
+		// describes, invisible to a parent_id-only view.
+		"ready-admitted-a": {ID: "ready-admitted-a", Status: "done", ParentID: "ready-35a", ClaimedDuring: "ready-db0"},
+		// Admitted: also parented to the sibling milestone, but created while its
+		// author held a claim on a PLANNED child already inside the closure —
+		// still an admission, not a plan, regardless of which reachable node its
+		// ClaimedDuring names.
+		"ready-admitted-b": {ID: "ready-admitted-b", Status: "done", ParentID: "ready-35a", ClaimedDuring: "ready-planned-a"},
+		// NOT admitted, despite a non-empty ClaimedDuring: the claimed item is
+		// OUTSIDE ready-db0's closure entirely (unrelated work), so this must
+		// count as planned rather than be misattributed to this objective.
+		"ready-unrelated-parent": {ID: "ready-unrelated-parent", Status: "done"},
+		"ready-outside-claim":    {ID: "ready-outside-claim", Status: "done", ParentID: "ready-35a", ClaimedDuring: "ready-unrelated-parent"},
+	}
+
+	closure := closureIDs("ready-db0", items)
+	for _, id := range []string{"ready-db0", "ready-planned-a", "ready-planned-b", "ready-35a", "ready-admitted-a", "ready-admitted-b", "ready-outside-claim"} {
+		if !closure[id] {
+			t.Errorf("expected %s in ready-db0's closure, closure=%v", id, closure)
+		}
+	}
+	if closure["ready-unrelated-parent"] {
+		t.Errorf("ready-unrelated-parent must NOT be in ready-db0's closure (nothing links it in)")
+	}
+
+	summary := summarizeProvenance(closure, items)
+	if summary.Total != 7 {
+		t.Errorf("Total = %d, want 7 (db0, 2 planned, 35a, 2 admitted, 1 outside-claim)", summary.Total)
+	}
+	if summary.Admitted != 2 {
+		t.Errorf("Admitted = %d, want 2 (ready-admitted-a, ready-admitted-b)", summary.Admitted)
+	}
+	if summary.Planned != 5 {
+		t.Errorf("Planned = %d, want 5 (db0, 2 planned children, 35a, outside-claim)", summary.Planned)
+	}
+}
+
+// TestClaimedDuringStamp_ExactlyOneActiveClaim verifies ready-0103's primitive:
+// exactly one item with status=active and by=self stamps that item's id; zero or
+// more than one leaves the stamp empty (never guesses, never blocks the create).
+func TestClaimedDuringStamp_ExactlyOneActiveClaim(t *testing.T) {
+	self := "self-pubkey"
+	other := "other-pubkey"
+
+	t.Run("zero claims", func(t *testing.T) {
+		items := map[string]*state.Item{
+			"ready-a": {ID: "ready-a", Status: "inbox", By: self},
+			"ready-b": {ID: "ready-b", Status: "active", By: other},
+		}
+		if got := claimedDuringStamp(self, items); got != "" {
+			t.Errorf("got %q, want empty (no active claim by self)", got)
+		}
+	})
+
+	t.Run("exactly one claim", func(t *testing.T) {
+		items := map[string]*state.Item{
+			"ready-a": {ID: "ready-a", Status: "active", By: self},
+			"ready-b": {ID: "ready-b", Status: "done", By: self},
+			"ready-c": {ID: "ready-c", Status: "active", By: other},
+		}
+		if got := claimedDuringStamp(self, items); got != "ready-a" {
+			t.Errorf("got %q, want %q", got, "ready-a")
+		}
+	})
+
+	t.Run("more than one claim is ambiguous, stamps nothing", func(t *testing.T) {
+		items := map[string]*state.Item{
+			"ready-a": {ID: "ready-a", Status: "active", By: self},
+			"ready-b": {ID: "ready-b", Status: "active", By: self},
+		}
+		if got := claimedDuringStamp(self, items); got != "" {
+			t.Errorf("got %q, want empty (ambiguous: 2 active claims by self)", got)
+		}
+	})
+}

@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 // depCmd is the parent command for dep subcommands.
 var depCmd = &cobra.Command{
 	Use:   "dep",
@@ -99,14 +98,24 @@ var depTreeCmd = &cobra.Command{
 			allItems[item.ID] = item
 		}
 
+		// ready-0103: distinguish PLANNED closure members from ones ADMITTED
+		// mid-dispatch (created while some agent held an active claim on
+		// another item already inside this same tree). Read-only report over
+		// the same closure the tree above walks; never affects the walk itself.
+		closure := closureIDs(root.ID, allItems)
+		summary := summarizeProvenance(closure, allItems)
+
 		if jsonOutput {
 			tree := buildDepTree(root.ID, allItems, map[string]bool{})
+			tree.Provenance = &summary
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(tree)
 		}
 
 		printDepTree(root, allItems, "", map[string]bool{})
+		fmt.Printf("\n%d items in this tree: %d planned, %d admitted mid-dispatch (created while some agent held a claim inside the tree)\n",
+			summary.Total, summary.Planned, summary.Admitted)
 		return nil
 	},
 }
@@ -117,6 +126,80 @@ type treeNode struct {
 	Title    string      `json:"title"`
 	Status   string      `json:"status"`
 	Children []*treeNode `json:"children,omitempty"`
+	// Provenance is set ONLY on the tree's ROOT node (ready-0103) — an existing
+	// JSON consumer walking Children sees no new field on any non-root node,
+	// so this is purely additive to the wire contract.
+	Provenance *provenanceSummary `json:"provenance,omitempty"`
+}
+
+// provenanceSummary is ready-0103's DONE CONDITION made countable: of the items
+// in a `rd dep tree` closure, how many were PLANNED (wired into the tree from
+// the start) versus ADMITTED (created while some agent held an active claim on
+// an item already inside this SAME closure — i.e. mid-dispatch churn, not the
+// original plan). This is the one query that used to require parsing 3.5MB of
+// session JSONL by hand (ready-db0's measured 16% on-objective figure).
+type provenanceSummary struct {
+	Total    int `json:"total"`
+	Planned  int `json:"planned"`
+	Admitted int `json:"admitted"`
+}
+
+// closureIDs returns every item id in the SAME downstream closure `rd dep
+// tree` walks and prints — root plus every item reachable via item.Blocks and
+// via child.ParentID == <some id already in the closure> — matching
+// buildDepTree/printDepTree's own edge definition exactly, so the provenance
+// count is scoped to precisely what the tree above it shows, no more and no
+// less. Cycle-safe via the `seen` set (a cycle simply stops re-expanding).
+func closureIDs(rootID string, items map[string]*state.Item) map[string]bool {
+	seen := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		item, ok := items[id]
+		if !ok {
+			return
+		}
+		for _, childID := range item.Blocks {
+			walk(childID)
+		}
+		for _, child := range items {
+			if child.ParentID == id {
+				walk(child.ID)
+			}
+		}
+	}
+	walk(rootID)
+	return seen
+}
+
+// summarizeProvenance classifies every member of closure as PLANNED or
+// ADMITTED (ready-0103). A member is ADMITTED when its ClaimedDuring names
+// ANOTHER member of this SAME closure — i.e. its creator held an active claim
+// on something already inside this objective's own tree at create time. Empty
+// ClaimedDuring (no claim, or an ambiguous/zero-claim create), or a
+// ClaimedDuring naming an item OUTSIDE this closure (the creator was working
+// on something unrelated), both count as PLANNED: this function only ever
+// counts an admission it can attribute to THIS closure specifically, never a
+// guess. An item id present in the closure walk but absent from `items`
+// (a dangling reference) counts as PLANNED — there is no ClaimedDuring to read.
+func summarizeProvenance(closure map[string]bool, items map[string]*state.Item) provenanceSummary {
+	s := provenanceSummary{Total: len(closure)}
+	for id := range closure {
+		item, ok := items[id]
+		if !ok {
+			s.Planned++
+			continue
+		}
+		if item.ClaimedDuring != "" && closure[item.ClaimedDuring] {
+			s.Admitted++
+		} else {
+			s.Planned++
+		}
+	}
+	return s
 }
 
 // buildDepTree builds a recursive tree for JSON output.

@@ -161,6 +161,10 @@ type CardSpec struct {
 	// Due carries the item's hard due date (Item.Due, RFC3339). Additive rd-extension
 	// tag ("due") (ready-187). DISTINCT from ETA. Old cards default to empty Due.
 	Due string
+	// ClaimedDuring carries Item.ClaimedDuring (ready-0103) — the id of the item
+	// the creator held an active claim on at create time. Additive rd-extension
+	// tag ("claimed_during"); descriptive only. Old cards default to empty.
+	ClaimedDuring string
 
 	// Enc, when non-nil, puts this card in CONFIDENTIAL mode (epic ready-216): the
 	// free-text fields (Title, Context, WaitingOn) are AEAD-sealed into
@@ -335,6 +339,9 @@ func BuildCardEvent(k *nostr.Key, spec CardSpec, createdAt int64) (*nostr.Event,
 	}
 	if spec.Due != "" {
 		tags = append(tags, []string{"due", spec.Due})
+	}
+	if spec.ClaimedDuring != "" {
+		tags = append(tags, []string{"claimed_during", spec.ClaimedDuring})
 	}
 	// Content: plaintext mode carries the raw description; confidential mode seals
 	// the {title,context,waiting_on,labels} blob and adds the clear enc/cek_epoch

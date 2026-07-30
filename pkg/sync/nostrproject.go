@@ -609,6 +609,9 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 		For:      tagValue(e, "for"),
 		ParentID: tagValue(e, "parent"),
 		Due:      tagValue(e, "due"),
+		// ClaimedDuring (ready-0103) — additive rd-extension tag; empty when
+		// absent (old cards, or a create with zero/ambiguous claims).
+		ClaimedDuring: tagValue(e, "claimed_during"),
 	}
 	if p := tagValue(e, "p"); p != "" {
 		item.By = p

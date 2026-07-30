@@ -217,28 +217,29 @@ func (e *Env) RdMustFail(args ...string) string {
 
 // Item is the JSON representation of a work item from rd --json output.
 type Item struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Context     string   `json:"context"`
-	Description string   `json:"description"`
-	Type        string   `json:"type"`
-	Level       string   `json:"level"`
-	Project     string   `json:"project"`
-	For         string   `json:"for"`
-	By          string   `json:"by"`
-	Priority    string   `json:"priority"`
-	Status      string   `json:"status"`
-	ETA         string   `json:"eta"`
-	Due         string   `json:"due"`
-	ParentID    string   `json:"parent_id"`
-	BlockedBy   []string `json:"blocked_by"`
-	Blocks      []string `json:"blocks"`
-	Gate        string   `json:"gate"`
-	GateMsgID   string   `json:"gate_msg_id"`
-	WaitingOn   string   `json:"waiting_on"`
-	WaitingType string   `json:"waiting_type"`
-	CreatedAt   int64    `json:"created_at"`
-	UpdatedAt   int64    `json:"updated_at"`
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	Context       string   `json:"context"`
+	Description   string   `json:"description"`
+	Type          string   `json:"type"`
+	Level         string   `json:"level"`
+	Project       string   `json:"project"`
+	For           string   `json:"for"`
+	By            string   `json:"by"`
+	ClaimedDuring string   `json:"claimed_during"`
+	Priority      string   `json:"priority"`
+	Status        string   `json:"status"`
+	ETA           string   `json:"eta"`
+	Due           string   `json:"due"`
+	ParentID      string   `json:"parent_id"`
+	BlockedBy     []string `json:"blocked_by"`
+	Blocks        []string `json:"blocks"`
+	Gate          string   `json:"gate"`
+	GateMsgID     string   `json:"gate_msg_id"`
+	WaitingOn     string   `json:"waiting_on"`
+	WaitingType   string   `json:"waiting_type"`
+	CreatedAt     int64    `json:"created_at"`
+	UpdatedAt     int64    `json:"updated_at"`
 }
 
 // ListItems runs rd list --json --all and returns parsed items.

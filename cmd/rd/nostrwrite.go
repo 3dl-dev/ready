@@ -144,6 +144,34 @@ func nostrExistingIDs() (map[string]struct{}, error) {
 	return out, nil
 }
 
+// claimedDuringStamp implements ready-0103's provenance primitive: it returns the
+// id of the ONE item that `self` currently holds an active claim on (status=active,
+// by=self) among the given projected items. Zero matches or more than one match
+// returns "" — deliberately: zero means there is nothing to attribute this create
+// to, and more than one means a single stamp would arbitrarily pick among several
+// concurrent claims, which is worse than recording nothing. This is descriptive
+// only (constraint: never blocks, warns, or rejects a create) and runs on every
+// `rd create`, stamping Item.ClaimedDuring so `rd dep tree` can later count how
+// many of an objective's closure members were created while some agent held a
+// claim inside that objective's own tree, versus parented in from the start.
+func claimedDuringStamp(self string, byID map[string]*state.Item) string {
+	found := ""
+	count := 0
+	for _, it := range byID {
+		if it.By == self && it.Status == state.StatusActive {
+			count++
+			if count > 1 {
+				return ""
+			}
+			found = it.ID
+		}
+	}
+	if count == 1 {
+		return found
+	}
+	return ""
+}
+
 // publishItemFullCreateNostr publishes a freshly-created item as board (once) +
 // 30302 card + NIP-34 status(inbox) events for the WHOLE item (all card fields via
 // CardSpecFromItem), signing with the secp256k1 key and appending to the local
@@ -573,21 +601,30 @@ func runCreateNostr(dir string, c nostrCreateSpec) (string, error) {
 		return "", err
 	}
 
+	// ready-0103: stamp the creating identity's currently-claimed item, if
+	// exactly one exists. Read-only, descriptive-only — never blocks create.
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		return "", err
+	}
+	claimedDuring := claimedDuringStamp(self, byID)
+
 	item := &state.Item{
-		ID:       id,
-		Title:    c.title,
-		Context:  c.context,
-		Type:     c.itemType,
-		Level:    c.level,
-		Project:  c.project,
-		For:      forParty,
-		By:       c.by,
-		Priority: c.priority,
-		Status:   state.StatusInbox,
-		ETA:      c.eta,
-		Due:      c.due,
-		ParentID: parentID,
-		Labels:   c.labels,
+		ID:            id,
+		Title:         c.title,
+		Context:       c.context,
+		Type:          c.itemType,
+		Level:         c.level,
+		Project:       c.project,
+		For:           forParty,
+		By:            c.by,
+		Priority:      c.priority,
+		Status:        state.StatusInbox,
+		ETA:           c.eta,
+		Due:           c.due,
+		ParentID:      parentID,
+		Labels:        c.labels,
+		ClaimedDuring: claimedDuring,
 	}
 	if err := publishItemFullCreateNostr(dir, self, item); err != nil {
 		return "", fmt.Errorf("nostr publish (create): %w", err)
