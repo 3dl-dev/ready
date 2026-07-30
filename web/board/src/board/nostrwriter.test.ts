@@ -176,6 +176,64 @@ describe("the signer is not trusted to return what it was given", () => {
     const w = makeWriter({ signer: realSigner(other) });
     await expect(w.claim("seed-1")).rejects.toBeInstanceOf(SignerMismatchError);
   });
+
+  // ready-e51 (veracity audit). publish.ts's header claims assertSignedAsBuilt
+  // refuses "a signer that quietly rewrote ANY field", and the id equality check
+  // is the only line that can see a rewritten TAG or CONTENT — the pubkey and
+  // created_at comparisons cannot. That line was witnessed by nothing: disabling
+  // it (`if (false && (recomputed !== signed.id || signed.id !== built.id))`)
+  // left 832/832 vitest green, because the two cases above trip the created_at
+  // and pubkey guards respectively and never reach it.
+  //
+  // The realistic shape is not an attacker but a helpful extension: several
+  // providers normalise or re-order what they are handed. On a CONFIDENTIAL
+  // board that would silently strip ["enc","1"] and publish an owner-signed card
+  // the rest of the board reads as cleartext; on any board it publishes state
+  // the user did not ask for while the page reports success.
+  it("an extension that rewrites a TAG is refused, though pubkey and created_at are untouched", async () => {
+    const w = makeWriter({
+      signer: {
+        async signEvent(e) {
+          // Same key, same created_at, same kind — only the payload differs, and
+          // the returned event is a VALID signature over the rewritten tags, so
+          // nothing but the id comparison against what the caller built can
+          // notice. Rewriting the status tag is the concrete harm: the card the
+          // relay stores says something the human never chose.
+          const tags = e.tags.map((t) => (t[0] === "s" ? ["s", "cancelled"] : t));
+          return signNostrEvent({ created_at: e.created_at, kind: e.kind, tags, content: e.content }, SECRET);
+        },
+      },
+    });
+    await expect(w.claim("seed-1")).rejects.toBeInstanceOf(SignerMismatchError);
+    // Nothing was absorbed: the writer's view is exactly where it started, so
+    // the refusal happened before the event could enter the local snapshot.
+    expect(w.items().get("seed-1")!.status).toBe("inbox");
+  });
+
+  it("an extension that rewrites CONTENT is refused the same way", async () => {
+    const w = makeWriter({
+      signer: {
+        async signEvent(e) {
+          return signNostrEvent(
+            { created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content + " (edited by the extension)" },
+            SECRET,
+          );
+        },
+      },
+    });
+    await expect(w.close("seed-1", "done", "the reason the human typed")).rejects.toBeInstanceOf(SignerMismatchError);
+    expect(w.items().get("seed-1")!.status).toBe("inbox");
+  });
+
+  // ANTI-TAUTOLOGY for both cases above: the SAME writer with a signer that
+  // returns exactly what it was given publishes without complaint, so the two
+  // refusals are attributable to the rewrite and not to the write path being
+  // refused for some unrelated reason.
+  it("…and an honest signer returning exactly what it was handed is accepted", async () => {
+    const w = makeWriter();
+    await w.close("seed-1", "done", "the reason the human typed");
+    expect(w.items().get("seed-1")!.status).toBe("done");
+  });
 });
 
 describe("rd's own refusals hold in the browser too", () => {
