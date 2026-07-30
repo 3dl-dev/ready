@@ -298,3 +298,60 @@ func TestKeydistUnwrapRejectsWrongLengthPayload(t *testing.T) {
 		})
 	}
 }
+
+// TestKeydistUnwrapKeyPayloadReportsTheEncoding pins the fact `rd confidential
+// rewrap` (ready-470) is built on: the SAME key comes back from both encodings, so
+// the key value alone cannot tell you whether a browser can read a grant — only
+// browserSafe can. If this ever reported true for a raw payload, the re-wrap
+// command would decide there was nothing to do and every legacy board would stay
+// [encrypted] in the browser while rd insisted it was fine.
+func TestKeydistUnwrapKeyPayloadReportsTheEncoding(t *testing.T) {
+	owner, member := kdKey(t), kdKey(t)
+	cek, err := MintKey()
+	if err != nil {
+		t.Fatalf("MintKey: %v", err)
+	}
+
+	// The wrap WrapKey emits today: 64 hex characters, survives NIP-07's string return.
+	current, err := WrapKey(owner, member.PubKeyHex(), cek)
+	if err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+	got, browserSafe, err := UnwrapKeyPayload(member, owner.PubKeyHex(), current)
+	if err != nil {
+		t.Fatalf("UnwrapKeyPayload(hex): %v", err)
+	}
+	if got != cek {
+		t.Fatal("hex payload unwrapped to the wrong key")
+	}
+	if !browserSafe {
+		t.Fatal("UnwrapKeyPayload reported WrapKey's own output as NOT browser-safe")
+	}
+
+	// The pre-ready-c4b wrap: the raw 32 bytes, still on relays today.
+	legacy, err := nip44.Seal(owner, member.PubKeyHex(), cek[:])
+	if err != nil {
+		t.Fatalf("nip44.Seal: %v", err)
+	}
+	got, browserSafe, err = UnwrapKeyPayload(member, owner.PubKeyHex(), legacy)
+	if err != nil {
+		t.Fatalf("UnwrapKeyPayload(raw): %v", err)
+	}
+	if got != cek {
+		t.Fatal("raw payload unwrapped to the wrong key")
+	}
+	if browserSafe {
+		t.Fatal("UnwrapKeyPayload called a RAW payload browser-safe — a browser's UTF-8 decode destroys those bytes")
+	}
+
+	// The owner can open a wrap it sealed to a MEMBER (NIP-44's conversation key is
+	// symmetric). That is what lets the re-wrap recover the member's exact key value
+	// instead of substituting one, so it is a load-bearing fact, not a curiosity.
+	fromOwnerSide, _, err := UnwrapKeyPayload(owner, member.PubKeyHex(), legacy)
+	if err != nil {
+		t.Fatalf("owner cannot open the wrap it sealed to a member: %v", err)
+	}
+	if fromOwnerSide != cek {
+		t.Fatal("the owner-side open of a member wrap yielded different bytes")
+	}
+}

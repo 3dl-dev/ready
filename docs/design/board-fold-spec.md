@@ -768,7 +768,7 @@ re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
 hardcoded role would silently demote every maintainer on every rotation.
 
 **§11.12 Keyring derivation retains ALL epochs.** `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:178-231`) scans EVERY historical grant, not latest-wins, so
+(`pkg/sync/keydist.go:193-246`) scans EVERY historical grant, not latest-wins, so
 a member keeps old-epoch CEKs and historical reads survive (`:136-140`). It
 accepts a key only when: kind is 39301 and `Verify()` passes (`:146-151`); the
 grant binds to `(boardAuthor, boardD)` (`:156-158`); the grant is signed by the
@@ -781,7 +781,7 @@ the anti-retarget guard.
 `created_at` of any owner-signed CEK-bearing grant, tracked regardless of who it
 is addressed to (`pkg/sync/keydist.go:172-175`). `Cutover(coord)` returning
 `ok=true` is exactly "this board is confidential"
-(`pkg/sync/keydist.go:134-140`).
+(`pkg/sync/keydist.go:149-155`).
 
 **§11.13a A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (`ready-daf`).** §11.13
 computes a MINIMUM over the grants a relay chose to serve, and reads on this
@@ -842,7 +842,7 @@ detected" is FALSE as an unqualified statement and must not be repeated. Tracked
 derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
-reader holds (`pkg/sync/keydist.go:147-161`). A member that missed a rotation
+reader holds (`pkg/sync/keydist.go:162-176`). A member that missed a rotation
 returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
@@ -1429,7 +1429,7 @@ usual cause — a CEK epoch whose grant no longer exists (§16.10).
 **§16.10 A CEK-bearing grant occupies a slot per epoch.** `DeriveBoardKeyring`
 scans ALL historical grants rather than latest-wins, so "a member keeps the
 old-epoch CEKs it was given, so historical reads survive"
-(`pkg/sync/keydist.go:174-177`). For that to hold on a RELAY and not merely in a
+(`pkg/sync/keydist.go:189-192`). For that to hold on a RELAY and not merely in a
 local append-only log, each epoch needs its own addressable slot — a relay keeps
 only the newest event per `(kind, pubkey, d)`. So a grant carrying a wrapped CEK
 is addressed `d = "<boardD>:<grantee>:e<epoch>"`, while a grant with no key
@@ -1441,7 +1441,7 @@ the identical relay-retention reason — see §12.10 (ready-55f).
 Splitting the slot is safe because nothing reads this `d` for meaning: authz
 replay orders latest-per-GRANTEE by `(created_at, id)` and never inspects it
 (`deriveGrants`, `pkg/sync/rolegrant.go:511`), and `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:178`) selects on the `a` board coordinate plus the `p`
+(`pkg/sync/keydist.go:193`) selects on the `a` board coordinate plus the `p`
 grantee tag. The `d` is a relay retention key and nothing more — so a revoke still
 supersedes every earlier grant for that grantee regardless of which slot each one
 occupies.
@@ -1499,6 +1499,45 @@ could resurrect authority a later revoke had removed. Measured on the `ready` bo
 after the recovery: a reader holding only the owner identity and the public relay
 projects 327 items with ZERO `[encrypted]`, against 6 of 206 confidential cards
 readable before it.
+
+**§16.11a THE SAME KEY, IN AN ENCODING THE READER CAN RECEIVE (`ready-470`).** A
+second, independent way the same grants became unreadable — this time only in a
+BROWSER. A page holds no secret, so it unwraps a CEK through NIP-07's
+`window.nostr.nip44.decrypt`, whose return type is a STRING; every extension
+finishes with a UTF-8 `TextDecoder`, and 32 random bytes are essentially never
+valid UTF-8, so a non-fatal decoder substitutes U+FFFD and destroys the key with no
+error raised anywhere. `WrapKey` therefore seals 64 lowercase-hex characters
+(`ready-c4b`), and `unwrapKey` accepts both encodings so rd keeps reading every
+grant already published. Grants minted BEFORE that change still carried raw
+payloads, so `ready.3dl.dev/board` showed `[encrypted]` for every card on such a
+board — including to its OWNER, which is how it was found. `rd confidential rewrap`
+re-seals the SAME key value, at the SAME epoch, into the SAME addressable slot,
+with the payload hex-encoded. It is not a rotation: a rotation would also produce
+readable wraps, at a new epoch whose key opens none of the board's history. Three
+constraints make it safe to run on a live board. The key value is recovered from
+the very wrap being replaced (the owner can open a wrap it sealed to a member —
+NIP-44's conversation key is symmetric) and cross-checked against the owner's own
+keyring, so the command cannot substitute a key; the plan is built from the grants
+that EXIST rather than from a membership list, so it cannot hand a key to a
+non-holder, and a grantee whose winning grant is `revoked` is withheld; and the
+replacement's `created_at` is the original's PLUS ONE SECOND rather than "now",
+because the cutover of §11.13 is a MINIMUM over served grants and stamping these
+"now" would move a relay-seeded reader's grandfather boundary forward by the whole
+age of the board. Measured on the `ready` board: epoch 2's four grants were already
+hex, epoch 1's three were raw — so a browser could read only post-rotation cards —
+and after the re-wrap every owner-signed CEK grant the public relay serves is hex,
+with the derived cutover moving from 1784206980 to 1784206981. The command's own
+evidence is a RELAY READ-BACK, not its publish report: `reduceEventOutcome`
+(`pkg/sync/relayclass.go`) calls an event accepted the moment any write relay says
+OK, so `verifyRewrapOnRelays` re-reads each published grant with a fresh REQ per
+relay and fails, naming the relay, when one did not take them
+(`cmd/rd/confidential_rewrap_test.go` drives every run of the command over a live
+in-process NIP-01 relay, and pins that failure against a relay that ACKs and stores
+nothing). The browser half of the claim is asserted at the DOM: the epoch-3 card of
+`confidential.fixtures.ts` renders `[encrypted]` for the reader served the legacy
+raw-payload grant and its real title for the reader served the hex re-wrap of the
+same key in the same slot — for the OWNER's self-grant as well as a member's
+(`web/board/src/main.confidential.test.ts`).
 
 ---
 
