@@ -132,6 +132,22 @@
       "post_fold": {"id": "wv-gate-approve", "status": "active"}
     },
     {
+      "name": "gate_approve_on_blocked_and_gated_item_never_authors_blocked",
+      "spec_clauses": ["22.2", "9.2", "9.7", "25.6", "8.4"],
+      "note": "READY-E51, the APPROVE half of the ready-e0e widening (its reject half is gate_reject_on_blocked_and_gated_item_never_authors_blocked, below). The item is BOTH gated and blocked by a live blocker, so nostrResolveItem hands runApproveNostr Status=blocked -- the edge derivation always runs before the gate check. SS9.2's status clause admits it anyway (widened from waiting-only by ready-e0e: the ruling is usually exactly what unblocks the chain). The WRITTEN card carries s=active and NONE of the three gate tags, and post_fold proves the fold independently re-derives blocked=true from the still-live BlockedBy edge (SS8.4/SS25.6): the gate clears, the block does not. Deleting `blocked` from either implementation's status clause turns this vector red -- a refusal instead of two events.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-approve-blocked", "title": "Approve while blocked", "type": "task", "priority": "p1", "status": "waiting", "blocked_by": ["wv-approve-blocked-blocker"], "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "extra_seeds": [
+        {"id": "wv-approve-blocked-blocker", "title": "Blocker", "type": "task", "priority": "p1", "status": "inbox"}
+      ],
+      "args": {"reason": "unblocked by the ruling"},
+      "events": [
+        {"kind": 30302, "tags": [["d", "wv-approve-blocked"], ["created", "{{created:wv-approve-blocked}}"], ["title", "Approve while blocked"], ["a", "30301:{{owner}}:project"], ["s", "active"], ["rank", "p1"], ["priority", "p1"], ["itype", "task"], ["i", "wv-approve-blocked-blocker"], ["for", "{{owner}}"]], "content": {"mode": "empty"}},
+        {"kind": 1630, "tags": [["a", "30302:{{owner}}:wv-approve-blocked"], ["d", "wv-approve-blocked"], ["status", "active"], ["e", "{{card:wv-approve-blocked}}"], ["e", "{{issue:wv-approve-blocked}}", "", "root"], ["a", "30301:{{owner}}:project"]], "content": {"mode": "literal", "value": "unblocked by the ruling"}}
+      ],
+      "post_fold": {"id": "wv-approve-blocked", "status": "blocked", "blocked_by": ["wv-approve-blocked-blocker"]}
+    },
+    {
       "name": "gate_reject_keeps_gate_open",
       "spec_clauses": ["22.3", "22.4", "9.1"],
       "note": "runRejectNostr changes NO field: it republishes the card UNCHANGED and emits a kind-1630 status event re-affirming the item's CURRENT status, with the rejection reason as Content. Approve and reject are indistinguishable on the wire except by the status transition and the reason (SS22.4) -- there is no resolution tag.",
@@ -298,6 +314,66 @@
       "args": {"item_id": "wv-does-not-exist", "label": "x"},
       "expect_error": true,
       "error_contains": "not found"
+    },
+    {
+      "name": "gate_approve_refuses_a_done_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.2", "9.2", "9.5"],
+      "note": "READY-E51: the STATUS clause of the gate ruling (SS9.2/SS22.2's `Status in {waiting, blocked}`), refereed across rd and the browser instead of by two hand-written truth tables. THE ROW REACHES THAT CLAUSE -- it is not shadowed by the no-pending-gate clause above it -- because SS9.5 clears WaitingOn/WaitingType/WaitingSince/GateMsgID on a terminal item but explicitly does NOT clear `Gate`. The surviving gate tag keeps the pending-gate predicate TRUE, so this status comparison is the ONLY thing standing between a CLOSED-but-still-gated item and a signed ruling on it: the gate branch never calls the terminal refusal that claim and update_fields use. The error text is therefore the discriminator -- `is not waiting or blocked`, NOT `no pending gate`. That makes the vector a referee for SS9.5 in both folds too: an implementation that additionally cleared `Gate` on a terminal item would fail here with the wrong message, and one that dropped a status from its terminal set would promote the item to waiting via SS9.4 and not refuse at all.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-approve-done", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "done", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
+    },
+    {
+      "name": "gate_reject_refuses_a_done_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.3", "9.2", "9.5"],
+      "note": "The reject half of gate_approve_refuses_a_done_item_whose_gate_tag_survived (read that vector's note for why the row reaches the status clause at all). It is a separate vector because rd carries a SEPARATE COPY of the clause per verb -- runApproveNostr:326-328 and runRejectNostr:354-356 -- so deleting either one alone is invisible to the other's vector.",
+      "op": "gate_reject",
+      "seed": {"id": "wv-reject-done", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "done", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
+    },
+    {
+      "name": "gate_approve_refuses_a_cancelled_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.2", "9.2", "9.5"],
+      "note": "The cancelled row of the same table. Each terminal status gets its own vector because the refusal depends on BOTH implementations agreeing on the terminal SET (SS9.5): a fold that omitted `cancelled` from it would promote this gated item to waiting via SS9.4 and the ruling would be admitted, not refused.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-approve-cancelled", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "cancelled", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
+    },
+    {
+      "name": "gate_reject_refuses_a_cancelled_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.3", "9.2", "9.5"],
+      "note": "The reject half of the cancelled row -- see gate_reject_refuses_a_done_item_whose_gate_tag_survived for why each verb needs its own vector.",
+      "op": "gate_reject",
+      "seed": {"id": "wv-reject-cancelled", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "cancelled", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
+    },
+    {
+      "name": "gate_approve_refuses_a_failed_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.2", "9.2", "9.5"],
+      "note": "The failed row of the same table -- the terminal status most likely to be dropped from an independent client's terminal set, since it is the one rd itself writes least often.",
+      "op": "gate_approve",
+      "seed": {"id": "wv-approve-failed", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "failed", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
+    },
+    {
+      "name": "gate_reject_refuses_a_failed_item_whose_gate_tag_survived",
+      "spec_clauses": ["22.3", "9.2", "9.5"],
+      "note": "The reject half of the failed row -- see gate_reject_refuses_a_done_item_whose_gate_tag_survived for why each verb needs its own vector.",
+      "op": "gate_reject",
+      "seed": {"id": "wv-reject-failed", "title": "Closed while gated", "type": "task", "priority": "p1", "status": "failed", "gate": "design", "waiting_type": "gate", "waiting_on": "need a ruling"},
+      "args": {"reason": "ruled"},
+      "expect_error": true,
+      "error_contains": "is not waiting or blocked"
     }
   ]
 }

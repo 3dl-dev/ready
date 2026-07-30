@@ -41,9 +41,18 @@ func load(t *testing.T) *writevectors.File {
 func TestWriteVectorFloor(t *testing.T) {
 	f := load(t)
 	t.Logf("write conformance: %d vectors from %s (spec %s)", len(f.Vectors), vectorPath, f.Spec)
-	const minVectors = 18
+	// ready-e51 (round 3): TIGHT, not merely non-empty. My own audit disposition
+	// on the TS half of this corpus was "to pass while broken you would have to
+	// edit or truncate the corpus, which reddens this floor". MEASURED, and it was
+	// false: with 30 vectors committed and a floor of 18, deleting the vector that
+	// proves a guard left this package AND cmd/rd's replay AND the browser's
+	// replay green — a 12-vector silent deletion budget in the one artifact rd and
+	// the board are both refereed by. The floor is now the committed count, so
+	// removing a vector is a deliberate edit of this line and visible in the diff.
+	// Adding vectors needs no change here.
+	const minVectors = 30
 	if len(f.Vectors) < minVectors {
-		t.Fatalf("only %d vectors present, expected at least %d — the vector file looks truncated", len(f.Vectors), minVectors)
+		t.Fatalf("only %d vectors present, expected at least %d — a vector was removed (update this floor deliberately) or the file is truncated", len(f.Vectors), minVectors)
 	}
 	seen := map[string]bool{}
 	for _, v := range f.Vectors {
