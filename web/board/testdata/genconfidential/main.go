@@ -33,6 +33,7 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 
+	"github.com/3dl-dev/ready/pkg/nip44"
 	"github.com/3dl-dev/ready/pkg/nostr"
 	rdsync "github.com/3dl-dev/ready/pkg/sync"
 )
@@ -75,6 +76,12 @@ const (
 	// created_at is later than any grant, so it cannot witness a too-late cutover
 	// by time; only its EPOCH does.
 	tCardE1Late = 1750000700
+	// ready-470: a legacy raw-payload grant and the hex re-wrap that replaces it in
+	// the SAME addressable slot, one second later (the minimum step that makes a
+	// relay serve the repair instead of the original, and small enough that the
+	// board's derived cutover does not move).
+	tGrantE3Legacy = 1750000800
+	tGrantE3Rewrap = 1750000801
 	// ready-02e: two cards whose ciphertext opens cleanly (real CEK, real AEAD
 	// tag) but whose plaintext is NOT a {title: string, ...} card payload. The
 	// AEAD succeeding must not be mistaken for a decryption SUCCESS. They are
@@ -304,6 +311,43 @@ func run() error {
 		return err
 	}
 
+	// ready-470: the pre-ready-c4b artifact and its repair, side by side.
+	//
+	// legacyRawWrapGrant seals an epoch-3 CEK the way WrapKey did BEFORE ready-c4b
+	// — the raw 32 bytes. rd reads it (unwrapKey accepts both encodings); a browser
+	// cannot, because NIP-07's nip44.decrypt returns a STRING and a UTF-8 decode
+	// destroys those bytes with no error raised anywhere, which is why a board
+	// carrying only such grants renders every card as [encrypted] even for its
+	// owner. rewrappedHexGrant is what `rd confidential rewrap` publishes over it:
+	// the SAME key value, the SAME epoch, the SAME addressable slot (so a relay
+	// serves it instead), one second later, sealed as 64 hex characters.
+	//
+	// Both are emitted OUTSIDE `grants` so a test can serve exactly one of them and
+	// compare what the reader ends up holding.
+	cek3, err := rdsync.MintKey()
+	if err != nil {
+		return err
+	}
+	rawWrap3, err := nip44.Seal(owner, member.PubKeyHex(), cek3[:])
+	if err != nil {
+		return err
+	}
+	legacyRawWrapGrant, err := rdsync.BuildRoleGrantEvent(owner, rdsync.RoleGrantSpec{
+		BoardD:      boardD,
+		BoardAuthor: ownerPub,
+		Grantee:     member.PubKeyHex(),
+		Role:        rdsync.RoleContributor,
+		WrappedCEK:  rawWrap3,
+		CEKEpoch:    3,
+	}, tGrantE3Legacy)
+	if err != nil {
+		return err
+	}
+	rewrappedHexGrant, err := grant(member, rdsync.RoleContributor, cek3, 3, tGrantE3Rewrap, false)
+	if err != nil {
+		return err
+	}
+
 	// A card sealed under an epoch NOBODY in this fixture holds (epoch 9). Even the
 	// owner must render the placeholder for it — this is done-condition 3's
 	// "an item at an epoch the reader lacks shows the placeholder while its
@@ -448,6 +492,7 @@ func run() error {
 	fmt.Fprintf(&b, "/** The SEALED title of cardEpoch1AfterRotation — only a holder of the epoch-1 CEK\n * can produce it. */\nexport const EPOCH1_AFTER_ROTATION_TITLE = %q;\n\n", staleSpec.Title)
 	fmt.Fprintf(&b, "/** Raw epoch keys, exported so envelope-level tests can seal/open without a keyring. */\nexport const CEK_EPOCH1 = %q;\nexport const CEK_EPOCH2 = %q;\nexport const LTK = %q;\n\n",
 		hex.EncodeToString(cek1[:]), hex.EncodeToString(cek2[:]), hex.EncodeToString(ltk[:]))
+	fmt.Fprintf(&b, "/** ready-470: the epoch-3 CEK carried by BOTH legacyRawWrapGrant and\n * rewrappedHexGrant — the value a re-wrap must leave untouched. */\nexport const CEK_EPOCH3 = %q;\n\n", hex.EncodeToString(cek3[:]))
 
 	writeEvent(&b, "boardEvent", board)
 	writeEvents(&b, "grants", grants)
@@ -467,6 +512,11 @@ func run() error {
 	writeEvent(&b, "cardGapPlaintext", cardGapPlaintext)
 	b.WriteString("/** ready-daf round 2: sealed under epoch 1, published after the rotation. Its\n * epoch is the only thing about it that witnesses a withheld grant. NOT part of\n * `cards`. */\n")
 	writeEvent(&b, "cardEpoch1AfterRotation", cardE1AfterRotation)
+
+	b.WriteString("/** ready-470: an epoch-3 grant to MEMBER whose CEK is sealed as 32 RAW bytes,\n * the way WrapKey did before ready-c4b. rd reads it; a NIP-07 browser signer\n * returns a string and the bytes do not survive the UTF-8 decode, so the key is\n * silently destroyed. NOT part of `grants`. */\n")
+	writeEvent(&b, "legacyRawWrapGrant", legacyRawWrapGrant)
+	b.WriteString("/** ready-470: what `rd confidential rewrap` publishes over legacyRawWrapGrant —\n * the SAME CEK_EPOCH3 value, the same epoch, the same addressable `d` slot, one\n * second later, sealed as 64 hex characters. NOT part of `grants`. */\n")
+	writeEvent(&b, "rewrappedHexGrant", rewrappedHexGrant)
 
 	b.WriteString("/** Every confidential card in the fixture, in relay-delivery order. */\n")
 	b.WriteString("export const cards: NostrEvent[] = [\n  cardEpoch1A,\n  cardEpoch1B,\n  cardEpoch2,\n  cardEpochNobodyHolds,\n  cardSmuggledCleartext,\n  cardGrandfatheredPlaintext,\n  cardForgedSignature,\n  cardSealedNonObject,\n  cardSealedNoTitle,\n];\n\n")

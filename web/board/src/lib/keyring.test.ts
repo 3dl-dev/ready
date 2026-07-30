@@ -17,11 +17,13 @@ import { applyFragmentKeys, deriveBoardKeyring, parseRoleGrant, KIND_ROLE_GRANT 
 import { nip07KeyUnwrapper, neverUnwraps, decodeWrappedKey } from "./keyunwrap";
 import { fakeNip44Signer } from "./fakesigner";
 import { bytesToHex, hexToBytes } from "./sha256";
+import { tagValue } from "./nostrevent";
 import {
   BOARD_COORD,
   BOARD_D,
   CEK_EPOCH1,
   CEK_EPOCH2,
+  CEK_EPOCH3,
   CUTOVER,
   LTK,
   MEMBER_PUB,
@@ -33,6 +35,8 @@ import {
   STRANGER_PUB,
   STRANGER_SEC,
   grants,
+  legacyRawWrapGrant,
+  rewrappedHexGrant,
 } from "./confidential.fixtures";
 
 function unwrapperFor(secretHex: string) {
@@ -211,6 +215,68 @@ describe("decodeWrappedKey — the string boundary NIP-07 forces", () => {
     expect(recovered.length === 32 && bytesToHex(recovered) === CEK_EPOCH1).toBe(false);
     // And the adapter fails closed on it rather than handing back 32 wrong bytes.
     expect(decodeWrappedKey(returned)).toBeNull();
+  });
+});
+
+// ready-470 — `rd confidential rewrap`, seen from the only side that can tell the
+// difference.
+//
+// The wrap PAYLOAD encoding is invisible to rd, which reads both, and decisive
+// here, where the plaintext can only arrive as a string. The two grants below are
+// the same key, the same epoch and the same addressable `d` slot, both produced by
+// the real Go writer; one sealed 32 raw bytes (what WrapKey did before ready-c4b),
+// the other their hex (what the re-wrap publishes over it). The raw one is the
+// state of every board granted before that change, and it is the whole reason
+// ready.3dl.dev/board rendered [encrypted] to the board's own owner.
+describe("a legacy raw-payload wrap and the re-wrap that repairs it (ready-470)", () => {
+  const legacyKeyring = () =>
+    deriveBoardKeyring([...grants, legacyRawWrapGrant], MEMBER_PUB, OWNER_PUB, BOARD_D, unwrapperFor(MEMBER_SEC));
+  const rewrappedKeyring = () =>
+    deriveBoardKeyring([...grants, rewrappedHexGrant], MEMBER_PUB, OWNER_PUB, BOARD_D, unwrapperFor(MEMBER_SEC));
+
+  it("the repair differs from the original in the wrap and nothing else", () => {
+    // Same slot is the point: a relay keeps one event per (kind, pubkey, d), so
+    // the re-wrap REPLACES the legacy grant instead of sitting beside it, and a
+    // relay-seeded browser stops being handed the unreadable one.
+    expect(tagValue(rewrappedHexGrant, "d")).toBe(tagValue(legacyRawWrapGrant, "d"));
+    expect(tagValue(rewrappedHexGrant, "p")).toBe(MEMBER_PUB);
+    expect(tagValue(legacyRawWrapGrant, "p")).toBe(MEMBER_PUB);
+    expect(tagValue(rewrappedHexGrant, "cek_epoch")).toBe("3");
+    expect(tagValue(legacyRawWrapGrant, "cek_epoch")).toBe("3");
+    // One second later — enough for the relay's newest-wins rule, small enough
+    // that the cutover this board derives does not move.
+    expect(rewrappedHexGrant.created_at).toBe(legacyRawWrapGrant.created_at + 1);
+    expect(tagValue(rewrappedHexGrant, "cek")).not.toBe(tagValue(legacyRawWrapGrant, "cek"));
+  });
+
+  it("ANTI-TAUTOLOGY: the legacy grant is not a broken fixture — the wrap carries the key", async () => {
+    // Opened as BYTES (which is all rd ever needs) the legacy ciphertext yields
+    // the epoch-3 CEK exactly. What the browser loses is the string boundary, not
+    // the wrap — so the test below is measuring the boundary, not a bad fixture.
+    const { open } = await import("./nip44ref");
+    expect(bytesToHex(open(MEMBER_SEC, OWNER_PUB, tagValue(legacyRawWrapGrant, "cek")))).toBe(CEK_EPOCH3);
+  });
+
+  it("the LEGACY grant leaves the member holding NO epoch-3 key", async () => {
+    const kr = await legacyKeyring();
+    expect(kr.cek(BOARD_COORD, 3)).toBeNull();
+    expect(kr.epochs(BOARD_COORD)).toEqual([1, 2]);
+  });
+
+  it("the RE-WRAPPED grant hands over the very same key the raw one carried", async () => {
+    const kr = await rewrappedKeyring();
+    expect(bytesToHex(kr.cek(BOARD_COORD, 3)!)).toBe(CEK_EPOCH3);
+    expect(kr.epochs(BOARD_COORD)).toEqual([1, 2, 3]);
+  });
+
+  it("and it costs the reader nothing it already held", async () => {
+    // A ROTATION would also produce a readable hex wrap — at a new epoch, whose
+    // key opens none of the board's history. The re-wrap must leave every earlier
+    // epoch exactly where it was.
+    const kr = await rewrappedKeyring();
+    expect(bytesToHex(kr.cek(BOARD_COORD, 1)!)).toBe(CEK_EPOCH1);
+    expect(bytesToHex(kr.cek(BOARD_COORD, 2)!)).toBe(CEK_EPOCH2);
+    expect(kr.cutover(BOARD_COORD)).toBe(CUTOVER);
   });
 });
 
