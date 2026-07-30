@@ -840,6 +840,16 @@ export function main(deps: BoardDeps = defaultDeps): void {
   //
   // Decryption comes from the fragment's own keys, threaded through afterLogin.
   //
+  // ready-de7: THIS BRANCH IS NOW THE ONLY WAY A CEK ENTERS THE PAGE. It used to
+  // be possible to arrive at the login form below still holding link keys — a
+  // `#board=<coord>&cek=...` fragment with no `pk=` parsed fine, `linkViewer` was
+  // undefined, and a visitor who then logged in with an extension reached
+  // loadBoardItems with a SIGNING identity and the link's CEKs, which is exactly
+  // the premise applyFragmentKeys' grant-check bypass assumes away. fragment.ts
+  // now refuses that shape, so `fragment.keys.ceks` non-empty implies `pk=`
+  // implies this branch implies read-only. Witnessed by main.fragmentkey.test.ts,
+  // "A CEK CANNOT REACH A SIGNING SESSION".
+  //
   // ready-4d9: a `--portfolio` link is the same act at portfolio scope — it also
   // names its viewer in pk=, and it also opens read-only for exactly the reasons
   // above. Its keys buy MORE reading (every board, not one) and still zero
