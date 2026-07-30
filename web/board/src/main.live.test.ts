@@ -382,12 +382,21 @@ describe("ready-4359: a multi-board view re-folds only what changed", () => {
   // board costing its own fold and costing all of them.
   const fakeBoard = (coord: string, id: string) => {
     let folds = 0;
+    let authorityRefreshes = 0;
     const absorbed: NostrEvent[] = [];
     const board = {
       coord,
       events: [] as NostrEvent[],
       seen: new Set<string>(),
       newest: 0,
+      // ready-48f: the read-side authority the live path may re-derive. Counted
+      // rather than implemented, so the cases below can assert that an ITEM
+      // event does not pay for a derivation only a GRANT needs.
+      authority: [] as NostrEvent[],
+      granted: false,
+      refreshAuthority: async () => {
+        authorityRefreshes++;
+      },
       // The projection the LOAD produced, as loadBoardItems supplies it.
       items: [{ id, title: id, status: "inbox", boardCoord: coord }] as never[],
       src: {
@@ -400,7 +409,7 @@ describe("ready-4359: a multi-board view re-folds only what changed", () => {
       // exercised by nostrwriter.absorb.test.ts against the real class.
       writer: { absorb: (es: NostrEvent[]) => absorbed.push(...es) } as never,
     };
-    return { board, folds: () => folds, absorbed };
+    return { board, folds: () => folds, absorbed, authorityRefreshes: () => authorityRefreshes };
   };
 
   it("folds the board that received the event, reuses the other, and absorbs into the right writer", async () => {

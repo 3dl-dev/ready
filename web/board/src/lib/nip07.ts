@@ -32,6 +32,53 @@ export function hasNip07Extension(win: Window = window): boolean {
   return typeof win.nostr?.getPublicKey === "function";
 }
 
+/** How long awaitNip07Extension keeps looking, and how often. Long enough for a
+ * content script's dynamically-appended provider script to be fetched and run
+ * on a cold profile; short enough that a page with genuinely no extension stops
+ * polling almost immediately in human terms. */
+export const NIP07_ARRIVAL_TIMEOUT_MS = 3000;
+const NIP07_ARRIVAL_POLL_MS = 100;
+
+/**
+ * awaitNip07Extension resolves true as soon as a NIP-07 provider is present, or
+ * false once it has waited `timeoutMs` without one appearing. It resolves
+ * SYNCHRONOUSLY-ish (on the first check) when the provider is already there, so
+ * the common case costs one predicate call and no timer.
+ *
+ * WHY THIS EXISTS — ready-48f, measured against a REAL extension. `window.nostr`
+ * is injected ASYNCHRONOUSLY: nos2x's content script runs at document_end and
+ * appends a `<script src="chrome-extension://…/nostr-provider.js">`, which must
+ * then be fetched and executed. The board's own bundle is a deferred module and
+ * routinely wins that race — measured 6 loads out of 6 on a cold Chromium
+ * profile with nos2x 2.5.2 loaded unpacked. hasNip07Extension() was sampled ONCE
+ * at render, so the only NIP-07 login control on the page was left permanently
+ * disabled on a load where the extension was installed, enabled and about to
+ * work; the human's only recovery was a reload that might lose the race again.
+ *
+ * A CDP-INJECTED window.nostr — the substitute every automated proof used before
+ * ready-48f — is installed before any page script runs and therefore cannot
+ * observe this at all. That is why it took a real-extension walk to find it.
+ */
+export function awaitNip07Extension(
+  win: Window = window,
+  timeoutMs: number = NIP07_ARRIVAL_TIMEOUT_MS,
+  pollMs: number = NIP07_ARRIVAL_POLL_MS,
+): Promise<boolean> {
+  if (hasNip07Extension(win)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const timer = setInterval(() => {
+      if (hasNip07Extension(win)) {
+        clearInterval(timer);
+        resolve(true);
+      } else if (Date.now() >= deadline) {
+        clearInterval(timer);
+        resolve(false);
+      }
+    }, pollMs);
+  });
+}
+
 /** nip44Provider returns the extension's NIP-44 namespace, or undefined when
  * there is no extension or it does not implement NIP-44. keyunwrap.ts turns
  * undefined into an unwrapper that holds no keys. */

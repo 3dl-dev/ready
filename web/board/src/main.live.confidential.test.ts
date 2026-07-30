@@ -52,7 +52,12 @@ import {
   cardSmuggledCleartext,
   expectedPlaintext as confExpected,
   grants as confGrants,
+  grantEpoch1Late,
+  LATECOMER_PUB,
+  LATECOMER_SEC,
+  STRANGER_SEC,
 } from "./lib/confidential.fixtures";
+import { signNostrEvent } from "./lib/schnorrsign";
 
 const RELAY = "wss://relay.test";
 
@@ -180,6 +185,150 @@ describe("ready-e51: the LIVE re-fold carries the same quarantine and the same k
       expect(latest.map((i) => i.context)).not.toContain("SMUGGLED CLEARTEXT BODY");
     } finally {
       b.close();
+    }
+  });
+});
+
+
+/**
+ * ready-48f — A GRANT THAT ARRIVES LIVE OPENS THE BOARD, WITH NO RELOAD.
+ *
+ * THE DEFECT THIS PINS, measured end to end before it was fixed
+ * (scripts/live-stranger-walk.mjs, a real nos2x extension on a fresh Chromium
+ * profile against wss://relay.3dl.network): the owner ran
+ * `rd grant --claim <nonce> <pubkey>`, the kind-39301 really arrived on the open
+ * page — 39301 has always been in BOARD_KINDS, so the subscription carried it —
+ * the board re-folded, and every title stayed "[encrypted]" for the full 45s
+ * deadline. LiveBoard.src, and with it the keyring the fold decrypts through,
+ * was the one derived at LOAD; nothing re-derived it, so the CEK inside the
+ * grant that had just landed was never unwrapped.
+ *
+ * WHY IT IS DRIVEN THROUGH THE REAL loadBoardItems + startLiveUpdates: the bug
+ * lived exactly in the seam between them — what the load hands the subscription,
+ * and what the subscription is allowed to redo. A hand-built LiveBoard would
+ * have asserted the fix against a fixture of the fix.
+ *
+ * THE ANTI-TAUTOLOGY is the load half of every case: the same identity, the same
+ * relay and the same card render the PLACEHOLDER first. Without that, "the title
+ * is right after the grant" would pass on a session that could read all along.
+ */
+describe("ready-48f: an owner-signed grant arriving LIVE unwraps the CEK with no reload", () => {
+  /** The latecomer: a key with NO grant in the load snapshot, whose grant
+   * (grantEpoch1Late, created_at 1750000600 — later than everything the load
+   * folds, so the live REQ's `since` cursor cannot hide it) arrives afterwards. */
+  const latecomer: Identity = {
+    pubkey: LATECOMER_PUB,
+    auth: authTransition({ type: "login", method: "extension" }),
+  };
+
+  async function openAsLatecomer() {
+    const { ctor, handle } = makeNip01Relay({ events: [...LOAD_SNAPSHOT] });
+    const deps: BoardDeps = {
+      loadRelays: async () => [RELAY],
+      fetchEvents: (relays, filter, opts) =>
+        fetchEventsFromRelays(relays, filter, { ...opts, webSocketCtor: ctor, retries: 0, timeoutMs: 2000 }),
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(LATECOMER_SEC)),
+      subscribeEvents: (relays, filter, opts) => subscribeToRelays(relays, filter, { ...opts, webSocketCtor: ctor }),
+    };
+    const { items, live, confidential } = await loadBoardItems(
+      [board],
+      [RELAY],
+      // The authority the load sees: the board definition and the grants that
+      // establish the cutover. NONE of them names the latecomer.
+      [confBoardEvent, ...confGrants],
+      latecomer,
+      deps,
+      () => {},
+    );
+    expect(confidential).toBe(true);
+    expect(live).toHaveLength(1);
+    return { items, live, handle, deps };
+  }
+
+  it("the ungranted session shows placeholders, and the SAME document shows the titles once the grant lands", async () => {
+    const { items, live, handle, deps } = await openAsLatecomer();
+
+    // ANTI-TAUTOLOGY 1 — the load really is sealed for this key, and really did
+    // project the card. A blank board would satisfy "no plaintext" for free.
+    const loadedConf1 = items.find((i) => i.id === "conf-001");
+    expect(loadedConf1, "the ungranted reader must still see the CARD").toBeDefined();
+    expect(loadedConf1!.title).toBe("[encrypted]");
+    expect(live[0].granted, "the latecomer holds no grant at load").toBe(false);
+
+    const emitted: Item[][] = [];
+    const sub = startLiveUpdates({
+      boards: live,
+      relays: [RELAY],
+      subscribe: deps.subscribeEvents!,
+      onItems: (next) => emitted.push(next),
+      coalesceMs: 5,
+    });
+    try {
+      // Let the subscription's socket finish opening before pushing: a push to
+      // a relay with no open REQ would be delivered to nobody, and the assertion
+      // below would then be measuring the fixture rather than the page.
+      await settle();
+      // The fixture is what this case needs it to be: an OWNER-signed grant, to
+      // THIS key, newer than anything the load folded.
+      expect(grantEpoch1Late.pubkey).toBe(CONF_OWNER);
+      expect(grantEpoch1Late.tags).toContainEqual(["p", LATECOMER_PUB]);
+      expect(handle.push(grantEpoch1Late)).toBe(1);
+      await settle();
+
+      const latest = emitted.at(-1);
+      expect(latest, "the live path must emit after a grant arrives").toBeDefined();
+      const conf1 = latest!.find((i) => i.id === "conf-001");
+      expect(conf1, "the card must still be there").toBeDefined();
+      expect(conf1!.title).toBe(CONF1.title);
+      expect(conf1!.redacted).toBeFalsy();
+      // The page's own record of this key's standing moved with it — that is
+      // what the awaiting-authorization panel is driven by.
+      expect(live[0].granted).toBe(true);
+    } finally {
+      sub.close();
+    }
+  });
+
+  it("a grant NOT signed by the board owner changes nothing — the same derivation drops it live and at load", async () => {
+    const { items, live, handle, deps } = await openAsLatecomer();
+    expect(items.find((i) => i.id === "conf-001")!.title).toBe("[encrypted]");
+
+    const emitted: Item[][] = [];
+    const sub = startLiveUpdates({
+      boards: live,
+      relays: [RELAY],
+      subscribe: deps.subscribeEvents!,
+      onItems: (next) => emitted.push(next),
+      coalesceMs: 5,
+    });
+    try {
+      await settle();
+      // The SAME grant, re-signed by a key that is not the board owner. Every
+      // byte that matters to the fold is identical — same grantee, same wrapped
+      // CEK, same epoch, same coordinate, a VALID signature — and only the
+      // AUTHOR differs. If re-deriving authority live were driven by "a 39301
+      // arrived" rather than by who signed it, this is the event that would open
+      // a confidential board to anyone holding a relay connection.
+      const forged = signNostrEvent(
+        {
+          created_at: grantEpoch1Late.created_at + 1,
+          kind: grantEpoch1Late.kind,
+          tags: grantEpoch1Late.tags,
+          content: grantEpoch1Late.content,
+        },
+        STRANGER_SEC,
+      );
+      expect(forged.pubkey).not.toBe(CONF_OWNER);
+      expect(handle.push(forged)).toBe(1);
+      await settle();
+
+      // Whether it triggers a re-fold is an efficiency question. What must hold
+      // is that nothing it carried was believed.
+      const latest = emitted.at(-1) ?? items;
+      expect(latest.find((i) => i.id === "conf-001")!.title).toBe("[encrypted]");
+      expect(live[0].granted).toBe(false);
+    } finally {
+      sub.close();
     }
   });
 });

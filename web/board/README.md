@@ -55,7 +55,22 @@ Each one states in its own header exactly what is real in it and what is not.
 node scripts/live-parity.mjs                        # the fold agrees with rd, live
 node scripts/live-write-roundtrip.mjs [--confidential]   # the 7 write ops, read back independently
 node scripts/live-roundtrip-both-ways.mjs [--confidential]  # both directions (ready-4359)
+node scripts/live-stranger-walk.mjs                 # the 8-step stranger walk (ready-48f)
 ```
+
+`live-stranger-walk.mjs` is the one that uses a **real NIP-07 extension**. It
+clones nos2x at a pinned commit, builds its MV3 bundles, loads it unpacked into
+three separate cold Chromium profiles (`--load-extension`), seeds each one's own
+`chrome.storage.local` with a freshly generated key, and serves the built bundle
+over real TLS. It then walks ready-48f end to end with no manual step: `rd board
+share` mints a claim link, an ungranted stranger opens it over https and sees the
+board's cards as `[encrypted]` placeholders, the owner runs `rd grant --claim
+<nonce> <pubkey>`, the **still-open page** unwraps the CEK through the extension
+and fills the titles in (no reload — a `window` sentinel proves it), what is on
+screen is compared against `rd list --json` read by an independent `rd`, a second
+fresh key is refused the spent nonce, and `rd board share <npub>` lands a third
+fresh key on a populated board in one command. It needs network access to fetch
+the extension's source on first run (cached under the OS temp dir afterwards).
 
 `live-roundtrip-both-ways.mjs` is the end-to-end one: a real browser moves a
 card, edits a title and approves a gate; an independent `rd` (clean `RD_HOME`,
