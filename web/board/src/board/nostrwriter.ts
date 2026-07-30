@@ -29,7 +29,7 @@
 import { projectItems, KindCard, KindIssue } from "../lib/fold";
 import type { BoardDecryptor, EncryptedBoardSet, SealEnvelope } from "../lib/envelope";
 import type { NostrEvent } from "../lib/nostrevent";
-import { tagValue } from "../lib/nostrevent";
+import { eventIdentity, tagValue } from "../lib/nostrevent";
 import {
   hasSigner,
   publishEvents,
@@ -156,6 +156,44 @@ export class NostrBoardWriter implements BoardWriter {
       );
     }
     return undefined;
+  }
+
+  /**
+   * absorb folds events the LIVE SUBSCRIPTION observed on the relay into this
+   * writer's snapshot (ready-4359). Returns the number of genuinely new events.
+   *
+   * WHY THE WRITER NEEDS THIS AND THE RENDERER'S setItems IS NOT ENOUGH. The
+   * snapshot is what every subsequent write is BUILT FROM: buildWrite starts
+   * from `items()` — this log, projected — and republishes the whole card. So a
+   * page that renders a title the rd CLI just changed while its writer still
+   * holds the old one publishes the OLD title back the next time the human
+   * claims that item. The board would then be showing the truth and writing a
+   * silent revert of it, which is precisely the client-and-rd-disagree failure
+   * this epic exists to prevent. Keeping the two in step is the difference
+   * between a live view and a live view that lies.
+   *
+   * It is append-only and content-deduplicated: the writer's OWN published
+   * events come back through the subscription, and the log must not grow a copy
+   * of each. Dedup is on eventIdentity — the full signed content — never on the
+   * self-declared id, for the reason lib/relay.ts states at length. Nothing is
+   * verified here; `items()` folds through projectItems, which verifies every
+   * signature itself.
+   *
+   * It does NOT touch grant levels, confidentiality or `enc`: those are
+   * authority, derived at load from an owner-signed snapshot, and a live event
+   * stream must not be able to widen what this session may write or seal.
+   */
+  absorb(events: readonly NostrEvent[]): number {
+    const known = new Set(this.log.map(eventIdentity));
+    const fresh: NostrEvent[] = [];
+    for (const e of events) {
+      const key = eventIdentity(e);
+      if (known.has(key)) continue;
+      known.add(key);
+      fresh.push(e);
+    }
+    if (fresh.length > 0) this.log = [...this.log, ...fresh];
+    return fresh.length;
   }
 
   /** items projects the writer's current view (snapshot + everything it has

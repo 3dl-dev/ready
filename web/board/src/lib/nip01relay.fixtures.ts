@@ -37,6 +37,26 @@ export interface Nip01RelayHandle {
   requests: NostrFilter[];
   /** Every URL a socket was opened for, in order (duplicates kept). */
   urls: string[];
+  /**
+   * push stores `e` and pushes it to every subscription that is STILL OPEN and
+   * whose filter matches — i.e. exactly what a real relay does when someone
+   * publishes while a client is subscribed (ready-4359).
+   *
+   * A subscription is open from its REQ until its CLOSE frame or its socket
+   * closing. That distinction is the whole point of this method: the backfill
+   * client (fetchFromOneRelay) CLOSEs every page as it EOSEs, so a pushed event
+   * reaches it never; the live client leaves its REQ open, so it reaches that
+   * one. A fixture that pushed to closed subscriptions too would let a
+   * still-one-shot client pass a liveness test.
+   *
+   * Returns how many open subscriptions it was delivered to.
+   */
+  push(e: NostrEvent): number;
+  /** How many subscriptions are open right now, across every socket. */
+  openSubscriptions(): number;
+  /** Close every open socket as a relay restart would, WITHOUT a CLOSED frame —
+   * the way a real socket dies. Used to prove the live client reconnects. */
+  dropSockets(): void;
 }
 
 export interface Nip01RelayConfig {
@@ -98,8 +118,38 @@ export function makeNip01Relay(config: Nip01RelayConfig): {
   ctor: typeof WebSocket;
   handle: Nip01RelayHandle;
 } {
-  const handle: Nip01RelayHandle = { requests: [], urls: [] };
   const maxLimit = config.maxLimit ?? Number.POSITIVE_INFINITY;
+  /** Every socket that has been opened and not closed, with its OPEN
+   * subscriptions. A live client's REQ lives here until it CLOSEs it. */
+  const live = new Set<Nip01RelayWebSocket>();
+  const handle: Nip01RelayHandle = {
+    requests: [],
+    urls: [],
+    push(e: NostrEvent): number {
+      config.events.push(e);
+      let delivered = 0;
+      for (const sock of live) {
+        for (const [subId, filter] of sock.subs) {
+          if (!matchesFilter(e, filter)) continue;
+          delivered++;
+          sock.onmessage?.({ data: JSON.stringify(["EVENT", subId, e]) });
+        }
+      }
+      return delivered;
+    },
+    openSubscriptions(): number {
+      let n = 0;
+      for (const sock of live) n += sock.subs.size;
+      return n;
+    },
+    dropSockets(): void {
+      for (const sock of [...live]) {
+        live.delete(sock);
+        sock.subs.clear();
+        sock.onclose?.();
+      }
+    },
+  };
 
   class Nip01RelayWebSocket {
     url: string;
@@ -107,10 +157,13 @@ export function makeNip01Relay(config: Nip01RelayConfig): {
     onerror: ((ev?: unknown) => void) | null = null;
     onclose: ((ev?: unknown) => void) | null = null;
     onmessage: ((ev: { data: string }) => void) | null = null;
+    /** subId -> filter, for every subscription open on THIS socket. */
+    readonly subs = new Map<string, NostrFilter>();
 
     constructor(url: string) {
       this.url = url;
       handle.urls.push(url);
+      live.add(this);
       // Deferred: relay.ts assigns its handlers immediately AFTER `new WS(url)`
       // returns.
       queueMicrotask(() => this.onopen?.());
@@ -118,9 +171,14 @@ export function makeNip01Relay(config: Nip01RelayConfig): {
 
     send(data: string): void {
       const frame = JSON.parse(data) as [string, string, NostrFilter?];
-      if (frame[0] !== "REQ") return; // CLOSE and anything else: nothing to do
+      if (frame[0] === "CLOSE") {
+        this.subs.delete(frame[1]);
+        return;
+      }
+      if (frame[0] !== "REQ") return; // anything else: nothing to do
       const [, subId, filter = {}] = frame;
       handle.requests.push(filter);
+      this.subs.set(subId, filter);
 
       if (config.closedOverLimit && filter.limit !== undefined && filter.limit > maxLimit) {
         queueMicrotask(() =>
@@ -150,7 +208,8 @@ export function makeNip01Relay(config: Nip01RelayConfig): {
     }
 
     close(): void {
-      /* nothing to tear down */
+      live.delete(this);
+      this.subs.clear();
     }
   }
 
