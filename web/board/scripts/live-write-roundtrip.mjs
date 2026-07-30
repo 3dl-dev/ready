@@ -115,6 +115,35 @@
 // §22.2's "if the item is still blocked, §8.4 recomputes Status=blocked on the
 // next fold regardless of the published `active`".
 //
+// THE WHOLE LOOP, IN ONE PASS (ready-fd2). The operations above each prove a
+// convergence. The loop the milestone exists for is a different claim, and it is
+// now run as its own act ("ready-fd2 STEP n/5" in the output):
+//
+//   1 an agent raises a real gate through rd on MACHINE A (`rd claim` + `rd gate`)
+//     and stops — with `rd dep add` wiring the next step behind it, so §8.4 holds
+//     that step `blocked` for as long as the gated work is unfinished;
+//   2 the gate appears in a browser board RELOADED FROM THE LINK at that moment,
+//     whose only possible source for it is the relay — asserted on the rail entry
+//     AND on its title, the string machine A itself authored;
+//   3 approving it there publishes a signed event to wss://relay.3dl.network;
+//   4 rd on MACHINE B — a clean RD_HOME whose nostr-log.jsonl starts EMPTY —
+//     projects the gate resolved, and the kind-1630 it read back is identified as
+//     the one ABSENT from the step-1 reader's log (two genuinely different logs,
+//     the second filled by the relay in between), then checked to be schnorr-
+//     signed by the browser's key and to carry the typed reason — in the clear on
+//     a public board, sealed on a confidential one, where the tie back to what was
+//     typed is machine B's DECRYPTED history note;
+//   5 the agent RESUMES: its own resume predicate (`rd sync` then "is my item
+//     still in `rd gates`?") flips, it runs `rd complete`, and the step that was
+//     BLOCKED behind the gate becomes actionable in `rd ready` ON MACHINE B —
+//     absent at step 1, present here, which is the flip that makes step 5 mean
+//     something. `rd ready` admits status=waiting, so asserting it on the GATED
+//     item instead would have been true before the ruling too.
+//
+// WHAT THE LOOP DOES NOT PROVE: two identities. The relay admits one key here, so
+// the agent and the browser sign with the same one; what is independent is every
+// LOG and every process. Authority is exercised separately, in clause 6.
+//
 // WHY THE READ-SIDE HALF IS SPLICED IN RATHER THAN PUBLISHED. wss://relay.3dl.network
 // enforces a tenant write-allowlist, so an ungranted key's event never reaches
 // the relay at all (that refusal is asserted too, separately). Splicing the same
@@ -165,6 +194,12 @@ const BOARD_D = `${CONFIDENTIAL ? "c191live" : "b2blive"}${RUN}`;
  * rd's token and the browser's token for this one string must be byte-identical
  * or the relay-side `#l` equality filter silently stops matching across writers. */
 const SHARED_LABEL = "browser-written";
+
+/** titleFor is the title MACHINE A authors for a seeded item. Read back in the
+ * browser's gate rail (ready-fd2 step 2), so it is a single definition rather
+ * than a template repeated at two ends that could quietly drift apart and turn
+ * "the gate's own text crossed the wire" into a comparison of two constants. */
+const titleFor = (k) => `browser write proof: ${k}`;
 
 const log = (...a) => console.log(...a);
 const step = (s) => console.log(`\n── ${s}`);
@@ -314,6 +349,28 @@ function readerRd(bin, tmp, tag, args) {
  * answered by rd, not by the page. */
 function readerGateIds(bin, tmp, tag) {
   const parsed = JSON.parse(readerRd(bin, tmp, tag, ["gates", "--json"]));
+  const items = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
+  return new Set(items.map((i) => i.id));
+}
+
+/**
+ * readerReadyIds is `rd ready` on an ALREADY-synced independent reader, as a Set
+ * of item ids — views.ReadyFilter over the same pkg/sync.ProjectItems fold every
+ * other assertion here reads. This is the agent's queue, and it is the surface
+ * ready-fd2 step 5 is stated in.
+ *
+ * `--for` IS REQUIRED and is the AGENT's party, not the reader's: `rd ready`
+ * defaults --for to the session identity (cmd/rd/ready.go runReady), and machine
+ * B's identity is deliberately not the agent's, so the default would report an
+ * empty queue for every board on earth and the step-5 flip would be unobservable.
+ *
+ * `--offline` because independentRead has just synced this directory from the
+ * relay: the answer is then attributable to exactly the event set the other
+ * assertions at this checkpoint were made against, instead of a second fetch
+ * landing between two reads of the same moment.
+ */
+function readerReadyIds(bin, tmp, tag, forParty) {
+  const parsed = JSON.parse(readerRd(bin, tmp, tag, ["ready", "--json", "--offline", "--for", forParty]));
   const items = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
   return new Set(items.map((i) => i.id));
 }
@@ -796,6 +853,13 @@ async function main() {
       // Ready column, where the CARD_CAP disclosure would hide one.
       gateBlocked: `${BOARD_D}-gateblk`,
       gateBlockedDep: `${BOARD_D}-gateblkdep`,
+      // ready-fd2, THE WHOLE LOOP: the agent's own work (claimed on machine A,
+      // then gated — the agent stops here) and the step that WAITS on it. The
+      // second one exists to make step 5 falsifiable; see the loop block's own
+      // header for why `rd ready` membership on the gated item itself proves
+      // nothing.
+      loopWork: `${BOARD_D}-loopwork`,
+      loopNext: `${BOARD_D}-loopnext`,
       rapid: `${BOARD_D}-rapid`,
       reject: `${BOARD_D}-reject`,
       // ready-191: written by RD, carrying the SAME label the browser adds to
@@ -810,7 +874,7 @@ async function main() {
     for (const [k, id] of Object.entries(ids)) {
       rd(rdBin, projectDir, writerHome, [
         "create",
-        `browser write proof: ${k}`,
+        titleFor(k),
         "--id",
         id,
         "--type",
@@ -846,6 +910,22 @@ async function main() {
       "--description",
       "needs a browser ruling while still blocked",
     ]);
+    // ready-fd2 STEP 1, performed here because it is machine A's half of the
+    // loop: an AGENT picks up its work, hits a question it may not answer alone,
+    // and raises a real gate through rd — the same `rd claim` / `rd gate` pair
+    // the operating instructions prescribe. It then stops. ids.loopNext is the
+    // step that waits on it, wired with a real dependency so §8.4 derives
+    // `blocked` for as long as the gated work is unfinished.
+    rd(rdBin, projectDir, writerHome, ["claim", ids.loopWork, "--reason", "the agent picks up its work"]);
+    rd(rdBin, projectDir, writerHome, [
+      "gate",
+      ids.loopWork,
+      "--gate-type",
+      "design",
+      "--description",
+      "the agent cannot rule on this alone",
+    ]);
+    rd(rdBin, projectDir, writerHome, ["dep", "add", ids.loopNext, ids.loopWork]);
     if (readerKey) {
       // The owner wraps this board's CEK to the reader's pubkey. `rd grant` IS
       // the whole invite — there is no relay-side admission involved.
@@ -1221,6 +1301,231 @@ async function main() {
         n: 7,
         name: "a BLOCKED-and-gated item is rulable from the rail and stays blocked afterwards",
         id: ids.gateBlocked,
+        ok,
+        problems,
+      });
+    }
+
+    // ── ready-fd2: THE WHOLE LOOP — five steps, three logs, one pass ─────────
+    //
+    // Everything above proves an OPERATION converges. This proves the LOOP the
+    // milestone exists for, end to end, with nothing mocked in between:
+    //
+    //   1 an agent raises a real gate through rd on MACHINE A, and stops;
+    //   2 the gate appears in a browser board opened from nothing but the LINK,
+    //     whose only possible source for it is the relay;
+    //   3 approving it there publishes a signed event to wss://relay.3dl.network;
+    //   4 rd on MACHINE B — a clean RD_HOME whose nostr-log.jsonl starts EMPTY —
+    //     projects that event and shows the gate resolved;
+    //   5 the agent RESUMES: its own resume predicate flips from "still gated" to
+    //     "ruled on", it finishes the work, and the step that was BLOCKED behind
+    //     it becomes actionable in `rd ready` ON MACHINE B.
+    //
+    // THREE LOGS, WHICH IS THE ENTIRE POINT. Machine A's log holds its own writes.
+    // The browser holds NO log — it folds what the relay serves it. Machine B is a
+    // fresh directory per checkpoint (independentRead throws if a log already
+    // exists). So step 4 never reads the log step 3 wrote into: the browser wrote
+    // to the relay, and machine B read the relay. Checking machine A instead would
+    // prove nothing, because machine A shares the append-only log the agent wrote.
+    //
+    // AND NOT ON RD'S OWN SUCCESS REPORT. pkg/sync/relayclass.go reduceEventOutcome
+    // reports ACCEPTED if ANY relay accepts, so a publish that only ever reached a
+    // permissive LAN relay still reads as success. Every verdict below is an
+    // independent read-back — for step 3, of the SIGNED BYTES the relay handed
+    // machine B, not of anything the browser said about what it built.
+    //
+    // WHAT IS SHARED, stated plainly so nobody reports more than happened: the
+    // IDENTITY. wss://relay.3dl.network admits one key here (see this file's
+    // header), so the agent on machine A and the browser sign with the same key.
+    // What is independent is every LOG and every process, which is what
+    // convergence is about. This is not a demonstration that a second person's
+    // key can rule a gate — clause 6 above is where authority is exercised.
+    //
+    // FALSIFIABILITY OF STEP 5, because the obvious assertion is vacuous.
+    // views.ReadyFilter excludes only terminal / blocked / scheduled, so a
+    // WAITING gated item is in `rd ready` the whole time and "it is in rd ready
+    // after the ruling" would have been true before it too. The seed is therefore
+    // shaped so the flip is real: ids.loopNext depends on the gated item, so §8.4
+    // derives `blocked` and `rd ready` excludes it until the agent — resuming ON
+    // the ruling — completes that work. Absent before, present after, on machine
+    // B, from the relay alone. The "absent before" half is asserted, not assumed.
+    const AGENT_RULING = "approved from the board: take the envelope-first shape";
+    {
+      const problems = [];
+
+      /**
+       * The AGENT's own resume predicate, run on MACHINE A exactly as an agent
+       * would run it: pull the ruling down from the relay (`rd gates` does not
+       * auto-reconcile — cmd/rd/gates.go), then ask whether MY item is still
+       * awaiting a human. True = still gated = do not resume.
+       */
+      const agentIsStillGated = () => {
+        rd(rdBin, projectDir, writerHome, ["sync"]);
+        const parsed = JSON.parse(rd(rdBin, projectDir, writerHome, ["gates", "--json"]));
+        const list = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
+        return list.some((i) => i.id === ids.loopWork);
+      };
+
+      step("ready-fd2 STEP 1/5: an agent raised a real gate through rd on MACHINE A, and is stuck");
+      const beforeTag = `loop-before-${RUN}`;
+      const beforeItems = independentRead(rdBin, tmp, coord, beforeTag, readerKey);
+      const beforeGates = readerGateIds(rdBin, tmp, beforeTag);
+      const beforeReady = readerReadyIds(rdBin, tmp, beforeTag, owner);
+      const work0 = beforeItems.get(ids.loopWork);
+      const next0 = beforeItems.get(ids.loopNext);
+      if (work0?.status !== "waiting" || work0?.gate !== "design" || (work0?.gate_msg_id ?? "") === "") {
+        problems.push(
+          `machine B projects the gated item as status=${JSON.stringify(work0?.status)} gate=${JSON.stringify(work0?.gate)} ` +
+            `gate_msg_id=${JSON.stringify(work0?.gate_msg_id)} — the gate did not reach the relay, so there is no loop to close`,
+        );
+      }
+      if (!beforeGates.has(ids.loopWork)) problems.push("`rd gates` on machine B does not list the agent's gate");
+      if (!agentIsStillGated()) problems.push("machine A's own `rd gates` does not list the item it just gated — the agent is not actually stuck");
+      if (next0?.status !== "blocked") {
+        problems.push(`the waiting next step is status=${JSON.stringify(next0?.status)}, want "blocked" — step 5's flip would be vacuous`);
+      }
+      if (beforeReady.has(ids.loopNext)) {
+        problems.push(`\`rd ready\` on machine B ALREADY lists ${ids.loopNext} before any ruling — step 5 would assert nothing`);
+      }
+      log(`  machine B: ${ids.loopWork} status=${work0?.status} gate=${work0?.gate}; ${ids.loopNext} status=${next0?.status}`);
+      log(`  machine B \`rd ready --for <agent>\`: ${JSON.stringify([...beforeReady])} (the blocked next step is NOT in it)`);
+
+      step("ready-fd2 STEP 2/5: the gate is in the BROWSER, on a page opened from the LINK with the relay as its only source");
+      // Reloaded from the link RIGHT NOW rather than trusting the page that has
+      // been open since the run began: a fresh cross-document load whose entire
+      // model is what the relay serves, so the rail entry below cannot be a
+      // residue of an earlier fold or of some optimistic patch.
+      await openBoard(cdp, origin, coord, esbuild, identity.secret_hex);
+      const railEntry = JSON.parse(
+        await cdp.evaluate(`
+          const li = document.querySelector('.gate-item[data-id=${JSON.stringify(ids.loopWork)}]');
+          return JSON.stringify({
+            present: !!li,
+            title: li?.querySelector(".gate-item-title")?.textContent ?? "",
+            gates: [...document.querySelectorAll(".gate-item")].map((n) => n.dataset.id),
+          });
+        `),
+      );
+      if (!railEntry.present) {
+        problems.push(`the browser's gate rail does not list ${ids.loopWork} (it lists ${JSON.stringify(railEntry.gates)})`);
+      }
+      // The gate's own TEXT, authored on machine A, rendered in the browser: the
+      // content crossed A -> relay -> browser, not merely a matching id.
+      if (railEntry.present && railEntry.title !== titleFor("loopWork")) {
+        problems.push(
+          `the rail shows ${JSON.stringify(railEntry.title)}; machine A authored ${JSON.stringify(titleFor("loopWork"))} — ` +
+            "the gate's own text did not cross the wire intact",
+        );
+      }
+      log(`  browser rail: ${JSON.stringify(railEntry.gates)}`);
+      log(`  rail entry title: ${JSON.stringify(railEntry.title)} (authored by rd on machine A)`);
+
+      step("ready-fd2 STEP 3/5: approving it in the browser publishes a signed event to " + RELAY);
+      let pageSaid = "";
+      if (railEntry.present) {
+        await resolveGateInRail(cdp, ids.loopWork, true, AGENT_RULING);
+        pageSaid = await settle(cdp);
+        if (pageSaid) log(`  page reported: ${pageSaid}`);
+      }
+
+      step("ready-fd2 STEP 4/5: rd on MACHINE B — clean RD_HOME, empty log — projects that event");
+      const afterTag = `loop-after-${RUN}`;
+      const afterItems = independentRead(rdBin, tmp, coord, afterTag, readerKey);
+      const afterGates = readerGateIds(rdBin, tmp, afterTag);
+      const work1 = afterItems.get(ids.loopWork);
+      // THE EVENT ITSELF, out of the log machine B's own `rd sync` filled from the
+      // relay — the browser's claim about what it published is never consulted.
+      //
+      // It is identified as the kind-1630 for this item that was NOT in the
+      // STEP-1 reader's log: the one the relay served only after the browser
+      // published. That identification is the "step 4 must read from a different
+      // log than step 3 wrote" clause made into an assertion — and it is also the
+      // only identification that holds in BOTH board modes, because on a
+      // confidential board the reason is sealed and finding the typed string on
+      // the wire would be the bug rather than the check.
+      const before1630 = new Set(readerEvents(tmp, beforeTag, ids.loopWork, 1630).map((e) => e.id));
+      const fresh = readerEvents(tmp, afterTag, ids.loopWork, 1630).filter((e) => !before1630.has(e.id));
+      if (fresh.length === 0) {
+        problems.push(
+          "machine B's relay-sourced log gained NO kind-1630 for the item after the approve — " +
+            "either nothing was published or the relay did not retain it",
+        );
+      } else {
+        if (fresh.length !== 1) problems.push(`machine B gained ${fresh.length} new status events for one approve, want exactly 1`);
+        const ruling = fresh.at(-1);
+        if (!/^[0-9a-f]{128}$/.test(ruling.sig ?? "")) problems.push("the event machine B read back carries no 64-byte schnorr signature");
+        if (ruling.pubkey !== owner) problems.push(`the ruling machine B read back was signed by ${ruling.pubkey}, not the browser's key`);
+        if (CONFIDENTIAL) {
+          // ready-191: the reason is free text, so it is SEALED. What ties this
+          // event back to what the human typed is the decrypted history note
+          // asserted below — read by a granted machine B, not by the writer.
+          if (JSON.stringify(ruling).includes(AGENT_RULING)) {
+            problems.push("PLAINTEXT ON THE WIRE: the reason typed in the browser is readable in the published event");
+          }
+        } else if (ruling.content !== AGENT_RULING) {
+          problems.push(`the published event carries reason ${JSON.stringify(ruling.content)}, want the one typed in the browser`);
+        }
+        log(
+          `  machine B read back event ${ruling.id} (kind 1630, sig ${ruling.sig?.slice(0, 16)}…, pubkey ${ruling.pubkey?.slice(0, 16)}…), ` +
+            `absent from the step-1 reader's log — a DIFFERENT log, filled by the relay in between`,
+        );
+      }
+      if (work1?.status !== "active") problems.push(`machine B projects status=${JSON.stringify(work1?.status)} after the approve, want "active"`);
+      for (const field of ["gate", "gate_msg_id", "waiting_type"]) {
+        if ((work1?.[field] ?? "") !== "") problems.push(`${field} = ${JSON.stringify(work1?.[field])} on machine B, want cleared`);
+      }
+      if (afterGates.has(ids.loopWork)) problems.push("`rd gates` on machine B still lists the gate the browser resolved");
+      const rulingEntry = (work1?.history ?? []).at(-1);
+      if (rulingEntry?.note !== AGENT_RULING) problems.push(`machine B's history note is ${JSON.stringify(rulingEntry?.note)}, want the reason typed in the browser`);
+      if (rulingEntry?.changed_by !== owner) problems.push(`the ruling is attributed to ${JSON.stringify(rulingEntry?.changed_by)}, want ${owner}`);
+      log(`  machine B: status=${work1?.status} gate=${JSON.stringify(work1?.gate)}; \`rd gates\` = ${JSON.stringify([...afterGates])}`);
+
+      step("ready-fd2 STEP 5/5: the agent RESUMES — and machine B sees what that unblocked");
+      const stillGated = agentIsStillGated();
+      if (stillGated) {
+        problems.push("machine A still sees a pending gate after the browser ruled — the agent would never resume, so the loop does not close");
+      } else {
+        // The agent's resume predicate flipped, so the agent does the thing it was
+        // stopped from doing: it finishes the work. This is `rd complete`, the
+        // agent-facing close, run on machine A with the ruling in the reason.
+        rd(rdBin, projectDir, writerHome, [
+          "complete",
+          ids.loopWork,
+          "--reason",
+          `resumed on the browser's ruling: ${AGENT_RULING}`,
+          "--branch",
+          "work/ready-fd2",
+        ]);
+        rd(rdBin, projectDir, writerHome, ["relay", "flush"]);
+      }
+      const resumedTag = `loop-resumed-${RUN}`;
+      const resumedItems = independentRead(rdBin, tmp, coord, resumedTag, readerKey);
+      const resumedReady = readerReadyIds(rdBin, tmp, resumedTag, owner);
+      const work2 = resumedItems.get(ids.loopWork);
+      const next2 = resumedItems.get(ids.loopNext);
+      if (work2?.status !== "done") problems.push(`machine B projects the resumed work as status=${JSON.stringify(work2?.status)}, want "done"`);
+      if (next2?.status === "blocked") problems.push(`${ids.loopNext} is STILL blocked on machine B — the agent's next step never opened up`);
+      if (!resumedReady.has(ids.loopNext)) {
+        problems.push(
+          `\`rd ready\` on machine B does not list ${ids.loopNext} (it lists ${JSON.stringify([...resumedReady])}) — ` +
+            "the work the gate was holding up is still not actionable, which is what step 5 means",
+        );
+      }
+      log(
+        `  machine A: the agent's own gate check says ${
+          stillGated ? "STILL GATED — so it does NOT resume, and nothing below can pass" : "clear — so it resumes and runs `rd complete`"
+        }`,
+      );
+      log(`  machine B: ${ids.loopWork} status=${work2?.status}; ${ids.loopNext} status=${next2?.status}`);
+      log(`  machine B \`rd ready --for <agent>\`: ${JSON.stringify([...beforeReady])} -> ${JSON.stringify([...resumedReady])}`);
+
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({
+        n: "L",
+        name: "THE WHOLE LOOP: rd gate on machine A -> browser rail approve -> relay -> machine B -> the agent resumes",
+        id: ids.loopWork,
         ok,
         problems,
       });
