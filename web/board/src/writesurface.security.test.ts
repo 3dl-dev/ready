@@ -648,7 +648,9 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
     // PIN (ready-fd9) — but a 30302 with the gate fields CLEARED really was
     // accepted by the relay, and it is the card that carries `gate`,
     // `waiting_type` and `waiting_on` (fold.ts itemFromCard).
-    // WHEN FIXED, replace these two lines with:
+    // WHEN FIXED there is no accepted card at all, so replace ALL THREE of the
+    // lines below (the `const`, the pin, and the gate-tag assertion, which would
+    // throw on `card!`) with:
     //   expect(accepted.find((e) => e.kind === 30302), "a refused ruling must leave no card behind").toBeUndefined();
     const card = accepted.find((e) => e.kind === 30302);
     expect(card, "ready-fd9 fixed? swap this for the secure assertion above").toBeDefined();
@@ -747,6 +749,14 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
     //   expect(threw, "a mis-signed write must be refused").toBeInstanceOf(SignerMismatchError);
     expect(threw, "ready-951 fixed? swap this for the secure assertion above").toBeUndefined();
 
+    // THE THREE LINES BELOW GO WITH THE PIN. They measure that the corrupt
+    // events really were published; once the fix refuses BEFORE publishing,
+    // `seen` is empty and all three are wrong. Replace them with the same claim
+    // stated the other way round — and KEEP the BIP-340 half, because it is what
+    // proves the fixture's corruption is real rather than mislabelled:
+    //   expect(signed.every((e) => !verifyEvent(e)), "the fixture really is corrupt").toBe(true);
+    //   expect(seen, "a mis-signed event must never reach a relay").toEqual([]);
+    // (`signed` = what the fake signer returned; capture it in badSigSigner.)
     expect(seen.length, "events really were published").toBeGreaterThan(0);
     // ANTI-TAUTOLOGY: the published events genuinely do not verify — the
     // fixture's corruption is real, not a mislabelled valid signature.
