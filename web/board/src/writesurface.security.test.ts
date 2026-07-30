@@ -50,17 +50,23 @@
 // with the secure assertions quoted beside them. "…and the suite is still
 // green" is not a satisfiable done condition for any of them.
 //
-// ready-605 IS FIXED and its two cases below are plain `it` asserting the
-// SECURE property — they are no longer pins and must never become defective
-// measurements again. They were not simply flipped from `it.fails`, and the
-// reason is worth keeping: `it.fails` passes on ANY throw, so the second one
-// stayed GREEN under the fix for the wrong reason — the hostile card is
+// ready-605 IS FIXED (merged to main as 41059ba) and its FOUR cases below are
+// plain `it` asserting the SECURE property — they are no longer pins and must
+// never become defective measurements again. Two say the ungranted key is
+// DROPPED (`an UNGRANTED key's card does not win…`, `…never reaches signEvent`)
+// and two say the cap-valid grantee is ADMITTED (`main.ts's site`,
+// `nostrwriter.ts's site`); a fifth, the ANTI-TAUTOLOGY case, is the
+// counterfactual at the fold. They were not simply flipped from `it.fails`, and
+// the reason is worth keeping: `it.fails` passes on ANY throw, so the signEvent
+// one stayed GREEN under the fix for the wrong reason — the hostile card is
 // dropped, resolveGate finds no pending gate, nothing reaches the signer, and
 // `tag(signedCard()!, "title")` threw a TypeError on `undefined`. Its
 // replacement performs a write that DOES reach the extension and asserts what
 // the extension was handed, so "nothing was signed at all" can no longer
-// satisfy it. Both were proven by reverting the fix (measured 2026-07-30: both
-// go red, see ready-605).
+// satisfy it. All four were proven load-bearing by mutating production
+// (measured 2026-07-30 on main: `trusted: null` at one site reddens one DROPPED
+// case; an EMPTY `new Set()` at one site reddens one ADMITTED case; each
+// failure names its call site).
 //
 // ── THE ASSESSMENT (ready-c6b done condition 1), probe by probe ─────────────
 //
@@ -89,8 +95,11 @@
 //      ws://192.168.2.40:7777 and .41:7777 accept a never-granted key; only
 //      wss://relay.3dl.network refuses, under a third-party tenant policy. The
 //      product says otherwise in a user-facing sentence -> ready-345.
-//    - THE READ-SIDE TRUST GATE: real in rd (cmd/rd/nostr.go:991 ->
-//      pkg/sync/nostrproject.go:262, proven by pkg/sync/nostrtrust_test.go's
+//    - THE READ-SIDE TRUST GATE: real in rd (cmd/rd/nostr.go:991 hands
+//      ProjectOptions.Trusted -> pkg/sync/nostrproject.go:253 `if
+//      !opts.trusts(e.PubKey) && !grantTrusts(levels, e.PubKey) { continue }`,
+//      the gate itself being nostrproject.go:120-128; proven by
+//      pkg/sync/nostrtrust_test.go's
 //      TestProjection_TrustGate_DropsUntrustedTakeover), and — ready-605 — now
 //      real in the browser too: main.ts loadBoardItems and nostrwriter.ts
 //      items() both project under the key set of deriveLevels over the board's
@@ -129,9 +138,33 @@
 //    is reported as a total refusal while the accepted card has already cleared
 //    the gate for every other reader -> ready-fd9; and a badly-signed event
 //    passes every check the page makes and is reported as success -> ready-951.
-//    Both are made permanent by the same gap: NostrWriterDeps.onApplied has no
-//    production caller and render.ts's setItems() is never called outside tests,
-//    so nothing ever reconciles the optimistic patch against a re-read.
+//
+//    WHAT RECONCILES THEM, CORRECTED 2026-07-30. An earlier revision of this
+//    paragraph — and of ready-fd9 and ready-951 — said "nothing ever reconciles
+//    the optimistic patch against a re-read", on the strength of
+//    NostrWriterDeps.onApplied having no production caller. Half of that was
+//    wrong when written. onApplied really is dead wiring (declared
+//    nostrwriter.ts:91, called nostrwriter.ts:309, constructed nowhere with it
+//    — main.ts:424 does not pass it), but render.ts's setItems() DOES have a
+//    production caller: main.ts:1030, inside startLiveUpdates (main.ts:525,
+//    shipped by ready-4359, driven in main.live.test.ts), which re-folds the
+//    WHOLE board through the same ItemSource on every pushed event and is
+//    wired live by defaultDeps.subscribeEvents (main.ts:124).
+//
+//    So neither defect is terminal-until-reload, and neither item should be
+//    argued on that ground. What survives, and is what they are filed on:
+//    - ready-fd9's cross-reader harm is untouched by any amount of
+//      reconciliation — the accepted card really did clear the gate for every
+//      other reader, and re-folding the approver's page only spreads that.
+//    - the MESSAGE is never reconciled, only the projection. The approver is
+//      told "the relay rejected this change" (fd9) or nothing at all (951);
+//      the live re-fold then silently moves the board the OTHER way. A user
+//      watching a card revert with a success already reported, or a gate vanish
+//      under a refusal message, is worse off than one shown a stale patch.
+//    NOT MEASURED HERE, and deliberately not claimed: whether a given relay
+//    echoes the writer's own accepted event back onto its open subscription.
+//    The wiring above is read out of main.ts; the round-trip is ready-fd9's and
+//    ready-951's to measure when they are fixed.
 //
 // 6. REPLAY. A card commits to its board (`a`) and its item (`d`) inside the
 //    signed event id, so it cannot be retargeted to either. Status events are
@@ -689,9 +722,13 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
   // (lib/nostrevent.ts verifyEvent, lib/secp256k1.ts).
   //
   // The consequence is not academic. Every downstream reader drops an event
-  // whose signature does not verify, so the write is a silent no-op; the page
-  // reports success and its optimistic patch stands, because nothing ever
-  // re-reads (NostrWriterDeps.onApplied has no production caller).
+  // whose signature does not verify, so the write is a silent no-op — while the
+  // page reports success and patches the card optimistically. Nothing tells the
+  // user otherwise: onApplied is dead wiring (nostrwriter.ts:91/:309, never
+  // constructed with it), and the one thing that DOES re-read — the live
+  // subscription's re-fold, main.ts:1030 — drops the mis-signed event too, so
+  // it reverts the card silently under a success the user was already given.
+  // See probe 5 in this file's header for the corrected reconciliation story.
   const okRelay: (url: string) => WebSocket = () => {
     const sock: Record<string, unknown> = {
       send(raw: string) {
