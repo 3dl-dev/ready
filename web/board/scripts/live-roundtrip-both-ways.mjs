@@ -83,6 +83,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "vite";
+// ready-153: the throwaway board this run provisions must not survive it. The
+// contract — archive, prove the marker landed on the relay, and bracket the
+// run with the owner's unarchived board count — lives in one module that
+// scripts/throwaway-board.test.mjs exercises hermetically in CI.
+import { openThrowawayBoardGuard, reportCleanup } from "./throwaway-board.mjs";
 
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
@@ -396,91 +401,6 @@ async function settle(cdp, ms = 9000) {
   return cdp.evaluate(`return document.querySelector(".transient-error")?.textContent ?? "";`);
 }
 
-/**
- * ownedBoardCount answers "how many unarchived boards does this key own, right
- * now, on the relay" — a kind-only walk paged backwards with `until` at limit
- * 500, exactly the shape archive-stray-boards.mjs and live-portfolio.mjs's own
- * oracle use, and for the same reason (relay measurement discipline: an
- * `authors` filter silently under-returns on wss://relay.3dl.network — measured
- * 42/56 vs 56/56 for the same walk, ready-5c5).
- *
- * WHY THIS EXISTS (ready-153 rework): the finally block below archives this
- * run's own throwaway board, but a harness that only trusts its own archive
- * call proves nothing if that call is deleted or starts failing — the earlier
- * version of this file did exactly that and still reported 9/9, green. This is
- * the assertion that makes a stopped cleanup show up as a FAILED run: a count
- * taken before this script does anything and a count taken after everything
- * (including the finally block) has run must agree, because the only board
- * this process is allowed to add to the relay is the one it also removes.
- */
-async function ownedBoardCount(relay, ownerPubkey) {
-  const seen = new Map();
-  let until;
-  for (let page = 0; page < 40; page++) {
-    const filter = { kinds: [30301], limit: 500 };
-    if (until !== undefined) filter.until = until;
-    const got = await new Promise((resolve, reject) => {
-      const ws = new WebSocket(relay);
-      const out = [];
-      const sub = `cnt${Math.random().toString(36).slice(2, 10)}`;
-      const t = setTimeout(() => {
-        try {
-          ws.close();
-        } catch {
-          /* closed */
-        }
-        resolve(out);
-      }, 45000);
-      ws.onopen = () => ws.send(JSON.stringify(["REQ", sub, filter]));
-      ws.onmessage = (m) => {
-        const f = JSON.parse(m.data);
-        if (f[0] === "EVENT" && f[1] === sub) out.push(f[2]);
-        else if (f[0] === "EOSE" && f[1] === sub) {
-          clearTimeout(t);
-          try {
-            ws.send(JSON.stringify(["CLOSE", sub]));
-            ws.close();
-          } catch {
-            /* closed */
-          }
-          resolve(out);
-        }
-      };
-      ws.onerror = () => {
-        clearTimeout(t);
-        reject(new Error(`relay ${relay}: connection failed`));
-      };
-    });
-    let added = 0;
-    let oldest = until;
-    for (const e of got) {
-      if (!seen.has(e.id)) {
-        seen.set(e.id, e);
-        added++;
-      }
-      if (oldest === undefined || e.created_at < oldest) oldest = e.created_at;
-    }
-    if (added === 0 || got.length < 500) break;
-    if (oldest === undefined) break;
-    until = oldest - 1;
-  }
-  const byCoord = new Map();
-  for (const e of seen.values()) {
-    if (e.pubkey !== ownerPubkey) continue;
-    const d = (e.tags ?? []).find((t) => t[0] === "d")?.[1];
-    if (!d) continue;
-    const coord = `30301:${e.pubkey}:${d}`;
-    const prev = byCoord.get(coord);
-    if (!prev || e.created_at > prev.created_at) byCoord.set(coord, e);
-  }
-  let count = 0;
-  for (const e of byCoord.values()) {
-    const archived = ((e.tags ?? []).find((t) => t[0] === "archived")?.[1] ?? "") !== "";
-    if (!archived) count++;
-  }
-  return count;
-}
-
 async function main() {
   if (!existsSync(CHROME)) throw new Error(`no Chromium at ${CHROME} (set CHROME_PATH)`);
 
@@ -491,17 +411,19 @@ async function main() {
   // leave a permanent stray in the owner's portfolio (ready-153).
   let rdBin, projectDir, writerHome, coord;
 
-  // Loaded BEFORE the try block, and used to bracket the ENTIRE run (ready-153):
-  // the owner's own board count, taken before this process creates anything and
-  // compared against the same count taken after the finally block has run.
   const idPath = path.join(
     process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
     "nostr-identity.json",
   );
   const identity = JSON.parse(readFileSync(idPath, "utf8"));
+
+  // ready-153: opened BEFORE anything is created, so it holds the owner's
+  // unarchived board count as it was before this process existed, and BOARD_D
+  // is registered before `rd init` runs — a run that dies inside `rd init` has
+  // no coordinate to hand back but may already have published the board.
   step("ready-153: count this key's unarchived boards BEFORE the run");
-  const boardsBefore = await ownedBoardCount(RELAY, identity.pubkey_hex);
-  log(`  ${boardsBefore} unarchived board(s) owned by this key, before this run`);
+  const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: identity.pubkey_hex, log });
+  guard.expect(BOARD_D);
 
   try {
     step("build rd from this tree");
@@ -825,47 +747,24 @@ async function main() {
         /* best effort */
       }
     }
-    // ready-153: this board exists ONLY to be thrown away. Archived here, in
+    // ready-153: this board exists ONLY to be thrown away. Cleaned up here, in
     // `finally` rather than after a happy-path return, so a run that fails
     // partway (or even before Chromium ever opens) still does not leave a
-    // permanent stray in the owner's portfolio. `rd board archive` only
-    // republishes the board's own kind-30301 definition — every card and
-    // status event already written is untouched.
-    if (coord && rdBin) {
-      try {
-        rd(rdBin, projectDir, writerHome, ["board", "archive", coord]);
-        log(`  archived throwaway board ${coord}`);
-      } catch (err) {
-        // An archive failure is a FAILURE, not a warning (ready-153 rework): the
-        // whole reason this finally block exists is to keep a stray out of the
-        // owner's permanent portfolio, and an error that is only logged still
-        // lets the process exit 0 while that stray persists.
-        failures++;
-        console.error(`FAILURE: could not archive throwaway board ${coord}: ${err.message}`);
-      }
-    }
+    // permanent stray in the owner's portfolio — and BEFORE the rmSync below,
+    // because `rd board archive` runs inside the project dir under tmp.
+    //
+    // guard.close() archives whatever the RELAY says this run published,
+    // reads the archived marker back off the relay (an `rd board archive`
+    // that exits 0 without the event landing is not success), and re-checks
+    // the owner's unarchived board count against the one taken before the
+    // run. Its failures count toward this script's exit code — an archive
+    // problem that is only logged lets the process exit 0 with the stray
+    // still in the portfolio.
+    step("ready-153: archive the throwaway board, and prove the owner's board count is unchanged");
+    failures += reportCleanup(await guard.close({ rdBin, cwd: projectDir, home: writerHome }), log);
     if (KEEP) log(`\nkept: ${tmp}`);
     else rmSync(tmp, { recursive: true, force: true });
   }
-
-  // ready-153: THE PROOF THAT CLEANUP ACTUALLY RAN, not merely that it was
-  // attempted. A count taken before this process touched the relay and a count
-  // taken after everything above (including the finally block) has finished
-  // must agree — the only board this run is entitled to add is the one it also
-  // archives. Delete the `rd board archive` call above and this is the
-  // assertion that goes red; nothing before it would notice.
-  step("ready-153: the owner's board count is unchanged after this run");
-  const boardsAfter = await ownedBoardCount(RELAY, identity.pubkey_hex);
-  const cleanupHeld = boardsAfter === boardsBefore;
-  if (!cleanupHeld) failures++;
-  log(`  boards before: ${boardsBefore}  boards after: ${boardsAfter}`);
-  log(
-    `  ${cleanupHeld ? "PASS" : "FAIL"}  ${
-      cleanupHeld
-        ? "the run left the owner's board count exactly where it started"
-        : "the run LEFT A STRAY BEHIND — board count grew and was not cleaned up"
-    }`,
-  );
 
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -87,6 +87,11 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "vite";
+// ready-153: the throwaway board this run provisions must not survive it. The
+// contract — archive, prove the marker landed on the relay, and bracket the
+// run with the owner's unarchived board count — lives in one module that
+// scripts/throwaway-board.test.mjs exercises hermetically in CI.
+import { openThrowawayBoardGuard, reportCleanup } from "./throwaway-board.mjs";
 
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
@@ -552,10 +557,30 @@ async function main() {
 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "rd-48f-"));
   const cleanup = [];
+  // Hoisted out of the try block so the `finally` clause below can archive the
+  // throwaway board EVEN WHEN THE SCRIPT FAILS PARTWAY — a red run must not
+  // leave a permanent stray in the owner's portfolio (ready-153).
+  let rdBin, projectDir, writerHome;
+
+  const idPath = path.join(
+    process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
+    "nostr-identity.json",
+  );
+  const identity = JSON.parse(readFileSync(idPath, "utf8"));
+
+  // ready-153: opened BEFORE anything is created, so it holds the owner's
+  // unarchived board count as it was before this process existed, and BOARD_D
+  // is registered before `rd init` runs — a run that dies inside `rd init` has
+  // no coordinate to hand back but may already have published the board.
+  // Until this landed, every run of this script added one permanent node to
+  // the owner's portfolio and nothing removed it.
+  step("ready-153: count this key's unarchived boards BEFORE the run");
+  const guard = await openThrowawayBoardGuard({ relay: RELAY, ownerPubkey: identity.pubkey_hex, log });
+  guard.expect(BOARD_D);
 
   try {
     step("build rd from this tree");
-    const rdBin = path.join(tmp, "rd");
+    rdBin = path.join(tmp, "rd");
     execFileSync("go", ["build", "-o", rdBin, "./cmd/rd"], { cwd: REPO_ROOT, stdio: "inherit" });
 
     const vite = await createServer({
@@ -574,16 +599,11 @@ async function main() {
     log(`  ${ext.name} ${ext.version} @ ${NOS2X_COMMIT.slice(0, 12)} -> ${ext.dir}`);
 
     step("provision the throwaway CONFIDENTIAL board (owner key, fresh board-d)");
-    const writerHome = path.join(tmp, "writer-home");
+    writerHome = path.join(tmp, "writer-home");
     mkdirSync(writerHome, { recursive: true });
-    const idPath = path.join(
-      process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
-      "nostr-identity.json",
-    );
-    const identity = JSON.parse(readFileSync(idPath, "utf8"));
     writeFileSync(path.join(writerHome, "nostr-identity.json"), JSON.stringify(identity), { mode: 0o600 });
 
-    const projectDir = path.join(tmp, BOARD_D);
+    projectDir = path.join(tmp, BOARD_D);
     mkdirSync(projectDir, { recursive: true });
     const initOut = JSON.parse(
       rd(rdBin, projectDir, writerHome, [
@@ -907,6 +927,21 @@ async function main() {
         /* best effort */
       }
     }
+    // ready-153: this board exists ONLY to be thrown away. Cleaned up here, in
+    // `finally` rather than after a happy-path return, so a run that fails
+    // partway (or even before Chromium ever opens) still does not leave a
+    // permanent stray in the owner's portfolio — and BEFORE the rmSync below,
+    // because `rd board archive` runs inside the project dir under tmp.
+    //
+    // guard.close() archives whatever the RELAY says this run published,
+    // reads the archived marker back off the relay (an `rd board archive`
+    // that exits 0 without the event landing is not success), and re-checks
+    // the owner's unarchived board count against the one taken before the
+    // run. Its failures count toward this script's exit code — an archive
+    // problem that is only logged lets the process exit 0 with the stray
+    // still in the portfolio.
+    step("ready-153: archive the throwaway board, and prove the owner's board count is unchanged");
+    failures += reportCleanup(await guard.close({ rdBin, cwd: projectDir, home: writerHome }), log);
     if (KEEP) log(`\nkept: ${tmp}`);
     else rmSync(tmp, { recursive: true, force: true });
   }
