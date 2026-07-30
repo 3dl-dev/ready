@@ -871,9 +871,13 @@ var nostrSyncCmd = &cobra.Command{
 			return enc.Encode(map[string]any{"results": results, "relay_errors": errs})
 		}
 		for _, r := range results {
-			fmt.Printf("sync %s: local_before=%d need=%d have=%d downloaded=%d uploaded=%d "+
+			// pages= is the anti-silence field (ready-bec): a relay caps how many
+			// records it reconciles per query and never says so, so "how many windows
+			// did this walk need" is the only place the reader can see that the board
+			// is bigger than one query and that sync went past the cap.
+			fmt.Printf("sync %s: local_before=%d need=%d have=%d downloaded=%d uploaded=%d pages=%d "+
 				"neg_bytes(sent=%d recv=%d rounds=%d) event_bytes(down=%d up=%d)\n",
-				r.Relay, r.LocalBefore, r.Need, r.Have, r.Downloaded, r.Uploaded,
+				r.Relay, r.LocalBefore, r.Need, r.Have, r.Downloaded, r.Uploaded, r.Pages,
 				r.BytesSent, r.BytesReceived, r.RoundTrips, r.EventBytesDownloaded, r.EventBytesUploaded)
 		}
 		for _, e := range errs {

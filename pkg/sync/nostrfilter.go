@@ -26,13 +26,33 @@ func matchesFilter(e *nostr.Event, filter map[string]any) bool {
 			if !stringInField(e.ID, raw) {
 				return false
 			}
+		case "until":
+			// NIP-01: created_at <= until (INCLUSIVE). The negentropy paging walk
+			// (ready-bec) asks the relay for one time window at a time; the LOCAL set
+			// must be reduced to the SAME window or the diff is skewed — every local
+			// event newer than the window would come back as "the relay lacks this"
+			// and be re-uploaded on every sync.
+			ts, ok := timestampField(raw)
+			if !ok || e.CreatedAt > ts {
+				return false
+			}
+		case "since":
+			// NIP-01: created_at >= since (INCLUSIVE). rd builds no since-scoped
+			// filter today; matching it correctly costs one branch and stops a future
+			// one from silently degrading to "matches everything".
+			ts, ok := timestampField(raw)
+			if !ok || e.CreatedAt < ts {
+				return false
+			}
 		default:
 			if len(key) == 2 && key[0] == '#' {
 				if !tagMatches(e, key[1], raw) {
 					return false
 				}
 			}
-			// Unknown keys (e.g. since/until/limit) are ignored for local matching.
+			// Unknown keys (e.g. limit) are ignored for local matching: `limit` is a
+			// relay-side cap on how many of the matching events are SERVED, not a
+			// predicate on an event, so applying it locally would be meaningless.
 		}
 	}
 	return true
@@ -79,6 +99,24 @@ func stringInField(s string, raw any) bool {
 		}
 	}
 	return false
+}
+
+// timestampField reads a NIP-01 since/until value, which may arrive as any of the
+// numeric shapes a Go map or a JSON decode produces. A value that is not a number
+// is NOT treated as "absent": the caller fails the match, so a malformed filter
+// selects nothing locally rather than silently widening to everything.
+func timestampField(raw any) (int64, bool) {
+	switch v := raw.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case uint64:
+		return int64(v), true
+	}
+	return 0, false
 }
 
 // tagMatches reports whether the event has a tag whose name is the single letter

@@ -151,6 +151,19 @@ func (n *Negentropy) reconcileServer(query []byte) ([]byte, error) {
 	return out, nil
 }
 
+// ServerReply is reconcileServer exported for tests in OTHER packages (ready-bec).
+// pkg/sync's paging walk can only be proven against a relay that reproduces the
+// per-REQ record CAP that caused the truncation — and a fake relay that speaks
+// canned bytes proves nothing about a real negentropy exchange. Exporting the
+// server role lets an in-process fake relay run the REAL protocol, so the walk
+// under test is exercised end to end rather than mocked away.
+//
+// Production rd is ALWAYS the client: no non-test caller of this exists, and one
+// would be a design error (playing relay is strfry's job).
+func (n *Negentropy) ServerReply(query []byte) ([]byte, error) {
+	return n.reconcileServer(query)
+}
+
 // reconcileAux processes one message. When isInitiator is true it behaves as the
 // client: IdList ranges are base cases from which the have/need diff is extracted
 // and answered with Skip. When false it behaves as the server: IdList ranges are
