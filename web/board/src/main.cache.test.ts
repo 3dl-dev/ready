@@ -20,8 +20,12 @@
 //
 //   1. A cached board is not painted into a session that would put DIFFERENT
 //      inputs to the read gates (different viewer, or a link that no longer
-//      carries the board's key). Neutralize admissibleBoards' fingerprint check
-//      and the plaintext of a board this session cannot decrypt appears.
+//      carries the board's key). admissibleBoards holds this with TWO guards
+//      and each has its own case here, because deleting one and seeing green is
+//      how a fail-closed check gets deleted for real: the KEY-PATH BELT is what
+//      "A LINK THAT NO LONGER CARRIES THE KEYS" turns red, and the FINGERPRINT
+//      check is what "ONLY THE FINGERPRINT CATCHES THIS ONE" turns red. Each
+//      annotation states which, verified by deleting one guard at a time.
 //   2. A card the CURRENT fold quarantines does not survive from a cached entry.
 //      Neutralize reconcileOne's replace-don't-merge and the withheld card stays.
 //   3. A card no read-trusted key ever signed cannot be introduced BY the cache.
@@ -217,9 +221,20 @@ describe("the cached paint is refused to a session that would ask a different qu
     root.replaceChildren();
     const pending = afterLogin(root, identity(), fragment(undefined), deps());
 
-    // NEUTRALIZATION: delete the `b.gate !== gateFingerprint(...)` line in
-    // boardcache.ts's admissibleBoards and this assertion fails — the cached
-    // plaintext is on screen here.
+    // NEUTRALIZATION — THE KEY-PATH BELT, not the fingerprint. Delete the
+    // `b.state !== "public" && !(...)` line in boardcache.ts's admissibleBoards
+    // and this assertion fails with ['gamma-002','gamma-001'] on screen
+    // (measured 2026-07-30, deleting each guard on its own and running the
+    // whole suite).
+    //
+    // DELETING THE FINGERPRINT CHECK INSTEAD LEAVES THIS CASE GREEN, and that
+    // is not evidence the fingerprint check is dead — do not read it that way
+    // and delete it. Both guards refuse alpha/beta/delta here, so removing
+    // either one alone still hides their plaintext; what only the belt refuses
+    // is GAMMA, whose entry was written by a session that held no gamma key
+    // either, so its stored `cek:` fingerprint MATCHES this keyless session's
+    // and the fingerprint admits it. The guard the fingerprint alone holds is
+    // the case below, "ONLY THE FINGERPRINT CATCHES THIS ONE".
     expect(cardIds(), "the warm paint admitted a board this session holds no key for").toEqual([]);
     expect(pageText()).not.toContain("Alpha epoch one card");
 

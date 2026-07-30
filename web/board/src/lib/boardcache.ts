@@ -35,6 +35,14 @@
 // and every card on it is replaced by this session's own fold as the boards
 // arrive. It is not worth pretending to be more than that.
 //
+// AND ONE CLAUSE OF ready-fe4 IS NOT MET. The "0 relay frames" row above is
+// frames arrived BY THE FIRST ITEM, not frames pulled over the visit. Over the
+// whole visit a warm load pulls 19,560 frames against a cold load's 19,598 —
+// 99.8%, because the reconcile is a full refetch by design. Condition 2 asks
+// for a `since`-derived incremental reconnect pulling "a small fraction" of the
+// cold count, and this file does not do it. CachedBoard.high says why, and what
+// the safe version would cost, and the open decision is ready-af6.
+//
 // WHAT IS CACHED, AND WHY IT IS THE FOLD'S OUTPUT AND NOT THE RELAY'S INPUT.
 // This file stores ADMITTED ITEMS — the Item[] a completed load produced, after
 // the read-trust gate (ready-605), after the confidentiality decision
@@ -117,25 +125,43 @@ export interface CachedBoard {
   /**
    * Newest created_at in the snapshot these items were folded from.
    *
-   * WHAT IT IS NOT: the `since` cursor of the next load's per-board fetch. The
-   * reconcile refetches each board IN FULL and replaces its items wholesale, on
-   * purpose — see this file's header. A `since`-scoped initial fetch would make
-   * the cached items part of the SETTLED projection rather than only of the
-   * paint, and everything this file promises (a withheld card cannot come back,
-   * a fabricated one cannot survive, a tampered store cannot outlive the relay
-   * answer) rests on them not being. The `since`-derived incremental path this
-   * transport does have is the LIVE SUBSCRIPTION's, which reconnects on exactly
-   * this number (ready-4359, main.ts's startLiveUpdates) — it is incremental
-   * against a snapshot THIS session folded, not against bytes off disk.
+   * READY-fe4 CONDITION 2 IS NOT IMPLEMENTED, AND THIS FIELD IS NOT ITS
+   * CURSOR. State it plainly rather than let the paragraphs below read as a
+   * satisfied clause. The condition asks that a warm reconnect fetch with a
+   * `since` derived from this number and pull "a small fraction" of the cold
+   * event count. Measured with live-cache.mjs, which counts every inbound relay
+   * frame per visit, on the operator's real portfolio against
+   * wss://relay.3dl.network 2026-07-30: cold 19,598 frames, warm 19,560 —
+   * 99.8%. That is not a small fraction; it is no incremental reconnect at all.
+   * The initial reconcile refetches every board IN FULL.
    *
-   * It is recorded for the staleness readout and because the reconnect cursor
-   * and the cache entry must come from the same snapshot to be comparable.
+   * WHY IT WAS NOT DONE, so the ruling can be made on the trade and not on a
+   * description of it. This cache stores the fold's OUTPUT (admitted Item[]),
+   * not the relay's input — see this file's header for the two reasons. A
+   * `since`-scoped initial fetch cannot fold anything on its own: an item's
+   * creation event is older than any useful cursor, so the delta would have to
+   * be MERGED onto the cached items, which makes those items part of the SETTLED
+   * projection rather than only of the paint. Everything this file promises (a
+   * withheld card cannot come back, a fabricated one cannot survive, a tampered
+   * store cannot outlive the relay answer) rests on them not being. Doing it
+   * safely means caching RAW EVENTS and re-folding cache ∪ delta through the
+   * same gates, which is a different design (open decision: ready-af6) with
+   * three costs this item did not scope: the fold re-verifies every signature,
+   * so it saves the 8.3s of relay
+   * and none of the 60.8s of BIP-340 (measured, see the header); ~71k raw events
+   * do not fit localStorage's ~5MB, so it needs IndexedDB, whose async API
+   * cannot serve condition 1's synchronous pre-await paint; and an omitted event
+   * in the store would no longer be re-fetched, so a tampered store CAN change
+   * the settled answer. That is an architecture decision, and it is escalated
+   * rather than taken here.
    *
-   * THE COST OF THAT CHOICE IS MEASURED, not waved at: live-cache.mjs counts
-   * every inbound relay frame per visit and prints both. 2026-07-30, the real
-   * portfolio — cold 19,580 frames, warm 19,548. A warm visit pulls the SAME
-   * traffic as a cold one. Whoever revisits ready-fe4 condition 2 is looking at
-   * that pair of numbers, not at a description of them.
+   * WHAT THIS FIELD IS FOR, in the meantime: the staleness readout, and the fact
+   * that the reconnect cursor and the cache entry must come from the same
+   * snapshot to be comparable. The `since`-derived incremental path this
+   * transport DOES have is the live subscription's (ready-4359, main.ts's
+   * startLiveUpdates), which is incremental against a snapshot THIS session
+   * folded — not against bytes off disk, and not the warm-reconnect saving
+   * condition 2 asks for.
    */
   high: number;
   items: Item[];
@@ -216,15 +242,29 @@ export function gateFingerprint(g: GateInputs): string {
  * admissibleBoards is the paint-time gate: the cached boards this session may
  * render before it has fetched anything.
  *
- * TWO CHECKS, and the second is not implied by the first. The FINGERPRINT check
- * is the general rule above. The KEY-PATH check is a belt on the one direction
- * that matters most: a board whose cached items were admitted as anything other
- * than "public" is only painted into a session that has some way to hold that
- * board's key — a link that carries it, or a signer that can unwrap a grant.
- * Fingerprint equality already implies it today, which is the point: if a
- * future edit widens the fingerprint (drops `signing`, say), this check still
- * refuses to paint a confidential board's decrypted titles into a session that
- * structurally cannot decrypt.
+ * TWO CHECKS, AND NEITHER IMPLIES THE OTHER — measured, not assumed. The
+ * FINGERPRINT check is the general rule above. The KEY-PATH check is a belt on
+ * the one direction that matters most: a board whose cached items were admitted
+ * as anything other than "public" is only painted into a session that has some
+ * way to hold that board's key — a link that carries it, or a signer that can
+ * unwrap a grant.
+ *
+ * The case the FINGERPRINT ALONE MISSES is a board that was ALREADY sealed to
+ * the session that cached it: it held no key for that board, so the entry's
+ * fingerprint records `cek:` (empty), and a later session that holds no keys at
+ * all computes the SAME fingerprint and is admitted by it. Only the belt refuses
+ * that board. main.cache.test.ts's "A LINK THAT NO LONGER CARRIES THE KEYS"
+ * exercises exactly it (gamma), and deleting this line turns it red while
+ * deleting the fingerprint line above leaves it green.
+ *
+ * The case the BELT ALONE MISSES is a public-state entry, or one written by a
+ * session with a DIFFERENT capability or a different viewer — the belt has
+ * nothing to say about any of those. "ONLY THE FINGERPRINT CATCHES THIS ONE" is
+ * that case, and deleting the fingerprint line turns it red.
+ *
+ * So both lines are load-bearing today, and each has a test that fails on its
+ * own deletion. Do not read one guard's green suite as evidence the other is
+ * redundant.
  */
 export function admissibleBoards(view: CachedView, g: ViewGate): CachedBoard[] {
   return view.boards.filter((b) => {
