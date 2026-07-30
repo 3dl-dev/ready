@@ -34,6 +34,9 @@ import type { Item } from "./state";
 import { named, labelFilter, apply, allNames } from "./views";
 import { hexToBytes } from "./sha256";
 import { deriveBoardKeyring, type BoardKeyring } from "./keyring";
+// The PRODUCTION confidentiality wiring, imported — not reimplemented. See
+// productionEncryptedBoards.
+import { confidentialityOf, encryptedBoardsOf } from "./confidentiality";
 import { nip07KeyUnwrapper } from "./keyunwrap";
 import { fakeNip44Signer } from "./fakesigner";
 import { xOnlyPubkey } from "./schnorrsign";
@@ -112,6 +115,11 @@ function buildEncryptedBoards(spec: VectorOptions["encrypted_boards"]): Encrypte
  * on the path: sealing raw bytes instead of hex would fail these vectors exactly
  * as it fails in a browser.
  */
+/** keyringCoord is the board coordinate a keyring spec names (§4.1 addressable). */
+function keyringCoord(spec: NonNullable<VectorOptions["keyring"]>): string {
+  return `30301:${spec.board_author}:${spec.board_d}`;
+}
+
 async function deriveVectorKeyring(
   spec: NonNullable<VectorOptions["keyring"]>,
   events: (NostrEvent | null)[],
@@ -126,26 +134,45 @@ async function deriveVectorKeyring(
 }
 
 /**
- * keyringEncryptedBoards adapts a derived keyring to the fold's
- * EncryptedBoardSet using §11.13 ALONE: confidential iff a cutover was derived,
- * at that instant.
+ * plainEncryptedBoards adapts a derived keyring to the fold's EncryptedBoardSet
+ * using §11.13 ALONE: confidential iff a cutover was derived, at that instant.
+ * This is what rd's Go reader does — spec §11.13a records that "the Go reader
+ * does not yet apply §11.13a" (tracked as ready-9a6).
  *
- * main.ts deliberately does NOT wire it this way — it puts §11.13a's
- * omission-witness layer (confidentialityOf / encryptedBoardsOf) in front, which
- * can downgrade a board to "unknown" and quarantine strictly MORE. That layer is
- * a client-side hardening the Go fold does not implement (spec §11.13a records
- * this: "The Go reader does not yet apply §11.13a", tracked as ready-9a6), so
- * running it here would make this suite assert something the vector file's
- * expectations were not authored against. The vectors pin the SHARED contract;
- * the extra layer has its own tests (main.grantsomission.test.ts).
+ * IT IS NOT WHAT THIS SUITE FOLDS WITH. The production wiring is
+ * confidentialityOf + encryptedBoardsOf (lib/confidentiality.ts), and this
+ * function exists only so the divergence-zone test below can compare the two.
+ * Round 1 of ready-882 folded with a local copy of THIS adapter and justified it
+ * as equivalent to production; it is not, and the false claim shipped a vector the
+ * deployed browser could not satisfy (see the divergence-zone test).
  */
-function keyringEncryptedBoards(kr: BoardKeyring): EncryptedBoardSet {
+function plainEncryptedBoards(kr: BoardKeyring): EncryptedBoardSet {
   return {
     cutover(boardCoord: string) {
       const at = kr.cutover(boardCoord);
       return at === null ? { cutover: 0, ok: false } : { cutover: at, ok: true };
     },
   };
+}
+
+/**
+ * productionEncryptedBoards is the REAL browser wiring, imported rather than
+ * reimplemented: main.ts calls exactly these two functions on exactly these
+ * arguments (`hasLinkKeys` is false because a vector carries no fragment keys).
+ *
+ * Substituting anything here reopens the hole this rework closes: a vector can
+ * then assert fold behaviour the shipped page does not produce, which is the drift
+ * the epic's spec -> vectors -> client ordering exists to prevent — introduced by
+ * a vector.
+ */
+function productionEncryptedBoards(
+  kr: BoardKeyring,
+  coord: string,
+  events: (NostrEvent | null)[],
+): EncryptedBoardSet {
+  const verified = events.filter((e): e is NostrEvent => e !== null);
+  const { state } = confidentialityOf(kr, coord, verified, false);
+  return encryptedBoardsOf(kr, state);
 }
 
 async function toProjectOptions(
@@ -159,6 +186,12 @@ async function toProjectOptions(
     expect(o.decryptor).toBeNull();
     expect(o.encrypted_boards).toBeNull();
     const kr = await deriveVectorKeyring(o.keyring, events);
+    // The board the §11.13a layer judges is the one the KEYRING SPEC names,
+    // exactly as main.ts judges the one board it is loading. (A keyring vector
+    // need not also pin that board — §3.4 pinning is an independent gate — but if
+    // it does, the two must be the same board.)
+    const coord = keyringCoord(o.keyring);
+    if (o.pinned_board !== "") expect(o.pinned_board).toBe(coord);
     return {
       keyring: kr,
       opts: {
@@ -166,7 +199,7 @@ async function toProjectOptions(
         maintainers: o.maintainers && o.maintainers.length > 0 ? new Set(o.maintainers) : null,
         pinnedBoard: o.pinned_board,
         decryptor: kr,
-        encryptedBoards: keyringEncryptedBoards(kr),
+        encryptedBoards: productionEncryptedBoards(kr, coord, events),
       },
     };
   }
@@ -323,7 +356,8 @@ describe("fold.vectors.json negative-vector sanity", () => {
   });
 
   const keyringNames = [
-    "keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
+    "keyring_epoch_zero_grant_yields_no_key",
+    "keyring_epoch_zero_grant_yields_no_cutover",
     "keyring_retains_every_epoch_across_a_rotation",
     "keyring_cutover_is_the_earliest_owner_grant_whoever_it_names",
   ];
@@ -334,6 +368,75 @@ describe("fold.vectors.json negative-vector sanity", () => {
   // board went confidential, which epoch a write seals under — no longer runs at
   // all. So the derived shape is part of the contract, not the fixture author's
   // choice.
+  // THE DIVERGENCE ZONE, PINNED (ready-882 rework). Two conformant readers derive
+  // the fold's quarantine gate DIFFERENTLY from the same grants:
+  //
+  //   plain §11.13   — confidential iff a cutover was derived. rd's Go fold
+  //                    (pkg/sync/keydist.go), and §11.13a says so outright: "The
+  //                    Go reader does not yet apply §11.13a" (ready-9a6).
+  //   §11.13a on top — lib/confidentiality.ts. A derived cutover is a LOWER
+  //                    BOUND, so the state is three-valued and "unknown"
+  //                    quarantines strictly more: gate ON, cutover 0.
+  //
+  // A vector is the SHARED contract, so its expectations must not depend on which
+  // one a reader runs — a vector inside the zone where they disagree is
+  // unsatisfiable by one implementation BY CONSTRUCTION. Round 1 shipped exactly
+  // that: keyring_epoch_zero_grant_yields_no_key_and_no_cutover asserted a
+  // plaintext card folding in clear, which is plain §11.13, while the deployed
+  // browser saw a verified sealed card with no derived cutover, went "unknown", and
+  // quarantined it. Neither implementation was wrong — the FIXTURE was, and the
+  // suite could not see it because it folded with a local copy of the plain adapter
+  // instead of production's.
+  //
+  // The zone is now empty and this is what keeps it empty. It is a real check and
+  // not a restatement of the run above: the vectors below fold with production's
+  // adapter, so a future vector that lands in the zone fails HERE, naming §11.13a,
+  // instead of failing as an unexplained item mismatch — or worse, passing this
+  // suite while breaking the Go one.
+  // WHAT IS COMPARED IS THE PROJECTION, NOT THE TWO ADAPTERS' ANSWERS. The
+  // adapters are ALLOWED to differ — §11.13a exists in order to differ — and on
+  // keyring_epoch_zero_grant_yields_no_key they do: the board has a verified sealed
+  // card and no derived cutover, so production says "unknown" (gate ON, cutover 0)
+  // where plain §11.13 says "plaintext" (gate off). What must not differ is
+  // anything the VECTOR ASSERTS, i.e. the projected items — a well-formed sealed
+  // envelope is never quarantined either way, so that vector's expectation is
+  // satisfiable by both readers while the epoch-0 CEK rejection it pins stays
+  // falsifiable. Views are a pure function of the items, so equal items suffice.
+  it.each(keyringNames)("%s projects identically under §11.13 and under §11.13a", async (name) => {
+    const v = file.vectors.find((x) => x.name === name);
+    expect(v).toBeTruthy();
+    const spec = v!.options.keyring;
+    expect(spec).not.toBeNull();
+    const kr = await deriveVectorKeyring(spec!, v!.events);
+    const base = {
+      trusted: v!.options.trusted === null ? null : new Set(v!.options.trusted),
+      maintainers:
+        v!.options.maintainers && v!.options.maintainers.length > 0
+          ? new Set(v!.options.maintainers)
+          : null,
+      pinnedBoard: v!.options.pinned_board,
+      decryptor: kr,
+    };
+    const underPlain = projectItems(v!.events, {
+      ...base,
+      encryptedBoards: plainEncryptedBoards(kr),
+    });
+    const underHardened = projectItems(v!.events, {
+      ...base,
+      encryptedBoards: productionEncryptedBoards(kr, keyringCoord(spec!), v!.events),
+    });
+    const encode = (m: Map<string, Item>) =>
+      Array.from(m.keys())
+        .sort()
+        .map((id) => encodeItem(m.get(id)!));
+    expect(
+      encode(underHardened),
+      `${name} projects differently under §11.13a than under plain §11.13, so its expectation ` +
+        `cannot be satisfied by both rd (plain, ready-9a6) and the browser (hardened) — the vector ` +
+        `is inside the divergence zone and must be reshaped, not re-expected`,
+    ).toEqual(encode(underPlain));
+  });
+
   it.each(keyringNames)("%s DERIVES its key material rather than declaring it", (name) => {
     const v = file.vectors.find((x) => x.name === name);
     expect(v).toBeTruthy();

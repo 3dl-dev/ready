@@ -331,6 +331,29 @@ var ready882Clauses = []string{
 // edit.
 var clauseExemptions = map[string]string{}
 
+// clauseMutationGaps records a ready882Clauses entry that IS cited by a vector but
+// for which no discriminating mutation exists — the implementation branch can be
+// deleted outright and the whole corpus stays green — together with the proof that
+// none can exist. A citation without a mutation receipt is the weakest kind of
+// coverage, so the honest thing is to name it rather than let the clause count
+// imply more than it earns.
+//
+// This is deliberately NOT the same thing as clauseExemptions ("no vector at
+// all"), and a clause may not be in both.
+var clauseMutationGaps = map[string]string{
+	"9.8": "Deleting §9.8's clear-the-fields branch from pkg/sync/nostrproject.go leaves all " +
+		"vectors green, and fold.ts's mirror is equally inert. PROVABLY so, not merely " +
+		"unobserved: !declaresGate already means WaitingType/WaitingOn/Gate are empty (§9.4), " +
+		"and WaitingSince/GateMsgID are assigned nowhere in either fold outside the gate loop " +
+		"itself (§9.6) and come from no card or status tag (§5.1), while both folds rebuild the " +
+		"item from the winning card (§22.2) so there is no prior revision to inherit from. No " +
+		"input this format can express reaches the branch with a field to clear. The clause is " +
+		"still normative and not vacuous — a client that MUTATES items across revisions instead " +
+		"of rebuilding them carries a stale GateMsgID past an `rd approve` — so what is asserted " +
+		"instead is the resulting INVARIANT, over the live fold, in " +
+		"TestNoDeclaredGateMeansNoGateFields. See spec §9.8a.",
+}
+
 // TestReady882ClauseSweepIsCovered is the done condition of ready-882: each
 // clause in the sweep is either cited by a vector or exempt with a reason.
 func TestReady882ClauseSweepIsCovered(t *testing.T) {
@@ -341,12 +364,20 @@ func TestReady882ClauseSweepIsCovered(t *testing.T) {
 			citedBy[c] = append(citedBy[c], v.Name)
 		}
 	}
+	inSweep := map[string]bool{}
 	for _, clause := range ready882Clauses {
+		inSweep[clause] = true
 		vectors := citedBy[clause]
 		reason, exempt := clauseExemptions[clause]
+		gap, noMutation := clauseMutationGaps[clause]
 		switch {
+		case exempt && noMutation:
+			t.Errorf("§%s is both exempt and recorded as a mutation gap — a clause with no vector "+
+				"cannot also have a cited-but-unfalsifiable vector", clause)
 		case len(vectors) > 0 && exempt:
 			t.Errorf("§%s is both cited (%v) and exempt (%q) — drop the exemption", clause, vectors, reason)
+		case len(vectors) > 0 && noMutation:
+			t.Logf("§%s covered by %v, NO DISCRIMINATING MUTATION: %s", clause, vectors, gap)
 		case len(vectors) > 0:
 			t.Logf("§%s covered by %v", clause, vectors)
 		case exempt:
@@ -355,12 +386,86 @@ func TestReady882ClauseSweepIsCovered(t *testing.T) {
 			t.Errorf("§%s has no vector and no exemption — the subsystem is unpinned again", clause)
 		}
 	}
+	// A mutation gap is a statement ABOUT a cited clause in the sweep. Recording one
+	// for a clause that is not cited at all would hide a coverage hole behind a
+	// disclosure, so that combination is an error, not a note.
+	for clause := range clauseMutationGaps {
+		if !inSweep[clause] {
+			t.Errorf("§%s is recorded as a mutation gap but is not in the sweep", clause)
+		}
+		if len(citedBy[clause]) == 0 {
+			t.Errorf("§%s is recorded as a mutation gap but no vector cites it — that is an "+
+				"exemption, not a gap", clause)
+		}
+	}
+}
+
+// TestNoDeclaredGateMeansNoGateFields is what §9.8 gets INSTEAD of a mutation
+// receipt, and the difference is stated plainly because the honest failure mode
+// here is a green test that implies more than it proves.
+//
+// §9.8 says an item with no declared gate has all four gate fields cleared. Its
+// branch in pkg/sync/nostrproject.go can be deleted with the entire corpus staying
+// green, and that is provable rather than a coverage accident — see
+// clauseMutationGaps["9.8"] and spec §9.8a. So this is NOT a discriminating test:
+// it is the INVARIANT §9.8 promises, asserted over the LIVE FOLD's output (not the
+// hand-authored expectations) for every vector in the corpus, so that any future
+// fold change or vector that produces a gate-less item carrying a WaitingSince or
+// a GateMsgID is caught here even though deleting the clause's own branch is not.
+//
+// The TypeScript side inherits it: fold.vectors.test.ts asserts its projection
+// equals the same committed expectations these items come from, so an item shape
+// this test rejects cannot be a passing TS expectation either.
+func TestNoDeclaredGateMeansNoGateFields(t *testing.T) {
+	f := load(t)
+	checkedGateless := 0
+	checkedGated := 0
+	for _, v := range f.Vectors {
+		items, _, _, err := foldvectors.Run(v)
+		if err != nil {
+			t.Fatalf("%s: run: %v", v.Name, err)
+		}
+		for _, raw := range items {
+			var it struct {
+				ID           string `json:"id"`
+				Gate         string `json:"gate"`
+				WaitingType  string `json:"waiting_type"`
+				WaitingOn    string `json:"waiting_on"`
+				WaitingSince string `json:"waiting_since"`
+				GateMsgID    string `json:"gate_msg_id"`
+			}
+			if err := json.Unmarshal(raw, &it); err != nil {
+				t.Fatalf("%s: decode item: %v", v.Name, err)
+			}
+			if it.WaitingType != "" || it.WaitingOn != "" || it.Gate != "" {
+				checkedGated++
+				continue
+			}
+			checkedGateless++
+			if it.WaitingSince != "" || it.GateMsgID != "" {
+				t.Errorf("%s: item %s declares no gate (§9.4) yet carries waiting_since=%q "+
+					"gate_msg_id=%q — §9.8 requires all four cleared", v.Name, it.ID,
+					it.WaitingSince, it.GateMsgID)
+			}
+		}
+	}
+	// Anti-vacuity: the corpus must contain items on BOTH sides of §9.4's predicate,
+	// or this test is asserting a property of the empty set.
+	if checkedGateless == 0 {
+		t.Fatal("no gate-less item in the whole corpus — §9.8's invariant is being asserted over nothing")
+	}
+	if checkedGated == 0 {
+		t.Fatal("no gate-declaring item in the whole corpus — §9.6/§9.7 have nothing to distinguish §9.8 from")
+	}
+	t.Logf("§9.8 invariant holds over %d gate-less items (%d gate-declaring items exercise the other branch)",
+		checkedGateless, checkedGated)
 }
 
 // keyringVectors are ready-882's epoch-model vectors: the ones whose whole point
 // is that the key material is DERIVED from the vector's own grants.
 var keyringVectors = []string{
-	"keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
+	"keyring_epoch_zero_grant_yields_no_key",
+	"keyring_epoch_zero_grant_yields_no_cutover",
 	"keyring_retains_every_epoch_across_a_rotation",
 	"keyring_cutover_is_the_earliest_owner_grant_whoever_it_names",
 }

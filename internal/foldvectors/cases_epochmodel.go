@@ -84,10 +84,12 @@ func (b *builder) readerKeyring(readerSecret string) Options {
 	}
 }
 
-// vKeyringEpochZeroContributesNothing pins §11.10: epochs are integers >= 1, and
-// a grant below that is rejected by derivation outright — "it contributes neither
-// a key nor a cutover". Both halves of that sentence are asserted, because they
-// fail in OPPOSITE directions:
+// §11.10's sentence — "it contributes neither a key nor a cutover" — is pinned by
+// TWO vectors, and the split is not cosmetic. THIS IS THE ready-882 REWORK; read
+// this before merging them back.
+//
+// The two halves fail in opposite directions, so the obvious fixture puts one of
+// each in a single vector:
 //
 //	accepting the KEY     -> a card sealed under the bogus epoch decrypts, so the
 //	                         reader renders content the epoch model says it cannot
@@ -96,9 +98,50 @@ func (b *builder) readerKeyring(readerSecret string) Options {
 //	                         on, so a legitimate plaintext card written afterwards
 //	                         is quarantined (§11.3) and DISAPPEARS.
 //
-// The vector therefore carries one of each: a card sealed under epoch 0 that must
-// stay "[encrypted]", and a later plaintext card that must fold in clear.
-func (b *builder) vKeyringEpochZeroContributesNothing() error {
+// Round 1 did exactly that, and the combined vector was UNSATISFIABLE BY THE
+// SHIPPED BROWSER. A sealed card plus no derived cutover is the one board shape on
+// which the two conformant readers diverge:
+//
+//	rd's Go fold applies §11.13 alone — no cutover derived, so Cutover() reports
+//	    the board plaintext, the quarantine gate is inert, and the plaintext card
+//	    folds. §11.13a states outright that "the Go reader does not yet apply
+//	    §11.13a" (ready-9a6).
+//	The browser applies §11.13a on top: a derived cutover is a LOWER BOUND, and a
+//	    verified sealed card with NO served owner grant is the "no-grant" arm of
+//	    the unestablished state — state "unknown", gate ON, cutover 0 — so the
+//	    plaintext card is quarantined and the item never appears.
+//
+// WHICH SIDE IS WRONG, ESTABLISHED FROM THE CLAUSE TEXT AND NOT FROM RUNNING THE
+// FOLD: neither. §11.10 is a statement about DERIVATION and both readers obey it
+// identically (both reject the grant, so no key and no cutover). §11.13a then
+// says a reader "MUST treat a derived cutover as unusable when the board's own
+// snapshot CONTRADICTS it", "fails closed exactly as for 'no grant at all' — gate
+// ON, cutover 0", and names confidentialityOf as its reference implementation; the
+// same clause records that the Go reader does not implement it. So the divergence
+// is SANCTIONED BY THE SPEC, and the thing at fault is the FIXTURE: a conformance
+// vector is the shared contract, so its expectations must hold for every
+// conformant reader, and this one could only ever hold for one of them.
+//
+// The fix is therefore to keep both halves of §11.10 falsifiable while keeping each
+// fixture OUT of the divergence zone:
+//
+//	no key     -> sealed card only. Both readers agree, because a well-formed
+//	              sealed envelope is never quarantined by either gate state
+//	              (§11.3), and it still renders "[encrypted]" iff the epoch-0 CEK
+//	              was rejected.
+//	no cutover -> plaintext card only, and NO sealed card, so §11.13a's witnesses
+//	              have nothing to testify about and both readers see a plaintext
+//	              board. The card still vanishes the moment epoch 0 mints a cutover.
+//
+// web/board/src/lib/fold.vectors.test.ts's "projects identically under §11.13 and
+// under §11.13a" test is what keeps the zone empty from here on, and it folds with
+// the browser's REAL adapter rather than a local restatement of it.
+
+// vKeyringEpochZeroYieldsNoKey pins the first half of §11.10: a grant whose
+// cek_epoch is below 1 is rejected outright, so it binds NO key, so a card sealed
+// under that epoch cannot be read (§11.6 refuses to resolve a key the keyring
+// never bound; §11.7 fails closed to the placeholder).
+func (b *builder) vKeyringEpochZeroYieldsNoKey() error {
 	cek, err := hexKey(cekBogusEpoch)
 	if err != nil {
 		return err
@@ -115,6 +158,59 @@ func (b *builder) vKeyringEpochZeroContributesNothing() error {
 	if err != nil {
 		return err
 	}
+	items, err := itemsJSON(
+		&state.Item{
+			ID: "ready-v51a", MsgID: sealed.ID,
+			Title: "[encrypted]", Context: "[encrypted]", Description: "[encrypted]",
+			Type: "task", Priority: "p1", Status: state.StatusActive,
+			CreatedAt: nanos(t0 - 200), UpdatedAt: nanos(t0 - 200),
+		},
+	)
+	if err != nil {
+		return err
+	}
+	return b.add(Vector{
+		Name:        "keyring_epoch_zero_grant_yields_no_key",
+		SpecClauses: []string{"11.10", "11.6", "11.7", "12.1"},
+		Note: "The board's ONLY CEK-bearing grant is owner-signed, carries a genuine NIP-44 wrap of a " +
+			"real 32-byte key, and names cek_epoch 0. §11.10 rejects it outright — epochs are integers " +
+			">= 1 — so it binds NO key: ready-v51a, sealed under epoch 0 with exactly that CEK, must " +
+			"render the \"[encrypted]\" placeholder (§11.6 refuses to resolve a key the keyring never " +
+			"bound, §11.7 fails closed). An implementation that accepted epoch 0 reads a card it must " +
+			"not, and the title it would print is in this vector's own event log. §12.1 is the sibling " +
+			"half of the same guard — an UNPARSEABLE cek_epoch coerces to 0, landing in this same " +
+			"rejection rather than defaulting to a real epoch. The companion vector " +
+			"keyring_epoch_zero_grant_yields_no_cutover pins the other half of §11.10's sentence; the " +
+			"two are separate because a sealed card with no derived cutover is the one shape on which " +
+			"§11.13 and §11.13a legitimately disagree (see cases_epochmodel.go).",
+		Options: b.readerKeyring(secMaint),
+		Events:  []*nostr.Event{grant, sealed},
+		Expect: Expect{
+			Items: items,
+			Views: vw(map[string][]string{
+				"ready": {"ready-v51a"}, "work": {"ready-v51a"}, "focus": {"ready-v51a"},
+			}),
+			Keyring: &KeyringFacts{BoardCoord: b.boardCoord, Confidential: false, Cutover: 0, CurrentEpoch: 0},
+		},
+	})
+}
+
+// vKeyringEpochZeroYieldsNoCutover pins the second half of §11.10: the rejected
+// grant contributes no CUTOVER either, so the board is not confidential (§11.13:
+// Cutover reporting ok=true is exactly "this board is confidential"), the fold
+// gate is inert, and a plaintext card written AFTER that grant folds in clear
+// instead of being quarantined (§11.3).
+//
+// There is deliberately no sealed card here: with none, §11.13a's two witnesses
+// have nothing to testify about and every conformant reader sees a plaintext
+// board, which is what makes this expectation a shared contract rather than a
+// statement about one reader.
+func (b *builder) vKeyringEpochZeroYieldsNoCutover() error {
+	// An owner-signed grant carrying a real wrapped key at epoch 0.
+	grant, err := b.cekGrant(b.maintPub, cekBogusEpoch, 0, "epoch-0 key material", t0-300)
+	if err != nil {
+		return err
+	}
 	// AFTER the epoch-0 grant. If that grant had set a cutover this card would be
 	// post-cutover cleartext and quarantined (§11.3); it must fold.
 	plain, err := b.card(b.owner, rdsync.CardSpec{
@@ -125,12 +221,6 @@ func (b *builder) vKeyringEpochZeroContributesNothing() error {
 	}
 	items, err := itemsJSON(
 		&state.Item{
-			ID: "ready-v51a", MsgID: sealed.ID,
-			Title: "[encrypted]", Context: "[encrypted]", Description: "[encrypted]",
-			Type: "task", Priority: "p1", Status: state.StatusActive,
-			CreatedAt: nanos(t0 - 200), UpdatedAt: nanos(t0 - 200),
-		},
-		&state.Item{
 			ID: "ready-v51b", MsgID: plain.ID, Title: "plaintext after the epoch-0 grant",
 			Type: "task", Priority: "p1", Status: state.StatusActive,
 			CreatedAt: nanos(t0 - 100), UpdatedAt: nanos(t0 - 100),
@@ -140,26 +230,23 @@ func (b *builder) vKeyringEpochZeroContributesNothing() error {
 		return err
 	}
 	return b.add(Vector{
-		Name:        "keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
-		SpecClauses: []string{"11.10", "11.13", "11.6", "11.7", "11.3", "12.1"},
-		Note: "The board's ONLY CEK-bearing grant is owner-signed, carries a genuine NIP-44 wrap of a " +
-			"real 32-byte key, and names cek_epoch 0. §11.10 rejects it outright — epochs are integers " +
-			">= 1 — so it contributes NEITHER a key NOR a cutover, and this vector asserts both halves " +
-			"because they fail in opposite directions. No key: ready-v51a, sealed under epoch 0 with " +
-			"exactly that CEK, must render the \"[encrypted]\" placeholder (§11.6 refuses to resolve a " +
-			"key the keyring never bound, §11.7 fails closed). No cutover: expect.keyring.confidential " +
-			"is FALSE, so the fold gate is inert and ready-v51b — plaintext, written AFTER the grant — " +
-			"folds in clear instead of being quarantined (§11.3). An implementation that accepted epoch " +
-			"0 shows the opposite of both: it reads a card it must not, and it hides one it must show. " +
-			"§12.1 is the sibling half of the same guard — an UNPARSEABLE cek_epoch coerces to 0, " +
-			"landing in this same rejection rather than defaulting to a real epoch.",
+		Name:        "keyring_epoch_zero_grant_yields_no_cutover",
+		SpecClauses: []string{"11.10", "11.13", "11.3", "11.4", "12.1"},
+		Note: "The same owner-signed epoch-0 grant as keyring_epoch_zero_grant_yields_no_key, and the " +
+			"other half of §11.10's sentence: it contributes no CUTOVER. expect.keyring.confidential is " +
+			"FALSE — §11.13 makes \"a cutover was derived\" exactly \"this board is confidential\" — so " +
+			"the fold gate is inert and ready-v51b, plaintext and written AFTER the grant, folds in " +
+			"clear. An implementation that accepted epoch 0 sets the cutover at the grant's created_at, " +
+			"which is EARLIER than this card, so §11.4 cannot grandfather it and §11.3 drops it: the " +
+			"item disappears entirely and the vector goes red on a missing item, not on a field. The " +
+			"board carries no sealed card on purpose, so nothing here depends on whether a reader also " +
+			"applies §11.13a (see cases_epochmodel.go).",
 		Options: b.readerKeyring(secMaint),
-		Events:  []*nostr.Event{grant, sealed, plain},
+		Events:  []*nostr.Event{grant, plain},
 		Expect: Expect{
 			Items: items,
 			Views: vw(map[string][]string{
-				"ready": {"ready-v51a", "ready-v51b"}, "work": {"ready-v51a", "ready-v51b"},
-				"focus": {"ready-v51a", "ready-v51b"},
+				"ready": {"ready-v51b"}, "work": {"ready-v51b"}, "focus": {"ready-v51b"},
 			}),
 			Keyring: &KeyringFacts{BoardCoord: b.boardCoord, Confidential: false, Cutover: 0, CurrentEpoch: 0},
 		},

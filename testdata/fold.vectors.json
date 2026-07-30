@@ -7544,7 +7544,7 @@
       "identity": "",
       "events": [
         {
-          "id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
+          "id": "fd83430d3b63f95031126c3c27e76392b8e66e67d578d5576d26d51abccb1140",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -7594,11 +7594,11 @@
               "1"
             ]
           ],
-          "content": "JWKST6cOhtAXfBYDt4I3CrL7INAfpblXlsrLgjFybcCIb5POBhxxMOLT6W9dLc6pTLihtvvcyooWDuFpa+n24n3s2ErskrJAv65buDPI+ksgNP+vKX4BwDo0daZX6Cv9WxC8bJZ1DxiokVQEd4PXnvQClnsmnPNnvTnTS81AGVws",
-          "sig": "c85791630845dbcf1f61f93b690520979ae54eaae824c9cfba22e2e0e9745a6a313abc465264051121ce04df3d278eaebb1b528f4ec130f818b2e371cca27666"
+          "content": "WwqwO3LDdB9RZ7vsHk3hHqcvx3lh7GqZVzn4r+4kFhORkwHz1LZL9Tkm1SUf/etiZ88X13IUOvvHqyym6RI4ikqANQVT/VT6vtCo2B6lF9eUhKFqXQn3pF6XISRxS7Sgc5EHvV0WmHdWPViCrTswiiDJkJFUm3Vb+OuHDyk2XntE",
+          "sig": "d8cda8bc72056de318a35f0479bb5f8be11b53cee0f110d386d7a1b3c191652a5cd89851acfeac13715d2d5704cb778724d7e0e65f3177d4270165f2ea3d47c0"
         },
         {
-          "id": "165bad2f33674afd5638d8f354a630003165380d11fa705ee26f9431bdfef1d7",
+          "id": "a9d889011aee08bd1e70ec08d9e55da5b4553b1c50e3c36259006a1ba6f383bc",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -7628,8 +7628,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "KrIco3ARsPD8rWwjx8IoNpjkMAOISOfVyaUxA8q6BMwnYEevpAwmQM8QKiDYXvXaUk0aUPVv",
-          "sig": "7d9e95a52353c3ae493ec0ccf9a44d29ed6af78fcc726a35137e614e70d8455c97eadbe2dab1c336c66e13e1969670c8d084f1faff5c2d93ef1ff0f48b335366"
+          "content": "pZuXwe/W6RAqpfLnjlX0BHxeJuOGN5KlS7YFw3fbL1ZwSWCKpYJ4P9Ail/gEgPzeKoKgtmYH",
+          "sig": "f842023ed50c6c775db34a3ab044dd0f76bbdec98c30f03b4cac6eb4cbd31b7dfb1b68410f6a88d518e9afcf61ea49d49e0f11832cae0e8406ce4e8d29d1c568"
         }
       ],
       "expect": {
@@ -7640,7 +7640,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
+            "gate_msg_id": "fd83430d3b63f95031126c3c27e76392b8e66e67d578d5576d26d51abccb1140",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -7654,7 +7654,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
+            "msg_id": "fd83430d3b63f95031126c3c27e76392b8e66e67d578d5576d26d51abccb1140",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -7723,7 +7723,7 @@
       "identity": "",
       "events": [
         {
-          "id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
+          "id": "29ab718d84e168652a0a20a8bb250b4ee8b9ae06473049032efeb6b651861569",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -7773,11 +7773,11 @@
               "1"
             ]
           ],
-          "content": "IBZlin+qparPZriCH/ngrolKlaSmL9hwuR6MXNP1GlUeOrAwuGrqeq48LnaUW9EvV2SCY2V7H60BkO8q6IA/WbygRLglM16zDiZ3sOtCo/g92iIf7UU0oC3dfUqUUOALXvjfKHY6aQO4n7yAJ3dsBjFqjE45MK7jA16JIeBXqtyO",
-          "sig": "1266af4c4836413746362cd6262c901d665874f54cf3180c3a0353aedf4d39f1265bf4379b5d194b33d26e98a4a26a6f17dd61a0aec68aec11577c2353493598"
+          "content": "yx4ts35YKKWHpi2RmEuC99HqgJasRJnguTwQz8MbzL+CGN1KXPWtAxnwJSChVcIJViXJz7A8rMso/bmnUpDPTB/R1wphwCcgspgWN3pvZu3fv2PQvMXAHQHOw12nCzUiRJvukX6hNVE83vdK3uou9v2Avj2WhO+OEkdQ5KG0Ow4H",
+          "sig": "02eaa2db73f88c9b90d70c28c0ba48843a9f7a755f6e79074f7c2fbad3e7f8175335fcc5dcb57163f4f518d3ada5cb71cb1d2cddfd07df1f266f14e55268c451"
         },
         {
-          "id": "6d3b902e8deaf18ea8cd8a179495e4ddc97bc31c95a9afc1deee72e69268bc62",
+          "id": "a56887fcb30093230c5be03a59270da0bd2012ff3d5cb9286477f4541c5c24aa",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -7807,8 +7807,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "l83izV0kgHNk1PFXMYUSQnFa8O3DB09J8c3FZtSQ+hLZX2G/ada98ARxQhUZq2et93OrY4Ux",
-          "sig": "5ae3e18c1fbe2f9a6eae4eb19f8242dc0de5c8463cbce6cbf4e7bdb0d3feac4cb46e1bc2a2b4525260a902c9645babea5dcb67fd1de14e2d65fe3d7d89b38bd9"
+          "content": "eJ5bGiwD1ZWALwXp4BP7Si+S9iv9/Bv6aIKrhPcO7suXZhK9NP4M17gX5AkP0UvrRBR6GQh1",
+          "sig": "1d2fe09511a496bcb3382f18bac385b5ef0c43353c4cc39814c890f5d5dae217c2e88fb03d0cf8478c4938023c21cee5f8fc2ac7fd509de55b1f64c1c0542cd3"
         }
       ],
       "expect": {
@@ -7819,7 +7819,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
+            "gate_msg_id": "29ab718d84e168652a0a20a8bb250b4ee8b9ae06473049032efeb6b651861569",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -7833,7 +7833,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
+            "msg_id": "29ab718d84e168652a0a20a8bb250b4ee8b9ae06473049032efeb6b651861569",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -7892,7 +7892,7 @@
       "identity": "",
       "events": [
         {
-          "id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
+          "id": "ec88bf9e9777e651d247141f1f1958480984801bb2b3b92487c4d7ca8424c522",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -7942,11 +7942,11 @@
               "1"
             ]
           ],
-          "content": "V1FMuY5jvFJ3j+AAp0hF2kjxc03JfFGqVcG25VYNhvjQEl8lou2kClYByVAqUTnAoz51rNpKLNVk9L9xA6fMKWcRgJMBbU3OkiyLF3K0sdQ0oO75xZOWEemn9osNyv///KjPKqVtQXf2rg8RFvhfPCAgOTekkgT3OgZtJNe4dqY9",
-          "sig": "b05cbc41a9c45aa5b2faec0b81ea5a7a0802cc073aad2a0d29a7ca70a2b003e93e8bb1aa1222f2a29c20067d64e99d9d8ac036edc163cb51b39ecfd41fe2e39a"
+          "content": "OWmfLx4AwmluFH3bwWB9ZpAkZUf/I0ycAUUF5kDtJb7pJQ5cRSvd/S2gfAaTOOXyYipqCCGRqnM4goddTQoKr2TYx5n0t3RDg03orKh9MepkqpACMTFAUBbGnPbPcsnNHHnvkGOiPp9zzGs+L8tkkIqW+c32ZHvu4Ys1p5uLLsz3",
+          "sig": "5a0ecda29cb44d5f5054057d9c3a2071c7a1e8d8a8b61b9488369febceb6fbb6820af330d343b9657151d42028a1b890f8dc81e98494e9dd213a163179261a16"
         },
         {
-          "id": "fd5ddd4d9aec7a35259f11435140679536e7a2eec9f095fab8352c88b312f531",
+          "id": "282888b4c0eb91a8db371c7799f06a9f3354c388f560186eeee98555e38bf3c0",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -7976,8 +7976,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "eImMv67nN2Cs6mvqEvCGLR6jVu1VYPTbQDpv1PfKsbw/xbmCDaBlmPJ+gkSFEBeER9XZIipP",
-          "sig": "20e187024044f25c590324daaf5169920613f4204052b5a49f80596b35b274af9ea84d9ca2879345bf4599e6082ae1beaca5bf13397816697163b15da41d5dd2"
+          "content": "cqT74WPDxLp79YKcbeYeccuyar3FLg0QnOFXWXE0/VP+4B3/E3CxCfp3mBgdgs9P4T9CY8/O",
+          "sig": "b34744b36e9accec2a09309d2c3b2cf64d921c2b05eb219236ef37fa7ae8df5ab5d3445c5b67cd6c5e7c94fd6b6c23c21814d0621372e581643e7a32f793f72a"
         }
       ],
       "expect": {
@@ -7988,7 +7988,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
+            "gate_msg_id": "ec88bf9e9777e651d247141f1f1958480984801bb2b3b92487c4d7ca8424c522",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -8002,7 +8002,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
+            "msg_id": "ec88bf9e9777e651d247141f1f1958480984801bb2b3b92487c4d7ca8424c522",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -8069,7 +8069,7 @@
       "identity": "",
       "events": [
         {
-          "id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
+          "id": "d555e4662cc752ae4599977f0fa5c486ed9f7ff3d9d7cc0356804b605075fb5a",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -8119,11 +8119,11 @@
               "1"
             ]
           ],
-          "content": "LYCllnpPGFtaKqPbjvArAQGMTizCCPWxUnW9Er+ynyxLpmZXGWG8x+cDdzYORG5lH+9O0Z9SUGCvWf2vOSWr+i0Q1pM=",
-          "sig": "41d8da60caf9f7671918cf7b4741abf7e9ff843c08d3a0e69174296cffa15d882bc021ce7035ed0ce7d126524c8ef6193cd36ac9b22dff3567b5ba6b85373393"
+          "content": "WKNhvmP6vm1z/aigZ/uYcltJK/kUlCwsxmRXa6hyA1hHAIqfLCp0PoTgiy7OchLOmxl+VC6052x+LwWCR07oY68FH1c=",
+          "sig": "bdc382fdca6ad633f01264490834b5f48e5332ca7c7257c97ad23f97728d6b8e999edbe6987bc2a748c52894dd525a0d27276ce1da8415aad29a491a3719a186"
         },
         {
-          "id": "9fecb39354463522969682e5c51da225a71d6affb1d97a4459dcea7b705d8ddc",
+          "id": "32738265acf2e6a28ad868f3fca2ca285b35f84a54bf5752372a84c2be62d7b3",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -8153,8 +8153,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "Yf+4MptIHwMvhOzgweI1fLHU0hPqUR7lPyK9Jw7vtMpxAmBgRjfMaQ1uluFqovVAE4yZqtSY",
-          "sig": "ab8ff9b8c857c765b87f09bce42e1fa945d9925eedb041a4e574b13e918682f9b475cc18139265da71c426bb39eaac4e0658df21583c18215e9ccda7b76053ba"
+          "content": "KdiBmHhAAYB0KHHJbWalOP3F0Y3I98UkKSjtcGn+3qjIyHqubnguCi7cwDlxr+6GUd/SdusN",
+          "sig": "ef0363c3498cf7398a14d53347c8b21c01af80f22b8b255e1c31f4f118d878d2a35568d5e49a6abca19efd87689e1f4659033d54f5b15190fc72e87fadf0f5ed"
         }
       ],
       "expect": {
@@ -8165,7 +8165,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
+            "gate_msg_id": "d555e4662cc752ae4599977f0fa5c486ed9f7ff3d9d7cc0356804b605075fb5a",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -8179,7 +8179,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
+            "msg_id": "d555e4662cc752ae4599977f0fa5c486ed9f7ff3d9d7cc0356804b605075fb5a",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -8419,16 +8419,14 @@
       }
     },
     {
-      "name": "keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
+      "name": "keyring_epoch_zero_grant_yields_no_key",
       "spec_clauses": [
         "11.10",
-        "11.13",
         "11.6",
         "11.7",
-        "11.3",
         "12.1"
       ],
-      "note": "The board's ONLY CEK-bearing grant is owner-signed, carries a genuine NIP-44 wrap of a real 32-byte key, and names cek_epoch 0. §11.10 rejects it outright — epochs are integers \u003e= 1 — so it contributes NEITHER a key NOR a cutover, and this vector asserts both halves because they fail in opposite directions. No key: ready-v51a, sealed under epoch 0 with exactly that CEK, must render the \"[encrypted]\" placeholder (§11.6 refuses to resolve a key the keyring never bound, §11.7 fails closed). No cutover: expect.keyring.confidential is FALSE, so the fold gate is inert and ready-v51b — plaintext, written AFTER the grant — folds in clear instead of being quarantined (§11.3). An implementation that accepted epoch 0 shows the opposite of both: it reads a card it must not, and it hides one it must show. §12.1 is the sibling half of the same guard — an UNPARSEABLE cek_epoch coerces to 0, landing in this same rejection rather than defaulting to a real epoch.",
+      "note": "The board's ONLY CEK-bearing grant is owner-signed, carries a genuine NIP-44 wrap of a real 32-byte key, and names cek_epoch 0. §11.10 rejects it outright — epochs are integers \u003e= 1 — so it binds NO key: ready-v51a, sealed under epoch 0 with exactly that CEK, must render the \"[encrypted]\" placeholder (§11.6 refuses to resolve a key the keyring never bound, §11.7 fails closed). An implementation that accepted epoch 0 reads a card it must not, and the title it would print is in this vector's own event log. §12.1 is the sibling half of the same guard — an UNPARSEABLE cek_epoch coerces to 0, landing in this same rejection rather than defaulting to a real epoch. The companion vector keyring_epoch_zero_grant_yields_no_cutover pins the other half of §11.10's sentence; the two are separate because a sealed card with no derived cutover is the one shape on which §11.13 and §11.13a legitimately disagree (see cases_epochmodel.go).",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -8446,7 +8444,7 @@
       "identity": "",
       "events": [
         {
-          "id": "52e0f5ab1d15466ab17cb55c055bca0d14f407ad623548ac88cda7e089528b5b",
+          "id": "8156052db63c04834a71f94877df5e38e80a7d149a24948628118a1d2012fe7e",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999700,
           "kind": 39301,
@@ -8469,7 +8467,7 @@
             ],
             [
               "cek",
-              "AgUyy8Rw2lDnJs3faMoxx+SRhSbuy1p9L1CQ0Bh5qzHa5PQM8I0Msg3iAyJtFUUCYHjxtg0VVNpWyQiPg8cOlpPhe6CI0PJ8hyFBhes6XGsteh2TA6jXUQzozkO4l9o9WA9JFvWMrVmTTMM3/iQekhbZWNKscBVyJz0NRNi/u1sh/Ho="
+              "AoxXxgDsqu+LlWKzpPTNkDYjWLq6zBS2WPfaweGhY1G03MwELOkY7uuhsBmoHaKznrzgY7zCiXtNhCtUNy4d5+VxrwVF9x+ZI/vgMl+qP1OQjGdnCcoQPs2eS5yP2o9ii1LO5X7eidMl/LvvTmIzu2svIkSTRO4/PzeHH3Yu/SsEv5k="
             ],
             [
               "cek_epoch",
@@ -8477,10 +8475,10 @@
             ]
           ],
           "content": "epoch-0 key material",
-          "sig": "68ea827b285de6df6e55875323d8d360217ada8c248380e483b0ad313ae5b0e6dde1ee8bf579649dd174833b3c3784ddebc5a7dd30e80b7ba41f6212d3f6636d"
+          "sig": "f26d7aa5543e2b00dced2c257747b17a4bd4b8b4aff13c54f7aefc0edcc31e55232109372b6b3980e5296a1e05ec8f8267a8d36d2bf4423e3929865369ad0b19"
         },
         {
-          "id": "221f0adc9ff0bcfe3435bd0ff79054e05e20470c896c6c2e05b1d10bd0b22743",
+          "id": "6805f001f3981bfc20f0ec70a03cd55377e99b24a40f8ea2cb026587d00b9795",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999800,
           "kind": 30302,
@@ -8518,8 +8516,109 @@
               "0"
             ]
           ],
-          "content": "85Xs53+747PPTeofQs9w+2FL3xI72AeZo09JuhWluQrzUz+WpT7VwOeqF35RIOmnVn/560gCgx785HBoHgMZ8VAwbSgMIyK/48wXNFqCK7y9KLffaZZhvFGj+YXbGa6Tu0TeObfo7oEGDXhx",
-          "sig": "7e0b37dcf9446ca1c3f3a918c9a450ec5ba758f4264b47d39ca9c814498d6decd1298030dc72fd18eb7e495af894c26b11228e3c54ea8264dbe1ef618618a68c"
+          "content": "/NfNMRIlqx/aU+Lt5RoUKzPeKHmrOwoDDDRJ9mXc0hvaZlF1v5oyo3Vb45la0ESMJP+TpVfXDiqFRZWY35wBdqeyocNhCKIynjEalBvab8CFVnZeLmrziK1oXE4Z/9N2w7HmyBK7d5dGQQqZ",
+          "sig": "8be1109458838de7e995255ae62474cb4298e4d9a1ddb45c47973eb4fad7d9aedf1b0c07dc6b75ec1b90305dbfc0cb0b99e8cfe7616d4236c6edd957656eff15"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "context": "[encrypted]",
+            "created_at": "1699999800000000000",
+            "description": "[encrypted]",
+            "for": "",
+            "id": "ready-v51a",
+            "msg_id": "6805f001f3981bfc20f0ec70a03cd55377e99b24a40f8ea2cb026587d00b9795",
+            "priority": "p1",
+            "status": "active",
+            "title": "[encrypted]",
+            "type": "task",
+            "updated_at": "1699999800000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v51a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v51a"
+          ],
+          "work": [
+            "ready-v51a"
+          ]
+        },
+        "keyring": {
+          "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+          "confidential": false,
+          "cutover": 0,
+          "current_epoch": 0
+        }
+      }
+    },
+    {
+      "name": "keyring_epoch_zero_grant_yields_no_cutover",
+      "spec_clauses": [
+        "11.10",
+        "11.13",
+        "11.3",
+        "11.4",
+        "12.1"
+      ],
+      "note": "The same owner-signed epoch-0 grant as keyring_epoch_zero_grant_yields_no_key, and the other half of §11.10's sentence: it contributes no CUTOVER. expect.keyring.confidential is FALSE — §11.13 makes \"a cutover was derived\" exactly \"this board is confidential\" — so the fold gate is inert and ready-v51b, plaintext and written AFTER the grant, folds in clear. An implementation that accepted epoch 0 sets the cutover at the grant's created_at, which is EARLIER than this card, so §11.4 cannot grandfather it and §11.3 drops it: the item disappears entirely and the vector goes red on a missing item, not on a field. The board carries no sealed card on purpose, so nothing here depends on whether a reader also applies §11.13a (see cases_epochmodel.go).",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": {
+          "reader_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+          "board_author": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "board_d": "ready"
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "396198072454e9f8c68ed1f87577e06fd89a2df6b3e2ee1161b353d34960ac44",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "Aqh3FtKvJw/xaUE0A/wg/u0W3AkwdE3r6xMy6RlyCSgK+M+i4DJv5mYqtv+hBKpLYXJs4dBgGdcaEhLlGICpln1QqHnEeCrHRRxByQckX+XHgf0wiXc1kmBQThmKEiSNVButNcM74GUzPTvnxQbGQ85hCfE7zE5grpszeyVw/4sCohM="
+            ],
+            [
+              "cek_epoch",
+              "0"
+            ]
+          ],
+          "content": "epoch-0 key material",
+          "sig": "b14a7836148f3b4cd30ffbec9cd0bda62d4b5390bb0756ce76935cafc477e6497c6e993e43a779a49212faacd20fed8fcc0666ace3aa5dcd5dae43423f3bdf70"
         },
         {
           "id": "55d1c7d90efdb90bb0eb2df33b99d69d704bb3cfae8c5c097420bc502ca4b388",
@@ -8563,19 +8662,6 @@
       "expect": {
         "items": [
           {
-            "context": "[encrypted]",
-            "created_at": "1699999800000000000",
-            "description": "[encrypted]",
-            "for": "",
-            "id": "ready-v51a",
-            "msg_id": "221f0adc9ff0bcfe3435bd0ff79054e05e20470c896c6c2e05b1d10bd0b22743",
-            "priority": "p1",
-            "status": "active",
-            "title": "[encrypted]",
-            "type": "task",
-            "updated_at": "1699999800000000000"
-          },
-          {
             "created_at": "1699999900000000000",
             "for": "",
             "id": "ready-v51b",
@@ -8590,7 +8676,6 @@
         "views": {
           "delegated": [],
           "focus": [
-            "ready-v51a",
             "ready-v51b"
           ],
           "gates": [],
@@ -8598,11 +8683,9 @@
           "overdue": [],
           "pending": [],
           "ready": [
-            "ready-v51a",
             "ready-v51b"
           ],
           "work": [
-            "ready-v51a",
             "ready-v51b"
           ]
         },
@@ -8642,7 +8725,7 @@
       "identity": "",
       "events": [
         {
-          "id": "adde582c5d06d435283439a127818eeceff36556f07d8f82bd8214cdcb709466",
+          "id": "1681dc84c96ddc366be62434b008de98588570e40a7f0e52bf5ad139e6b8e492",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999700,
           "kind": 39301,
@@ -8665,7 +8748,7 @@
             ],
             [
               "cek",
-              "AkdEDkttHEPjKfhCLo4qkpfqEWu80uNhAaWen1WevRh3lerc720PSpFnwl+udaXBPOvHra4qa6mQJc0at8JP2brOkpHKljq9B6aVF2ZA291DcF7OBzqqVyaQ73ocY2BKcol0Bdd5h+ZGQC/EjvW6jpxg8rDCB1CITHT7NamOx973zLE="
+              "Ah7+6BmQUi41Gqxk9nEEqnf7AVWiKl9u6SBkWcDSwxSueQsWqpe3xq1UIdGWIVQuesOliqQNHe/mwWD84Iiv//QItGiamP0mS8aRzHCDTnRya1Avn4hO3oMU1O5uengcodBMyq3A5a+fJD93aHCjN/vT18RPfStFaxbINuTDyqGR1Jo="
             ],
             [
               "cek_epoch",
@@ -8673,10 +8756,10 @@
             ]
           ],
           "content": "bootstrap epoch 1",
-          "sig": "0c099ac21a5e05d09e73eae5df34853aee65047b8106e3e927ade02dd48f0f3a7cefcd0043a57deae5a20d0a5c2a5004fafcdcf38abb8064c8deb7f6fb8a5649"
+          "sig": "ef69abcdefd4b34447657b213ed1c4b74e53b59a8b10c3b1c936f61b1ba9d9c441407fd429ecb1b0ce7fc67f6970acbc505d6b4971f500cef2f2ea7d928b2c2c"
         },
         {
-          "id": "c854da534e9bd6ba8b99a71b5706eb5b79797e6b166061017c542554783cebe7",
+          "id": "2b94c068fb576f363e7314297d16fdd02e563db9201c9d7b97875d270fdf7a34",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999800,
           "kind": 30302,
@@ -8714,11 +8797,11 @@
               "1"
             ]
           ],
-          "content": "dwSOQ3L/dK3QjueUvLZy0XE5gV0B/0VwQs5afsBDX7xRPKgKxG9fx8nwqzgi5dSlKaU1s+sypwIHsyc4lKDbZzc8bH1MmjafEgVq2TnsAIhc6WuyJP/tUOV/Dg==",
-          "sig": "f36b72614bafd07280c73513747830c84d4f354cb2431e311f293c3f0dc1d8beffd9fc5aa40c00bff8c58ceb7edb75e07774ad6c0778a43de38cc0de131ac108"
+          "content": "PQeWuEnnwNFZhzpDRZ9KF5cX7eepIur3gLqFpLqwhwy91lySZeyztF8QAeQIaJzdrf1M5aedfIpyYypvXRiDiBLkcgWE7WgIEf4z+WmygrGurXD5RQYqI50QGA==",
+          "sig": "aebdb52d884d784b03f0beeccc5a99b3eff6bf8699bebf0867ccf51d06a16c6b1f06d940820c4c7ec7d3e7498866e7ade0f8155a28739a099c618a8dde7d46ee"
         },
         {
-          "id": "14b1db07dd88a24ea864a933e3f637924d7b1b76a31791dba0fa5580af22b8df",
+          "id": "3dd0aeeb884685b0e87c941b2731825f0ccad71e8415df095b443b5ede67e795",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999900,
           "kind": 39301,
@@ -8741,7 +8824,7 @@
             ],
             [
               "cek",
-              "Am2/KiIr2Sz80BkRhNtAoLOmrQSyTXM3NAn293iyq2sUUk3smamp2mYbcHuk58TuYiLoqvIbVuMEQnvuRDnDjp0OoncTqgz0je05FM8g0GTuuLPqhT/7Xpjvvmw5f3ITlV9nVDtFDTbf24oWrjtAagewq41ddUqajSwjlN1HyxMK94Q="
+              "AmOv3iNPiFd4u8lUH2emkgS/0Z55NkJ/zAegPtHj5snHtlUPscj8Ii5BwY4gYQOx0smsDs8qKDFXRe2totiI3e0QVRRL7hCdwhfifLluokggioJkfCgpQh4QWgfI7cRLkdvJvjDCuaLe0StmGHti1ulBAWmag7NyC84r2VIGjvXkMH4="
             ],
             [
               "cek_epoch",
@@ -8749,10 +8832,10 @@
             ]
           ],
           "content": "rotation to epoch 2",
-          "sig": "2844d4af28e70b01aea88581f1f261d23099d894508303072d741fcb7cbafd61491b7b60c4e76187cbd441484108cf04ab1668e44151a166aa991a4f12aa066e"
+          "sig": "1d571f0eed1b3e209b515bcdd45ffdff77bdfb401c38e07c0edce53545d08a828b3f385f2f44c103579af06242df6b094ea2c857d6d6186edf4b5e8ab771e13a"
         },
         {
-          "id": "6cafc2789504ab55ff19251966f72c092bb5ed865ec5d8b71595029d45825124",
+          "id": "033fef2e3471ff61375b01468813bdc9b772b9e4e2ba591d0a54f0f031b53416",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -8790,8 +8873,8 @@
               "2"
             ]
           ],
-          "content": "+82siWxGUl6LQi0S4A+n1PNQuS0q2XCU9KcTJaaRNfjje1rWsW2sGSSC9m9ojXnubiNnwNCWd4wfOoaUFHujjbq0UoX2dyGptcRGPw+Hd82KT85pTveOFRoF",
-          "sig": "b2104542940e8c7c1bd8636c22f2642c207c1e481cb2258f45a2f6ddc4b06c243832814fa8f7fbb02789e71393bcbb8f065c350f09e69fe82ea2435100c178a2"
+          "content": "byn7vWtPdJqtkRm2GYjQuTAnk46UNz96C8M6ElGGZyi4beeq2z9Ymnp5IFfzpLlctQ39hgUT4VT/Qjb35I5k4u9elM9Vh6q7N6fgQz5xJ5S/gI3xqqs8ynnl",
+          "sig": "e5c1a11888df3202704d0d05b00558fb6e0b4379516b4397b44933eb4cae7692e49dc823e9021b66c85f9925243b6167a9407236b80a548979748e555e053da5"
         }
       ],
       "expect": {
@@ -8802,7 +8885,7 @@
             "description": "epoch 1 body",
             "for": "",
             "id": "ready-v52a",
-            "msg_id": "c854da534e9bd6ba8b99a71b5706eb5b79797e6b166061017c542554783cebe7",
+            "msg_id": "2b94c068fb576f363e7314297d16fdd02e563db9201c9d7b97875d270fdf7a34",
             "priority": "p1",
             "status": "active",
             "title": "sealed before the rotation",
@@ -8815,7 +8898,7 @@
             "description": "epoch 2 body",
             "for": "",
             "id": "ready-v52b",
-            "msg_id": "6cafc2789504ab55ff19251966f72c092bb5ed865ec5d8b71595029d45825124",
+            "msg_id": "033fef2e3471ff61375b01468813bdc9b772b9e4e2ba591d0a54f0f031b53416",
             "priority": "p1",
             "status": "active",
             "title": "sealed after the rotation",
@@ -8877,7 +8960,7 @@
       "identity": "",
       "events": [
         {
-          "id": "88b32c302d815ab5f9c382edae4e6b474fbab36535bb462221104144e6889aa0",
+          "id": "44c1c85e7007b0697d12489ad1279767d8cfcd56e95ad1565948f222a0cf956b",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999700,
           "kind": 39301,
@@ -8900,7 +8983,7 @@
             ],
             [
               "cek",
-              "AsqpSUpyEWI9v/7GyyKimiPlNT1GsCXxzbQI6gAi6tWCN/gCxqVmRnnOqTaXOZynFnMmXnsdl1s9LblJ4I8uTEeF5YIOqr16oFZL28Emyn6rPeXmGk4jgmN4UjXNgR7wR6sQoXxU8ZTBlOqv2Iz6SeWISU/PNNDDy5v2oIwMtZZjY6Y="
+              "AvAlaz/Ofdw03rZ6EGfbI+RJaviyWhsY52Z/Vp36dA+5f92lss0abfXuaywZgAtxfuFCtuFVTXpD/WDmx1Pzbpr+Qp6yfts4e9qKEr6a+I3avEPBwYh+CcNqfDXTI521K/tnS2kOrfjXqd3yRWU7m39Z0saGx0DBneYyM042edwnsAw="
             ],
             [
               "cek_epoch",
@@ -8908,7 +8991,7 @@
             ]
           ],
           "content": "bootstrap, first member",
-          "sig": "8c26abe2233378d334f46b0664fff0815d31341fe1d0863888e5f138d5399d4c98b0bfa308ebaa2e827a27ffeee82637c260e90236dab43394832f2653a09817"
+          "sig": "4ac5989539010f1e9030b457326a32c4af02f489ac8cc5be4a20ad9fb53b80f4a39ca2d8362439a1f8999cf0f7c7f07c6026a473e43323d161413d817d9a8cc8"
         },
         {
           "id": "fea0d6f05cca7e0d7cc2b530641ffb083387bcd2aa737afab1fcd2363c6ac48a",
@@ -8987,7 +9070,7 @@
           "sig": "b665b6b616a16e9d52778747658c3692e1084187b83754d6532951bc94f55026445b44d92536291c21fda46d728baaf7e16fbbb505181434fafc7e0ff7941503"
         },
         {
-          "id": "994c8aebbc3f066115435681459feb4a6b2878f1d32f9954798495095bf7df41",
+          "id": "5f6c086b785768f6de2642e118ca3afb0cd1ace576b901e4af6a1d8a321bf644",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1699999900,
           "kind": 39301,
@@ -9010,7 +9093,7 @@
             ],
             [
               "cek",
-              "AsH8ZDevIB/R8t2EdM+2heaUN7sNaWSNcmnfKM2BPSQiyx3qoEusjYHI5cdOsyu1H7XWFaUmQCEwaP27NfjZ4dO96JFVUJi4VSOe69Er8Oj5T++T2BTuq9LAVO4/UlT0D/rKp910UTY/Lq9NBS7TLZ3vHNJBs62TQi0G15okbAmDhBE="
+              "Auz9Xlu+mugNWnhY63QghQ9W00rKv/Ri3gh3kuSarSUxxuvJEQ4IjQIuBckU9wEzgMqZGNF6iu6wSVFR6CN3faXuY09ErpUD/fItG/QmVC4ZpGkwx/bcJr584SCqur4yzek6T9OW5kUkJhQp2eiC9DIF4BLdkT7Rarzzcwj5wtiPtpA="
             ],
             [
               "cek_epoch",
@@ -9018,10 +9101,10 @@
             ]
           ],
           "content": "second member admitted later",
-          "sig": "c6192f98ff376566cc38f1ced4f0dc5e4da939e3bf9e638e5ec3b974a61cb35baffe68a5299472e82e9ee4d9649814ff9017506e256c71b4007fb978b127548d"
+          "sig": "e05e04ddc2c06fa306692629b77444cb1b007d2977171b6ea2cda4d2986f992769f58bdea31ed63093efe356880d495a83981e9bede978240fa5d509eeb2cb8d"
         },
         {
-          "id": "c7f6c732bcb33e5a91cc7c2c4e7391066b2acbdd4155cdb21da6c76ed880ae41",
+          "id": "5c71f2d57ea9ee02a55c1d544b3b94fb24dea4492f4dec9df0ba48a15a9f154a",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -9059,8 +9142,8 @@
               "1"
             ]
           ],
-          "content": "39uSDqWjGf2XB7wZ5lFzIZiPRrJS9MYNjVbSapkfNf9GQct8XqDqtWO0CqCOXzonVMspcEvgceg0+D4Db2sb397lEmfdNX6K0XyUJc/G7zODWMxQ",
-          "sig": "a872f4322c22ba3b3a975fa5074d7a6f48089010f2b762c571b0e9bb77eb1c46504f88cf572348eab92b7d2b5693d492e7bcd502de674666a86f83f53f9b3af7"
+          "content": "kgmaXPW0ADqE8XUGByOGY8p0tUliNaEBXE11cc7Zvwrr0dTGYrcO2trjf33sIIoJJEPR2zHhUNZxWg/XO6eVOFMMNAveUEYoKZ4quQCKKO4+sTh0",
+          "sig": "fe5e328d5445910ec88ec818e74874cba6825a8d4547b0258cb3d2793d1b111a7b563e1174e416761fcfaf9c05285d38ed089db117354bdae51d2234c535dc42"
         }
       ],
       "expect": {
@@ -9082,7 +9165,7 @@
             "description": "epoch 1 body",
             "for": "",
             "id": "ready-v53c",
-            "msg_id": "c7f6c732bcb33e5a91cc7c2c4e7391066b2acbdd4155cdb21da6c76ed880ae41",
+            "msg_id": "5c71f2d57ea9ee02a55c1d544b3b94fb24dea4492f4dec9df0ba48a15a9f154a",
             "priority": "p1",
             "status": "active",
             "title": "sealed and readable",
