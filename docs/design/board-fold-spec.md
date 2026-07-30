@@ -793,17 +793,19 @@ one satisfies §11.4's grandfather clause and renders in clear. `Cutover(coord)`
 returning `ok=true` means "at least one owner CEK grant reached me", NOT "this is
 when the board went confidential" — a distinction that is invisible while a client
 only ever sees complete answers, and load-bearing the moment one does not. Note
-this is not only an attack shape: kind 39301 is ADDRESSABLE and its `d` tag is
-`<boardD>:<grantee>`, so after a rotation a conformant relay retains only each
-grantee's NEWEST grant and the epoch-1 grants are legitimately gone (cf. §11.11a,
-which is a statement about what the OWNER publishes, not about what a relay
-retains).
+this is not only an attack shape: a relay that predates the per-epoch grant slot
+(§16.10) DESTROYED the older epoch's grants on every rotation, which is exactly
+what the live `ready` board's first rotation did — four grants left on the public
+relay, all epoch 2, zero epoch 1. Such a board serves a grant set with no epoch-1
+grant in it today, with no relay misbehaving now.
 
 A reader MUST therefore treat a derived cutover as unusable when the board's own
-snapshot CONTRADICTS it. Two contradictions are available, both carried by the
-sealed cards themselves and both signature-verified, so a relay can suppress them
-but can neither forge nor alter them (sealing needs a board CEK, signing needs the
-author's key, and `created_at`/`cek_epoch` are inside the signed id):
+snapshot CONTRADICTS it. Three contradictions are available, none of them
+forgeable: the first two are carried by the sealed cards themselves and are
+signature-verified, so a relay can suppress them but can neither fabricate nor
+alter them (sealing needs a board CEK, signing needs the author's key, and
+`created_at`/`cek_epoch` are inside the signed id); the third is carried by the
+served grants and needs no card at all.
 
 - **TIME.** A verified sealed event on the board OLDER than the derived cutover
   proves the board was already confidential before that instant.
@@ -811,34 +813,62 @@ author's key, and `created_at`/`cek_epoch` are inside the signed id):
   any served owner CEK grant covers proves that epoch's grant was not served;
   epochs increase by one per rotation (§11.10, §11.11), so a lower epoch is an
   older grant, and an older grant moves the minimum earlier.
+- **FIRST EPOCH (`ready-f6b`).** The LOWEST epoch any served owner CEK grant
+  covers is ABOVE 1. Every confidential board starts at epoch 1 (§11.10: epochs
+  are integers `>= 1` and bootstrap mints 1; §11.11 mints a rotation at
+  `OldEpoch + 1`), and epoch N's grants cannot precede the rotation that minted
+  epoch N — so the epoch-1 grant exists, is older than every grant served, and is
+  not in this answer. This witness rides on the GRANTS, so unlike TIME and EPOCH
+  no card retention policy can silence it.
 
 An epoch ABOVE everything the served grants cover is deliberately NOT a
 contradiction: it also proves a grant is missing, but a missing LATER grant cannot
 move a MINIMUM, so the cutover still stands and quarantining would cost visibility
-for no security gain. On a contradiction the state is UNKNOWN and the reader fails
+for no security gain. An INTERNAL gap — epochs 1 and 3 served, 2 missing — is not
+one either, for the identical reason; FIRST EPOCH looks only DOWNWARD, at the one
+epoch whose grant is by construction the earliest. On a contradiction the state is UNKNOWN and the reader fails
 closed exactly as for "no grant at all" — gate ON, cutover `0`, so §11.4
 grandfathers nothing and every event that is not a well-formed sealed envelope is
 withheld — and it says so, distinguishing "no grant reached me" (consistent with
 an indexing gap) from "the answer I got is internally inconsistent" (omission
-proven). Reference implementation: `web/board/src/lib/confidentiality.ts`'s
-`confidentialityOf` / `grantsWithheld` over `BoardKeyring.grantEpochFloor`,
-witnessed by `web/board/src/main.grantsomission.test.ts` end-to-end through the DOM
+proven). The three states are distinguished in the notice, because a reader acts on
+them differently: "no grant reached me" says nothing about the relay's honesty,
+"a signed card on this board contradicts the grants" does, and "the grants
+themselves start above epoch 1" does WITHOUT any card being involved — a notice
+that told a reader a card contradicted the grants on that third shape would be
+asserting more than the page can prove. Reference implementation:
+`web/board/src/lib/confidentiality.ts`'s `confidentialityOf` / `grantsWithheld` /
+`firstEpochGrantMissing` over `BoardKeyring.grantEpochFloor`, witnessed by
+`web/board/src/main.grantsomission.test.ts` end-to-end through the DOM
 and consumed directly by the conformance runner (`ready-882` moved it out of
-`main.ts` so the vectors fold through the REAL adapter rather than a substitute). **The residual, stated exactly, and it is NOT only an attack.** Both
-witnesses ride on the sealed cards, so they are silent for any board whose visible
-sealed history begins at or after the cutover being asserted. A relay can arrange
-that by withholding, on top of the grants, every sealed card older than the cutover
-it wants to manufacture and every one naming a lower epoch. But a ROTATED board
-reaches the same state with NO relay misbehaviour anywhere: §18.1 makes a card
-addressable at `30302:<pubkey>:<itemID>` and §11.14 seals every write under
+`main.ts` so the vectors fold through the REAL adapter rather than a substitute).
+
+**WHY THE THIRD WITNESS EXISTS (`ready-f6b`), and what the residual is now.** TIME
+and EPOCH both ride on the sealed cards, so they are silent for any board whose
+retained card versions all begin at or after the cutover being asserted — and a
+ROTATED board reaches that state with NO relay misbehaviour anywhere: §18.1 makes a
+card addressable at `30302:<pubkey>:<itemID>` and §11.14 seals every write under
 `CurrentEpoch`, so a card revised after a rotation legitimately replaces its
-pre-rotation version at the newer epoch, while a conformant relay legitimately
-retains only each grantee's newest kind-39301. A board whose retained card versions
-all postdate its last rotation therefore sits in this gap by default. NIP-01 has no
-proof of non-omission, so the case is undetectable from inside one relay answer and
-MUST NOT be claimed otherwise — in particular, "full and partial omission are both
-detected" is FALSE as an unqualified statement and must not be repeated. Tracked as
-`ready-f6b`. **The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
+pre-rotation version at the newer epoch. Reproduced against the two-witness reader
+on committed fixtures, with no card withheld, nothing forged and no relay
+misbehaviour: a stranger got "This board is confidential; 1 of 2 titles were
+decrypted", no unestablished notice, and the cleartext title in the DOM. FIRST
+EPOCH closes that shape because it needs no card. Note it costs nothing on a
+healthy rotated board: §16.10 gives each epoch its own addressable grant slot, so
+a conformant relay keeps serving the epoch-1 grants after any number of rotations
+and the floor stays 1.
+
+The residual after FIRST EPOCH, stated exactly, and it is now only an attack: the
+witness sees an ABSENT epoch-1 grant, not a LATE one. A relay that serves an
+epoch-1 grant published well after the board really went confidential — one
+addressed to a member admitted long afterwards — puts the floor back at 1 and
+manufactures a cutover at that grant's instant; TIME catches it only if some sealed
+card older than it survives in the answer, so the relay must ALSO withhold every
+such card, and the reader must hold no key-bearing link. NIP-01 has no proof of
+non-omission, so that constructed answer is undetectable from inside one relay
+answer and MUST NOT be claimed otherwise — in particular, "full and partial omission
+are both detected" is FALSE as an unqualified statement and must not be repeated.
+**The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
 derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the

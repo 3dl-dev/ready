@@ -68,6 +68,7 @@ import {
   boardEvent,
   cardEpoch1A,
   cardEpoch1AfterRotation,
+  cardEpoch2,
   cardEpochNobodyHolds,
   cardGapPlaintext,
   cardGrandfatheredPlaintext,
@@ -401,5 +402,147 @@ describe("ANTI-TAUTOLOGY: complete grants still establish the cutover", () => {
     expect(notice()).not.toContain("COULD NOT BE ESTABLISHED");
     // conf-001 + conf-004 sealed, conf-006 grandfathered on the TRUE cutover.
     expect(everythingCount()).toBe("3");
+  });
+});
+
+// ready-f6b — WITNESS C: THE SERVED GRANTS THEMSELVES START ABOVE EPOCH 1.
+//
+// THE GAP ready-daf LEFT. Witnesses A and B both ride ON the sealed cards, so
+// they are silent for any board whose RETAINED card versions all postdate the
+// cutover being asserted. That is not an exotic snapshot: §18.1 makes a card
+// addressable at 30302:<pubkey>:<itemID> and §11.14 seals every write under
+// CurrentEpoch, so a card revised after a rotation legitimately REPLACES its
+// pre-rotation version at the newer epoch. A board that has rotated and whose
+// cards have all been touched since carries no card older than the rotation and
+// no card naming the older epoch — A and B have nothing to testify about — and
+// the opus veracity adversary reproduced exactly that against ready-daf's fixed
+// branch, with the cleartext title in the DOM.
+//
+// WITNESS C RIDES ON THE GRANTS INSTEAD, so it does not care what the cards look
+// like. §11.10 fixes the first epoch of EVERY confidential board at 1: bootstrap
+// mints epoch 1 and a rotation mints OldEpoch+1. So if the lowest epoch any
+// served owner CEK grant names is ABOVE 1, the grant that minted epoch 1 is not
+// in this answer — and it is older than every grant that is, because epoch N's
+// grants cannot precede the rotation that minted epoch N. The cutover is a
+// MINIMUM over what was served, so the minimum on offer is provably too late.
+//
+// IT IS NOT THE REJECTED WIDENING. ready-daf considered and rejected "a sealed
+// card at ANY epoch no served grant covers", pinned above by conf-004 (epoch 9,
+// no epoch-9 grant anywhere): a missing LATER grant cannot move a MINIMUM, so it
+// costs visibility for no security gain. C is the opposite comparison — it looks
+// only DOWNWARD, at whether the FIRST epoch, whose grant is by construction the
+// earliest, is present. An internal gap (epochs 1 and 3 served, 2 missing) is
+// deliberately NOT a witness for the same reason conf-004 is not.
+//
+// AND IT COSTS NOTHING ON A HEALTHY ROTATED BOARD. §16.10 (ready-889) gives a
+// CEK-bearing grant a PER-EPOCH addressable slot, `<boardD>:<grantee>:e<epoch>`,
+// precisely so a rotation does not make a relay drop the old epoch's grant. A
+// conformant relay therefore still serves the epoch-1 grants after any number of
+// rotations, floor stays 1, and C stays silent — the first case below is that
+// board, and it renders its grandfathered cleartext exactly as before.
+describe("ready-f6b — a ROTATED board whose retained cards all postdate the rotation", () => {
+  /**
+   * THE HEALTHY ROTATED BOARD, and the reason witness C is cheap. Every party
+   * conformant: both epochs' grants retained in their per-epoch slots (§16.10),
+   * the only sealed card served is the post-rotation epoch-2 one, plus one
+   * genuinely pre-cutover plaintext card and one post-cutover plaintext card.
+   */
+  const ROTATED_CONFORMANT: NostrEvent[] = [
+    boardEvent,
+    ...grants,
+    cardEpoch2,
+    cardGapPlaintext,
+    cardGrandfatheredPlaintext,
+  ];
+
+  /**
+   * THE SAME BOARD WITH THE EPOCH-1 GRANTS GONE — the adversary's reproduction,
+   * event for event. Nothing is forged and nothing is altered; the epoch-1 grants
+   * are simply not in the answer, which is what a relay that predates the §16.10
+   * per-epoch slot split already did to the live `ready` board on its first
+   * rotation (four grants returned, all epoch 2, zero epoch 1) and what any relay
+   * can still choose to do.
+   */
+  const ROTATED_EPOCH1_GONE: NostrEvent[] = [boardEvent, ...GRANTS_MINUS_EPOCH1, cardEpoch2, cardGapPlaintext];
+
+  it("FIXTURE INVARIANT: witnesses A and B are BOTH provably silent on this snapshot", () => {
+    // A is silent: the one sealed card served is NEWER than the manufactured
+    // cutover, so nothing on the board is older than the instant being asserted.
+    expect(cardEpoch2.created_at).toBeGreaterThan(CUTOVER_IF_EPOCH1_WITHHELD);
+    // B is silent: that card's epoch is 2, and the lowest epoch the served grants
+    // cover is also 2 — there is no epoch BELOW the floor anywhere in the answer.
+    expect(tagValue(cardEpoch2, "cek_epoch")).toBe("2");
+    expect(tagValue(cardEpoch2, "enc")).toBe("1");
+    expect(
+      GRANTS_MINUS_EPOCH1.filter((g) => tagValue(g, "cek") !== "").map((g) => tagValue(g, "cek_epoch")),
+    ).toEqual(["2", "2"]);
+    // The gap card carries no epoch at all, so it cannot fire B either.
+    expect(tagValue(cardGapPlaintext, "cek_epoch")).toBe("");
+    // And the cleartext really is sitting in the window the manufactured cutover
+    // grandfathers.
+    expect(GAP_PLAINTEXT_AT).toBeLessThan(CUTOVER_IF_EPOCH1_WITHHELD);
+  });
+
+  it("FIXTURE INVARIANT: the epoch grants occupy PER-EPOCH slots, so a conformant relay keeps both", () => {
+    // §16.10. If the fixture ever regressed to one shared `<board>:<grantee>`
+    // slot per grantee, the healthy case below would stop being reachable at all
+    // and witness C would be quarantining every rotated board instead of only the
+    // ones missing their first epoch.
+    const cekSlots = grants.filter((g) => tagValue(g, "cek") !== "").map((g) => tagValue(g, "d"));
+    expect(cekSlots.every((d) => /:e\d+$/.test(d))).toBe(true);
+    expect(new Set(cekSlots).size).toBe(cekSlots.length);
+  });
+
+  it("HEALTHY: with both epochs' grants served the board stays ESTABLISHED and grandfathers its old cleartext", async () => {
+    await afterLogin(root, signingIdentity(STRANGER_PUB), boardFragment, deps(ROTATED_CONFORMANT, STRANGER_SEC));
+
+    // This is the anti-tautology half, and it is the one that would break first
+    // if witness C were written as "the board rotated, so fail closed". A rotated
+    // board with a complete grant set has a CORRECT cutover and must keep working.
+    expect(notice()).not.toContain("COULD NOT BE ESTABLISHED");
+    // conf-003 sealed (placeholder for a stranger) + conf-006 grandfathered on
+    // the true cutover; the gap card is post-cutover cleartext and still goes.
+    expect(everythingCount()).toBe("2");
+    expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
+  });
+
+  it("THE FAIL-OPEN: the cleartext the manufactured cutover grandfathers is WITHHELD", async () => {
+    await afterLogin(root, signingIdentity(STRANGER_PUB), boardFragment, deps(ROTATED_EPOCH1_GONE, STRANGER_SEC));
+
+    // Before ready-f6b this rendered: derived cutover 1750000310, gap card at
+    // 1750000205, A silent because the only sealed card is at 1750000400, B
+    // silent because 2 is not below 2 — and the notice said "This board is
+    // confidential; 1 of 2 titles were decrypted" with the cleartext title on
+    // screen underneath it.
+    expect(renderedItems().map((i) => i.id)).not.toContain(GAP_ID);
+    expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
+    expect(pageText()).not.toContain(GAP_PLAINTEXT_BODY);
+    // Only the sealed epoch-2 card survives the fail-closed gate.
+    expect(everythingCount()).toBe("1");
+    expect(renderedItems().map((i) => i.title)).toEqual([PLACEHOLDER]);
+  });
+
+  it("says the state is UNESTABLISHED, and says so as a MISSING FIRST EPOCH", async () => {
+    await afterLogin(root, signingIdentity(STRANGER_PUB), boardFragment, deps(ROTATED_EPOCH1_GONE, STRANGER_SEC));
+
+    expect(notice()).toContain("CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED");
+    // The reason is named, and it is NOT the card-carried one: no card
+    // contradicts anything here, so claiming "a sealed card on this board is
+    // older than the earliest grant" would be a false statement about the
+    // evidence. What this page can prove is narrower and it says exactly that.
+    expect(notice()).toContain("key epoch 1");
+    expect(notice()).not.toContain("older than the earliest grant");
+  });
+
+  it("holds for the MEMBER, who holds the epoch-2 key the served grants carry", async () => {
+    // Reading power is not cutover knowledge: this reader's epoch-2 wrap really
+    // opens conf-003, and the state is still unestablished and the cleartext is
+    // still withheld.
+    await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(ROTATED_EPOCH1_GONE, MEMBER_SEC));
+
+    expect(notice()).toContain("CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED");
+    expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
+    expect(everythingCount()).toBe("1");
+    expect(renderedItems().map((i) => i.title)).toEqual(["Sealed after the rotation"]);
   });
 });
