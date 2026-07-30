@@ -76,6 +76,9 @@ import {
   CUTOVER as CONF_CUTOVER,
   boardEvent as confBoardEvent,
   cards as confCards,
+  // ready-191 rework 4: the adversarial post-cutover cleartext card, named so
+  // the writer's quarantine can be asserted against the very event it drops.
+  cardSmuggledCleartext,
   expectedPlaintext as confExpected,
   grants as confGrants,
 } from "./lib/confidential.fixtures";
@@ -1317,7 +1320,16 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
       // v2 implementation standing in for the extension (nip44ref.test.ts).
       keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
     };
-    const { writers } = await loadBoardItems([board], [], confGrants, identity, deps, () => {});
+    // `items` is the PAGE's projection — what the user is looking at. Captured
+    // so the writer's own projection can be compared against it below.
+    const { items: pageItems, writers } = await loadBoardItems(
+      [board],
+      [],
+      confGrants,
+      identity,
+      deps,
+      () => {},
+    );
     const writer = writers.get(board.coord)!;
 
     // NOT read-only — and specifically not for the confidentiality reason, which
@@ -1373,6 +1385,62 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
     // went on the wire, which is the OTHER half of what tokenizing is for.
     expect(card.tags).not.toContainEqual(["l", "crypto"]);
     expect(card.tags).not.toContainEqual(["l", "board"]);
+
+    // ── ready-191 rework 4: WHICH confidentiality gate the WRITER projects through ──
+    //
+    // The third and worst member of the same family as the epoch and LTK lines,
+    // found by the witness audit those two produced. main.ts hands the writer the
+    // SAME `encryptedBoards` gate the page's read just used. That argument was
+    // witnessed by nothing: replacing it with a fail-open
+    //   { cutover: () => ({ cutover: 0, ok: false }) }
+    // — the exact shape confidentiality.ts's own encryptedBoardsOf doc calls "the
+    // bug this item fixes" — left the whole 768-case suite green, measured.
+    //
+    // WHAT THE FAIL-OPEN COSTS, on this shipped fixture: conf-005 is an
+    // attacker-authored POST-cutover CLEARTEXT card. The page withholds it
+    // (main.confidential.test.ts). A fail-open writer PROJECTS it, title and all,
+    // and setPriority then seals the attacker's plaintext into an owner-SIGNED
+    // card tagged ["enc","1"],["cek_epoch","2"]. Quarantined content laundered
+    // into an authentic sealed card under the owner's own key — this item's done
+    // condition ("an independent rd decrypts to exactly the intended state")
+    // failing in the worst available direction, since the laundered card is
+    // indistinguishable from a real one to every downstream reader.
+    //
+    // PREMISE: the adversarial event really is on the board this writer holds, so
+    // its absence below is a QUARANTINE and not an empty fixture.
+    expect(CONF_SNAPSHOT).toContain(cardSmuggledCleartext);
+    expect(cardSmuggledCleartext.tags).toContainEqual(["title", "SMUGGLED CLEARTEXT TITLE"]);
+
+    // THE CLAIM: the writer's own projection withholds it, exactly as the page's
+    // does — one board, one verdict.
+    expect(writer.items().has("conf-005")).toBe(false);
+    // …and under no other id either: the quarantine is asserted on the CONTENT
+    // the attacker smuggled, not only on the "d" they filed it under.
+    for (const projected of writer.items().values()) {
+      expect(projected.title).not.toContain("SMUGGLED CLEARTEXT");
+      expect(projected.context ?? "").not.toContain("SMUGGLED CLEARTEXT");
+    }
+    expect([...writer.items().keys()].sort()).toEqual(pageItems.map((i) => i.id).sort());
+
+    // ANTI-TAUTOLOGY 1: the gate is a CUTOVER, not "the writer drops every
+    // plaintext card". conf-006 carries a clear title too and is grandfathered
+    // in, by this projection, because it predates the cutover.
+    expect(writer.items().get("conf-006")!.title).toBe("Legacy plaintext card");
+
+    // ANTI-TAUTOLOGY 2: "not in the projection" is not "unwritable in general" —
+    // the same writer wrote conf-001 twenty lines up.
+    //
+    // AND THE CONSEQUENCE ITSELF: the laundering write is refused BEFORE anything
+    // is built or signed. Under the fail-open mutation this call instead reaches
+    // the relay, and the signer is handed a sealed card whose plaintext is the
+    // attacker's title — so `confSign` gaining a call is the leak, and its call
+    // count is asserted unchanged rather than merely "an error was thrown".
+    const signsBefore = confSign.mock.calls.length;
+    await expect(writer.setPriority("conf-005", "p0")).rejects.toMatchObject({
+      name: "WriteRefusedError",
+      code: "unknown_item",
+    });
+    expect(confSign.mock.calls.length).toBe(signsBefore);
   });
 
   // ── ready-191 rework: WHICH epoch the seal used ───────────────────────────
