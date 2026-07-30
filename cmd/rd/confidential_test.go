@@ -142,18 +142,14 @@ func TestConfidentialEnableMigration(t *testing.T) {
 		t.Fatalf("create old: %v", err)
 	}
 
-	// Enable confidential mode (mirror `rd confidential enable`): mark + bootstrap.
-	cfg, _ := rdconfig.LoadSyncConfig(dir)
-	cfg.Public = false
-	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
-		t.Fatalf("save confidential cfg: %v", err)
-	}
-	pub, ok, err := nostrPublisher()
-	if err != nil || !ok {
-		t.Fatalf("publisher: %v", err)
-	}
-	if _, err := boardConfidentialEnvelope(dir, pub, owner, boardD); err != nil {
-		t.Fatalf("bootstrap: %v", err)
+	// Enable confidential mode through the REAL `rd confidential enable` verb, so the
+	// cutover stamp under test is the one production writes — resolved through the
+	// command's own resolveBoardAuthorD and its owner check, not a coordinate the test
+	// re-derived for itself.
+	if out, err := runConfidentialArgv(t, "enable"); err != nil {
+		t.Fatalf("rd confidential enable: %v (out=%q)", err, out)
+	} else if !strings.Contains(out, "confidential mode ENABLED for board "+coord) {
+		t.Fatalf("rd confidential enable did not mint the board CEK: %q", out)
 	}
 
 	newID, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "NEW secret item", context: "sealed", itemType: "task", priority: "p1"})
@@ -298,22 +294,20 @@ func armSameSecondCutoverRace(t *testing.T) (dir, targetID, decoyID, coord strin
 		}
 	}
 
-	// `rd confidential enable`: mark the config, then bootstrap the CEK self-grant
-	// at cutoverCreatedAt = max(whole log)+1.
-	cfg, err := rdconfig.LoadSyncConfig(dir)
-	if err != nil {
-		t.Fatalf("LoadSyncConfig: %v", err)
-	}
-	cfg.Public = false
-	if err := rdconfig.SaveSyncConfig(dir, cfg); err != nil {
-		t.Fatalf("save confidential cfg: %v", err)
+	// THE REAL `rd confidential enable`, driven through cobra: it marks the config and
+	// bootstraps the CEK self-grant at cutoverCreatedAt = max(whole log)+1. The whole
+	// defect class under test is "this command's cutover stamp versus the per-item
+	// write clock", so the stamp has to come from the command that actually produces
+	// it — including its resolveBoardAuthorD board resolution and its owner check —
+	// and not from a hand-rolled setup that re-derives its own coordinate.
+	if out, err := runConfidentialArgv(t, "enable"); err != nil {
+		t.Fatalf("rd confidential enable: %v (out=%q)", err, out)
+	} else if !strings.Contains(out, "confidential mode ENABLED for board "+coord) {
+		t.Fatalf("rd confidential enable did not mint the board CEK: %q", out)
 	}
 	pub, ok, err := nostrPublisher()
 	if err != nil || !ok {
 		t.Fatalf("publisher: %v (ok=%v)", err, ok)
-	}
-	if _, err := boardConfidentialEnvelope(dir, pub, owner, boardD); err != nil {
-		t.Fatalf("bootstrap: %v", err)
 	}
 
 	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
