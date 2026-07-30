@@ -21,7 +21,7 @@
 // The live relay + real browser + real rd CLI version of this same proof is
 // scripts/live-roundtrip-both-ways.mjs.
 import { beforeEach, describe, expect, it } from "vitest";
-import { afterLogin, defaultDeps, type BoardDeps, type Identity } from "./main";
+import { afterLogin, defaultDeps, startLiveUpdates, type BoardDeps, type Identity } from "./main";
 import { authTransition } from "./lib/auth";
 import { neverUnwraps } from "./lib/keyunwrap";
 import { fetchEventsFromRelays, subscribeToRelays } from "./lib/relay";
@@ -193,6 +193,77 @@ describe("ready-4359: the OPEN board reflects a change made elsewhere, with no r
     // Still exactly one live subscription — not two racing to re-fold into a
     // workspace only one of them owns.
     expect(handle.openSubscriptions()).toBe(first);
+  });
+});
+
+describe("ready-4359: a multi-board view re-folds only what changed", () => {
+  // Driven through the exported startLiveUpdates rather than afterLogin, because
+  // the assertion is about which board's FOLD ran — an observation the DOM cannot
+  // make (both projections would look identical either way). A `--portfolio` link
+  // is genuinely multi-board (ready-4d9) and every fold re-verifies every
+  // signature on the board it folds, so this is the difference between one busy
+  // board costing its own fold and costing all of them.
+  const fakeBoard = (coord: string, id: string) => {
+    let folds = 0;
+    const absorbed: NostrEvent[] = [];
+    const board = {
+      coord,
+      events: [] as NostrEvent[],
+      seen: new Set<string>(),
+      newest: 0,
+      // The projection the LOAD produced, as loadBoardItems supplies it.
+      items: [{ id, title: id, status: "inbox", boardCoord: coord }] as never[],
+      src: {
+        loadItems: () => {
+          folds++;
+          return [{ id, title: id, status: "inbox", boardCoord: coord }] as never[];
+        },
+      },
+      // Only `absorb` is reached from the live path; the rest of the writer is
+      // exercised by nostrwriter.absorb.test.ts against the real class.
+      writer: { absorb: (es: NostrEvent[]) => absorbed.push(...es) } as never,
+    };
+    return { board, folds: () => folds, absorbed };
+  };
+
+  it("folds the board that received the event, reuses the other, and absorbs into the right writer", async () => {
+    const a = fakeBoard(`30301:${OWNER}:a`, "item-a");
+    const b = fakeBoard(`30301:${OWNER}:b`, "item-b");
+    const { ctor, handle } = makeNip01Relay({ events: [] });
+
+    const emitted: string[][] = [];
+    const sub = startLiveUpdates({
+      boards: [a.board, b.board],
+      relays: [RELAY],
+      subscribe: (relays, filter, opts) => subscribeToRelays(relays, filter, { ...opts, webSocketCtor: ctor }),
+      onItems: (items) => emitted.push(items.map((i) => i.id)),
+      coalesceMs: 5,
+    });
+    await settleLive();
+    const [foldsA, foldsB] = [a.folds(), b.folds()];
+
+    // One event, addressed to board A only.
+    handle.push(
+      sign({
+        created_at: 1_780_000_500,
+        kind: 30302,
+        tags: [
+          ["d", "item-a"],
+          ["a", a.board.coord],
+        ],
+        content: "",
+      }),
+    );
+    await settleLive();
+
+    expect(a.folds()).toBe(foldsA + 1);
+    expect(b.folds()).toBe(foldsB); // untouched
+    expect(a.absorbed).toHaveLength(1);
+    expect(b.absorbed).toHaveLength(0);
+    // …and the emitted projection still carries BOTH boards' items: reusing a
+    // board's last fold must not drop it from the view.
+    expect(emitted.at(-1)).toEqual(["item-a", "item-b"]);
+    sub.close();
   });
 });
 

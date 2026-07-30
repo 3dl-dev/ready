@@ -360,7 +360,8 @@ export async function loadBoardItems(
         },
         b.coord,
       );
-      out.push(...src.loadItems(events));
+      const boardItems = src.loadItems(events);
+      out.push(...boardItems);
 
       // ready-191: the WRITE-side envelope. A confidential board is writable from
       // this page exactly while the session holds its CEK — the same key the read
@@ -414,6 +415,7 @@ export async function loadBoardItems(
         events: [...events],
         seen: new Set(events.map(eventIdentity)),
         newest: events.reduce((max, e) => (typeof e.created_at === "number" && e.created_at > max ? e.created_at : max), 0),
+        items: boardItems,
         src,
         writer,
       });
@@ -437,12 +439,21 @@ export async function loadBoardItems(
  */
 export interface LiveBoard {
   coord: string;
+  /** Every event this board has folded, live ones appended. It only grows: a
+   * superseded card is still evidence the fold needs (latest-wins is decided
+   * over the whole set), so nothing here can be pruned without making the page's
+   * projection depend on when it was opened. A session that sits open through
+   * thousands of writes therefore grows; a reload compacts it. */
   events: NostrEvent[];
   /** eventIdentity of everything in `events`, so a re-served event is not
    * appended twice. Content-keyed, never id-keyed — lib/relay.ts's reason. */
   seen: Set<string>;
   /** Newest created_at folded so far: the live REQ's `since` cursor. */
   newest: number;
+  /** This board's CURRENT projection — the one the load produced, replaced each
+   * time this board is re-folded. Carried so the first live event does not have
+   * to re-fold every OTHER board just to reassemble the view. */
+  items: Item[];
   src: ItemSource;
   writer: NostrBoardWriter;
 }
@@ -487,11 +498,25 @@ export function startLiveUpdates(args: {
   let pending: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
+  /**
+   * The last projection of each board, so an event on ONE board does not re-fold
+   * the other 23. A `--portfolio` link is genuinely multi-board (ready-4d9) and
+   * every fold re-verifies every signature on the board it folds, so folding all
+   * of them per pushed event would make one busy board slow the whole view down.
+   * Only the boards that actually received something are re-folded; the rest are
+   * reused verbatim, which is the same array the previous fold produced.
+   */
+  const dirty = new Set<string>();
+
   const refold = (): void => {
     pending = undefined;
     if (closed) return;
     const items: Item[] = [];
-    for (const b of boards) items.push(...b.src.loadItems(b.events));
+    for (const b of boards) {
+      if (dirty.has(b.coord)) b.items = b.src.loadItems(b.events);
+      items.push(...b.items);
+    }
+    dirty.clear();
     onItems(items);
   };
 
@@ -515,6 +540,7 @@ export function startLiveUpdates(args: {
             b.events.push(e);
             if (typeof e.created_at === "number" && e.created_at > b.newest) b.newest = e.created_at;
             b.writer.absorb([e]);
+            dirty.add(b.coord);
             if (pending === undefined) pending = setTimeout(refold, coalesceMs);
           },
         },
