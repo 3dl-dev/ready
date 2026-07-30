@@ -142,9 +142,11 @@
 //    is a pre-existing fold property rather than a browser write defect; recorded
 //    here and cross-referenced to ready-8aa rather than filed twice.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authTransition } from "./lib/auth";
@@ -796,6 +798,17 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
 // This is the one ready-c6b finding with no executable pin, in a deliverable whose
 // premise is demonstration rather than prose. Pinned here rather than fixed there:
 // fixing it is a change to another item's guard, and this item is a review.
+//
+// THE PINS BELOW MEASURE THE GUARD'S OUTPUT, NOT ITS SYNTAX. An earlier revision
+// regexed nostorage.test.ts for its two `fileURLToPath(new URL("./lib/", ...))`
+// literals and pinned that list. That was wrong in a way worth naming: ready-fe5's
+// own done condition offers "walk src/ recursively" as an option, and a recursive
+// walk DELETES those literals instead of adding a third — so the pin would have
+// stayed green on a correct fix. What follows instead EXECUTES the guard's own
+// shippedSources() (lifted out of nostorage.test.ts, TypeScript stripped by the
+// tsc the package already depends on, its imports supplied as arguments) and asks
+// the only question that matters: is the write surface in the set it returns?
+// Extra root, recursive walk, glob — every shape of fix turns these red.
 describe("ready-c6b — GUARD: what the no-persistence scan actually reads (ready-fe5)", () => {
   // nostorage.test.ts locates itself with `new URL(..., import.meta.url)`, which
   // this file cannot copy: it runs under jsdom, where import.meta.url is not a
@@ -808,42 +821,127 @@ describe("ready-c6b — GUARD: what the no-persistence scan actually reads (read
     }
     throw new Error(`cannot locate web/board/src from ${process.cwd()} — this pin would otherwise be vacuous`);
   })();
-  const guardSrc = readFileSync(join(srcDir, "nostorage.test.ts"), "utf8");
+  const guardPath = join(srcDir, "nostorage.test.ts");
+  const guardSrc = readFileSync(guardPath, "utf8");
   const boardDir = join(srcDir, "board");
 
-  /** Every directory shippedSources() resolves, read out of the guard itself so
-   * this cannot drift into asserting a copy of the scan instead of the scan. */
-  function guardScanRoots(): string[] {
-    return [...guardSrc.matchAll(/fileURLToPath\(new URL\("([^"]+)", import\.meta\.url\)\)/g)].map((m) => m[1]);
+  type Scanned = { name: string; code: string };
+
+  /**
+   * THE GUARD'S OWN shippedSources(), RUN. Everything above the first top-level
+   * `describe(` is the guard's scan and the constants it depends on; its imports
+   * become parameters, `import.meta.url` becomes the guard's real file URL, and
+   * the TypeScript is stripped by the tsc this package already builds with.
+   * Nothing is re-implemented here, so this cannot drift into asserting a copy of
+   * the scan. If the guard is refactored past what this can lift, it throws with
+   * ready-fe5 in the message — loud, never a silent pass.
+   */
+  function guardScannedSources(): Scanned[] {
+    const cut = guardSrc.indexOf("\ndescribe(");
+    if (cut < 0) throw new Error("ready-fe5 pin: nostorage.test.ts has no top-level describe() to cut at");
+    const prelude = guardSrc
+      .slice(0, cut)
+      .replace(/^import\s[\s\S]*?;$/gm, "")
+      .replace(/^export\s+/gm, "")
+      .replace(/import\.meta\.url/g, "__guardUrl");
+    if (!prelude.includes("shippedSources")) {
+      throw new Error("ready-fe5 pin: shippedSources() is no longer declared above the first describe()");
+    }
+    const code = ts.transpileModule(prelude, {
+      fileName: guardPath,
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+    }).outputText;
+    const run = new Function(
+      "readFileSync",
+      "readdirSync",
+      "existsSync",
+      "statSync",
+      "fileURLToPath",
+      "join",
+      "dirname",
+      "relative",
+      "__guardUrl",
+      `${code}\nreturn shippedSources();`,
+    ) as (...deps: unknown[]) => Scanned[];
+    return run(
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync,
+      fileURLToPath,
+      join,
+      dirname,
+      relative,
+      pathToFileURL(guardPath).href,
+    );
   }
 
-  it("MEASURED (ready-fe5): the scan's roots are src/ and src/lib/ — src/board/ is not among them", () => {
-    // ANTI-VACUITY: the regex found the scan, so an empty result cannot pass.
-    expect(guardScanRoots().length, "shippedSources() changed shape — re-derive this pin").toBeGreaterThanOrEqual(2);
+  /** The longest substantive code line in a module — long enough to be unique to
+   * it, and never a comment, so the guard's comment-stripping cannot remove it.
+   * Matching on CONTENT rather than on the name the scan happens to assign makes
+   * the pins independent of whether a fix reports "nostrwriter.ts",
+   * "board/nostrwriter.ts" or an absolute path. */
+  function fingerprint(file: string, dir = boardDir): string {
+    const best = readFileSync(join(dir, file), "utf8")
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .filter((l) => {
+        const t = l.trimStart();
+        return t.length >= 40 && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") && !t.startsWith("import");
+      })
+      .sort((a, b) => b.length - a.length)[0];
+    if (!best) throw new Error(`ready-fe5 pin: no fingerprintable line in ${file}`);
+    return best;
+  }
 
-    // PIN (ready-fe5) — the roots as they stand.
+  const boardModules = readdirSync(boardDir).filter(
+    (f) => f.endsWith(".ts") && !f.includes(".test.") && !f.endsWith(".d.ts"),
+  );
+
+  it("MEASURED (ready-fe5): the guard's own scan, executed, does not contain the module holding the write-side keys", () => {
+    const scanned = guardScannedSources();
+
+    // ANTI-VACUITY: the guard's scan really ran and really returned modules —
+    // the five its own vacuous-pass test names are all in what came back.
+    expect(scanned.length, "shippedSources() returned nothing — this pin would be vacuous").toBeGreaterThan(8);
+    for (const required of ["main.ts", "lib/keyring.ts", "lib/keyunwrap.ts", "lib/envelope.ts", "lib/carditems.ts"]) {
+      const [dir, file] = required.includes("/") ? [join(srcDir, "lib"), required.split("/")[1]] : [srcDir, required];
+      expect(
+        scanned.filter((s) => s.code.includes(fingerprint(file, dir))).length,
+        `POSITIVE CONTROL: ${required} is scanned and content-matching finds it`,
+      ).toBe(1);
+    }
+    // …so a module NOT found below is a module the scan missed, not a module the
+    // matching failed on.
+
+    // ANTI-VACUITY: nostrwriter.ts really is where the write-side key material is.
+    const writerSrc = readFileSync(join(boardDir, "nostrwriter.ts"), "utf8");
+    expect(writerSrc, "nostrwriter.ts holds the write-side SealEnvelope {cek, epoch, ltk}").toContain("SealEnvelope");
+
+    // PIN (ready-fe5) — the module that holds the CEK, the epoch and the LTK is
+    // absent from the set the guard reads, so it could persist any of them and
+    // the guard would stay green.
     // WHEN FIXED, replace this line with:
-    //   expect(guardScanRoots()).toEqual(["./", "./lib/", "./board/"]);
-    expect(guardScanRoots(), "ready-fe5 fixed? swap this for the secure assertion above").toEqual(["./", "./lib/"]);
+    //   expect(scanned.filter((s) => s.code.includes(fingerprint("nostrwriter.ts"))), "the write-side key module must be scanned").toHaveLength(1);
+    expect(
+      scanned.filter((s) => s.code.includes(fingerprint("nostrwriter.ts"))),
+      "ready-fe5 fixed? swap this for the secure assertion above",
+    ).toEqual([]);
   });
 
-  it("MEASURED (ready-fe5): the write surface it therefore misses, and why that module is the one that matters", () => {
-    const boardModules = readdirSync(boardDir).filter(
-      (f) => f.endsWith(".ts") && !f.includes(".test.") && !f.endsWith(".d.ts"),
-    );
+  it("MEASURED (ready-fe5): and it misses the whole write surface, not just that one module", () => {
+    const scanned = guardScannedSources();
+
     // ANTI-VACUITY: there really is a write surface under src/board/ to miss.
     expect(boardModules.length, "src/board/ holds the write surface").toBeGreaterThan(8);
-    expect(boardModules, "the module the pin is named for").toContain("nostrwriter.ts");
+    expect(boardModules, "the write path itself").toEqual(expect.arrayContaining(["nostrwriter.ts", "writeevents.ts", "write.ts", "render.ts"]));
 
-    // It is not an arbitrary module: it is where the write-side key material lives.
-    const writer = readFileSync(join(boardDir, "nostrwriter.ts"), "utf8");
-    expect(writer, "nostrwriter.ts holds the write-side SealEnvelope").toContain("SealEnvelope");
+    const reached = boardModules.filter((m) => scanned.some((s) => s.code.includes(fingerprint(m))));
 
-    // PIN (ready-fe5) — none of them is scanned. The check is deliberately made
-    // against the guard's own scan roots (above), not against a re-listing of the
-    // files, so it measures the guard and not a copy of it.
+    // PIN (ready-fe5) — not one of them is reached. A partial fix (one module,
+    // one root) also turns this red, at this line, listing what is still missed.
     // WHEN FIXED, replace this line with:
-    //   expect(guardScanRoots()).toContain("./board/");
-    expect(guardScanRoots(), "ready-fe5 fixed? swap this for the secure assertion above").not.toContain("./board/");
+    //   expect(reached, "every shipped src/board/ module must be scanned").toEqual(boardModules);
+    expect(reached, "ready-fe5 fixed? swap this for the secure assertion above").toEqual([]);
   });
 });
