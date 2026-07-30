@@ -27,6 +27,9 @@ import type { NostrEvent } from "./lib/nostrevent";
 import type { ParsedFragment } from "./lib/fragment";
 import {
   BOARD_COORD,
+  EPOCH3_CARD_CONTEXT,
+  EPOCH3_CARD_ID,
+  EPOCH3_CARD_TITLE,
   MEMBER_PUB,
   MEMBER_SEC,
   OWNER_PUB,
@@ -34,10 +37,16 @@ import {
   REVOKED_SEC,
   STRANGER_PUB,
   STRANGER_SEC,
+  OWNER_SEC,
   boardEvent,
+  cardSealedUnderEpoch3,
   cards,
   expectedPlaintext,
   grants,
+  legacyRawWrapGrant,
+  legacyRawWrapGrantOwner,
+  rewrappedHexGrant,
+  rewrappedHexGrantOwner,
 } from "./lib/confidential.fixtures";
 
 const SNAPSHOT: NostrEvent[] = [boardEvent, ...grants, ...cards];
@@ -341,5 +350,94 @@ describe("the confidential path does not disturb a plaintext board", () => {
     expect(node?.querySelector(".nm")?.textContent).toBe("Confidential Board");
     expect(pageText()).not.toContain(BOARD_COORD);
     expect(pageText()).not.toContain(OWNER_PUB);
+  });
+});
+
+// ready-470 — THE ITEM'S DONE CONDITION, at the layer it was written at.
+//
+// "Verify by logging into the board page with the owner key and seeing real
+// titles." A derived CEK is one layer below that: a keyring can hold the right
+// bytes while the page still shows nothing. So these cases run the whole page —
+// afterLogin -> signature verification -> fold gate -> keyring -> the
+// ChaCha20-Poly1305 open -> mountBoardWorkspace — and assert on the TEXT of a
+// `.card-title`.
+//
+// The two snapshots differ in ONE event: the epoch-3 grant is either the
+// pre-ready-c4b raw-byte wrap or the hex re-wrap `rd confidential rewrap`
+// publishes over it — same slot, same key value, one second later. Everything else
+// (board, other grants, the epoch-3 card) is byte-identical, so any difference on
+// the screen is caused by the wrap encoding and nothing else.
+describe("ready-470: the re-wrap is what puts a real title on the screen", () => {
+  function depsWith(snapshot: NostrEvent[], secretHex: string): BoardDeps {
+    return {
+      loadRelays: async () => ["wss://relay.test"],
+      fetchEvents: async () => snapshot,
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(secretHex)),
+    };
+  }
+
+  const withGrant = (g: NostrEvent): NostrEvent[] => [boardEvent, ...grants, ...cards, g, cardSealedUnderEpoch3];
+
+  async function renderAs(pubkey: string, secretHex: string, epoch3Grant: NostrEvent) {
+    await afterLogin(root, signingIdentity(pubkey), boardFragment, depsWith(withGrant(epoch3Grant), secretHex));
+    return new Map(renderedItems().map((i) => [i.id, i]));
+  }
+
+  // Each reader is exercised twice: once against the legacy grant it cannot use,
+  // once against the repair. The OWNER row is the item's literal done condition —
+  // the ready board's own self-grant was a raw-payload one, which is why the page
+  // showed [encrypted] to the person who owns it. The MEMBER row proves the repair
+  // is not an owner-only special case.
+  const readers: { who: string; pub: string; sec: string; legacy: NostrEvent; repaired: NostrEvent }[] = [
+    { who: "OWNER", pub: OWNER_PUB, sec: OWNER_SEC, legacy: legacyRawWrapGrantOwner, repaired: rewrappedHexGrantOwner },
+    { who: "MEMBER", pub: MEMBER_PUB, sec: MEMBER_SEC, legacy: legacyRawWrapGrant, repaired: rewrappedHexGrant },
+  ];
+
+  for (const r of readers) {
+    it(`${r.who}: the LEGACY raw wrap leaves the placeholder on the screen`, async () => {
+      const byId = await renderAs(r.pub, r.sec, r.legacy);
+      const got = byId.get(EPOCH3_CARD_ID)!;
+      expect(got.title).toBe(PLACEHOLDER);
+      expect(got.sealed).toBe(true);
+      // Nothing of the sealed card's text reached the page by any other route.
+      expect(pageText()).not.toContain(EPOCH3_CARD_TITLE);
+      expect(pageText()).not.toContain(EPOCH3_CARD_CONTEXT);
+      // NOT a board-wide bail-out: this reader's other cards still render, so the
+      // repaired case below cannot pass merely by un-breaking the whole page.
+      expect(byId.get("conf-001")!.title).toBe(expectedPlaintext[0].title);
+    });
+
+    it(`${r.who}: the RE-WRAPPED grant renders the real title`, async () => {
+      const byId = await renderAs(r.pub, r.sec, r.repaired);
+      const got = byId.get(EPOCH3_CARD_ID)!;
+      expect(got.title).toBe(EPOCH3_CARD_TITLE);
+      expect(got.sealed).toBe(false);
+      // The plain-language version of the done condition: the words are on the page.
+      expect(pageText()).toContain(EPOCH3_CARD_TITLE);
+      // ...and the repair cost the reader none of the history it already held. A
+      // ROTATION would also have produced a readable title here — at a new epoch
+      // whose key opens none of these.
+      for (const want of expectedPlaintext) {
+        expect(byId.get(want.id)?.title, `item ${want.id}`).toBe(want.title);
+      }
+    });
+  }
+
+  it("the repair is the ONLY difference between the two pages", async () => {
+    // Same reader, same everything but the one grant: every other card renders
+    // identically, so the epoch-3 title flipping from placeholder to plaintext is
+    // attributable to the wrap encoding alone.
+    const before = await renderAs(OWNER_PUB, OWNER_SEC, legacyRawWrapGrantOwner);
+    document.body.replaceChildren();
+    root = document.createElement("div");
+    root.id = "app";
+    document.body.append(root);
+    const after = await renderAs(OWNER_PUB, OWNER_SEC, rewrappedHexGrantOwner);
+
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    for (const [id, b] of before) {
+      if (id === EPOCH3_CARD_ID) continue;
+      expect(after.get(id), `item ${id}`).toEqual(b);
+    }
   });
 });

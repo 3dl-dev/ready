@@ -36,6 +36,7 @@ import {
   STRANGER_SEC,
   grants,
   legacyRawWrapGrant,
+  legacyRawWrapGrantOwner,
   rewrappedHexGrant,
 } from "./confidential.fixtures";
 
@@ -255,6 +256,10 @@ describe("a legacy raw-payload wrap and the re-wrap that repairs it (ready-470)"
     // the wrap — so the test below is measuring the boundary, not a bad fixture.
     const { open } = await import("./nip44ref");
     expect(bytesToHex(open(MEMBER_SEC, OWNER_PUB, tagValue(legacyRawWrapGrant, "cek")))).toBe(CEK_EPOCH3);
+    // The same for the OWNER's own legacy self-grant, which main.confidential
+    // .test.ts renders the page from: it too carries the key, so the placeholder
+    // that reader sees is the string boundary and not a malformed grant.
+    expect(bytesToHex(open(OWNER_SEC, OWNER_PUB, tagValue(legacyRawWrapGrantOwner, "cek")))).toBe(CEK_EPOCH3);
   });
 
   it("the LEGACY grant leaves the member holding NO epoch-3 key", async () => {

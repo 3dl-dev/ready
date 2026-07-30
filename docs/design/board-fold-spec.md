@@ -1465,7 +1465,18 @@ because the cutover of §11.13 is a MINIMUM over served grants and stamping thes
 age of the board. Measured on the `ready` board: epoch 2's four grants were already
 hex, epoch 1's three were raw — so a browser could read only post-rotation cards —
 and after the re-wrap every owner-signed CEK grant the public relay serves is hex,
-with the derived cutover moving from 1784206980 to 1784206981.
+with the derived cutover moving from 1784206980 to 1784206981. The command's own
+evidence is a RELAY READ-BACK, not its publish report: `reduceEventOutcome`
+(`pkg/sync/relayclass.go`) calls an event accepted the moment any write relay says
+OK, so `verifyRewrapOnRelays` re-reads each published grant with a fresh REQ per
+relay and fails, naming the relay, when one did not take them
+(`cmd/rd/confidential_rewrap_test.go` drives every run of the command over a live
+in-process NIP-01 relay, and pins that failure against a relay that ACKs and stores
+nothing). The browser half of the claim is asserted at the DOM: the epoch-3 card of
+`confidential.fixtures.ts` renders `[encrypted]` for the reader served the legacy
+raw-payload grant and its real title for the reader served the hex re-wrap of the
+same key in the same slot — for the OWNER's self-grant as well as a member's
+(`web/board/src/main.confidential.test.ts`).
 
 ---
 
