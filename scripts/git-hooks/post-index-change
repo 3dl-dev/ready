@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# post-index-change — ready-f75 stash guard (detection half).
+#
+# `git stash apply` opens NO ref transaction, so the reference-transaction
+# hook never sees it, and `git stash pop` applies BEFORE it drops. There is
+# no abortable pre-apply hook anywhere in git: post-index-change is the only
+# hook that fires at all, and git IGNORES its exit code (measured on git
+# 2.43 — a post-index-change returning 1 leaves `git stash apply` at exit 0
+# with the working tree already rewritten).
+#
+# So this hook cannot prevent a shared-stash apply. What it CAN do is make it
+# LOUD. The 2026-07-29 incident's defining property was silence: "Nothing
+# failed loudly here; it was caught only because one agent chose to disclose
+# it." This hook removes that property — an agent that applies or pops from
+# the shared stack now gets told, on stderr, at the moment their working tree
+# changed, that the content may be another worktree's.
+#
+# KNOW WHAT THIS IS WORTH: it is a smoke alarm, not a lock. It cannot stop
+# anything — git ignores its exit code. Do not read its existence, or the
+# existence of the guard as a whole, as a statement of what is prevented; that
+# claim has been deleted from every shipped file after three rounds of getting
+# it wrong. The scope is measured in scripts/wt_stash_test.go:
+#
+#   go test ./scripts/ -run TestStashGuard -v
+#
+# It speaks ONLY for `git stash apply` / `git stash pop`. Every other index
+# write in the repo (add, commit, checkout, reset, merge, rebase, and
+# `git wtstash`'s own internal `git stash apply <sha>`) passes silently.
+#
+# Args, per githooks(5): $1 = "1" if the working directory was updated,
+# $2 = "1" if the index was updated. We warn on the working-directory-update
+# event, which fires exactly once per apply and is the moment the damage
+# lands.
+#
+# ready-f75 stash guard
+set -uo pipefail
+
+# `git wtstash` uses `git stash create` + `git stash apply <sha>` internally
+# against its OWN per-worktree refs. That is the safe path, not the hazard.
+[[ "${RD_STASH_GUARD_INTERNAL:-}" == "1" ]] && exit 0
+
+worktree_updated="${1:-0}"
+[[ "$worktree_updated" == "1" ]] || exit 0
+
+# Which user-facing `git ...` are we inside? git runs parts of stash from
+# internal subprocesses, so walk up the process tree. Linux /proc only; on a
+# system without /proc this hook is simply silent (it can never block, so a
+# missing warning is the only cost).
+_invoking_git_cmd() {
+  local pid="$PPID" cmd ppid depth=0
+  while [[ -n "$pid" && "$pid" != "0" && "$depth" -lt 8 ]]; do
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || return 0
+    if [[ "$cmd" == *"stash"* ]]; then
+      printf '%s' "${cmd% }"
+      return 0
+    fi
+    ppid=$(sed -e 's/^.*) [A-Za-z] //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)
+    [[ "$ppid" == "$pid" ]] && return 0
+    pid="$ppid"
+    depth=$((depth + 1))
+  done
+}
+
+verb="$(_invoking_git_cmd)"
+case "$verb" in
+  *"stash apply"* | *"stash pop"*) ;;
+  *) exit 0 ;;
+esac
+
+# NOTE: `git wtstash` is exempted solely by RD_STASH_GUARD_INTERNAL above,
+# which is measured to reach this hook (git passes its environment through to
+# hooks; verified for `git wtstash`, and confirmed unset for an ordinary
+# `git add`). An earlier version ALSO exempted any invocation whose command
+# line contained a 40-hex object id, on the theory that only wt-stash.sh
+# applies by explicit SHA. That was redundant and it was a hole: it silenced a
+# hand-typed `git stash apply <sha>` against a shared entry, which is exactly
+# the hazard this hook exists to surface.
+
+{
+  echo "ready-f75 stash guard: WARNING — you just applied from the SHARED stash stack."
+  echo "  invoked by: $verb"
+  echo
+  echo "refs/stash lives in the COMMON .git directory that every git worktree of"
+  echo "this repo shares, so the entry you just applied may have been created by"
+  echo "a DIFFERENT dispatched agent in a different worktree, and your working"
+  echo "tree may now contain its content mixed into yours."
+  echo
+  echo "This is a warning, not a block — nothing was prevented. Verify with"
+  echo "'git status' and 'git diff' before doing anything else."
+  echo
+  echo "Use 'git wtstash [push|list|pop|apply|drop|clear]' instead — it is scoped"
+  echo "to refs/worktree/wtstash/N, which git stores per worktree. Putting"
+  echo "scripts/git-shim earlier on PATH than the real git is the stronger form."
+  echo "For what each of those actually stops, measure rather than assume:"
+  echo "  go test ./scripts/ -run TestStashGuard -v"
+} >&2
+
+exit 0
