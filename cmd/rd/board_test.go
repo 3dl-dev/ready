@@ -330,6 +330,29 @@ func TestBoardShareCmd_WithUppercasePubkey_GrantsAndIsValid(t *testing.T) {
 	}
 }
 
+// TestResolveGranteePubkey_BareHexNormalizesToLowercase pins board.go's
+// resolveGranteePubkey normalization IN ISOLATION (ready-3e1 rework): it calls
+// the function directly, with no downstream runNostrGrantRevoke/publishRoleGrant
+// in the call chain, so this test goes RED if resolveGranteePubkey's bare-hex
+// branch reverts to `return who, nil` — independent of whether either of the
+// other two normalization sites (nostr_grant.go, authz_nostr.go) still fix the
+// case downstream. TestBoardShareCmd_WithUppercasePubkey_GrantsAndIsValid above
+// exercises the full CLI path and does NOT catch a revert here alone, precisely
+// because those other two sites mask it end-to-end — this test exists so each
+// site has its own single-revert-goes-red guard.
+func TestResolveGranteePubkey_BareHexNormalizesToLowercase(t *testing.T) {
+	const lower = "a1b2c3d4e5f60707070707070707070707070707070707070707070707070707"
+	upper := strings.ToUpper(lower)
+
+	got, err := resolveGranteePubkey(upper)
+	if err != nil {
+		t.Fatalf("resolveGranteePubkey(%q): %v", upper, err)
+	}
+	if got != lower {
+		t.Errorf("resolveGranteePubkey(%q) = %q, want canonical lowercase %q", upper, got, lower)
+	}
+}
+
 // TestBoardShareCmd_WithPubkey_NoClaimNonce is the REJECTION test for
 // ready-5c1: `rd board share <known-pubkey>` must NOT mint a claim-nonce or an
 // rd1_ token, even though the grant it just published carries no --claim. The

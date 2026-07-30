@@ -133,6 +133,55 @@ func TestPublishRoleGrant_NonMaintainerRejectedClientSide(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestPublishRoleGrant_UppercaseGrantee_PublishesLowercase pins nostr_grant.go's
+// publishRoleGrant normalization IN ISOLATION (ready-3e1 rework): it calls
+// publishRoleGrant directly, bypassing runNostrGrantRevoke entirely (which has
+// its own, separate normalization at cmd/rd/authz_nostr.go), so this test goes
+// RED if publishRoleGrant's `grantee = normalizeHexPubkey(grantee)` reverts —
+// independent of the caller-side normalization. `go test ./cmd/rd/...` staying
+// green with only this site reverted (verified before writing this test) was
+// because every existing test reaches publishRoleGrant through
+// runNostrGrantRevoke, which re-normalizes before calling in; this test is the
+// one that does not go through that door.
+func TestPublishRoleGrant_UppercaseGrantee_PublishesLowercase(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
+
+	granteeKey, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	lower := granteeKey.PubKeyHex()
+	upper := strings.ToUpper(lower)
+
+	if _, err := publishRoleGrant(upper, rdSync.RoleContributor, "", 0, ""); err != nil {
+		t.Fatalf("publishRoleGrant(%q): %v", upper, err)
+	}
+
+	events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll log: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind != rdSync.KindRoleGrant {
+			continue
+		}
+		p, hasP := tagVal(e.Tags, "p")
+		if !hasP {
+			continue
+		}
+		if p == upper {
+			t.Fatalf("published grant's p tag is %q (as-typed uppercase) — publishRoleGrant must normalize to canonical lowercase before signing", p)
+		}
+		if p == lower {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no published kind-39301 grant carries the grantee's canonical lowercase pubkey %q", lower)
+	}
+}
+
 // TestPublishRoleGrant_ClaimSingleUse is the ready-ce0 security-property (c) proof at
 // the CLI seam: the owner binds a first self-minted key to claim-nonce N (ok); a
 // SECOND grant reusing the SAME N for a DIFFERENT key is REFUSED client-side (one

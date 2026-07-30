@@ -18,6 +18,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -152,6 +153,138 @@ func TestRevokeNative_DropsFromTrustSetNoAllowlist(t *testing.T) {
 		t.Fatalf("revoke created/modified write-allowlist.json (stat err=%v); revoke must not touch it at all", statErr)
 	}
 	assertNoDotCf(t)
+}
+
+// TestGrantRevokeKillCmd_UppercaseGrantee_NormalizesAtEachEntryPoint is the
+// ready-3e1 rework requirement: `rd board share` was the ONLY end-to-end
+// uppercase-form regression test, leaving `rd grant`, `rd revoke`, and `rd
+// kill` — the headline commands the item names publishRoleGrant's callers
+// by — completely uncovered for the uppercase form. This drives the actual
+// cobra RunE for each of the three (not runNostrGrantRevoke directly), so a
+// bug specific to a command's own arg/flag wiring would also be caught, and
+// asserts the outcome against the grantee's REAL (lowercase) pubkey via
+// InviteGrantValid / DeriveLevels — never against the as-typed uppercase
+// string.
+func TestGrantRevokeKillCmd_UppercaseGrantee_NormalizesAtEachEntryPoint(t *testing.T) {
+	cases := []struct {
+		name        string
+		preGrant    bool // revoke/kill target must already exist as an active holder
+		run         func(t *testing.T, upper string)
+		wantRevoked bool
+	}{
+		{
+			name: "rd grant",
+			run: func(t *testing.T, upper string) {
+				if err := grantCmd.RunE(grantCmd, []string{upper}); err != nil {
+					t.Fatalf("rd grant <UPPERCASE-pubkey>: %v", err)
+				}
+			},
+		},
+		{
+			name:     "rd revoke",
+			preGrant: true,
+			run: func(t *testing.T, upper string) {
+				if err := revokeCmd.RunE(revokeCmd, []string{upper}); err != nil {
+					t.Fatalf("rd revoke <UPPERCASE-pubkey>: %v", err)
+				}
+			},
+			wantRevoked: true,
+		},
+		{
+			name:     "rd kill",
+			preGrant: true,
+			run: func(t *testing.T, upper string) {
+				if err := killCmd.RunE(killCmd, []string{upper}); err != nil {
+					t.Fatalf("rd kill <UPPERCASE-pubkey>: %v", err)
+				}
+			},
+			wantRevoked: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, owner := setupNostrNativeProject(t)
+			boardD := projectPrefix(dir)
+
+			gk, err := nostr.GenerateKey()
+			if err != nil {
+				t.Fatalf("GenerateKey: %v", err)
+			}
+			lower := gk.PubKeyHex()
+			upper := strings.ToUpper(lower)
+
+			if tc.preGrant {
+				if err := runNostrGrantRevoke(dir, lower, rdSync.RoleContributor, "agent-pm", 0, ""); err != nil {
+					t.Fatalf("pre-grant: %v", err)
+				}
+			}
+
+			tc.run(t, upper)
+
+			events, err := rdSync.NewNostrLog(rdSync.NostrLogPath(dir)).ReadAll()
+			if err != nil {
+				t.Fatalf("ReadAll log: %v", err)
+			}
+
+			// No published grant's p tag may carry the as-typed uppercase string —
+			// the grant must be filed under the grantee's real (lowercase) identity.
+			for _, e := range events {
+				if e.Kind != rdSync.KindRoleGrant {
+					continue
+				}
+				if p, ok := tagVal(e.Tags, "p"); ok && p == upper {
+					t.Fatalf("%s published a grant with p=%q (as-typed uppercase) instead of the canonical lowercase pubkey", tc.name, p)
+				}
+			}
+
+			if tc.wantRevoked {
+				levels, _ := rdSync.DeriveLevels(events, owner, boardD)
+				if lvl, ok := levels[lower]; !ok || lvl != rdSync.LevelRevoked {
+					t.Fatalf("%s: grantee's real (lowercase) pubkey level = (%d, present=%v), want revoked", tc.name, levels[lower], ok)
+				}
+			} else {
+				if !rdSync.InviteGrantValid(events, owner, boardD, lower) {
+					t.Fatalf("%s: InviteGrantValid = false for the grantee's real (lowercase) pubkey — the grant was never filed under a form the grantee's own client would recognize", tc.name)
+				}
+			}
+		})
+	}
+}
+
+// TestRunNostrGrantRevoke_SummaryLine_UsesCanonicalCase pins authz_nostr.go's
+// OWN normalization at runNostrGrantRevoke IN ISOLATION (ready-3e1 rework,
+// challenge 3): publishRoleGrant normalizes independently for what gets
+// PUBLISHED, so reverting only runNostrGrantRevoke's `grantee =
+// normalizeHexPubkey(grantee)` does not change the signed grant (proven: `go
+// test ./cmd/rd/...` stays green with only that line reverted). What that
+// line actually, only, controls is the human-facing summary line below, which
+// renders shortKey(grantee) — the CALLER's as-typed string, not the
+// published grant's. This test goes RED if that normalization is reverted,
+// because the printed line would then echo the uppercase input instead of
+// the canonical lowercase form the grant was actually filed under.
+func TestRunNostrGrantRevoke_SummaryLine_UsesCanonicalCase(t *testing.T) {
+	dir, _ := setupNostrNativeProject(t)
+
+	// A fixed key (not GenerateKey) so the first 12 hex chars deterministically
+	// contain letters — shortKey truncates to 12 chars, and an all-digit prefix
+	// would make the upper/lowercase forms identical, silently defeating this
+	// test's ability to ever go red.
+	const lower = "a1b2c3d4e5f60707070707070707070707070707070707070707070707070707"
+	upper := strings.ToUpper(lower)
+
+	out := captureStdoutPipe(t, func() {
+		if err := runNostrGrantRevoke(dir, upper, rdSync.RoleContributor, "agent-pm", 0, ""); err != nil {
+			t.Fatalf("runNostrGrantRevoke: %v", err)
+		}
+	})
+
+	if strings.Contains(out, shortKey(upper)) {
+		t.Fatalf("summary line echoes the as-typed UPPERCASE grantee: %q", out)
+	}
+	if !strings.Contains(out, shortKey(lower)) {
+		t.Fatalf("summary line does not show the canonical lowercase grantee shortKey %q: %q", shortKey(lower), out)
+	}
 }
 
 // holderPresent reports whether pubkey appears in the active grant-holder list.

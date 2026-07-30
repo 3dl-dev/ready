@@ -60,15 +60,29 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // error out — but the human-facing line must say so plainly instead of claiming an
 // unqualified "they can read and write" that is not true yet.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
-	// ready-3e1: normalize BEFORE the fork below, not just inside publishRoleGrant.
-	// publishRoleGrant lowercases its own local copy of grantee, which fixes the
-	// PUBLISHED grant, but this function's own `grantee` variable is a separate
-	// copy (Go strings are passed by value) that ALSO feeds rekeyBoardOnRevoke's
-	// revokedPubkey exclusion below. An unnormalized grantee there would fail to
-	// match the lowercase pubkey DeriveBoardKeyring/planBoardRotation compare
-	// against, so a revoke's forward-secrecy rekey would keep re-wrapping the new
-	// epoch CEK TO the just-revoked key. Normalizing once here keeps every use in
-	// this function — and everything it calls — on the same canonical string.
+	// ready-3e1: normalize here too, not just inside publishRoleGrant.
+	//
+	// CORRECTED CLAIM (this comment previously asserted a forward-secrecy
+	// break that a probe shows does NOT occur — do not restore the old
+	// wording). publishRoleGrant normalizes its own local copy of grantee
+	// independently, so the PUBLISHED grant is already canonical lowercase
+	// regardless of whether this line runs; and rotationMembership
+	// (cmd/rd/confidential.go) withholds a revoked key from the re-wrap by
+	// checking h.Level == rdSync.LevelRevoked against the (already-lowercase,
+	// just-published-above) grant in the log — not by matching this
+	// function's `exclude`/grantee string. So an unnormalized grantee here
+	// would NOT hand the new epoch CEK back to the revoked key; a direct
+	// probe (uppercase revoke on a confidential board, scanning for an
+	// owner-signed grant to the revoked key with cek_epoch > 1) passes
+	// identically whether this line is present or reverted.
+	//
+	// What this line actually, only, fixes: `grantee` is also used below in
+	// `shortKey(grantee)` for the human-facing summary line. Without this
+	// normalization, a caller passing an uppercase/mixed-case grantee sees
+	// its own as-typed case echoed back in the printed confirmation instead
+	// of the canonical lowercase form the grant was actually filed under —
+	// a display nit, not a security property. Kept for that reason: one
+	// canonical string used everywhere in this function, not two.
 	grantee = normalizeHexPubkey(grantee)
 	res, err := publishRoleGrant(grantee, role, label, from, claim)
 	if err != nil {
