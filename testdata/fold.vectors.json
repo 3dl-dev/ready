@@ -279,7 +279,7 @@
         "4.1",
         "4.3"
       ],
-      "note": "Two cards for one item; the greater created_at wins even though it appears FIRST in the log. Note CreatedAt tracks the WINNING card, not the first-ever card (§5.1).",
+      "note": "Two cards for one item; the greater created_at wins the CONTENT contest even though it appears FIRST in the log (§4.1/§4.3). CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag, not derived by scanning every admitted event -- a derived min() is subset-sensitive (a relay retains only the latest addressable card, so a relay-bootstrapped machine never sees the older card at all, and would disagree with a full-log machine about the minimum). Neither card here carries a \"created\" tag (this vector builds raw wire events directly, bypassing CardSpecFromItem's carry-forward), so CreatedAt falls back to the winning card's OWN created_at -- the same value UpdatedAt reports. A real CLI republish always forwards the prior CreatedAt via CardSpecFromItem, so in production this reset does not occur; see TestProjection_CreatedAtSurvivesMutation (pkg/sync/nostrreplay_test.go) for the carried-tag proof.",
       "options": {
         "trusted": [
           "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
@@ -525,6 +525,143 @@
           ],
           "work": [
             "ready-v04"
+          ]
+        }
+      }
+    },
+    {
+      "name": "card_carried_created_tag_survives_republish",
+      "spec_clauses": [
+        "4.1",
+        "5.1",
+        "5.6"
+      ],
+      "note": "Genesis card @t0 carries no \"created\" tag (falls back to its own created_at, t0). It is republished @t0+500 CARRYING \"created\": t0 (as CardSpecFromItem does on every live mutation) even though the republished card's OWN wire created_at is t0+500. Item.CreatedAt must read t0 (the carried tag), not t0+500 (the winning card's own created_at) -- this is the one vector in the corpus where the tag and the event's own timestamp actually disagree, so it is the cross-implementation (Go/TS) proof of the carried-tag mechanism itself, not just of its absent-tag fallback.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "7ae5f0874c70f5a828b5b0518829c4f7a362b9f9ae50edc7443635406158b6bb",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v34"
+            ],
+            [
+              "title",
+              "v0"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "dd9234c53ce5927eb582622e3c6e6efa85b5827fd4de5103ed1043308d9a18e6f1b1d8ff3babb604566689b700a452de2a2d210476e62d4c5cb9aad32762c986"
+        },
+        {
+          "id": "39b6ea7407662eaf62201de26eba5e7022e732958bd55c234b0cd19c8340d721",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000500,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v34"
+            ],
+            [
+              "created",
+              "1700000000"
+            ],
+            [
+              "title",
+              "v1 edited"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "p",
+              "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+            ]
+          ],
+          "content": "",
+          "sig": "23d11877c183a7bd07e8698ca307321e5fac968debc505ae1573c6793c98491d5d28492288943afb1ce9eba10a42a3af869963641dc01414dc8f1f12b881c9b1"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v34",
+            "msg_id": "39b6ea7407662eaf62201de26eba5e7022e732958bd55c234b0cd19c8340d721",
+            "priority": "p1",
+            "status": "active",
+            "title": "v1 edited",
+            "type": "task",
+            "updated_at": "1700000500000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v34"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v34"
+          ],
+          "work": [
+            "ready-v34"
           ]
         }
       }
@@ -3808,7 +3945,7 @@
         "4.1",
         "6.4"
       ],
-      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set).",
+      "note": "IDENTICAL events to untrusted_author_dropped, with `trusted: null` (gate disabled — the pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status event authoritative: full state takeover. This is what the enforced gate prevents. Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag; neither card here carries one (raw wire events, no CardSpecFromItem carry-forward), so it falls back to the winning (hostile) card's OWN t0+100 -- the takeover changes who currently authors the content AND, in this no-tag fixture, what the item's recorded creation time is, which is exactly why a real CLI republish must always carry the tag forward (see TestProjection_CreatedAtSurvivesMutation) rather than leave CreatedAt to a derived fallback.",
       "options": {
         "trusted": null,
         "maintainers": null,
@@ -6006,7 +6143,7 @@
       "identity": "",
       "events": [
         {
-          "id": "9fa97af7662ac3e9849b68625a7912658843d0afa8229f51affde30167860189",
+          "id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6056,11 +6193,11 @@
               "1"
             ]
           ],
-          "content": "rAdiHjgno/Lj2fpqS+qbh+0xtjEYpUXw7s1+Tc0rrJUorbmcqOOYNa6Ucdea1SON5PRIRhNhBcaAkKKisaF+jPk+QIjbKPRTfWjRZdhL+HGyrSmHddcblQzJC3lcoepFDnsjbs4xWhBkJ+iJHyi8VtXDTfqKpoBvAwVPstJyelth",
-          "sig": "a2fd29986be818b163910f0386edc04696374260c7af673e96d105568fa7f8e5b75232c3ac9f452460eb7225e5b3c3b731e920c5c31d0d16ebb421d60ef737e7"
+          "content": "bZ1HJQjLYwS3Ki5V0kb2ngtaz0pCJ099eYuAKszK6tSjFpO6OHdMdcU56Z3Tc8SF4PWAMFMI92kTie5IMKtw6Gsc0lQNg3cbRUPe8fuBONytuTDfiqw0RoeuJ1FR5XnHhBPn3x9HzZu6eQfGLqafdKA5+RaWmZTUkCwcYMlJQpbv",
+          "sig": "89f9a7c7a3ec014b9fde6d78205a66a49758df01abf98ea6f6b375f970a2c22f5601af1172af06b3eb7a1817a63233ebd8ebf36a3feb20486cb61402e02d4026"
         },
         {
-          "id": "bf4fbae1f3f4e7b14341d34b7515736396accfef073809073c1923e40443c84e",
+          "id": "062d7b934725bb65578dcd9f07c8639b51ea84e61a0116f0e04b909837e37dc1",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6090,8 +6227,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "54821J6l3YiTtpKTfIyfsa7DYbu2sPhHEBgqhg8jh9yGPCCzgTpPvd3UNBrBaQhVddet1Jkc",
-          "sig": "c278989239ddf3363e02f93387e4076b4c26c587e81b4f7cd02093706a59d9fe723577f2080fa55e11bd128103acb0b8499b492164dc73f67ef746e7d459dbe5"
+          "content": "8ettj249ttQbZvUQIgnAG4exlIWYDuqEo5Ntp7wA8zz/+G36HeN+Cik3lPFJgQqWh0KBeimw",
+          "sig": "0a8a36824c4a09acf632e8a69723eee6b5aea5aa5863f3725aedfe4775a0f3b6e681aa639b0c820194d1e71ea76e2cc11bf9a9395146d8ffeaac995afc7b55b2"
         }
       ],
       "expect": {
@@ -6102,7 +6239,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "9fa97af7662ac3e9849b68625a7912658843d0afa8229f51affde30167860189",
+            "gate_msg_id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6116,7 +6253,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "9fa97af7662ac3e9849b68625a7912658843d0afa8229f51affde30167860189",
+            "msg_id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -6184,7 +6321,7 @@
       "identity": "",
       "events": [
         {
-          "id": "1df8e93bc6717d52c3f72dd8a7c6b6a8ba89fb4b54ab46f9fe7abe94afd017a0",
+          "id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6234,11 +6371,11 @@
               "1"
             ]
           ],
-          "content": "YhOMgfUJ3qsDUVRcboyB+VpqkPxtXKwCft4QWqSyzjm+IvCdFhrTARp7Vh8CY/Z4yCGbjMbyDpABGgNQwH2/uDRg0gAK0JgBu6Glr5o1nfzJwAoXM9k9JPukKtvQU2TRztSGKvqRHwGOtY1iHTK/3XdFyZRulIk4biVyWLXDDn3y",
-          "sig": "f0b67ac686299ef603134dbfd06e8c72426a3691f7db7d598ac6e09d13435d3fd424051ead5756859175521d67d787148740242151afa5a4f793b287166f926d"
+          "content": "a4fWSEu3FKolWUgtjEy9z5TqwJHS15e/7qxx5bQSz+cmsotqijjvepM0cf1UQ6gkoGJgsJfqRSWBksJABz0FS8rWotCrOzXRxzhxuj1X0AOlpcTxdCXkaHfXOGzoIWJPIkZPxVlK8z05lX5w3rgO3DfuyQrHtk1hu6al0dhjgYg6",
+          "sig": "1977d5db7f99db6a2c7da2887964a6cbd02d426a70fa2a5bd1464ed3328c7c3c4eacadf077bee0e2e9501179478d82c89bce405c158db1081527d462cb5368ed"
         },
         {
-          "id": "65c112342e03722ec175c6da4c086bd78a60f58a9a4d4fed10967cfd57d75e65",
+          "id": "48fdef15337decf8e691be043772fcf3ece5b904f170253dcbfd6f840e12862d",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6268,8 +6405,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "7hM28+nI3RukbBzNQWRi/Vuq6eTO5prQ+jwK9QTR9t8tgIEqo3tmLFBHy2Gj/Wtgl5bPT1fh",
-          "sig": "1dcc431fb84ab7bda484c7d7f2ccd4d33a19f51b6c6a06b803432ccc0820bea068152d5574cea1856e720e91d9eb16a980bb31f9d337f54e1e5255d37fbd47c5"
+          "content": "oRGVwDAesy3I5slZlEVZjjCjr5IVvSuPQeWiQ41sfMd4RexAEmRcJeYLuY7E4B6vi2uR7JKf",
+          "sig": "7c0284f4c38e10f1d33f61522dd634844f58392c3d3844bdc37b19ead59f16567e53a4aff38b922b09136010b96dcbbb4e83850b054157c1d78f7e66d20cb748"
         }
       ],
       "expect": {
@@ -6280,7 +6417,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "1df8e93bc6717d52c3f72dd8a7c6b6a8ba89fb4b54ab46f9fe7abe94afd017a0",
+            "gate_msg_id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6294,7 +6431,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "1df8e93bc6717d52c3f72dd8a7c6b6a8ba89fb4b54ab46f9fe7abe94afd017a0",
+            "msg_id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -6352,7 +6489,7 @@
       "identity": "",
       "events": [
         {
-          "id": "95eb4dd08a265e22a0e99f9bae5a2455d9288e22adbf1e1f085db0e6a36a6114",
+          "id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6402,11 +6539,11 @@
               "1"
             ]
           ],
-          "content": "bJ93OH3Mpa11Yr9ahkDM0fHBB5JkMopsrvHRzqlpueTjd0z6Vlw4SHrY5iX+17MVV8TQbAgjcqeAsfWU4rUL7tdTZZH3XfclBgcGvSmAEXShzosYzCZYbLSegsLTHhVRreLEfi2xvlf0AusXf31/AVuWC+lpX1ACYeUtmSisFVT6",
-          "sig": "18714ebf02aed48a740931c0fcef5483222b4bc23af2fe50b75744b0599f0cf9b82095a389ec8c7a18cfb16b00a547d34ac58675c657c7c6a1e0ddbc24013976"
+          "content": "y6vr+QGM7i444rf0DQhE4RKhU0GAMPiSYZhrKhASpOGaAL0qu9yEXFo7RW4DQ/Q1JD50/fmrF//rPdPtiUMhmkEDXLOqxMjhP54M4fK4J4LCc9OVb8Ixn2wsluFw7fAkAT6KVqRTRsbyBQ0nj8W9UAb+2CPWmiqY3e+FaefQbETw",
+          "sig": "14badad5ca6f3fe854504c0807e16ceab668c71157ece7bc483825f67913f4c5e92ec4fa1ec8223cf2349a082a94fa650f9b7e7383a0b7770ca10b7ca1f5b189"
         },
         {
-          "id": "a1b99bf9c65d6918f899761da5aa2861fbc46f487679fe1641e5497529fae3ec",
+          "id": "dd8f3b2a33b171976686450e3601e263a3cd51fa16a4b297c333c2654f095382",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6436,8 +6573,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "uzXmHuExf9uiqnWXSVU8KV2n5RlNBreCBijNqtH8dg7Y1QntjCOBHLeMbBoqr3DCv8IdRI6b",
-          "sig": "c2d9ef581a3e228406b2a4dc1b5983aa78c3dd2f702a11ae491bdb98c24ac0c795feb061b9fffff5d2509ca5e011c0e2f959ffc6cc5b091b600121b467baf2c8"
+          "content": "2W7QMXsJJn1UPpGjkKdRxs7lIqJs4qX581RN+8gBXkb1o4YwuNqByEr3OeiAb2I3UZ0eavd4",
+          "sig": "14407c60beb55b34d2f72dbb62b8d3d72501f3e412775c8d77908de6a0a6020f2b56285f92e4ed8ce5901f3ca2f77af0ef82bf507ce8152f966799ce3b4c794a"
         }
       ],
       "expect": {
@@ -6448,7 +6585,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "95eb4dd08a265e22a0e99f9bae5a2455d9288e22adbf1e1f085db0e6a36a6114",
+            "gate_msg_id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6462,7 +6599,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "95eb4dd08a265e22a0e99f9bae5a2455d9288e22adbf1e1f085db0e6a36a6114",
+            "msg_id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -6528,7 +6665,7 @@
       "identity": "",
       "events": [
         {
-          "id": "653fc6b32676275d3618311cd13d8d0b368fd0567cc49eda7466e7905026d08c",
+          "id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6578,11 +6715,11 @@
               "1"
             ]
           ],
-          "content": "jGCB2LFSGCv7a18xRir2m00+omualyXyI05FyUNCZff58h/2FQ7G/u3Bza5JfTX86e8RWozodCx17QmsPuVo8RFpF8E=",
-          "sig": "3d49604bfc209874745c5b68c66c63a51cf79531a4f89bbe312333bbccb81f6f3644095d0f0dbe2ba6b7cb9092cc46523c04032a54232e1447666cda58759a90"
+          "content": "2Erx5GtoLY9JnHs0p5EpyAFUfr/OobjAVAA3hvSo/IYUwKZQ/TEtzIJD6sUZfWQOrHYXz/NLs7eEyIxESl6bFgrX4xQ=",
+          "sig": "afd41c4061064d585f8f6d3977cdcad2f60169a49dabbbc55c8a89b7720b77c25dd917b8e84051284ff4c2ec984c8083e63dd081afcc1528152c1ed6d9b824c9"
         },
         {
-          "id": "34567aa3f61b749c7767563aedf4bac5f0b53c354f723bc99d263a9170c8162b",
+          "id": "3c3263dd66aca74732fa4de5590d336e561b24783c86f4716b7cb88b090cd43f",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6612,8 +6749,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "1OXOLGR8Yw1xgadOS0rbqBrq6DnKrVXitaUUYybUNyKVIvqHL4fDN+prcZ09OJ9BpnbB6Nfb",
-          "sig": "5298d5949cfd3cf23f39f29f175293015eeed3e55072b7e3d97759f84b284de0b88e9fce8dbebaaec0e10d0b2bf7ad580c36bf0cebd5213c0273ecdb72238fdb"
+          "content": "y7i7CBUfvZ59BDRxQjyj4/XbA+1UBJAolHD1GXDPVCWo0koEt+J+/5uj9V+4f3cIYHKlQuRT",
+          "sig": "f366e0fd4533b15193448e63fe0501004bd68d72ab431d195b74b98e59692ea0f6a653db86fd78bccdb428e67d25ac946b824370455016aef3a2dda8753d70c2"
         }
       ],
       "expect": {
@@ -6624,7 +6761,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "653fc6b32676275d3618311cd13d8d0b368fd0567cc49eda7466e7905026d08c",
+            "gate_msg_id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6638,7 +6775,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "653fc6b32676275d3618311cd13d8d0b368fd0567cc49eda7466e7905026d08c",
+            "msg_id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -7706,6 +7843,450 @@
           "pending": [],
           "ready": [
             "ready-v33"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "created_tag_rejects_non_canonical_shapes",
+      "spec_clauses": [
+        "5.1",
+        "5.6"
+      ],
+      "note": "Eight validly re-signed cards, each carrying one non-canonical \"created\" tag shape (leading '+', leading zeros, leading whitespace, empty, beyond int64, negative, non-numeric, fractional). parseCanonicalCreatedTag rejects all eight on both Go and TS, so every item's CreatedAt falls back to its own card's wire created_at -- proving the two languages' raw parsers (strconv.ParseInt vs BigInt), which accept DIFFERENT input sets on their own, now agree once gated by the shared canonical-format pre-check.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "d5ad17eececc67c817749971a51bee874b04d706b1941d9d5ed4df2ba72aba60",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35a"
+            ],
+            [
+              "created",
+              "+1709000000"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35a"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "66bd9c22f22b9c9dc5ab141434bf09adf78bf0acbde74ccd460a413e5ebdd88c3b1d93ef30a0314808481ea797563eac570ad9d6b579922ada74846f3364ca19"
+        },
+        {
+          "id": "585e271729d161b6476925becab15b072bcd360b1398112a340035dc9eb8df6e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000200,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35b"
+            ],
+            [
+              "created",
+              "0001709000000"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35b"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "ebe5ad459665e271ef7fe556b16ba53f137625c7fb33b70af9fefd48c4b017c9ed235e8907afdf572a01aa828a47c2c4f429a9e36a45cf2b3a9b83276f4dd5b3"
+        },
+        {
+          "id": "d43a67c3c7e29900892ca3a8ddd0796c3c879dab97f4219366fccc28e875d266",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000300,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35c"
+            ],
+            [
+              "created",
+              " 1709000000"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35c"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "ab4e5a2a54075fe8852e1cc6e28425bdb7883eaef878e8522f3f3e1fcb5c627f4892d04ddf8a331323d5c90210f611bd2207a4c0b7c73063139847693dd8c8e5"
+        },
+        {
+          "id": "3af7126fdfb190e95e1b0be75e7e515162490b7ef358ba9bb6c0a44f7fe62ee1",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000400,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35d"
+            ],
+            [
+              "created",
+              ""
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35d"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "59f2036f95e442206d2be9590f19ff12d6e757268e41ce68146c927dfd7cfc091e138ffbedb79014ffafa8e8dd2cc2f2d643cae872dd9bb96d432221e3d9bf38"
+        },
+        {
+          "id": "74cf78c843772c64caa9cde84073532e771fbb6bc5486acb3de5aa4eb0e747dc",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000500,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35e"
+            ],
+            [
+              "created",
+              "99999999999999999999999999"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35e"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "c0e5e0810192c5266aa9f7e75f599015894326c61695ac4b896ade8bdb9cd113ff55566c8bd9a7c2cd4d9f217efeaa0f7cacef3f0729d3169af2b428eb9d0cf7"
+        },
+        {
+          "id": "1393216846193165a38eae0d3e3c590fd178cddc0b3fc8e8d6d8b844763e1bfa",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000600,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35f"
+            ],
+            [
+              "created",
+              "-1709000000"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35f"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "a6f464a6b5c8892819087b8573f9357ca16c19660eec4fb15df63e5f19211b30f809e8ece7ea6fc893ceb294cccacdf31ee770d76119bf0be20deb6d1c29a05f"
+        },
+        {
+          "id": "c655e4600b8e77c2cd095a100fd471fb861f33a9a42a47dd04204e8b2fbc7f1a",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000700,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35g"
+            ],
+            [
+              "created",
+              "not-a-number"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35g"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "5eab5fb11fb57b5aa69c4acb238e6f6b0ad6bc5f7ab3223cba05c7d4e4f35469a761fe6acb401d9a6adfe22f9ef5d60ef925f7c80d55cfc068517e1c35446daf"
+        },
+        {
+          "id": "79ee8b21c57340497d925d6adc0e7358739756a26db0fec22189eb5a22df84b9",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000800,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v35h"
+            ],
+            [
+              "created",
+              "1709000000.5"
+            ],
+            [
+              "title",
+              "Non-canonical created tag ready-v35h"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p2"
+            ],
+            [
+              "priority",
+              "p2"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "c8e3266049b1b156f7cb26603cc3755c0d3070e0d0bfcebfac10f357f31eb0ecd463e428d4a7abb244efad4bb834d6598567ba585d20702389062d7512d10fba"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1700000100000000000",
+            "for": "",
+            "id": "ready-v35a",
+            "msg_id": "d5ad17eececc67c817749971a51bee874b04d706b1941d9d5ed4df2ba72aba60",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35a",
+            "type": "task",
+            "updated_at": "1700000100000000000"
+          },
+          {
+            "created_at": "1700000200000000000",
+            "for": "",
+            "id": "ready-v35b",
+            "msg_id": "585e271729d161b6476925becab15b072bcd360b1398112a340035dc9eb8df6e",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35b",
+            "type": "task",
+            "updated_at": "1700000200000000000"
+          },
+          {
+            "created_at": "1700000300000000000",
+            "for": "",
+            "id": "ready-v35c",
+            "msg_id": "d43a67c3c7e29900892ca3a8ddd0796c3c879dab97f4219366fccc28e875d266",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35c",
+            "type": "task",
+            "updated_at": "1700000300000000000"
+          },
+          {
+            "created_at": "1700000400000000000",
+            "for": "",
+            "id": "ready-v35d",
+            "msg_id": "3af7126fdfb190e95e1b0be75e7e515162490b7ef358ba9bb6c0a44f7fe62ee1",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35d",
+            "type": "task",
+            "updated_at": "1700000400000000000"
+          },
+          {
+            "created_at": "1700000500000000000",
+            "for": "",
+            "id": "ready-v35e",
+            "msg_id": "74cf78c843772c64caa9cde84073532e771fbb6bc5486acb3de5aa4eb0e747dc",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35e",
+            "type": "task",
+            "updated_at": "1700000500000000000"
+          },
+          {
+            "created_at": "1700000600000000000",
+            "for": "",
+            "id": "ready-v35f",
+            "msg_id": "1393216846193165a38eae0d3e3c590fd178cddc0b3fc8e8d6d8b844763e1bfa",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35f",
+            "type": "task",
+            "updated_at": "1700000600000000000"
+          },
+          {
+            "created_at": "1700000700000000000",
+            "for": "",
+            "id": "ready-v35g",
+            "msg_id": "c655e4600b8e77c2cd095a100fd471fb861f33a9a42a47dd04204e8b2fbc7f1a",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35g",
+            "type": "task",
+            "updated_at": "1700000700000000000"
+          },
+          {
+            "created_at": "1700000800000000000",
+            "for": "",
+            "id": "ready-v35h",
+            "msg_id": "79ee8b21c57340497d925d6adc0e7358739756a26db0fec22189eb5a22df84b9",
+            "priority": "p2",
+            "status": "inbox",
+            "title": "Non-canonical created tag ready-v35h",
+            "type": "task",
+            "updated_at": "1700000800000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v35a",
+            "ready-v35b",
+            "ready-v35c",
+            "ready-v35d",
+            "ready-v35e",
+            "ready-v35f",
+            "ready-v35g",
+            "ready-v35h"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v35a",
+            "ready-v35b",
+            "ready-v35c",
+            "ready-v35d",
+            "ready-v35e",
+            "ready-v35f",
+            "ready-v35g",
+            "ready-v35h"
           ],
           "work": []
         }

@@ -199,7 +199,13 @@ func (b *builder) vTrustGateDisabledAdmitsAnyone() error {
 			"pre-ready-d53 behaviour retained for unconfigured/legacy callers). The outsider's newer card " +
 			"now wins, which makes the outsider the item AUTHOR, which makes the outsider's own status " +
 			"event authoritative: full state takeover. This is what the enforced gate prevents. " +
-			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set).",
+			"Production never passes null (cmd/rd/nostr.go always supplies a non-nil trust set). " +
+			"CreatedAt (ready-4ec REWORK) is read from the winning card's CARRIED \"created\" tag; " +
+			"neither card here carries one (raw wire events, no CardSpecFromItem carry-forward), so it " +
+			"falls back to the winning (hostile) card's OWN t0+100 -- the takeover changes who currently " +
+			"authors the content AND, in this no-tag fixture, what the item's recorded creation time is, " +
+			"which is exactly why a real CLI republish must always carry the tag forward (see " +
+			"TestProjection_CreatedAtSurvivesMutation) rather than leave CreatedAt to a derived fallback.",
 		Options: Options{Trusted: nil},
 		Events:  []*nostr.Event{genuine, hostileCard, hostileStatus},
 		Expect:  Expect{Items: items, Views: vw(nil)},

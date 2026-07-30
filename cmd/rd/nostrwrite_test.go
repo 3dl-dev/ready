@@ -1321,6 +1321,99 @@ func TestNostrNative_PublishCmd_ResolvesFromProjection_NoDotCf(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_PutCmd_ExistingItem_CreatedAtSurvives is ready-4ec's missing
+// coverage for nostrPutCmd (`rd log put`), the ONE production CardSpec
+// construction site that does NOT route through CardSpecFromItem. The
+// testdata/write.vectors.json suite (cmd/rd/writevectors_test.go) exercises 24
+// ops -- create, claim, dep_add/remove, close x2, delegate, gate_open/approve/
+// reject, label_add/remove, update_fields/status -- and every single one of them
+// goes through CardSpecFromItem; none reaches nostrPutCmd's raw CardSpec
+// literal. So that suite passing proves nothing about the fix added to
+// nostrPutCmd (the `if existing, rerr := nostrResolveItem(itemID); ...` block
+// above, cmd/rd/nostr.go). This test drives nostrPutCmd.RunE directly against
+// an item that ALREADY EXISTS and asserts its CreatedAt is unchanged after the
+// put -- the same shape the done condition asks for on every other mutation
+// path.
+//
+// TIMING NOTE (load-bearing, do not remove): unlike every other write hook,
+// nostrPutCmd stamps its republish with a bare time.Now().Unix() instead of the
+// scoped nostrNextCreatedAt (see cmd/rd/nostr.go:591's comment on the sibling
+// nostrPublishCmd, which had this exact defect class fixed under ready-500).
+// If the genesis create and this put land in the SAME wall-clock second, the
+// card fold's tie-break (newerThan, pkg/sync/nostrproject.go) falls back to
+// comparing event IDs -- content-and-key-dependent, effectively a coin flip
+// across test runs with a freshly generated key -- and the put can silently
+// lose, which was observed directly: 4/10 runs failed with the ORIGINAL
+// (unreverted) production code before this sleep was added. That is a real,
+// separate latent bug in nostrPutCmd (tracked as ready-c52, out of scope for
+// THIS item's CreatedAt-carry fix), not a flaw in the assertion below -- the
+// sleep below only forces the put into a strictly later second so the
+// created_at comparison (not the id tie-break) decides the winner, making
+// THIS test deterministic regardless of that separate bug.
+func TestNostrNative_PutCmd_ExistingItem_CreatedAtSurvives(t *testing.T) {
+	setupNostrNativeProject(t)
+	dir := mustDir(t)
+
+	id, err := runCreateNostr(dir, nostrCreateSpec{
+		title: "Original title", itemType: "task", priority: "p1",
+	})
+	if err != nil {
+		t.Fatalf("runCreateNostr: %v", err)
+	}
+
+	// Force the put into a strictly later wall-clock second than the genesis
+	// create -- see TIMING NOTE above.
+	genesisSecond := time.Now().Unix()
+	for time.Now().Unix() == genesisSecond {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	before, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("nostrResolveItem before put: %v", err)
+	}
+	if before.CreatedAt <= 0 {
+		t.Fatalf("CreatedAt after genesis create = %d, want >0", before.CreatedAt)
+	}
+
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("flag set: %v", err)
+		}
+	}
+	must(nostrPutCmd.Flags().Set("title", "Retitled via rd log put"))
+	must(nostrPutCmd.Flags().Set("status", state.StatusActive))
+	must(nostrPutCmd.Flags().Set("priority", "p2"))
+	t.Cleanup(func() {
+		_ = nostrPutCmd.Flags().Set("title", "")
+		_ = nostrPutCmd.Flags().Set("status", "")
+		_ = nostrPutCmd.Flags().Set("priority", "")
+		_ = nostrPutCmd.Flags().Set("type", "task")
+		_ = nostrPutCmd.Flags().Set("context", "")
+		_ = nostrPutCmd.Flags().Set("note", "")
+	})
+
+	captureStdoutPipe(t, func() {
+		if err := nostrPutCmd.RunE(nostrPutCmd, []string{id}); err != nil {
+			t.Fatalf("nostrPutCmd.RunE: %v", err)
+		}
+	})
+
+	after, err := nostrResolveItem(id)
+	if err != nil {
+		t.Fatalf("nostrResolveItem after put: %v", err)
+	}
+	if after.Title != "Retitled via rd log put" {
+		t.Fatalf("title after put = %q, want %q (the put itself did not take effect, so this test proves nothing)", after.Title, "Retitled via rd log put")
+	}
+	if after.CreatedAt != before.CreatedAt {
+		t.Fatalf("CreatedAt after `rd log put` on an EXISTING item = %d, want unchanged %d (ready-4ec: nostrPutCmd's raw CardSpec literal must carry CreatedAt forward, same as every other write path)", after.CreatedAt, before.CreatedAt)
+	}
+
+	assertNoDotCf(t)
+}
+
 // TestNostrNative_PublishCmdOnBlockedItem_Recovers is ready-500's done-condition
 // test for the THIRD instance of the same defect class, in the manual
 // `rd nostr publish` handler (nostrPublishCmd.RunE, cmd/rd/nostr.go): unlike

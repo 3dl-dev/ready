@@ -99,9 +99,64 @@ function appendUniqueStr(arr: string[] | undefined, val: string): string[] {
   return out;
 }
 
-/** itemFromCard mirrors nostrproject.go's itemFromCard (spec §5). */
+// CANONICAL_CREATED_SECONDS_RE matches EXACTLY the decimal-integer format
+// Go's strconv.FormatInt(secs, 10) produces for a positive int64 secs: no
+// sign, no leading zero, no whitespace, digits only. BuildCardEvent only ever
+// emits a "created" tag via FormatInt when CreatedAt > 0, so this is the
+// WHOLE set of shapes a genuine tag can take. Mirrors
+// nostrproject.go's canonicalCreatedSecondsRe byte-for-byte.
+const CANONICAL_CREATED_SECONDS_RE = /^[1-9][0-9]*$/;
+
+// MAX_INT64 bounds parseCanonicalCreatedTag's accepted magnitude to match
+// Go's int64 (BigInt itself has no upper bound, so this check is what makes
+// the two languages agree on huge-magnitude rejection).
+const MAX_INT64 = 9223372036854775807n;
+
+/** parseCanonicalCreatedTag mirrors nostrproject.go's parseCanonicalCreatedTag
+ * EXACTLY -- see its doc for why a canonical-format pre-check (not "just try
+ * BigInt/ParseInt and see if it throws or accept whatever it returns") is
+ * required: BigInt(raw) alone accepts leading/trailing whitespace, treats ""
+ * as 0, and has no magnitude bound (silently overflowing int64 instead of
+ * erroring), while Go's strconv.ParseInt(raw, 10, 64) alone rejects
+ * whitespace and overflow but still accepts a leading '+' and leading
+ * zeros -- neither language's raw parser agrees with the other on every
+ * input without this shared pre-check (ready-4ec rework 3). Returns null for
+ * any non-canonical shape (empty, leading '+', leading zero, whitespace,
+ * fraction, non-digits, or beyond int64); the caller then falls back to the
+ * card's own created_at exactly as if the tag were absent. */
+function parseCanonicalCreatedTag(raw: string): bigint | null {
+  if (!CANONICAL_CREATED_SECONDS_RE.test(raw)) return null;
+  let n: bigint;
+  try {
+    n = BigInt(raw);
+  } catch {
+    return null;
+  }
+  if (n > MAX_INT64) return null;
+  return n;
+}
+
+/** itemFromCard mirrors nostrproject.go's itemFromCard (spec §5, and the
+ * ready-4ec carried "created" tag rework). TRUE CREATION TIME: read the
+ * CARRIED "created" tag when present -- a derived min()-over-admitted-events
+ * is subset-sensitive (a relay retains only the latest addressable card, so a
+ * relay-bootstrapped machine never sees historical cards and would disagree
+ * with a full-log machine about the minimum). Falls back to this card's OWN
+ * created_at when the tag is absent OR non-canonical (a genesis card that has
+ * never been republished since this field existed, or a forged/malformed
+ * tag -- see parseCanonicalCreatedTag) -- correct for the bootstrap case, and
+ * the value CardSpecFromItem (Go) / the equivalent TS write path then carries
+ * forward unchanged on every subsequent republish. */
 function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
   const tsNano = BigInt(e.created_at) * 1_000_000_000n;
+  let createdAtNano = tsNano;
+  const createdTag = tagValue(e, "created");
+  if (createdTag !== "") {
+    const secs = parseCanonicalCreatedTag(createdTag);
+    if (secs !== null) {
+      createdAtNano = secs * 1_000_000_000n;
+    }
+  }
   const item: Item = {
     id: tagValue(e, "d"),
     msg_id: e.id,
@@ -111,7 +166,7 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
     type: tagValue(e, "itype"),
     context: e.content,
     description: e.content,
-    created_at: tsNano,
+    created_at: createdAtNano,
     updated_at: tsNano,
     blocked_by: tagValues(e, "i"),
     gate: tagValue(e, "gate") || undefined,
