@@ -141,6 +141,125 @@ describe("parseFragment — `rd board --with-key` key material", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ready-de7 — A CEK IS BOUND TO A pk=, BECAUSE pk= IS WHAT MAKES THE SESSION
+// READ-ONLY.
+//
+// keyring.ts's applyFragmentKeys deliberately skips the four checks
+// deriveBoardKeyring runs on a relay-served grant. Half of the reason is
+// provenance (the key came from the reader's own `rd`, which ran those checks
+// locally); the OTHER half is that the session holding it cannot sign, so the
+// key buys reading and nothing else. main.ts delivers that second half by
+// minting `method: "readOnly"` — but only for a fragment that names a viewer in
+// `pk=`.
+//
+// So `#board=<coord>&cek=<epoch>:<hex>` with NO pk= was the shape where the
+// justification was simply false: no viewer meant main.ts showed the LOGIN
+// FORM, and a visitor who logged in there with a NIP-07 extension held a
+// SIGNING session that was nonetheless handed the link's CEKs (probed before
+// the fix: the fixture's sealed titles opened for an `extension` identity).
+// Binding the two parameters here is what makes the premise structural — after
+// this, cek= implies pk= implies read-only — rather than a doc comment's
+// assumption. The portfolio shape has always had this rule ("keys= without pk=
+// is a damaged link"); the single-board shape was the asymmetry.
+//
+// The composition-level witness, that a signing session genuinely cannot obtain
+// these keys through main(), is main.fragmentkey.test.ts's "A CEK CANNOT REACH
+// A SIGNING SESSION".
+// ---------------------------------------------------------------------------
+describe("parseFragment — ready-de7: cek= without pk= is refused", () => {
+  const CEK1 = "a".repeat(64);
+  const CEK2 = "b".repeat(64);
+  const LTK = "c".repeat(64);
+  const PK = "d".repeat(64);
+  const BOARD = "#board=30301%3Aabc123%3Amyboard";
+
+  it("a one-epoch key link with no viewer throws instead of degrading to a login form", () => {
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}`)).toThrow(/pk= is missing/);
+  });
+
+  it("the same holds for every held epoch, and with a legacy ltk alongside", () => {
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}%2C2%3A${CEK2}`)).toThrow(/pk= is missing/);
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}&ltk=${LTK}`)).toThrow(/pk= is missing/);
+    // Order in the query string must not matter: URLSearchParams is a map, but
+    // a reader of this file should not have to know that to trust the rule.
+    expect(() => parseFragment(`${BOARD}&relays=wss%3A%2F%2Fr.test&cek=1%3A${CEK1}`)).toThrow(/pk= is missing/);
+  });
+
+  it("ANTI-TAUTOLOGY: the SAME link with pk= parses, keeps both epochs, and names the viewer", () => {
+    // Without this, the throws above could be any old rejection of a cek= —
+    // e.g. a rule that had accidentally banned key material outright.
+    const parsed = parseFragment(`${BOARD}&pk=${PK}&cek=1%3A${CEK1}%2C2%3A${CEK2}`);
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.viewer).toBe(PK);
+    expect(parsed.keys!.ceks.map((c) => c.epoch)).toEqual([1, 2]);
+  });
+
+  it("a legacy ltk= WITHOUT pk= still parses — it decrypts nothing, so refusing it would strand an old link for no gain", () => {
+    // The scope of the rule, stated as a case rather than left to the comment:
+    // an LTK is the label-token key, nothing in this app reads BoardKeyring.ltk(),
+    // and it cannot open a card envelope. Its only effect on the page is the
+    // strictly tightening one (hasLinkKeys pushes confidentiality to "unknown").
+    const parsed = parseFragment(`${BOARD}&ltk=${LTK}`);
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.viewer).toBeUndefined();
+    expect(parsed.keys!.ceks).toEqual([]);
+    expect(parsed.keys!.ltk!.length).toBe(32);
+  });
+
+  it("THE INVARIANT, over every documented link shape: a fragment either throws or carries no decryption key without a viewer", () => {
+    // A property over a table rather than one case, because the statement is
+    // about the WHOLE parser: whatever shape a link arrives in, EITHER it is
+    // refused, OR what comes back cannot decrypt a card without also telling
+    // main.ts which pubkey to mint a read-only identity for. New shapes added to
+    // this file are expected to be added here.
+    //
+    // Refusal counts as satisfying it — that is how the pk-less cek= shapes pass
+    // — which also makes this loop sensitive to the fix being removed: drop the
+    // guard and those shapes stop throwing, come back with CEKs and no viewer,
+    // and the assertion inside fires.
+    const shapes = [
+      "", // plain visit
+      "#relays=wss%3A%2F%2Fr.test",
+      BOARD, // key-free own-board / share link
+      `${BOARD}&relays=wss%3A%2F%2Fr.test`,
+      `${BOARD}&pk=${PK}`, // --with-key on a PUBLIC board: viewer, no keys
+      `${BOARD}&pk=${PK}&cek=1%3A${CEK1}`, // --with-key on a confidential board
+      `${BOARD}&ltk=${LTK}`, // legacy, no decryption power
+      `${BOARD}&pk=${PK}&cek=1%3A${CEK1}&ltk=${LTK}`, // legacy --with-key
+      `${BOARD}&cek=1%3A${CEK1}`, // ready-de7: refused
+      `${BOARD}&cek=1%3A${CEK1}%2C2%3A${CEK2}&relays=wss%3A%2F%2Fr.test`, // refused
+      `#pk=${PK}`, // portfolio, key-free
+      `#pk=${PK}&relays=wss%3A%2F%2Fr.test`,
+    ];
+    let sawDecryptionKeys = 0;
+    let refused = 0;
+    for (const hash of shapes) {
+      let parsed;
+      try {
+        parsed = parseFragment(hash);
+      } catch {
+        refused++;
+        continue;
+      }
+      if (parsed.kind === "board" && parsed.keys && parsed.keys.ceks.length > 0) {
+        sawDecryptionKeys++;
+        expect(parsed.viewer, `${hash} carries CEKs with no viewer`).toBeDefined();
+      }
+      if (parsed.kind === "portfolio") {
+        // The portfolio variant types `viewer` as required, and parseFragment is
+        // the only producer; assert it anyway so the invariant is checked, not
+        // merely declared.
+        expect(parsed.viewer, `${hash} is a portfolio link with no viewer`).toBeDefined();
+      }
+    }
+    // ANTI-TAUTOLOGY, both ways: the loop proves nothing if no shape in it ever
+    // carried a CEK, and nothing about the fix if every shape merely threw.
+    expect(sawDecryptionKeys).toBe(2);
+    expect(refused).toBe(2);
+  });
+});
+
 describe("parseAndStripFragment", () => {
   it("strips the fragment from the URL after parsing (done condition 6)", () => {
     const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});

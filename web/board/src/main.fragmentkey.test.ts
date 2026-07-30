@@ -39,6 +39,7 @@ import {
   OWNER_PUB,
   OWNER_SEC,
   STRANGER_PUB,
+  STRANGER_SEC,
   boardEvent,
   cards,
   expectedPlaintext,
@@ -224,6 +225,125 @@ describe("a fragment key does NOT weaken any existing guarantee", () => {
     expect(pageText()).toContain(expectedPlaintext[0].title); // not vacuous
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ready-de7 — A CEK CANNOT REACH A SIGNING SESSION.
+//
+// keyring.ts's applyFragmentKeys BYPASSES the four checks deriveBoardKeyring
+// applies to a relay-served grant. That is correct for reads, and its stated
+// justification has two halves: the key came from the reader's own `rd` (which
+// ran those checks locally), AND the session holding it cannot sign, so the key
+// buys reading and nothing else. ready-1af made the second half real for a link
+// that names a viewer — `pk=` mints `method: "readOnly"`, which is what leaves
+// NostrBoardWriter without a signer.
+//
+// THE PATH THAT ESCAPED IT was a link with cek= and NO pk=. Nothing rejected
+// that shape, main.ts had no viewer to open as, so it fell through to the LOGIN
+// FORM — and a visitor who logged in there with a NIP-07 extension held a
+// SIGNING session that was still handed the link's CEKs. Probed before the fix
+// on exactly this fixture: an `extension` identity opened four sealed titles
+// from link keys alone. No write escalation followed (a board carrying link keys
+// is never "public" — confidentiality.ts — and NostrBoardWriter refuses every
+// write to a confidential board), but the premise the bypass rests on was false,
+// and the only thing standing in for it was an unrelated control that ready-034c
+// is actively changing.
+//
+// fragment.ts now refuses cek= without pk=, so the chain is structural: CEKs
+// imply a viewer, a viewer implies read-only, read-only implies no signer. This
+// block is the composition-level witness for the first link of that chain — the
+// unit-level one is lib/fragment.test.ts's "cek= without pk= is refused".
+//
+// WHY IT DRIVES main() AND A REAL EXTENSION. The premise is about what the PAGE
+// does, not about what a parser returns, and the hazardous session is one that
+// can sign. So: a genuinely working NIP-07 extension is installed the whole
+// time, `keyUnwrapper` is the PRODUCTION predicate (defaultDeps), the login
+// button is really clicked, and the resulting identity line is asserted NOT to
+// say "(read-only)" — i.e. the assertions below run against the very session the
+// bypass must never be handed keys for, not against a read-only one that could
+// never have used them anyway.
+// ---------------------------------------------------------------------------
+describe("ready-de7: A CEK CANNOT REACH A SIGNING SESSION", () => {
+  let origHistory: History;
+  let replaceState: ReturnType<typeof vi.fn>;
+  let origNostr: Window["nostr"];
+
+  /** Deps that serve the whole fixture for any REQ and use the PRODUCTION
+   * keyUnwrapper, so the extension below is genuinely reachable by any session
+   * that can sign. */
+  const prodUnwrapDeps: BoardDeps = {
+    loadRelays: async () => ["wss://relay.test"],
+    fetchEvents: async () => SNAPSHOT,
+    keyUnwrapper: defaultDeps.keyUnwrapper,
+  };
+
+  beforeEach(() => {
+    origHistory = window.history;
+    replaceState = vi.fn();
+    Object.defineProperty(window, "history", { value: { replaceState }, configurable: true, writable: true });
+    origNostr = window.nostr;
+    // A REAL extension holding the STRANGER's key: it answers getPublicKey and
+    // it really does NIP-44-decrypt. The stranger holds no grant on this board,
+    // so any plaintext that appears below can only have come from the LINK.
+    const signer = fakeNip44Signer(STRANGER_SEC);
+    window.nostr = {
+      getPublicKey: async () => STRANGER_PUB,
+      nip44: { decrypt: (pk: string, ct: string) => signer.decrypt(pk, ct) },
+    } as unknown as Window["nostr"];
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "history", { value: origHistory, configurable: true, writable: true });
+    window.nostr = origNostr;
+    window.location.hash = "";
+  });
+
+  const extensionButton = () =>
+    [...root.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("extension"));
+
+  it("a cek= link with no pk= is reported as damaged, and an extension login gets NO key material", async () => {
+    window.location.hash =
+      `#board=${encodeURIComponent(BOARD_COORD)}&cek=1:${CEK_EPOCH1},2:${CEK_EPOCH2}`;
+    main(prodUnwrapDeps);
+
+    // The link is refused as incomplete, and the reader is left able to recover.
+    await vi.waitFor(() => expect(root.querySelector(".fragment-error")).not.toBeNull());
+    const btn = extensionButton();
+    expect(btn, "no extension button to log in with").toBeDefined();
+    // NOT vacuous: the extension is present and the button is live, so the
+    // signing login below is a real one.
+    expect(btn!.disabled).toBe(false);
+    // And the key material is out of the address bar regardless.
+    expect(replaceState).toHaveBeenCalledWith(null, "", window.location.pathname + window.location.search);
+
+    btn!.click();
+    await vi.waitFor(() => expect(root.querySelector(".identity")).not.toBeNull());
+
+    // THIS SESSION CAN SIGN — that is the whole point of the case.
+    expect(root.querySelector(".identity")!.textContent).not.toContain("(read-only)");
+    // And it holds nothing: no board, no cards, no plaintext, no ciphertext.
+    expect(pageText()).toContain("No boards found.");
+    expect(root.querySelector(".card[data-id]")).toBeNull();
+    assertNothingLeaked([]);
+  });
+
+  it("ANTI-TAUTOLOGY: the SAME keys, deps and extension DO open the board once the link names its viewer — read-only", async () => {
+    // Without this, the silence above could mean the fixture keys were wrong, or
+    // that the fake relay served nothing. Only `pk=` differs between the two
+    // cases, and here every sealed title renders — from the link alone, since a
+    // read-only identity makes defaultDeps.keyUnwrapper inert.
+    window.location.hash =
+      `#board=${encodeURIComponent(BOARD_COORD)}&pk=${OWNER_PUB}&cek=1:${CEK_EPOCH1},2:${CEK_EPOCH2}`;
+    main(prodUnwrapDeps);
+
+    await vi.waitFor(() => expect(root.querySelector(".card[data-id]")).not.toBeNull());
+    expect(root.querySelector(".fragment-error")).toBeNull();
+    expect(extensionButton(), "a pk= link must not show a login form").toBeUndefined();
+    expect(root.querySelector(".identity")!.textContent).toContain("(read-only)");
+    for (const want of expectedPlaintext) {
+      expect(pageText(), `missing ${want.id}`).toContain(want.title);
+    }
   });
 });
 

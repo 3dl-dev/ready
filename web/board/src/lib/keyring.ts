@@ -287,6 +287,22 @@ export async function deriveBoardKeyring(
  * browser is impossible anyway (the whole point is that the page holds no secret
  * key and so can do no ECDH) and would prove nothing new.
  *
+ * THE OTHER HALF OF THAT ARGUMENT — "and the session holding it cannot sign" —
+ * IS NOW ENFORCED, NOT ASSUMED (ready-de7). It used to be neither: a
+ * `#board=<coord>&cek=<epoch>:<hex>` link with NO `pk=` parsed happily, main.ts
+ * had no viewer to open as so it showed the LOGIN FORM, and a visitor who logged
+ * in there with a NIP-07 extension reached this function with a SIGNING
+ * identity. The bypass's justification was false on that path. fragment.ts now
+ * refuses a cek= that arrives without a pk= (the rule the portfolio shape
+ * already had), so the chain holds end to end: CEKs imply pk=, pk= implies
+ * main.ts mints `method: "readOnly"` (main.fragmentkey.test.ts, "the pk=
+ * identity CANNOT SIGN"), read-only implies NostrBoardWriter is built with no
+ * signer and refuses every write (main.test.ts, ready-1af). Witnessed as one
+ * path by main.fragmentkey.test.ts's "A CEK CANNOT REACH A SIGNING SESSION".
+ * Nothing here inspects the identity — this function is handed keys and applies
+ * them, exactly as before; the premise is established upstream, at parse time,
+ * before an identity exists at all.
+ *
  * WHAT IS STILL ENFORCED, and must stay enforced:
  *  - Keys apply to ONE coordinate — the one named in the same fragment — and
  *    nowhere else. A key can never leak across boards.
