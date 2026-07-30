@@ -57,6 +57,21 @@ import {
   type Nip01RelayHandle,
 } from "./lib/nip01relay.fixtures";
 import type { NostrEvent } from "./lib/nostrevent";
+// ready-1af's write-gate block: the real write path (buildWrite -> signWith ->
+// publishEvents) and the real signer, so a refusal can be attributed to one
+// specific control rather than to "something threw".
+import { signNostrEvent, xOnlyPubkey } from "./lib/schnorrsign";
+import { buildFullCreate } from "./board/writeevents";
+import { NotAuthorizedError } from "./board/nostrwriter";
+import { RelayRejectedError } from "./lib/publish";
+import {
+  BOARD_COORD as CONF_COORD,
+  BOARD_D as CONF_BOARD_D,
+  OWNER_PUB as CONF_OWNER,
+  boardEvent as confBoardEvent,
+  cards as confCards,
+  grants as confGrants,
+} from "./lib/confidential.fixtures";
 import {
   OWNER,
   OTHER,
@@ -1028,70 +1043,147 @@ describe("ready-62d1: malformed board link", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ready-1af: main.ts's comment at the `pk=`/readOnly identity mint site used
-// to assert that `method: "readOnly"` "is what every write control ... gates
-// on" while NOTHING read any such flag: WorkspaceOptions carried no `readOnly`
-// field, and write.ts's BoardWriter interface has never had one either. That
-// is the exact shape ready-75a shipped under — a doc comment promising a gate
-// its callers do not provide, which is worse than no comment because the next
-// person to build a write control believes it already exists.
+// ready-1af — THE WRITE GATE, WITNESSED RATHER THAN ASSERTED.
 //
-// ready-b2b landed the real writer since that comment was written, and the
-// gate DOES now exist — just two steps removed from the comment's mint site,
-// in loadBoardItems' `signer: canSign(identity.auth) ? nip07Signer() :
-// undefined`. This block pins THAT mechanism directly, isolated from every
-// other reason NostrBoardWriter.whyReadOnly() can refuse a write:
+// main.ts's comment at the `pk=`/readOnly identity mint site used to claim that
+// `method: "readOnly"` "is what every write control ... gates on" while NOTHING
+// read any such flag: WorkspaceOptions (render.ts) carried no `readOnly` field
+// and write.ts's BoardWriter interface has never had one. That is the exact
+// shape ready-75a shipped under — a doc comment promising a control its callers
+// do not provide — and it is worse than no comment, because the next person to
+// build a write control believes the gate is already there.
 //
-//   - the SAME pubkey (OWNER) is used for both identities below, so the ONLY
-//     axis that differs is the login method, not who is asking;
-//   - a REAL, CAPABLE window.nostr.signEvent is installed for both cases, so
-//     a pass on the read-only case cannot be "there was no extension anyway";
-//   - the board carries no grant events at all, yet OWNER still gets
-//     LEVEL_MAINTAINER for free (rolegrant.ts's deriveLevels: the board's own
-//     author is always authoritative) and the board is non-confidential, so
-//     both the grant-level and confidentiality branches of whyReadOnly()
-//     would otherwise happily allow the write — isolating the assertion to
-//     the signer-presence branch specifically (matched by message text).
+// The gate that DOES exist lives two steps from that mint site, in
+// loadBoardItems' `signer: canSign(identity.auth) ? nip07Signer() : undefined`,
+// and in NostrBoardWriter.whyReadOnly()'s no-signer branch. This block is the
+// witness for that mechanism through the real loadBoardItems, and for the ORDER
+// whyReadOnly() evaluates its three refusal reasons in — which the corrected
+// comment now states and which nothing else in the suite pinned.
+//
+// WHY THE FIXTURE IS BUILT THE WAY IT IS. Round 1 of this item shipped a block
+// that passed with the entire write gate DELETED: it wrote to the item id
+// "some-item" against an EMPTY snapshot, so the rejection came from
+// writeevents.ts's requireItem refusing an unknown id long before authorization
+// was ever reached, and the installed signer was never called because buildWrite
+// threw first. Every ingredient below closes a specific one of those holes:
+//
+//   - THE TARGET ITEM REALLY EXISTS. GATE_SNAPSHOT is a real signed create
+//     (buildFullCreate + schnorrsign.ts, the same construction nostrwriter.
+//     test.ts's seedItem uses), so buildWrite CANNOT refuse GATE_ITEM. The
+//     `writer.items().has(GATE_ITEM)` assertion pins that, so this test cannot
+//     silently degrade back into an unknown-id test.
+//   - THE REFUSAL IS TYPED, NOT JUST "SOMETHING THREW". NotAuthorizedError plus
+//     the message text, so a WriteRefusedError / SignerMissingError / relay
+//     error cannot stand in for the gate.
+//   - THE SIGNER IS REAL AND CAPABLE. window.nostr.signEvent produces genuine
+//     BIP-340 signatures for GATE_OWNER, so a refusal cannot be "there was no
+//     extension anyway", and `not.toHaveBeenCalled()` proves the refusal landed
+//     before anything was signed.
+//   - THE CONTRAST CASE PROVES THE FIXTURE CAN WRITE. Same board, same
+//     snapshot, same item, same op, same installed extension — only the login
+//     method differs — and there the write runs all the way through signing.
+//   - `relays: []` KEEPS IT OFF THE NETWORK. loadBoardItems has no
+//     publishOptions seam, so the contrast case would otherwise open a real
+//     socket. With no relays, publishEvents refuses up front
+//     (RelayRejectedError, "no relays are configured") AFTER signing, which is
+//     exactly the boundary this block needs to observe.
+//
+// GATE_OWNER's write authority is NOT a grant event: `authorityEvents` is empty
+// here, and rolegrant.ts's deriveLevels seats the board's own author at
+// LEVEL_MAINTAINER unconditionally (`levels.set(boardAuthor, LEVEL_MAINTAINER)`).
+// That implicit authority is the point — the grant-level branch of whyReadOnly()
+// is satisfied, the board is public so the confidentiality branch is too, and
+// the only branch left that can explain a refusal is the signer one.
 // ---------------------------------------------------------------------------
-describe("ready-1af: method: readOnly really does gate every write", () => {
-  const WRITEGATE_D = "writegate";
-  const board: DiscoveredBoard = {
-    coord: boardCoord(OWNER, WRITEGATE_D),
-    ownerPubkey: OWNER,
-    boardD: WRITEGATE_D,
-    title: "Write Gate Board",
-  };
 
+/** A test-only secp256k1 secret (BIP-340's own test-vector key, also used by
+ * nostrwriter.test.ts). It exists so this file can produce a snapshot whose card
+ * events genuinely verify — the fold re-checks every signature, so a
+ * hand-written card would simply vanish and the target item would not exist
+ * after all, which is precisely the hole this block closes. */
+const GATE_SECRET = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef";
+const GATE_OWNER = xOnlyPubkey(GATE_SECRET);
+const GATE_D = "writegate";
+const GATE_ITEM = "gate-1";
+
+const GATE_BOARD: DiscoveredBoard = {
+  coord: boardCoord(GATE_OWNER, GATE_D),
+  ownerPubkey: GATE_OWNER,
+  boardD: GATE_D,
+  title: "Write Gate Board",
+};
+
+/** The board's snapshot: a real, signed create of GATE_ITEM (board event, card,
+ * issue root, status), so the writes below target an item that EXISTS. */
+const GATE_SNAPSHOT: NostrEvent[] = buildFullCreate(
+  {
+    signer: GATE_OWNER,
+    boardAuthor: GATE_OWNER,
+    boardD: GATE_D,
+    boardTitle: GATE_BOARD.title,
+    items: new Map(),
+    issueEventIds: new Map(),
+    createdAt: 1_780_000_000,
+  },
+  {
+    id: GATE_ITEM,
+    msg_id: "",
+    title: "Gate Seed",
+    context: "",
+    type: "task",
+    priority: "p2",
+    status: "inbox",
+    for: GATE_OWNER,
+    created_at: 0n,
+    updated_at: 0n,
+  },
+).map((b) =>
+  signNostrEvent({ created_at: b.created_at, kind: b.kind, tags: b.tags, content: b.content }, GATE_SECRET),
+);
+
+/** The confidential board's snapshot — REAL Go-signed sealed cards and owner CEK
+ * grants (confidential.fixtures.ts, generated by the production Go writer). Used
+ * so `confidential: true` is established the way production establishes it,
+ * rather than being set by hand. */
+const CONF_SNAPSHOT: NostrEvent[] = [confBoardEvent, ...confGrants, ...confCards];
+
+describe("ready-1af: the control that actually refuses a browser write", () => {
+  let signEvent: ReturnType<typeof vi.fn>;
   let origNostr: Window["nostr"];
 
   beforeEach(() => {
     origNostr = window.nostr;
-    const fakeSigner = {
-      getPublicKey: async () => OWNER,
-      signEvent: vi.fn(async (e: Record<string, unknown>) => ({
-        ...e,
-        id: "0".repeat(64),
-        pubkey: OWNER,
-        sig: "0".repeat(128),
-      })),
-    };
-    window.nostr = fakeSigner as unknown as Window["nostr"];
+    // A REAL signer: genuine BIP-340 signatures as GATE_OWNER, so publish.ts's
+    // signWith/assertSignedAsBuilt accepts what comes back and the contrast case
+    // gets all the way past signing.
+    signEvent = vi.fn(async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+      signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, GATE_SECRET),
+    );
+    window.nostr = { getPublicKey: async () => GATE_OWNER, signEvent } as unknown as Window["nostr"];
   });
 
   afterEach(() => {
     window.nostr = origNostr;
   });
 
-  async function writerFor(identity: Identity) {
+  /** writerFor runs the REAL loadBoardItems — the function that owns the
+   * `canSign(identity.auth) ? nip07Signer() : undefined` decision — and returns
+   * the writer it built for `board`. Only the relay transport is stubbed. */
+  async function writerFor(
+    identity: Identity,
+    board: DiscoveredBoard,
+    snapshot: NostrEvent[],
+    authority: NostrEvent[],
+  ) {
     const deps: BoardDeps = {
       loadRelays: async () => [],
-      fetchEvents: async () => [],
+      fetchEvents: async () => snapshot,
       keyUnwrapper: () => neverUnwraps,
     };
     const { writers } = await loadBoardItems(
       [board],
-      ["wss://relay.test"],
-      [], // no role-grant events at all
+      [], // no write relays: publishEvents refuses up front instead of dialling out
+      authority,
       identity,
       deps,
       () => {},
@@ -1101,28 +1193,83 @@ describe("ready-1af: method: readOnly really does gate every write", () => {
     return writer!;
   }
 
-  it("a read-only npub's writer refuses every write, though a real signer is installed and this key would otherwise carry the board owner's MAINTAINER grant", async () => {
-    const identity: Identity = { pubkey: OWNER, auth: authTransition({ type: "login", method: "readOnly" }) };
-    expect(canSign(identity.auth)).toBe(false);
-
-    const writer = await writerFor(identity);
-    const why = writer.whyReadOnly();
-    expect(why, "whyReadOnly() returned undefined -- this identity could write").toBeDefined();
-    // The NO-SIGNER branch specifically (nostrwriter.ts), not the grant-level
-    // or confidentiality branches -- proving the refusal traces to canSign(),
-    // not to some other reason this fixture happens to also refuse on.
-    expect(why).toMatch(/never accepts a secret key/i);
-
-    await expect(writer.setPriority("some-item", "p0")).rejects.toThrow();
-    // The installed signer was never even asked to sign the refused write.
-    expect((window.nostr as unknown as { signEvent: ReturnType<typeof vi.fn> }).signEvent).not.toHaveBeenCalled();
+  const readOnly = (pubkey: string): Identity => ({
+    pubkey,
+    auth: authTransition({ type: "login", method: "readOnly" }),
+  });
+  const extension = (pubkey: string): Identity => ({
+    pubkey,
+    auth: authTransition({ type: "login", method: "extension" }),
   });
 
-  it("CONTRAST: the identical board and installed signer, but an extension identity, is not refused", async () => {
-    const identity: Identity = { pubkey: OWNER, auth: authTransition({ type: "login", method: "extension" }) };
+  it("a read-only identity is refused BEFORE anything is signed — on a board it owns, for an item that exists, with a working extension installed", async () => {
+    const identity = readOnly(GATE_OWNER);
+    expect(canSign(identity.auth)).toBe(false);
+
+    const writer = await writerFor(identity, GATE_BOARD, GATE_SNAPSHOT, []);
+
+    // ANTI-TAUTOLOGY: the item really is in the writer's projection, so
+    // writeevents.ts's requireItem cannot be what refuses below.
+    expect(
+      writer.items().has(GATE_ITEM),
+      "GATE_ITEM is not in the snapshot — a refusal below would be requireItem's, not the gate's",
+    ).toBe(true);
+
+    expect(writer.whyReadOnly()).toMatch(/never accepts a secret key/i);
+
+    await expect(writer.setPriority(GATE_ITEM, "p0")).rejects.toBeInstanceOf(NotAuthorizedError);
+    await expect(writer.setPriority(GATE_ITEM, "p0")).rejects.toThrow(/never accepts a secret key/i);
+    // Nothing was signed: the refusal is applyNow's whyReadOnly() re-check,
+    // which runs before buildWrite and before the signing loop.
+    expect(signEvent).not.toHaveBeenCalled();
+  });
+
+  it("CONTRAST: the same board, item, op and installed extension DOES reach the signer once the login method can sign", async () => {
+    const identity = extension(GATE_OWNER);
     expect(canSign(identity.auth)).toBe(true);
 
-    const writer = await writerFor(identity);
+    const writer = await writerFor(identity, GATE_BOARD, GATE_SNAPSHOT, []);
     expect(writer.whyReadOnly()).toBeUndefined();
+
+    // The only thing left to stop this write is the (deliberately empty) relay
+    // list, and it stops it AFTER the event has been built and signed.
+    await expect(writer.setPriority(GATE_ITEM, "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(signEvent).toHaveBeenCalled();
+  });
+
+  // ── the ORDER whyReadOnly() gives its three reasons in ────────────────────
+  //
+  // nostrwriter.ts checks CONFIDENTIALITY first, SIGNER PRESENCE second and
+  // GRANT LEVEL third. Round 1's corrected comment asserted signer presence
+  // FIRST — this item's own failure mode recurring inside its fix — and nothing
+  // in the suite contradicted it, because every existing case varies one input
+  // at a time and any order then produces the same message. The two cases below
+  // each make TWO branches true at once, so only the real order satisfies them.
+  it("ORDER 1/2: confidentiality outranks signer presence — a read-only identity on a confidential board is told about the SEAL", async () => {
+    const board: DiscoveredBoard = {
+      coord: CONF_COORD,
+      ownerPubkey: CONF_OWNER,
+      boardD: CONF_BOARD_D,
+      title: "Confidential Board",
+    };
+    // Read-only AND confidential: both branches are true. The board owner's own
+    // key, so the grant branch is not.
+    const writer = await writerFor(readOnly(CONF_OWNER), board, CONF_SNAPSHOT, confGrants);
+
+    expect(writer.whyReadOnly()).toMatch(/seals its free text/i);
+    expect(writer.whyReadOnly()).not.toMatch(/never accepts a secret key/i);
+  });
+
+  it("ORDER 2/2: signer presence outranks grant level — an ungranted read-only key is told about the SIGNER, and the same key WITH a signer is told about the grant", async () => {
+    // A key that is neither GATE_BOARD's author nor a grantee, and no grant
+    // event exists at all, so deriveLevels seats only GATE_OWNER.
+    const readOnlyWriter = await writerFor(readOnly(STRANGER), GATE_BOARD, GATE_SNAPSHOT, []);
+    expect(readOnlyWriter.whyReadOnly()).toMatch(/never accepts a secret key/i);
+    expect(readOnlyWriter.whyReadOnly()).not.toMatch(/no write grant/i);
+
+    // ANTI-TAUTOLOGY for the line above: the grant branch really is reachable
+    // for this key — it is only being outranked.
+    const signingWriter = await writerFor(extension(STRANGER), GATE_BOARD, GATE_SNAPSHOT, []);
+    expect(signingWriter.whyReadOnly()).toMatch(/no write grant/i);
   });
 });

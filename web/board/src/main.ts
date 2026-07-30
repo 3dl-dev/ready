@@ -1006,21 +1006,46 @@ export function main(deps: BoardDeps = defaultDeps): void {
   // they only proved they were sent a link naming it. It is also what keeps the
   // "(read-only)" marker on the identity line.
   //
-  // ready-1af: THE WRITE GATE IS NOT HERE, and no field on this Identity or on
-  // WorkspaceOptions (render.ts) is named `readOnly` — an earlier revision of
-  // this comment claimed one was "what every write control gates on", and no
-  // such gate existed anywhere. What actually gates a write is two steps away,
-  // in loadBoardItems below: `signer: canSign(identity.auth) ? nip07Signer() :
-  // undefined`. canSign() being false here is what makes that `undefined`, so
-  // the NostrBoardWriter built for every board this identity sees is
-  // constructed with NO signer, REGARDLESS of whether a NIP-07 extension is
-  // installed. NostrBoardWriter.whyReadOnly() (nostrwriter.ts) checks signer
-  // presence BEFORE grant level or confidentiality, so a writer built this way
-  // refuses every write unconditionally, and applyNow() re-checks whyReadOnly()
-  // before building or signing a single event — belt AND suspenders, neither
-  // one this comment. Pinned end to end (real extension present, real
-  // MAINTAINER-level grant, only the auth method differs) by main.test.ts's
-  // "ready-1af: method: readOnly really does gate every write" block.
+  // ready-1af: THE WRITE GATE IS NOT HERE, and NO WRITE CONTROL READS A
+  // `readOnly` FLAG. The AuthState field of that name is real (auth.ts) but has
+  // exactly two readers in the whole page: canSign() itself (`loggedIn &&
+  // !readOnly`), and renderAwaitingAuthorization's sentence on the claim-link
+  // path. Nothing else — WorkspaceOptions (render.ts) has no such field,
+  // BoardWriter (write.ts) has no such method, and the read-only note the board
+  // UI shows is obtained by ASKING THE WRITER (`this.writer.whyReadOnly?.()`,
+  // render.ts). An earlier revision of this comment claimed the flag was "what
+  // every write control gates on"; no such gate existed anywhere.
+  //
+  // What actually gates a write is two steps away, in loadBoardItems below:
+  // `signer: canSign(identity.auth) ? nip07Signer() : undefined`. canSign()
+  // being false here is what makes that `undefined`, so the NostrBoardWriter
+  // built for every board this identity sees is constructed with NO signer,
+  // REGARDLESS of whether a NIP-07 extension is installed.
+  // NostrBoardWriter.whyReadOnly() (nostrwriter.ts) then refuses every write,
+  // and applyNow() re-checks whyReadOnly() before building or signing a single
+  // event — belt AND suspenders, neither one this comment.
+  //
+  // WHICH REASON THE USER IS TOLD, IN THE WRITER'S ACTUAL ORDER: whyReadOnly()
+  // tests CONFIDENTIALITY first, then SIGNER PRESENCE, then GRANT LEVEL. So a
+  // read-only session on a confidential board is told about the seal, not about
+  // the missing signer — the write is refused either way, but do not read the
+  // signer branch as the first thing consulted (the round-1 fix of this very
+  // item asserted exactly that, wrongly). The order is pinned, not assumed, by
+  // main.test.ts's "ready-1af" ORDER 1/2 and ORDER 2/2 cases, each of which
+  // makes two branches true at once so only the real order satisfies it.
+  //
+  // Pinned end to end by main.test.ts's "ready-1af: the control that actually
+  // refuses a browser write" block: one board, one item that genuinely exists
+  // in the snapshot, a real BIP-340-capable window.nostr installed for both
+  // cases, and only the auth method differing — the read-only case rejects with
+  // NotAuthorizedError and never reaches the signer (that is what witnesses
+  // applyNow's re-check), while the extension case signs. The writer's write
+  // authority there is NOT a grant event — no grant event is passed at all;
+  // rolegrant.ts's deriveLevels seats a board's own author at LEVEL_MAINTAINER
+  // implicitly, which is what leaves the signer branch as the only possible
+  // explanation for the refusal. The three refusal branches are also pinned one
+  // by one, at the unit layer, by nostrwriter.test.ts's "who may write
+  // (client-side, and BEFORE anything is signed)".
   //
   // Flipping it to "extension" is a one-word edit that silently converts a
   // bearer READ link into a session the page treats as signing-capable, so it is
