@@ -60,7 +60,13 @@ with a "N more" line past the cap. --flat prints the pre-ready-e88 flat list
 instead. --json and piped (non-TTY) output are unaffected either way.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewName, _ := cmd.Flags().GetString("view")
-		forFilter, _ := cmd.Flags().GetString("for")
+		// ready-3e1: --for is a PARTY token (pubkey | email | agent id), so it
+		// normalizes through the guarded normalizePartyToken rather than
+		// normalizeHexPubkey. Unnormalized, an uppercase pubkey misses
+		// nostrPartyIdentitySet's map lookup and then idset[item.For] — the caller
+		// is told "nothing ready" about their own queue.
+		forFilterRaw, _ := cmd.Flags().GetString("for")
+		forFilter := normalizePartyToken(forFilterRaw)
 		projectFilter, _ := cmd.Flags().GetString("project")
 		scopeKey, _ := cmd.Flags().GetString("scope")
 		labelFilters, _ := cmd.Flags().GetStringArray("label")

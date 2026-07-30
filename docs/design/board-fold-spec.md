@@ -581,7 +581,7 @@ the plaintext labels from the sealed blob when the blob decrypts AND is non-empt
 the built-in seed atoms (`declarations.LoadSeedLabels`,
 `pkg/state/state.go:487-495`). `rd label list` renders them
 (`cmd/rd/label.go:87`), and `printUnknownLabelHints` uses them for a stderr hint
-when a `--label` filter returns nothing (`cmd/rd/list.go:203-214`). Neither path
+when a `--label` filter returns nothing (`cmd/rd/list.go:210-221`). Neither path
 affects the fold or the filter result.
 
 **§10.5 Query is client-side.** `rd list --label` / `rd ready --label` apply
@@ -965,7 +965,7 @@ non-empty (`:133-144`); a project filter (`:146`); then one `LabelFilter` per
 **§13.14 List order is NOT part of the fold.** `ProjectItems` returns a map; the
 CLI materializes a slice in Go map-iteration order
 (`cmd/rd/nostr.go:978-981`) and then sorts — by priority, then ETA, then ID for
-ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:405-419`),
+ready/work/pending/focus/gates (`sortByPriorityETA`, `cmd/rd/ready.go:411-425`),
 by priority then ID for `rd list` (`cmd/rd/list.go:103-110`). Both are now a
 total order (see §15.7 — `sortByPriorityETA` was not, until the ready-e88
 rework added the ID tie-break).

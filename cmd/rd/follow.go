@@ -315,9 +315,22 @@ func runFollow(opts followOpts) (*followReport, error) {
 // discovered.
 //
 // ready-3e1: the bare-hex branch normalizes through normalizeHexPubkey. The other
-// three branches already yield canonical lowercase (decodeNpub/ParseBoardCoord
-// return hex.EncodeToString output; alias keys come from signed events), so the
-// as-typed branch is the only one that can carry an uppercase pubkey forward.
+// three branches already yield canonical lowercase, but for THREE DIFFERENT
+// reasons, and only one of them is a normalizer:
+//
+//   - npub: decodeNpub bech32-decodes to bytes and returns hex.EncodeToString
+//     output, which is lowercase by construction. A genuine normalizer.
+//   - email: the keys come from a signed person-alias event, so they are event
+//     pubkeys and canonical already.
+//   - rd1_ token: rdSync.ParseBoardCoord (pkg/sync/rolegrant.go) is a plain
+//     3-way split on ':' and normalizes NOTHING. This branch is canonical
+//     because of its INPUT, not its parser — the coordinate is read out of a
+//     token payload rd itself minted from a canonical coordinate, never from
+//     as-typed human input. If a hand-typed coordinate is ever accepted here,
+//     this branch needs a normalizer.
+//
+// So the as-typed bare-hex branch is the only one that can carry an uppercase
+// pubkey forward today.
 //
 // The consequence, MEASURED (TestFollow_UppercaseHexOwner_BindsTheOwnersBoards),
 // is a misdirecting total failure, not a dead binding: these pubkeys go to
