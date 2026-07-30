@@ -43,11 +43,11 @@
 // Also newly covered here: the fragment.kind === "claim" branch, which returns
 // before any relay query and is the other place afterLogin renders off the
 // auth state (renderAwaitingAuthorization reads identity.auth.readOnly).
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { afterLogin, main, type BoardDeps, type Identity } from "./main";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterLogin, loadBoardItems, main, type BoardDeps, type Identity } from "./main";
 import { authTransition, canSign } from "./lib/auth";
 import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
-import { boardCoord } from "./lib/boarddiscovery";
+import { boardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
 import * as boarddiscoveryModule from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
 import { neverUnwraps } from "./lib/keyunwrap";
@@ -1024,5 +1024,105 @@ describe("ready-62d1: malformed board link", () => {
         writable: true,
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ready-1af: main.ts's comment at the `pk=`/readOnly identity mint site used
+// to assert that `method: "readOnly"` "is what every write control ... gates
+// on" while NOTHING read any such flag: WorkspaceOptions carried no `readOnly`
+// field, and write.ts's BoardWriter interface has never had one either. That
+// is the exact shape ready-75a shipped under — a doc comment promising a gate
+// its callers do not provide, which is worse than no comment because the next
+// person to build a write control believes it already exists.
+//
+// ready-b2b landed the real writer since that comment was written, and the
+// gate DOES now exist — just two steps removed from the comment's mint site,
+// in loadBoardItems' `signer: canSign(identity.auth) ? nip07Signer() :
+// undefined`. This block pins THAT mechanism directly, isolated from every
+// other reason NostrBoardWriter.whyReadOnly() can refuse a write:
+//
+//   - the SAME pubkey (OWNER) is used for both identities below, so the ONLY
+//     axis that differs is the login method, not who is asking;
+//   - a REAL, CAPABLE window.nostr.signEvent is installed for both cases, so
+//     a pass on the read-only case cannot be "there was no extension anyway";
+//   - the board carries no grant events at all, yet OWNER still gets
+//     LEVEL_MAINTAINER for free (rolegrant.ts's deriveLevels: the board's own
+//     author is always authoritative) and the board is non-confidential, so
+//     both the grant-level and confidentiality branches of whyReadOnly()
+//     would otherwise happily allow the write — isolating the assertion to
+//     the signer-presence branch specifically (matched by message text).
+// ---------------------------------------------------------------------------
+describe("ready-1af: method: readOnly really does gate every write", () => {
+  const WRITEGATE_D = "writegate";
+  const board: DiscoveredBoard = {
+    coord: boardCoord(OWNER, WRITEGATE_D),
+    ownerPubkey: OWNER,
+    boardD: WRITEGATE_D,
+    title: "Write Gate Board",
+  };
+
+  let origNostr: Window["nostr"];
+
+  beforeEach(() => {
+    origNostr = window.nostr;
+    const fakeSigner = {
+      getPublicKey: async () => OWNER,
+      signEvent: vi.fn(async (e: Record<string, unknown>) => ({
+        ...e,
+        id: "0".repeat(64),
+        pubkey: OWNER,
+        sig: "0".repeat(128),
+      })),
+    };
+    window.nostr = fakeSigner as unknown as Window["nostr"];
+  });
+
+  afterEach(() => {
+    window.nostr = origNostr;
+  });
+
+  async function writerFor(identity: Identity) {
+    const deps: BoardDeps = {
+      loadRelays: async () => [],
+      fetchEvents: async () => [],
+      keyUnwrapper: () => neverUnwraps,
+    };
+    const { writers } = await loadBoardItems(
+      [board],
+      ["wss://relay.test"],
+      [], // no role-grant events at all
+      identity,
+      deps,
+      () => {},
+    );
+    const writer = writers.get(board.coord);
+    expect(writer, "loadBoardItems built no writer for this board").toBeDefined();
+    return writer!;
+  }
+
+  it("a read-only npub's writer refuses every write, though a real signer is installed and this key would otherwise carry the board owner's MAINTAINER grant", async () => {
+    const identity: Identity = { pubkey: OWNER, auth: authTransition({ type: "login", method: "readOnly" }) };
+    expect(canSign(identity.auth)).toBe(false);
+
+    const writer = await writerFor(identity);
+    const why = writer.whyReadOnly();
+    expect(why, "whyReadOnly() returned undefined -- this identity could write").toBeDefined();
+    // The NO-SIGNER branch specifically (nostrwriter.ts), not the grant-level
+    // or confidentiality branches -- proving the refusal traces to canSign(),
+    // not to some other reason this fixture happens to also refuse on.
+    expect(why).toMatch(/never accepts a secret key/i);
+
+    await expect(writer.setPriority("some-item", "p0")).rejects.toThrow();
+    // The installed signer was never even asked to sign the refused write.
+    expect((window.nostr as unknown as { signEvent: ReturnType<typeof vi.fn> }).signEvent).not.toHaveBeenCalled();
+  });
+
+  it("CONTRAST: the identical board and installed signer, but an extension identity, is not refused", async () => {
+    const identity: Identity = { pubkey: OWNER, auth: authTransition({ type: "login", method: "extension" }) };
+    expect(canSign(identity.auth)).toBe(true);
+
+    const writer = await writerFor(identity);
+    expect(writer.whyReadOnly()).toBeUndefined();
   });
 });

@@ -1004,11 +1004,28 @@ export function main(deps: BoardDeps = defaultDeps): void {
   // that happens to be installed is never asked to nip44.decrypt grants for a
   // pubkey that did not authenticate — nobody proved they hold `pk=`'s secret;
   // they only proved they were sent a link naming it. It is also what keeps the
-  // "(read-only)" marker on the identity line and what every write control (the
-  // scaffolded board/write.ts drop path, and whatever lands on it) gates on.
+  // "(read-only)" marker on the identity line.
+  //
+  // ready-1af: THE WRITE GATE IS NOT HERE, and no field on this Identity or on
+  // WorkspaceOptions (render.ts) is named `readOnly` — an earlier revision of
+  // this comment claimed one was "what every write control gates on", and no
+  // such gate existed anywhere. What actually gates a write is two steps away,
+  // in loadBoardItems below: `signer: canSign(identity.auth) ? nip07Signer() :
+  // undefined`. canSign() being false here is what makes that `undefined`, so
+  // the NostrBoardWriter built for every board this identity sees is
+  // constructed with NO signer, REGARDLESS of whether a NIP-07 extension is
+  // installed. NostrBoardWriter.whyReadOnly() (nostrwriter.ts) checks signer
+  // presence BEFORE grant level or confidentiality, so a writer built this way
+  // refuses every write unconditionally, and applyNow() re-checks whyReadOnly()
+  // before building or signing a single event — belt AND suspenders, neither
+  // one this comment. Pinned end to end (real extension present, real
+  // MAINTAINER-level grant, only the auth method differs) by main.test.ts's
+  // "ready-1af: method: readOnly really does gate every write" block.
+  //
   // Flipping it to "extension" is a one-word edit that silently converts a
   // bearer READ link into a session the page treats as signing-capable, so it is
-  // witnessed directly: main.fragmentkey.test.ts, "the pk= identity CANNOT SIGN".
+  // witnessed directly: main.fragmentkey.test.ts, "the pk= identity CANNOT SIGN",
+  // and (for the write side) the ready-1af block named above.
   //
   // Decryption comes from the fragment's own keys, threaded through afterLogin.
   //
