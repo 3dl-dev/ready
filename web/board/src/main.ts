@@ -513,7 +513,17 @@ export function startLiveUpdates(args: {
     if (closed) return;
     const items: Item[] = [];
     for (const b of boards) {
-      if (dirty.has(b.coord)) b.items = b.src.loadItems(b.events);
+      if (dirty.has(b.coord)) {
+        try {
+          b.items = b.src.loadItems(b.events);
+        } catch {
+          // Keep the last good projection for THIS board and carry on with the
+          // others — the same stance loadBoardItems takes at load ("skip this
+          // board; the others still render"). One board that cannot fold must
+          // not stop every other board on the page from updating, and it must
+          // not leave the view empty either.
+        }
+      }
       items.push(...b.items);
     }
     dirty.clear();

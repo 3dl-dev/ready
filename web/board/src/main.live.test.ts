@@ -265,6 +265,48 @@ describe("ready-4359: a multi-board view re-folds only what changed", () => {
     expect(emitted.at(-1)).toEqual(["item-a", "item-b"]);
     sub.close();
   });
+
+  it("a board whose fold throws keeps its last projection and does not stop the others", async () => {
+    const good = fakeBoard(`30301:${OWNER}:good`, "item-good");
+    const bad = fakeBoard(`30301:${OWNER}:bad`, "item-bad");
+    bad.board.src = {
+      loadItems: () => {
+        throw new Error("this board cannot fold");
+      },
+    } as never;
+    const { ctor, handle } = makeNip01Relay({ events: [] });
+
+    const emitted: string[][] = [];
+    const sub = startLiveUpdates({
+      boards: [good.board, bad.board],
+      relays: [RELAY],
+      subscribe: (relays, filter, opts) => subscribeToRelays(relays, filter, { ...opts, webSocketCtor: ctor }),
+      onItems: (items) => emitted.push(items.map((i) => i.id)),
+      coalesceMs: 5,
+    });
+    await settleLive();
+
+    for (const coord of [good.board.coord, bad.board.coord]) {
+      handle.push(
+        sign({
+          created_at: 1_780_000_600,
+          kind: 30302,
+          tags: [
+            ["d", `d-${coord}`],
+            ["a", coord],
+          ],
+          content: "",
+        }),
+      );
+    }
+    await settleLive();
+
+    // The broken board still contributes what it last projected, and the healthy
+    // one updated — an exception in one fold must not empty the view.
+    expect(emitted.at(-1)).toEqual(["item-good", "item-bad"]);
+    expect(good.folds()).toBeGreaterThan(0);
+    sub.close();
+  });
 });
 
 describe("ready-4359: the production wiring", () => {
