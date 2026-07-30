@@ -42,6 +42,7 @@ test run by `TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage`, which
 runs each verb against an installed guard and fails if the documented verb
 lists and the measured ones differ.
 
+```
 ready-f75 coverage table BEGIN
   mechanism: git-hooks
     blocked-pre-damage: push save clear
@@ -64,6 +65,7 @@ ready-f75 coverage table BEGIN
       of the process that spawns an agent and cannot be installed from
       inside this repository the way the hooks can.
 ready-f75 coverage table END
+```
 
 #### 1a. Why the hooks stop where they do
 
