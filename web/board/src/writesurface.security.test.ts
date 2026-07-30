@@ -9,27 +9,64 @@
 // "can a hostile title reach signEvent" and "is the client-side authorization
 // check the only gate" — and requires each one demonstrated by execution.
 //
-// THE REMAINING `it.fails` CASES ASSERT A PROPERTY THE CODE DOES NOT HAVE YET,
-// and they say so with `it.fails`. That is deliberate and it is not a skipped
-// test: vitest RUNS the body and requires it to throw, so the assertion is
-// genuinely evaluated on every CI run. The instant the underlying defect is
-// fixed the test goes RED, and the fix's author flips `it.fails` back to `it`.
-// A test that instead asserted the CURRENT (defective) value would have to be
-// deleted by that same author, which is how a vulnerability quietly becomes a
-// requirement.
+// ── HOW THE FINDINGS ARE PINNED, AND WHY NOT WITH `it.fails` ────────────────
 //
-// Each `it.fails` names the finding it carries. Do not "fix" one by weakening
-// the assertion — the assertion is the specification.
+// Every case below is a plain `it`. The ones carrying an open finding are
+// MEASUREMENTS: each asserts, at a line marked `PIN (<item>)`, the exact
+// DEFECTIVE value the code produces today, and the comment on that line spells
+// out the secure assertion that must replace it once the finding is fixed. So
+// the fix's author gets a red test at a named line with the replacement text
+// sitting next to it.
 //
-// ready-605 IS NOW FIXED and its two cases below are plain `it`. THEY WERE NOT
-// SIMPLY FLIPPED, and the reason is worth keeping: `it.fails` passes on ANY
-// throw, so the second one stayed GREEN under the fix for the wrong reason —
-// the hostile card is dropped, resolveGate finds no pending gate, nothing
-// reaches the signer, and `tag(signedCard()!, "title")` threw a TypeError on
-// `undefined`. Its replacement performs a write that DOES reach the extension
-// and asserts what the extension was handed, so "nothing was signed at all"
-// can no longer satisfy it. Both were proven by reverting the fix (measured
-// 2026-07-30: both go red, see ready-605).
+// THIS FILE USED `it.fails` AND IT WAS WRONG. vitest's `it.fails` passes on ANY
+// throw, so it only pins a finding if something independently proves the throw
+// happens AT the security assertion. It did not here, and one case was silently
+// worthless: the ready-605 signEvent case asserted `tag(signedCard()!, 'title')`
+// under `it.fails`, and when the ready-605 fix was applied it stayed GREEN —
+// with the read-trust gate on, the hostile card is dropped, resolveGate finds no
+// pending gate, nothing reaches the signer, and `signedCard()` is undefined, so
+// the `!` threw a TypeError and `it.fails` was satisfied by the wrong throw. The
+// security assertion was never reached, before or after the fix. The two cases
+// that had an anti-tautology companion survived; the one without a companion was
+// the broken one. Measurements do not have that failure mode: an assertion that
+// names a concrete value fails at its own line or not at all.
+//
+// A MEASUREMENT IS NOT AN ENDORSEMENT. Each PIN line is labelled with the item
+// that must delete it. Do not "fix" a red PIN by updating it to the new value —
+// replace it with the secure assertion in its comment, or the vulnerability
+// quietly becomes a requirement, which is the exact failure `it.fails` was
+// chosen to avoid.
+//
+// EACH PIN WAS VERIFIED BY APPLYING THE FIX AND RE-RUNNING (2026-07-30):
+// ready-fd9 (publish the status event before the card, in its own publishEvents
+// call), ready-951 (a verifyEvent call inside assertSignedAsBuilt), ready-fe5
+// (add src/board/ to the guard's scan). Every pin went RED at its marked line,
+// and the fixes were reverted. The item text of each names the pin's file, its
+// PIN marker and the replacement assertion, so a fixer arriving from the item
+// lands on the line rather than hunting for a test that used to exist.
+//
+// A PIN GOING RED IS THE FIX SUCCEEDING. None of these findings can be closed
+// with the suite untouched: the pin lines below MUST be replaced, by the fixer,
+// with the secure assertions quoted beside them. "…and the suite is still
+// green" is not a satisfiable done condition for any of them.
+//
+// ready-605 IS FIXED (merged to main as 41059ba) and its FOUR cases below are
+// plain `it` asserting the SECURE property — they are no longer pins and must
+// never become defective measurements again. Two say the ungranted key is
+// DROPPED (`an UNGRANTED key's card does not win…`, `…never reaches signEvent`)
+// and two say the cap-valid grantee is ADMITTED (`main.ts's site`,
+// `nostrwriter.ts's site`); a fifth, the ANTI-TAUTOLOGY case, is the
+// counterfactual at the fold. They were not simply flipped from `it.fails`, and
+// the reason is worth keeping: `it.fails` passes on ANY throw, so the signEvent
+// one stayed GREEN under the fix for the wrong reason — the hostile card is
+// dropped, resolveGate finds no pending gate, nothing reaches the signer, and
+// `tag(signedCard()!, "title")` threw a TypeError on `undefined`. Its
+// replacement performs a write that DOES reach the extension and asserts what
+// the extension was handed, so "nothing was signed at all" can no longer
+// satisfy it. All four were proven load-bearing by mutating production
+// (measured 2026-07-30 on main: `trusted: null` at one site reddens one DROPPED
+// case; an EMPTY `new Set()` at one site reddens one ADMITTED case; each
+// failure names its call site).
 //
 // ── THE ASSESSMENT (ready-c6b done condition 1), probe by probe ─────────────
 //
@@ -58,8 +95,11 @@
 //      ws://192.168.2.40:7777 and .41:7777 accept a never-granted key; only
 //      wss://relay.3dl.network refuses, under a third-party tenant policy. The
 //      product says otherwise in a user-facing sentence -> ready-345.
-//    - THE READ-SIDE TRUST GATE: real in rd (cmd/rd/nostr.go:991 ->
-//      pkg/sync/nostrproject.go:262, proven by pkg/sync/nostrtrust_test.go's
+//    - THE READ-SIDE TRUST GATE: real in rd (cmd/rd/nostr.go:991 hands
+//      ProjectOptions.Trusted -> pkg/sync/nostrproject.go:253 `if
+//      !opts.trusts(e.PubKey) && !grantTrusts(levels, e.PubKey) { continue }`,
+//      the gate itself being nostrproject.go:120-128; proven by
+//      pkg/sync/nostrtrust_test.go's
 //      TestProjection_TrustGate_DropsUntrustedTakeover), and — ready-605 — now
 //      real in the browser too: main.ts loadBoardItems and nostrwriter.ts
 //      items() both project under the key set of deriveLevels over the board's
@@ -98,9 +138,33 @@
 //    is reported as a total refusal while the accepted card has already cleared
 //    the gate for every other reader -> ready-fd9; and a badly-signed event
 //    passes every check the page makes and is reported as success -> ready-951.
-//    Both are made permanent by the same gap: NostrWriterDeps.onApplied has no
-//    production caller and render.ts's setItems() is never called outside tests,
-//    so nothing ever reconciles the optimistic patch against a re-read.
+//
+//    WHAT RECONCILES THEM, CORRECTED 2026-07-30. An earlier revision of this
+//    paragraph — and of ready-fd9 and ready-951 — said "nothing ever reconciles
+//    the optimistic patch against a re-read", on the strength of
+//    NostrWriterDeps.onApplied having no production caller. Half of that was
+//    wrong when written. onApplied really is dead wiring (declared
+//    nostrwriter.ts:91, called nostrwriter.ts:309, constructed nowhere with it
+//    — main.ts:424 does not pass it), but render.ts's setItems() DOES have a
+//    production caller: main.ts:1030, inside startLiveUpdates (main.ts:525,
+//    shipped by ready-4359, driven in main.live.test.ts), which re-folds the
+//    WHOLE board through the same ItemSource on every pushed event and is
+//    wired live by defaultDeps.subscribeEvents (main.ts:124).
+//
+//    So neither defect is terminal-until-reload, and neither item should be
+//    argued on that ground. What survives, and is what they are filed on:
+//    - ready-fd9's cross-reader harm is untouched by any amount of
+//      reconciliation — the accepted card really did clear the gate for every
+//      other reader, and re-folding the approver's page only spreads that.
+//    - the MESSAGE is never reconciled, only the projection. The approver is
+//      told "the relay rejected this change" (fd9) or nothing at all (951);
+//      the live re-fold then silently moves the board the OTHER way. A user
+//      watching a card revert with a success already reported, or a gate vanish
+//      under a refusal message, is worse off than one shown a stale patch.
+//    NOT MEASURED HERE, and deliberately not claimed: whether a given relay
+//    echoes the writer's own accepted event back onto its open subscription.
+//    The wiring above is read out of main.ts; the round-trip is ready-fd9's and
+//    ready-951's to measure when they are fixed.
 //
 // 6. REPLAY. A card commits to its board (`a`) and its item (`d`) inside the
 //    signed event id, so it cannot be retargeted to either. Status events are
@@ -111,14 +175,19 @@
 //    is a pre-existing fold property rather than a browser write defect; recorded
 //    here and cross-referenced to ready-8aa rather than filed twice.
 
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authTransition } from "./lib/auth";
 import type { DiscoveredBoard } from "./lib/boarddiscovery";
 import { projectItems } from "./lib/fold";
 import { neverUnwraps } from "./lib/keyunwrap";
-import type { NostrEvent } from "./lib/nostrevent";
-import { RelayRejectedError } from "./lib/publish";
+import { verifyEvent, type NostrEvent } from "./lib/nostrevent";
+import { assertSignedAsBuilt, RelayRejectedError } from "./lib/publish";
 import { LEVEL_MAINTAINER } from "./lib/rolegrant";
 import { signNostrEvent, xOnlyPubkey } from "./lib/schnorrsign";
 import { mountBoardWorkspace } from "./board/render";
@@ -609,21 +678,39 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
 
     // The user is told the ruling was refused, and the writer's own view agrees.
     expect(w.items().get(ITEM)!.gate).toBe("budget");
-    // But a 30302 with the gate fields CLEARED really was accepted by the relay.
+    // PIN (ready-fd9) — but a 30302 with the gate fields CLEARED really was
+    // accepted by the relay, and it is the card that carries `gate`,
+    // `waiting_type` and `waiting_on` (fold.ts itemFromCard).
+    // WHEN FIXED there is no accepted card at all, so replace ALL THREE of the
+    // lines below (the `const`, the pin, and the gate-tag assertion, which would
+    // throw on `card!`) with:
+    //   expect(accepted.find((e) => e.kind === 30302), "a refused ruling must leave no card behind").toBeUndefined();
     const card = accepted.find((e) => e.kind === 30302);
-    expect(card, "no card reached the relay — this case proves nothing").toBeDefined();
+    expect(card, "ready-fd9 fixed? swap this for the secure assertion above").toBeDefined();
     expect(card!.tags.some((t) => t[0] === "gate")).toBe(false);
   });
 
-  it.fails(
-    "SECURITY — NOT HELD (ready-fd9): an independent reader must see what the approver was told — the gate still pending",
-    async () => {
-      const accepted: NostrEvent[] = [];
-      const { w } = writerWith(partialRelay(accepted));
-      await w.resolveGate(ITEM, true, "approved").catch(() => undefined);
-      expect(independentReader(accepted).get(ITEM)!.gate).toBe("budget");
-    },
-  );
+  it("MEASURED (ready-fd9): the approver is told it was refused while every other reader's gate is already CLEARED", async () => {
+    const accepted: NostrEvent[] = [];
+    const { w } = writerWith(partialRelay(accepted));
+    // ANTI-TAUTOLOGY: the gate really is pending before the ruling.
+    expect(w.items().get(ITEM)!.gate).toBe("budget");
+
+    // What the approver is told: refused.
+    await expect(w.resolveGate(ITEM, true, "approved")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(w.items().get(ITEM)!.gate, "the writer's own view agrees with what the user was told").toBe("budget");
+
+    const reader = independentReader(accepted);
+    // ANTI-VACUITY: the item exists in the independent reader's projection —
+    // this measures a CLEARED gate, not an absent item.
+    expect(reader.get(ITEM), "the item must project for the reader, or this measures nothing").toBeDefined();
+
+    // PIN (ready-fd9) — the accepted card already cleared the gate for everyone
+    // except the person who was told the write did not happen.
+    // WHEN FIXED, replace this line with:
+    //   expect(reader.get(ITEM)!.gate, "a refused ruling must leave the gate pending for every reader").toBe("budget");
+    expect(reader.get(ITEM)!.gate, "ready-fd9 fixed? swap this for the secure assertion above").toBeUndefined();
+  });
 
   // ── PROBE: what the page checks about what the extension handed back ──────
   //
@@ -635,9 +722,13 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
   // (lib/nostrevent.ts verifyEvent, lib/secp256k1.ts).
   //
   // The consequence is not academic. Every downstream reader drops an event
-  // whose signature does not verify, so the write is a silent no-op; the page
-  // reports success and its optimistic patch stands, because nothing ever
-  // re-reads (NostrWriterDeps.onApplied has no production caller).
+  // whose signature does not verify, so the write is a silent no-op — while the
+  // page reports success and patches the card optimistically. Nothing tells the
+  // user otherwise: onApplied is dead wiring (nostrwriter.ts:91/:309, never
+  // constructed with it), and the one thing that DOES re-read — the live
+  // subscription's re-fold, main.ts:1030 — drops the mis-signed event too, so
+  // it reverts the card silently under a success the user was already given.
+  // See probe 5 in this file's header for the corrected reconciliation story.
   const okRelay: (url: string) => WebSocket = () => {
     const sock: Record<string, unknown> = {
       send(raw: string) {
@@ -685,26 +776,219 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
         timeoutMs: 200,
       },
     });
-    // No throw: the page considers this write done.
-    await w.resolveGate(ITEM, true, "approved");
+    let threw: unknown;
+    await w.resolveGate(ITEM, true, "approved").catch((e: unknown) => {
+      threw = e;
+    });
+
+    // PIN (ready-951) — the page considers this write done.
+    // WHEN FIXED, replace this line with:
+    //   expect(threw, "a mis-signed write must be refused").toBeInstanceOf(SignerMismatchError);
+    expect(threw, "ready-951 fixed? swap this for the secure assertion above").toBeUndefined();
+
+    // THE THREE LINES BELOW GO WITH THE PIN. They measure that the corrupt
+    // events really were published; once the fix refuses BEFORE publishing,
+    // `seen` is empty and all three are wrong. Replace them with the same claim
+    // stated the other way round — and KEEP the BIP-340 half, because it is what
+    // proves the fixture's corruption is real rather than mislabelled:
+    //   expect(signed.every((e) => !verifyEvent(e)), "the fixture really is corrupt").toBe(true);
+    //   expect(seen, "a mis-signed event must never reach a relay").toEqual([]);
+    // (`signed` = what the fake signer returned; capture it in badSigSigner.)
     expect(seen.length, "events really were published").toBeGreaterThan(0);
-    // …and every reader drops them, so the board never changed.
+    // ANTI-TAUTOLOGY: the published events genuinely do not verify — the
+    // fixture's corruption is real, not a mislabelled valid signature.
+    expect(seen.every((e) => !verifyEvent(e)), "every published event fails BIP-340 verification").toBe(true);
+    // …so every reader drops them, and the board never changed.
     expect(independentReader(seen).get(ITEM)!.gate).toBe("budget");
   });
 
-  it.fails(
-    "SECURITY — NOT HELD (ready-951): a write the extension mis-signed must be refused, not reported as success",
-    async () => {
-      const w = new NostrBoardWriter({
-        signerPubkey: OWNER,
-        signer: badSigSigner(),
-        board: { ownerPubkey: OWNER, boardD: BOARD_D, title: BOARD.title },
-        relays: [RELAY],
-        snapshot: GATED,
-        grantLevels: new Map([[OWNER, LEVEL_MAINTAINER]]),
-        publishOptions: { socketFactory: okRelay, timeoutMs: 200 },
-      });
-      await expect(w.resolveGate(ITEM, true, "approved")).rejects.toThrow();
-    },
+  // The same defect at its own line, one function down from the writer:
+  // assertSignedAsBuilt is publish.ts's "the signer is not trusted to return what
+  // it was given" check, and the signature is the one field it does not look at.
+  it("MEASURED (ready-951): assertSignedAsBuilt accepts an event whose schnorr signature does not verify", () => {
+    const built = buildFullCreate(env(OWNER, 1_780_000_000), item()).find((b) => b.kind === 30302)!;
+    const good = sign(OWNER_SEC)(built);
+    const badlySigned: NostrEvent = { ...good, sig: "00" + good.sig.slice(2) };
+
+    // ANTI-TAUTOLOGY: only the signature differs, and it genuinely does not
+    // verify — the id, pubkey and created_at that assertSignedAsBuilt DOES check
+    // are all still correct, so nothing else could carry the check.
+    expect(badlySigned.id).toBe(built.id);
+    expect(badlySigned.pubkey).toBe(built.pubkey);
+    expect(badlySigned.created_at).toBe(built.created_at);
+    expect(verifyEvent(good), "the uncorrupted event verifies").toBe(true);
+    expect(verifyEvent(badlySigned), "the corrupted one does not").toBe(false);
+
+    let threw: unknown;
+    try {
+      assertSignedAsBuilt(built, badlySigned);
+    } catch (e) {
+      threw = e;
+    }
+    // PIN (ready-951) — no throw: the signature is never checked.
+    // WHEN FIXED, replace this line with:
+    //   expect(threw, "a signature that does not verify must be refused").toBeInstanceOf(SignerMismatchError);
+    expect(threw, "ready-951 fixed? swap this for the secure assertion above").toBeUndefined();
+  });
+});
+
+// ── PROBE (guard defect): does the no-persistence scan cover the write surface?
+//
+// src/nostorage.test.ts is the STRUCTURAL half of the "no secret material is ever
+// written to localStorage/IndexedDB/sessionStorage" claim: it reads every shipped
+// module and fails if one so much as names a persistence API. Its own header says
+// a module nothing in the suite reaches "could persist a CEK and stay green", and
+// that is precisely the hole it has — shippedSources() walks src/ and src/lib/ and
+// never src/board/, so all twelve write-surface modules are unscanned, including
+// nostrwriter.ts, the one holding the write-side SealEnvelope {cek, epoch, ltk}.
+//
+// This is the one ready-c6b finding with no executable pin, in a deliverable whose
+// premise is demonstration rather than prose. Pinned here rather than fixed there:
+// fixing it is a change to another item's guard, and this item is a review.
+//
+// THE PINS BELOW MEASURE THE GUARD'S OUTPUT, NOT ITS SYNTAX. An earlier revision
+// regexed nostorage.test.ts for its two `fileURLToPath(new URL("./lib/", ...))`
+// literals and pinned that list. That was wrong in a way worth naming: ready-fe5's
+// own done condition offers "walk src/ recursively" as an option, and a recursive
+// walk DELETES those literals instead of adding a third — so the pin would have
+// stayed green on a correct fix. What follows instead EXECUTES the guard's own
+// shippedSources() (lifted out of nostorage.test.ts, TypeScript stripped by the
+// tsc the package already depends on, its imports supplied as arguments) and asks
+// the only question that matters: is the write surface in the set it returns?
+// Extra root, recursive walk, glob — every shape of fix turns these red.
+describe("ready-c6b — GUARD: what the no-persistence scan actually reads (ready-fe5)", () => {
+  // nostorage.test.ts locates itself with `new URL(..., import.meta.url)`, which
+  // this file cannot copy: it runs under jsdom, where import.meta.url is not a
+  // file: URL. Walk up from the working directory to the package root instead,
+  // and fail loudly rather than silently scanning nothing.
+  const srcDir = (() => {
+    for (let dir = process.cwd(), i = 0; i < 6; dir = dirname(dir), i++) {
+      const cand = join(dir, "src");
+      if (existsSync(join(cand, "nostorage.test.ts"))) return cand;
+    }
+    throw new Error(`cannot locate web/board/src from ${process.cwd()} — this pin would otherwise be vacuous`);
+  })();
+  const guardPath = join(srcDir, "nostorage.test.ts");
+  const guardSrc = readFileSync(guardPath, "utf8");
+  const boardDir = join(srcDir, "board");
+
+  type Scanned = { name: string; code: string };
+
+  /**
+   * THE GUARD'S OWN shippedSources(), RUN. Everything above the first top-level
+   * `describe(` is the guard's scan and the constants it depends on; its imports
+   * become parameters, `import.meta.url` becomes the guard's real file URL, and
+   * the TypeScript is stripped by the tsc this package already builds with.
+   * Nothing is re-implemented here, so this cannot drift into asserting a copy of
+   * the scan. If the guard is refactored past what this can lift, it throws with
+   * ready-fe5 in the message — loud, never a silent pass.
+   */
+  function guardScannedSources(): Scanned[] {
+    const cut = guardSrc.indexOf("\ndescribe(");
+    if (cut < 0) throw new Error("ready-fe5 pin: nostorage.test.ts has no top-level describe() to cut at");
+    const prelude = guardSrc
+      .slice(0, cut)
+      .replace(/^import\s[\s\S]*?;$/gm, "")
+      .replace(/^export\s+/gm, "")
+      .replace(/import\.meta\.url/g, "__guardUrl");
+    if (!prelude.includes("shippedSources")) {
+      throw new Error("ready-fe5 pin: shippedSources() is no longer declared above the first describe()");
+    }
+    const code = ts.transpileModule(prelude, {
+      fileName: guardPath,
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+    }).outputText;
+    const run = new Function(
+      "readFileSync",
+      "readdirSync",
+      "existsSync",
+      "statSync",
+      "fileURLToPath",
+      "join",
+      "dirname",
+      "relative",
+      "__guardUrl",
+      `${code}\nreturn shippedSources();`,
+    ) as (...deps: unknown[]) => Scanned[];
+    return run(
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync,
+      fileURLToPath,
+      join,
+      dirname,
+      relative,
+      pathToFileURL(guardPath).href,
+    );
+  }
+
+  /** The longest substantive code line in a module — long enough to be unique to
+   * it, and never a comment, so the guard's comment-stripping cannot remove it.
+   * Matching on CONTENT rather than on the name the scan happens to assign makes
+   * the pins independent of whether a fix reports "nostrwriter.ts",
+   * "board/nostrwriter.ts" or an absolute path. */
+  function fingerprint(file: string, dir = boardDir): string {
+    const best = readFileSync(join(dir, file), "utf8")
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .filter((l) => {
+        const t = l.trimStart();
+        return t.length >= 40 && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") && !t.startsWith("import");
+      })
+      .sort((a, b) => b.length - a.length)[0];
+    if (!best) throw new Error(`ready-fe5 pin: no fingerprintable line in ${file}`);
+    return best;
+  }
+
+  const boardModules = readdirSync(boardDir).filter(
+    (f) => f.endsWith(".ts") && !f.includes(".test.") && !f.endsWith(".d.ts"),
   );
+
+  it("MEASURED (ready-fe5): the guard's own scan, executed, does not contain the module holding the write-side keys", () => {
+    const scanned = guardScannedSources();
+
+    // ANTI-VACUITY: the guard's scan really ran and really returned modules —
+    // the five its own vacuous-pass test names are all in what came back.
+    expect(scanned.length, "shippedSources() returned nothing — this pin would be vacuous").toBeGreaterThan(8);
+    for (const required of ["main.ts", "lib/keyring.ts", "lib/keyunwrap.ts", "lib/envelope.ts", "lib/carditems.ts"]) {
+      const [dir, file] = required.includes("/") ? [join(srcDir, "lib"), required.split("/")[1]] : [srcDir, required];
+      expect(
+        scanned.filter((s) => s.code.includes(fingerprint(file, dir))).length,
+        `POSITIVE CONTROL: ${required} is scanned and content-matching finds it`,
+      ).toBe(1);
+    }
+    // …so a module NOT found below is a module the scan missed, not a module the
+    // matching failed on.
+
+    // ANTI-VACUITY: nostrwriter.ts really is where the write-side key material is.
+    const writerSrc = readFileSync(join(boardDir, "nostrwriter.ts"), "utf8");
+    expect(writerSrc, "nostrwriter.ts holds the write-side SealEnvelope {cek, epoch, ltk}").toContain("SealEnvelope");
+
+    // PIN (ready-fe5) — the module that holds the CEK, the epoch and the LTK is
+    // absent from the set the guard reads, so it could persist any of them and
+    // the guard would stay green.
+    // WHEN FIXED, replace this line with:
+    //   expect(scanned.filter((s) => s.code.includes(fingerprint("nostrwriter.ts"))), "the write-side key module must be scanned").toHaveLength(1);
+    expect(
+      scanned.filter((s) => s.code.includes(fingerprint("nostrwriter.ts"))),
+      "ready-fe5 fixed? swap this for the secure assertion above",
+    ).toEqual([]);
+  });
+
+  it("MEASURED (ready-fe5): and it misses the whole write surface, not just that one module", () => {
+    const scanned = guardScannedSources();
+
+    // ANTI-VACUITY: there really is a write surface under src/board/ to miss.
+    expect(boardModules.length, "src/board/ holds the write surface").toBeGreaterThan(8);
+    expect(boardModules, "the write path itself").toEqual(expect.arrayContaining(["nostrwriter.ts", "writeevents.ts", "write.ts", "render.ts"]));
+
+    const reached = boardModules.filter((m) => scanned.some((s) => s.code.includes(fingerprint(m))));
+
+    // PIN (ready-fe5) — not one of them is reached. A partial fix (one module,
+    // one root) also turns this red, at this line, listing what is still missed.
+    // WHEN FIXED, replace this line with:
+    //   expect(reached, "every shipped src/board/ module must be scanned").toEqual(boardModules);
+    expect(reached, "ready-fe5 fixed? swap this for the secure assertion above").toEqual([]);
+  });
 });
