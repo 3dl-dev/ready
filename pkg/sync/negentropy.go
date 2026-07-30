@@ -86,12 +86,30 @@ type SyncResult struct {
 // its real ~540 and was told nothing. This is the Go-side twin of the browser
 // defect fixed in web/board/src/lib/relay.ts (ready-5c5).
 //
-// The limit is sent EXPLICITLY rather than left to the relay for one reason: a
-// relay whose cap is BELOW what we ask for rejects the query loudly (strfry
-// answers a too-large REQ limit with CLOSED, and dropped the NEG-OPEN above),
-// whereas an absent limit is answered with a silently short window — the exact
-// failure mode this constant exists to end. 500 is strfry's default
-// maxFilterLimit and is what MaxREQIDs already uses for the download side.
+// THE CAP IS PER-RELAY CONFIGURATION AND CANNOT BE READ BACK. Re-measured
+// 2026-07-30 against the LAN strfry ws://192.168.2.40:7777 over a purpose-built
+// 560-event board (TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt):
+//
+//	NEG-OPEN {kinds,#a}              -> need=560   (no default cap at this size)
+//	NEG-OPEN {kinds,#a,limit:100}    -> need=100   (clamps to the asked limit)
+//	NEG-OPEN {kinds,#a,limit:500}    -> need=500   (the newest 500)
+//	NEG-OPEN {kinds,#a,limit:5000}   -> need=560   (answered, NOT refused)
+//
+// Two relays, two different answers to the same query: 3dl volunteers 500 and
+// stops, this one volunteers everything. Nothing in NIP-01 or NIP-77 tells a
+// client which it is talking to, so the walk must not depend on the relay's own
+// bound — it names its own.
+//
+// Naming the limit EXPLICITLY does two things. It makes the window size OURS, so
+// the walk's termination test ("did this window come back under the limit?") is
+// asked against a number we chose rather than one we cannot see. And where a
+// relay's cap is BELOW what we ask for, the query is refused rather than answered
+// short — pinned by TestNegentropySync_RelayCapBelowOurLimitFailsLoudly, which
+// checks rd propagates that refusal instead of merging a partial board. (Not
+// every relay refuses: the strfry above answers limit=5000 with what it has. That
+// is why the walk's correctness rests on the `until` cursor, and the refusal is
+// the safety net, not the mechanism.) 500 is strfry's default maxFilterLimit and
+// is what MaxREQIDs already uses for the download side.
 const SyncPageLimit = 500
 
 // MaxSyncPages hard-stops the `until` walk. It is a backstop against a relay that

@@ -17,6 +17,14 @@
 // REAL signed events. The code under test — the `until` walk in NegentropySync —
 // is untouched by the fake and is what these tests exercise.
 //
+// AND THE MODEL IS CHECKED AGAINST THE MODELLED THING. cappedRelay asserts three
+// things about real relays: one query answers at most `limit` records, it picks
+// the NEWEST ones, and it honours `until`. All three are measured live against a
+// real strfry by TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt
+// (negentropy_live_cap_test.go, RD_NOSTR_LIVE_RELAY=1), which also runs the walk
+// end to end over a 560-event board. Without that file this fake would be the
+// only witness to a behaviour it invented.
+//
 // The walk is what makes these tests pass: cappedRelay serves at most `cap`
 // records per query, so deleting the paging (one exchange, no `until` cursor)
 // turns TestNegentropySync_PagesPastTheRelayCap red at 500 of 1200 events.
@@ -232,6 +240,14 @@ func (cr *cappedRelay) windowCount() int {
 	return len(cr.windows)
 }
 
+// refusals is how many queries this relay turned away for asking a limit above
+// its own cap — the loud-refusal behaviour, as distinct from answering short.
+func (cr *cappedRelay) refusals() int {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	return cr.rejected
+}
+
 func (cr *cappedRelay) uploadedIDs() map[string]int {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -434,6 +450,67 @@ func TestSyncWindowFilter_AsksForAnExplicitLimit(t *testing.T) {
 	}
 	if SyncPageLimit < 500 {
 		t.Fatalf("SyncPageLimit must be >= 500 (the measured relay cap), got %d", SyncPageLimit)
+	}
+}
+
+// TestNegentropySync_RelayCapBelowOurLimitFailsLoudly is the discriminating test
+// for the ONLY thing that justifies naming `limit` explicitly at all.
+//
+// An absent limit is answered with a silently short window — the defect. Naming
+// it converts a relay whose cap is BELOW what rd asks for into a REFUSAL, and a
+// refusal is only worth something if rd propagates it instead of treating the
+// short answer it did not get as success. So: a relay capped at 400 facing rd's
+// limit=500 must (a) refuse the query rather than serve 400 of 600, and (b) leave
+// NegentropySync returning an error with an EMPTY local log — never a partial
+// board reported as a completed sync.
+//
+// The control is TestNegentropySync_PagesPastTheRelayCap, where the same fake at
+// cap == SyncPageLimit syncs all 1200 events: the refusal here is about the limit
+// exceeding the cap, not about the relay being unusable.
+//
+// This is what makes cappedRelay's refusal branch load-bearing rather than
+// decorative. Delete that branch (let the relay answer short, as it does for any
+// limit at or below its cap) and this test goes red: err becomes nil and 400 of
+// 600 events land in the log under a reported success — the exact silent
+// truncation the item is about.
+func TestNegentropySync_RelayCapBelowOurLimitFailsLoudly(t *testing.T) {
+	k, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardCoord := "30301:" + k.PubKeyHex() + ":refusalboard"
+	const total = 600
+	const relayCap = SyncPageLimit - 100 // strictly below what the walk asks for
+	events := pagingBoard(t, k, boardCoord, total, time.Now().Unix()-int64(total)-10)
+	relay := newCappedRelay(t, events, relayCap)
+
+	log := NewNostrLog(t.TempDir() + "/" + NostrLogFile)
+	filter := BoardSyncFilter(boardCoord, nil)
+	trusted := map[string]bool{k.PubKeyHex(): true}
+
+	res, err := NegentropySync(context.Background(), relay.url(), log, filter, trusted, 30*time.Second, false)
+	if err == nil {
+		t.Fatalf("a relay capped at %d BELOW our limit=%d must not produce a successful sync: got downloaded=%d of %d, pages=%d",
+			relayCap, SyncPageLimit, res.Downloaded, total, res.Pages)
+	}
+	if !strings.Contains(err.Error(), "NEG-ERR") {
+		t.Fatalf("the relay's refusal must reach the caller intact, got: %v", err)
+	}
+	if relay.refusals() != 1 {
+		t.Fatalf("relay recorded %d refusals, want exactly 1 — the walk must ask ONCE with an explicit limit, not retry blindly", relay.refusals())
+	}
+	if relay.windowCount() != 0 {
+		t.Fatalf("the refused query must never have been answered as a window, relay served %d", relay.windowCount())
+	}
+	if res.Downloaded != 0 {
+		t.Fatalf("a refused sync merged %d events", res.Downloaded)
+	}
+	stored, err := log.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("a refused sync left %d events in the local log — a partial board under a reported failure is still a partial board", len(stored))
 	}
 }
 
