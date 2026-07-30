@@ -673,9 +673,10 @@ var citationExceptions = map[string]string{
 	"publishItemCardEditNostr|cmd/rd/nostr.go|412@decl399": "§16.9: the " +
 		"refuseRedactedRepublish CALL site inside the body (:412); " +
 		"publishItemCardEditNostr is declared at :399",
-	"DeriveBoardKeyring|pkg/sync/keydist.go|174@decl178": "§16.10: quotes " +
-		"DeriveBoardKeyring's OWN doc comment (:174-177) — the scan-ALL-grants claim " +
-		"the relay's addressable replacement contradicts; the func is declared at :178",
+	"DeriveBoardKeyring|pkg/sync/keydist.go|189@decl193": "§16.10: quotes " +
+		"DeriveBoardKeyring's OWN doc comment (:189-192) — the scan-ALL-grants claim " +
+		"the relay's addressable replacement contradicts; the func is declared at :193 " +
+		"(moved from :178 by ready-470's UnwrapKeyPayload split above it)",
 	"newerThan|pkg/sync/nostrproject.go|274@decl595": "§4.5: newerThan is USED for board " +
 		"latest-wins ordering at nostrproject.go:274-276; it's declared at :595 (moved " +
 		"from :552 by ready-f5f's deterministic-edge-order fix in applyDepAndGateStatus, " +

@@ -266,6 +266,42 @@ this for a reader who never opens the Go source. `FormatVersion` was bumped
 1 → 2 for this change (a client on version 1 was silently trusting a bare
 number that is only safe by accident).
 
+`FormatVersion` was bumped 2 → 3 by `ready-882`, which added `options.keyring`
+and `expect.keyring` so the epoch model (§11.10–§11.14) is inside the vector
+contract at all. Before it, every confidential vector handed the fold its key
+material as literal data (`options.decryptor`, `options.encrypted_boards`),
+which skips the derivation entirely — which epochs a reader retains, when the
+board went confidential, and which epoch a write seals under were unasserted,
+so a client could derive all three wrongly and still pass every vector. A
+vector carrying `options.keyring` names a reader SECRET and a board
+coordinate instead, and the client must DERIVE both fold inputs from that
+vector's own owner-signed 39301 grants (§11.12), wiring one derived keyring
+into BOTH slots exactly as `cmd/rd/nostr.go:969-976` does. The bump is
+required rather than optional because a client that ignores the new field
+folds with no keys and no cutover — a silent, plausible-looking wrong answer
+rather than a parse failure. See `internal/foldvectors/vectors.go`
+(`KeyringSpec`, `KeyringFacts`) and the vectors in
+`internal/foldvectors/cases_epochmodel.go`.
+
+**A KEYRING VECTOR MUST NOT DEPEND ON §11.13a** (`ready-882` rework). A vector is
+the contract SHARED by every conformant reader, and §11.13 and §11.13a legitimately
+disagree about one board shape: a verified sealed card with NO served owner CEK
+grant. Plain §11.13 — what rd's Go fold does, as §11.13a itself records — reports
+the board plaintext and leaves the quarantine gate inert; §11.13a's reader calls
+that state UNKNOWN and fails closed with the gate ON at cutover `0`. A vector whose
+expectation differs between those two is unsatisfiable by one implementation BY
+CONSTRUCTION, and the first draft of the epoch-0 vector was exactly that: it
+asserted a post-grant plaintext card folding in clear, which no §11.13a reader can
+produce. It is split into `keyring_epoch_zero_grant_yields_no_key` (a sealed card,
+which neither gate state quarantines) and `keyring_epoch_zero_grant_yields_no_cutover`
+(a plaintext card and NO sealed card, so §11.13a's witnesses have nothing to
+testify about), which keeps both halves of §11.10 falsifiable outside the zone.
+`web/board/src/lib/fold.vectors.test.ts` folds every keyring vector through the
+browser's REAL adapter (`lib/confidentiality.ts`, not a local restatement of it)
+and additionally projects each one under BOTH derivations, so a future vector
+inside the zone fails there naming §11.13a instead of passing one suite and
+breaking the other.
+
 ---
 
 ## 5. Card → item field projection
@@ -546,6 +582,29 @@ with `pkg/state.applyBlockStatus`, which likewise never clears them.
 **§9.8 No declared gate.** All four fields are cleared
 (`pkg/sync/nostrproject.go:563-569`).
 
+**§9.8a §9.8 IS AN INVARIANT WITH NO DISCRIMINATING VECTOR, AND THAT IS RECORDED
+RATHER THAN PAPERED OVER (`ready-882`).** Deleting §9.8's whole branch from
+`pkg/sync/nostrproject.go` leaves every fold vector GREEN, and the TypeScript
+mirror (`web/board/src/lib/fold.ts`) is equally inert. This is provable, not
+merely unobserved: `!declaresGate` means `WaitingType`, `WaitingOn` and `Gate` are
+ALREADY empty by the definition in §9.4, and the remaining two fields cannot be
+non-empty on entry — `WaitingSince` and `GateMsgID` are assigned NOWHERE in either
+fold except inside this same gate loop (§9.6), and no card or status tag carries
+either one (§5.1). Both folds rebuild an item from the winning card (§22.2), so
+there is no prior revision's gate state to inherit. No input the vector format can
+express therefore reaches this branch with anything to clear.
+
+It is NOT vacuous, which is why the clause stays normative: a client that MUTATES
+an item across card revisions instead of rebuilding it — a plausible incremental
+implementation, and the shape §22.2 exists to forbid — carries a stale
+`GateMsgID`/`WaitingSince` into a revision that dropped its gate tags, and then
+`rd approve` (§9.2) appears not to have cleared the gate. §9.8 is the rule that
+makes such a client wrong. What conformance can assert is the resulting INVARIANT,
+and `TestNoDeclaredGateMeansNoGateFields` asserts it over the live fold's output
+for every vector in the corpus; what it cannot produce is a mutation receipt, and
+that gap is recorded in `clauseMutationGaps` in `internal/foldvectors/vectors_test.go`
+rather than left to be rediscovered.
+
 **§9.9 Ordering.** §9.4–§9.8 run inside `applyDepAndGateStatus` AFTER the dep pass
 (`pkg/sync/nostrproject.go:475`, dep loop `:504-518`, gate loop `:520-570`), and
 `applyDepAndGateStatus` itself runs after the whole per-item status pass
@@ -709,7 +768,7 @@ re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
 hardcoded role would silently demote every maintainer on every rotation.
 
 **§11.12 Keyring derivation retains ALL epochs.** `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:178-231`) scans EVERY historical grant, not latest-wins, so
+(`pkg/sync/keydist.go:193-246`) scans EVERY historical grant, not latest-wins, so
 a member keeps old-epoch CEKs and historical reads survive (`:136-140`). It
 accepts a key only when: kind is 39301 and `Verify()` passes (`:146-151`); the
 grant binds to `(boardAuthor, boardD)` (`:156-158`); the grant is signed by the
@@ -722,7 +781,7 @@ the anti-retarget guard.
 `created_at` of any owner-signed CEK-bearing grant, tracked regardless of who it
 is addressed to (`pkg/sync/keydist.go:172-175`). `Cutover(coord)` returning
 `ok=true` is exactly "this board is confidential"
-(`pkg/sync/keydist.go:134-140`).
+(`pkg/sync/keydist.go:149-155`).
 
 **§11.13a A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (`ready-daf`).** §11.13
 computes a MINIMUM over the grants a relay chose to serve, and reads on this
@@ -761,9 +820,11 @@ closed exactly as for "no grant at all" — gate ON, cutover `0`, so §11.4
 grandfathers nothing and every event that is not a well-formed sealed envelope is
 withheld — and it says so, distinguishing "no grant reached me" (consistent with
 an indexing gap) from "the answer I got is internally inconsistent" (omission
-proven). Reference implementation: `web/board/src/main.ts`'s `confidentialityOf` /
-`grantsWithheld` over `BoardKeyring.grantEpochFloor`, witnessed by
-`web/board/src/main.grantsomission.test.ts`. **The residual, stated exactly, and it is NOT only an attack.** Both
+proven). Reference implementation: `web/board/src/lib/confidentiality.ts`'s
+`confidentialityOf` / `grantsWithheld` over `BoardKeyring.grantEpochFloor`,
+witnessed by `web/board/src/main.grantsomission.test.ts` end-to-end through the DOM
+and consumed directly by the conformance runner (`ready-882` moved it out of
+`main.ts` so the vectors fold through the REAL adapter rather than a substitute). **The residual, stated exactly, and it is NOT only an attack.** Both
 witnesses ride on the sealed cards, so they are silent for any board whose visible
 sealed history begins at or after the cutover being asserted. A relay can arrange
 that by withholding, on top of the grants, every sealed card older than the cutover
@@ -781,7 +842,7 @@ detected" is FALSE as an unqualified statement and must not be repeated. Tracked
 derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
-reader holds (`pkg/sync/keydist.go:147-161`). A member that missed a rotation
+reader holds (`pkg/sync/keydist.go:162-176`). A member that missed a rotation
 returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
@@ -1368,7 +1429,7 @@ usual cause — a CEK epoch whose grant no longer exists (§16.10).
 **§16.10 A CEK-bearing grant occupies a slot per epoch.** `DeriveBoardKeyring`
 scans ALL historical grants rather than latest-wins, so "a member keeps the
 old-epoch CEKs it was given, so historical reads survive"
-(`pkg/sync/keydist.go:174-177`). For that to hold on a RELAY and not merely in a
+(`pkg/sync/keydist.go:189-192`). For that to hold on a RELAY and not merely in a
 local append-only log, each epoch needs its own addressable slot — a relay keeps
 only the newest event per `(kind, pubkey, d)`. So a grant carrying a wrapped CEK
 is addressed `d = "<boardD>:<grantee>:e<epoch>"`, while a grant with no key
@@ -1380,7 +1441,7 @@ the identical relay-retention reason — see §12.10 (ready-55f).
 Splitting the slot is safe because nothing reads this `d` for meaning: authz
 replay orders latest-per-GRANTEE by `(created_at, id)` and never inspects it
 (`deriveGrants`, `pkg/sync/rolegrant.go:511`), and `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:178`) selects on the `a` board coordinate plus the `p`
+(`pkg/sync/keydist.go:193`) selects on the `a` board coordinate plus the `p`
 grantee tag. The `d` is a relay retention key and nothing more — so a revoke still
 supersedes every earlier grant for that grantee regardless of which slot each one
 occupies.
@@ -1438,6 +1499,45 @@ could resurrect authority a later revoke had removed. Measured on the `ready` bo
 after the recovery: a reader holding only the owner identity and the public relay
 projects 327 items with ZERO `[encrypted]`, against 6 of 206 confidential cards
 readable before it.
+
+**§16.11a THE SAME KEY, IN AN ENCODING THE READER CAN RECEIVE (`ready-470`).** A
+second, independent way the same grants became unreadable — this time only in a
+BROWSER. A page holds no secret, so it unwraps a CEK through NIP-07's
+`window.nostr.nip44.decrypt`, whose return type is a STRING; every extension
+finishes with a UTF-8 `TextDecoder`, and 32 random bytes are essentially never
+valid UTF-8, so a non-fatal decoder substitutes U+FFFD and destroys the key with no
+error raised anywhere. `WrapKey` therefore seals 64 lowercase-hex characters
+(`ready-c4b`), and `unwrapKey` accepts both encodings so rd keeps reading every
+grant already published. Grants minted BEFORE that change still carried raw
+payloads, so `ready.3dl.dev/board` showed `[encrypted]` for every card on such a
+board — including to its OWNER, which is how it was found. `rd confidential rewrap`
+re-seals the SAME key value, at the SAME epoch, into the SAME addressable slot,
+with the payload hex-encoded. It is not a rotation: a rotation would also produce
+readable wraps, at a new epoch whose key opens none of the board's history. Three
+constraints make it safe to run on a live board. The key value is recovered from
+the very wrap being replaced (the owner can open a wrap it sealed to a member —
+NIP-44's conversation key is symmetric) and cross-checked against the owner's own
+keyring, so the command cannot substitute a key; the plan is built from the grants
+that EXIST rather than from a membership list, so it cannot hand a key to a
+non-holder, and a grantee whose winning grant is `revoked` is withheld; and the
+replacement's `created_at` is the original's PLUS ONE SECOND rather than "now",
+because the cutover of §11.13 is a MINIMUM over served grants and stamping these
+"now" would move a relay-seeded reader's grandfather boundary forward by the whole
+age of the board. Measured on the `ready` board: epoch 2's four grants were already
+hex, epoch 1's three were raw — so a browser could read only post-rotation cards —
+and after the re-wrap every owner-signed CEK grant the public relay serves is hex,
+with the derived cutover moving from 1784206980 to 1784206981. The command's own
+evidence is a RELAY READ-BACK, not its publish report: `reduceEventOutcome`
+(`pkg/sync/relayclass.go`) calls an event accepted the moment any write relay says
+OK, so `verifyRewrapOnRelays` re-reads each published grant with a fresh REQ per
+relay and fails, naming the relay, when one did not take them
+(`cmd/rd/confidential_rewrap_test.go` drives every run of the command over a live
+in-process NIP-01 relay, and pins that failure against a relay that ACKs and stores
+nothing). The browser half of the claim is asserted at the DOM: the epoch-3 card of
+`confidential.fixtures.ts` renders `[encrypted]` for the reader served the legacy
+raw-payload grant and its real title for the reader served the hex re-wrap of the
+same key in the same slot — for the OWNER's self-grant as well as a member's
+(`web/board/src/main.confidential.test.ts`).
 
 ---
 

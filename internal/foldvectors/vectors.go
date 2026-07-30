@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -50,7 +51,19 @@ import (
 // nanosecond precision on JSON.parse for any int64 value not shaped like
 // today's fold output; the version bump forces a client to notice the shape
 // changed instead of mis-parsing it.
-const FormatVersion = 2
+//
+// Bumped 2 -> 3 by ready-882: `options.keyring` and `expect.keyring` were added
+// so the CONFIDENTIAL-ENVELOPE EPOCH MODEL (spec §11.10-§11.14) is inside the
+// vector contract at all. Until this bump every confidential vector handed the
+// fold a keyring as literal DATA (`options.decryptor`, `options.encrypted_boards`),
+// which skips the derivation entirely: which epochs a reader holds, when the
+// board went confidential, and which epoch a write seals under were unasserted,
+// so a client could derive all three wrongly and still pass. A vector carrying
+// `options.keyring` requires the client to DERIVE that key material from the
+// vector's own owner-signed kind-39301 grants; a client that ignores the field
+// silently folds with no keys and no cutover, which is why the version has to
+// move rather than the field simply appearing.
+const FormatVersion = 3
 
 // tsFields names the two Item JSON fields that carry arbitrary int64
 // unix-nanosecond timestamps. See EncodeItem.
@@ -199,6 +212,41 @@ type Options struct {
 	// EncryptedBoards, when non-null, drives the fail-closed fold gate
 	// (spec §3.9, §11.3). Null leaves every board plaintext-legal.
 	EncryptedBoards *EncryptedBoardsSpec `json:"encrypted_boards"`
+	// Keyring, when non-null, replaces BOTH of the two fields above with key
+	// material the client must DERIVE from this vector's own events
+	// (spec §11.10-§11.14). See KeyringSpec. It is an error for a vector to set
+	// Keyring together with Decryptor or EncryptedBoards: the two express the
+	// same two fold inputs and a vector that set both would be asserting nothing
+	// about which one the client used.
+	Keyring *KeyringSpec `json:"keyring"`
+}
+
+// KeyringSpec asks a conforming implementation to DERIVE the reader's
+// confidential-board key material from the vector's own event log instead of
+// being handed it (`DeriveBoardKeyring`, `pkg/sync/keydist.go`, spec §11.12),
+// and to wire the result into BOTH fold inputs — the decryptor (spec §11.6) and
+// the encrypted-board set (spec §3.9, §11.3) — exactly as rd does
+// (`cmd/rd/nostr.go:969-976`).
+//
+// This is the ONLY option shape under which the epoch model is observable at
+// all. `options.decryptor` states which (coordinate, epoch) keys the reader
+// holds as a fact; `options.keyring` makes it a CONSEQUENCE of the owner-signed
+// grants in `events`, so §11.10 (epoch >= 1), §11.12 (all epochs retained, not
+// latest-wins), §11.13 (cutover = earliest owner CEK grant, whoever it is
+// addressed to) and §11.14 (current epoch = highest held) each become
+// falsifiable.
+type KeyringSpec struct {
+	// ReaderSecret is the 32-byte lowercase-hex secp256k1 scalar of the reader
+	// the keyring is derived FOR. A secret, not a pubkey: unwrapping a grant's
+	// NIP-44 wrap is an ECDH operation and is itself one of the admission checks
+	// (spec §11.12 — a wrap addressed to somebody else does not open). Fixture
+	// secrets are published in this file's `keys` on purpose.
+	ReaderSecret string `json:"reader_secret"`
+	// BoardAuthor and BoardD name the board whose key material is derived. Both
+	// are part of the check: a grant must bind to this exact coordinate
+	// (spec §11.12, §12.2).
+	BoardAuthor string `json:"board_author"`
+	BoardD      string `json:"board_d"`
 }
 
 // DecryptorSpec is the reader's keyring as data.
@@ -237,6 +285,35 @@ type Expect struct {
 	// LabelViews maps a label atom to the SET of item ids carrying it
 	// (views.LabelFilter, spec §13.12). Empty when the case does not exercise it.
 	LabelViews map[string][]string `json:"label_views,omitempty"`
+	// Keyring is the key material the client must have DERIVED from this
+	// vector's grants, asserted directly. Present only on a vector that sets
+	// options.keyring. See KeyringFacts.
+	Keyring *KeyringFacts `json:"keyring,omitempty"`
+}
+
+// KeyringFacts is the derived-keyring expectation: the three answers
+// DeriveBoardKeyring produces that the projected items cannot fully show.
+//
+// Cutover/Confidential DO also show up in the items (a post-cutover plaintext
+// card is quarantined, spec §11.3, while a pre-cutover one is grandfathered,
+// §11.4), and a vector that asserts them here SHOULD also carry that item-level
+// consequence — the direct assertion says WHICH instant, the items say the
+// instant is load-bearing. CurrentEpoch has no item-level consequence at all: it
+// is the epoch a WRITE seals under (spec §11.14), so a read-only conformance run
+// is the only place a client can be held to it before it starts publishing.
+type KeyringFacts struct {
+	// BoardCoord is the "30301:<owner>:<d>" the three answers below are about.
+	BoardCoord string `json:"board_coord"`
+	// Confidential is `Cutover(coord)`'s ok — "at least one owner-signed
+	// CEK-bearing grant reached this reader" (spec §11.13). False means the fold
+	// gate is INERT for this board, not that the board is known-plaintext.
+	Confidential bool `json:"confidential"`
+	// Cutover is the derived cutover in unix SECONDS, 0 when Confidential is
+	// false (spec §11.13).
+	Cutover int64 `json:"cutover"`
+	// CurrentEpoch is the HIGHEST epoch this reader holds for the board, 0 when
+	// it holds none (spec §11.14).
+	CurrentEpoch int `json:"current_epoch"`
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +342,7 @@ func Load(path string) (*File, error) {
 // (JSON-normalized, sorted by id), the view membership sets, and the label-view
 // sets for whatever atoms the vector asks about.
 func Run(v Vector) (items []json.RawMessage, viewSets map[string][]string, labelSets map[string][]string, err error) {
-	opts, err := v.Options.projectOptions()
+	opts, err := v.Options.projectOptions(v.Events)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -320,10 +397,61 @@ func idsOf(in []*state.Item) []string {
 	return out
 }
 
+// deriveKeyring builds the reader keyring from the vector's OWN events, exactly
+// as rd does before folding (`boardReadKeyring` -> `DeriveBoardKeyring`,
+// `cmd/rd/nostr.go:969`). Returns nil when the vector does not use the derived
+// form.
+//
+// It is the ONE derivation both consumers go through — the fold inputs
+// (projectOptions) and the asserted facts (KeyringFactsFor) — so a vector's
+// expect.keyring can never describe a keyring different from the one its items
+// were folded with.
+func (o Options) deriveKeyring(events []*nostr.Event) (*rdsync.BoardKeyring, error) {
+	if o.Keyring == nil {
+		return nil, nil
+	}
+	reader, err := nostr.KeyFromHex(o.Keyring.ReaderSecret)
+	if err != nil {
+		return nil, fmt.Errorf("keyring.reader_secret: %w", err)
+	}
+	return rdsync.DeriveBoardKeyring(events, reader, o.Keyring.BoardAuthor, o.Keyring.BoardD), nil
+}
+
+// KeyringFactsFor derives the vector's keyring and reports the facts
+// expect.keyring asserts (spec §11.13, §11.14). It returns nil when the vector
+// does not use the derived-keyring form.
+func KeyringFactsFor(v Vector) (*KeyringFacts, error) {
+	kr, err := v.Options.deriveKeyring(v.Events)
+	if err != nil || kr == nil {
+		return nil, err
+	}
+	coord := rdsync.BoardCoord(v.Options.Keyring.BoardAuthor, v.Options.Keyring.BoardD)
+	cutover, confidential := kr.Cutover(coord)
+	if !confidential {
+		// Cutover's int64 is meaningless when ok is false; pin the zero so the
+		// file never suggests a client should read it.
+		cutover = 0
+	}
+	epoch, _, held := kr.CurrentEpoch(coord)
+	if !held {
+		epoch = 0
+	}
+	return &KeyringFacts{
+		BoardCoord:   coord,
+		Confidential: confidential,
+		Cutover:      cutover,
+		CurrentEpoch: epoch,
+	}, nil
+}
+
 // projectOptions materializes the data-form options into sync.ProjectOptions.
 // A nil Trusted stays nil (gate disabled); an empty Maintainers list stays nil
 // so the "no explicit maintainers" case is the production wiring exactly.
-func (o Options) projectOptions() (rdsync.ProjectOptions, error) {
+//
+// events is needed only by the derived-keyring form (Options.Keyring): that
+// keyring is a function of the SAME signed log the fold then replays, which is
+// the whole point — the key material is not an out-of-band fact.
+func (o Options) projectOptions(events []*nostr.Event) (rdsync.ProjectOptions, error) {
 	var opts rdsync.ProjectOptions
 	if o.Trusted != nil {
 		set := map[string]bool{}
@@ -362,6 +490,21 @@ func (o Options) projectOptions() (rdsync.ProjectOptions, error) {
 			b.cutovers[e.BoardCoord] = e.Cutover
 		}
 		opts.EncryptedBoards = b
+	}
+	if o.Keyring != nil {
+		if o.Decryptor != nil || o.EncryptedBoards != nil {
+			return opts, errors.New("options.keyring cannot be combined with options.decryptor / options.encrypted_boards: they set the same two fold inputs")
+		}
+		kr, err := o.deriveKeyring(events)
+		if err != nil {
+			return opts, err
+		}
+		// ONE object in BOTH slots, as production wires it
+		// (cmd/rd/nostr.go:969-976): the keys a reader holds and the boards it
+		// knows are confidential come from the same derivation, so they cannot
+		// disagree.
+		opts.Decryptor = kr
+		opts.EncryptedBoards = kr
 	}
 	return opts, nil
 }

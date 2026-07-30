@@ -162,6 +162,24 @@ export class BoardKeyring {
     return [...(this.ceks.get(coord)?.keys() ?? [])].sort((a, b) => a - b);
   }
 
+  /**
+   * currentEpoch returns the HIGHEST CEK epoch this reader holds for the board,
+   * or null when it holds none. Port of pkg/sync/keydist.go's CurrentEpoch
+   * (board-fold-spec.md §11.14).
+   *
+   * THIS IS THE EPOCH A WRITE SEALS UNDER, which is why it is a distinct question
+   * from `epochs()` and is NOT "the epoch of the newest grant I saw": a member
+   * that missed a rotation holds a STALE highest epoch and seals under it (the
+   * owner, who minted the rotation and self-wrapped it, always holds the true
+   * current one). Sealing under any other held epoch — the lowest, or whichever
+   * grant arrived last — publishes a card that part of the board cannot read, and
+   * nothing on the READ path would ever report it.
+   */
+  currentEpoch(coord: string): number | null {
+    const held = this.epochs(coord);
+    return held.length === 0 ? null : held[held.length - 1];
+  }
+
   /** @internal */
   addCEK(coord: string, epoch: number, cek: Uint8Array): void {
     let m = this.ceks.get(coord);

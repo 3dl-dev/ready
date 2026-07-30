@@ -74,24 +74,39 @@ func WrapKey(owner *nostr.Key, granteePubHex string, key [32]byte) (string, erro
 // unwrap). Anything else is an error, and every caller treats an error as "the
 // reader does not hold this key" — the fail-closed direction.
 func unwrapKey(reader *nostr.Key, counterpartyPubHex, wrapped string) ([32]byte, error) {
-	var out [32]byte
+	key, _, err := UnwrapKeyPayload(reader, counterpartyPubHex, wrapped)
+	return key, err
+}
+
+// UnwrapKeyPayload is unwrapKey plus the fact of WHICH encoding the payload used:
+// browserSafe is true for the 64-hex form and false for the legacy raw-32 form.
+//
+// That distinction is invisible to the Go CLI — both encodings yield the same key
+// here — and decisive in a browser, which can only reach the plaintext through
+// NIP-07's string-returning nip44.decrypt and therefore loses a raw payload to
+// UTF-8 substitution (see WrapKey). `rd confidential rewrap` uses it to tell a
+// grant a browser can already read from one that has to be re-minted, which is
+// what makes that command idempotent instead of republishing on every run.
+//
+// browserSafe is meaningful ONLY when err is nil.
+func UnwrapKeyPayload(reader *nostr.Key, counterpartyPubHex, wrapped string) (key [32]byte, browserSafe bool, err error) {
 	pt, err := nip44.Open(reader, counterpartyPubHex, wrapped)
 	if err != nil {
-		return out, err
+		return key, false, err
 	}
 	switch len(pt) {
 	case hex.EncodedLen(32):
 		decoded, derr := hex.DecodeString(string(pt))
 		if derr != nil {
-			return out, fmt.Errorf("sync: keydist: unwrapped key is not hex: %w", derr)
+			return key, false, fmt.Errorf("sync: keydist: unwrapped key is not hex: %w", derr)
 		}
-		copy(out[:], decoded)
-		return out, nil
+		copy(key[:], decoded)
+		return key, true, nil
 	case 32:
-		copy(out[:], pt)
-		return out, nil
+		copy(key[:], pt)
+		return key, false, nil
 	default:
-		return out, fmt.Errorf("sync: keydist: unwrapped key is %d bytes, want %d (hex) or 32 (raw)", len(pt), hex.EncodedLen(32))
+		return key, false, fmt.Errorf("sync: keydist: unwrapped key is %d bytes, want %d (hex) or 32 (raw)", len(pt), hex.EncodedLen(32))
 	}
 }
 
