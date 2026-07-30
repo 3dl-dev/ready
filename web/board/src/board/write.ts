@@ -38,18 +38,51 @@ export interface BoardWriter {
   moveStatus(itemId: string, toStatus: Status): Promise<void>;
   /** Resolve a gate from the detail pane's gate banner. */
   resolveGate(itemId: string, approve: boolean, reason?: string): Promise<void>;
+  /** Take the item: status active, assigned to the signing key. */
+  claim(itemId: string, reason?: string): Promise<void>;
+  /** Close it — resolution is an rd close resolution (done/cancelled/failed). */
+  close(itemId: string, resolution?: string, reason?: string): Promise<void>;
+  /** Retitle. */
+  setTitle(itemId: string, title: string): Promise<void>;
+  /** Re-prioritise (p0..p3). */
+  setPriority(itemId: string, priority: string): Promise<void>;
+  /** Add (present=true) or remove (present=false) one label atom. */
+  setLabel(itemId: string, label: string, present: boolean): Promise<void>;
+  /** A plain sentence explaining why this identity cannot write, or undefined
+   * when it can. The UI states it up front instead of only after a failed
+   * drag — a read-only board must SAY it is read-only (ready-b2b's security
+   * model: no NIP-07 provider means read-only, said plainly, never a prompt
+   * for a secret key). */
+  whyReadOnly?(): string | undefined;
 }
 
-/** The only BoardWriter that exists today. Every method throws
- * WriteNotImplementedError synchronously-as-a-rejection; callers (the drag
- * handler, the gate banner's approve/deny buttons) MUST catch it and revert
- * whatever optimistic UI change they made — see render.ts's onDrop handler,
- * which is the one call site exercising this today. */
+/** The FALLBACK BoardWriter: what a workspace mounted with no writer gets (a
+ * test harness, or a render path that has no board/relay context). The real one
+ * is NostrBoardWriter (nostrwriter.ts), wired in main.ts. Every method rejects;
+ * callers (the drag handler, the gate banner's approve/deny buttons, the detail
+ * pane's actions) MUST catch it and revert whatever optimistic UI change they
+ * made — see render.ts's handleDrop, which reverts the card to its prior
+ * column and shows the message. */
 export const unimplementedWriter: BoardWriter = {
   moveStatus(_itemId: string, _toStatus: Status): Promise<void> {
     return Promise.reject(new WriteNotImplementedError(`moveStatus(${_itemId} -> ${_toStatus})`));
   },
   resolveGate(_itemId: string, _approve: boolean): Promise<void> {
     return Promise.reject(new WriteNotImplementedError(`resolveGate(${_itemId})`));
+  },
+  claim(_itemId: string): Promise<void> {
+    return Promise.reject(new WriteNotImplementedError(`claim(${_itemId})`));
+  },
+  close(_itemId: string, _resolution?: string): Promise<void> {
+    return Promise.reject(new WriteNotImplementedError(`close(${_itemId})`));
+  },
+  setTitle(_itemId: string, _title: string): Promise<void> {
+    return Promise.reject(new WriteNotImplementedError(`setTitle(${_itemId})`));
+  },
+  setPriority(_itemId: string, _priority: string): Promise<void> {
+    return Promise.reject(new WriteNotImplementedError(`setPriority(${_itemId})`));
+  },
+  setLabel(_itemId: string, _label: string, _present: boolean): Promise<void> {
+    return Promise.reject(new WriteNotImplementedError(`setLabel(${_itemId})`));
   },
 };

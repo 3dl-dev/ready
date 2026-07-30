@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeItem } from "./testitem";
 import { mountBoardWorkspace, type BoardWorkspace } from "./render";
 import type { BoardWriter } from "./write";
-import { WriteNotImplementedError } from "./write";
+import { unimplementedWriter, WriteNotImplementedError } from "./write";
 
 let container: HTMLElement;
 let ws: BoardWorkspace | undefined;
@@ -411,6 +411,7 @@ describe("write affordance (drag-and-drop)", () => {
   it("a custom writer is used when supplied — the interface is genuinely pluggable", async () => {
     let called: [string, string] | undefined;
     const writer: BoardWriter = {
+      ...unimplementedWriter,
       moveStatus: async (id, to) => {
         called = [id, to];
       },
@@ -423,5 +424,89 @@ describe("write affordance (drag-and-drop)", () => {
     await ws.handleDrop("moveme", "active");
     expect(called).toEqual(["moveme", "active"]);
     expect(container.querySelector(".transient-error")).toBeNull();
+  });
+});
+
+/** columnOf reports which column a card is currently rendered in — the only
+ * observation that actually witnesses "the card moved" / "the card went back". */
+function columnOf(container: HTMLElement, id: string): string | undefined {
+  const card = [...container.querySelectorAll(".card")].find(
+    (c) => c.querySelector(".card-id")?.textContent?.trim() === id,
+  );
+  return (card?.closest(".column") as HTMLElement | null)?.dataset.column;
+}
+
+describe("optimistic write, and the revert when it is refused (ready-b2b DC4)", () => {
+  it("the card moves IMMEDIATELY, before the publish resolves", async () => {
+    let release: () => void = () => {};
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      moveStatus: () => new Promise<void>((res) => (release = res)),
+    };
+    const item = makeItem({ id: "moveme", status: "inbox" });
+    ws = mountBoardWorkspace(container, [item], { writer });
+    expect(columnOf(container, "moveme")).toBe("ready");
+
+    const pending = ws.handleDrop("moveme", "active");
+    // Not awaited yet: the publish has NOT resolved, and the card has already moved.
+    expect(columnOf(container, "moveme")).toBe("moving");
+    expect(container.querySelector(".transient-error")).toBeNull();
+
+    release();
+    await pending;
+    expect(columnOf(container, "moveme")).toBe("moving");
+  });
+
+  it("a REJECTED write returns the card to its prior column and says what happened", async () => {
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      moveStatus: async () => {
+        throw new Error("the relay rejected this change: restricted: pubkey is not admitted");
+      },
+    };
+    const item = makeItem({ id: "moveme", status: "inbox" });
+    ws = mountBoardWorkspace(container, [item], { writer });
+    await ws.handleDrop("moveme", "active");
+    expect(columnOf(container, "moveme")).toBe("ready");
+    expect(container.querySelector(".transient-error")?.textContent).toContain("restricted");
+  });
+
+  it("a rejected retitle restores the ORIGINAL title, not a half-applied one", async () => {
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      setTitle: async () => {
+        throw new Error("nope");
+      },
+    };
+    const item = makeItem({ id: "t1", title: "Original" });
+    ws = mountBoardWorkspace(container, [item], { writer });
+    await ws.handleRetitle("t1", "Rewritten");
+    ws.selectItem("t1");
+    expect(container.querySelector(".detail h2")?.textContent ?? container.textContent).toContain("Original");
+  });
+});
+
+describe("the detail pane's write affordances (the five that are not a drag or a gate)", () => {
+  it("renders claim / close / rename / priority / label for a writable board", () => {
+    const writer: BoardWriter = { ...unimplementedWriter, whyReadOnly: () => undefined };
+    ws = mountBoardWorkspace(container, [makeItem({ id: "a1" })], { writer });
+    ws.selectItem("a1");
+    expect(container.querySelector(".act-claim")).not.toBeNull();
+    expect(container.querySelector(".act-close")).not.toBeNull();
+    expect(container.querySelector(".act-title-save")).not.toBeNull();
+    expect(container.querySelector(".act-priority")).not.toBeNull();
+    expect(container.querySelector(".act-label-add")).not.toBeNull();
+  });
+
+  it("a read-only board renders NO write affordance and states the reason instead", () => {
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      whyReadOnly: () => "Read-only: this key holds no write grant on board proj.",
+    };
+    ws = mountBoardWorkspace(container, [makeItem({ id: "a1" })], { writer });
+    ws.selectItem("a1");
+    expect(container.querySelector(".act-claim")).toBeNull();
+    expect(container.querySelector(".act-priority")).toBeNull();
+    expect(container.querySelector(".read-only-note")?.textContent).toContain("no write grant");
   });
 });

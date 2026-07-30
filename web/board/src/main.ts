@@ -35,6 +35,10 @@ const BUILD_STAMP: string = import.meta.env.VITE_BUILD_STAMP ?? "dev-local";
 
 import { authTransition, canSign, type AuthTransition } from "./lib/auth";
 import { hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
+import { NostrBoardWriter, NotAuthorizedError } from "./board/nostrwriter";
+import type { BoardWriter } from "./board/write";
+import type { Nip07Signer } from "./lib/publish";
+import { deriveLevels } from "./lib/rolegrant";
 import { decodeNpub, encodeNpub } from "./lib/npub";
 import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
 import type { PortfolioKeys } from "./lib/portfoliokeys";
@@ -52,7 +56,7 @@ import { applyFragmentKeys, deriveBoardKeyring, KIND_ROLE_GRANT, type BoardKeyri
 import { nip07KeyUnwrapper, neverUnwraps, type KeyUnwrapper } from "./lib/keyunwrap";
 import type { EncryptedBoardSet } from "./lib/envelope";
 import { PLACEHOLDER, boardCoordOf, cekEpochOf, isConfidential } from "./lib/envelope";
-import { verifyEvent } from "./lib/nostrevent";
+import { verifiedEvents, verifyEvent } from "./lib/nostrevent";
 import { foldItemSource } from "./lib/itemsource";
 import { mountBoardWorkspace } from "./board/render";
 import type { Item } from "./board/types";
@@ -500,8 +504,14 @@ export async function loadBoardItems(
   deps: BoardDeps,
   onStatus: (e: RelayStatusEvent) => void,
   fragmentKeys?: PortfolioKeys,
-): Promise<{ items: Item[]; confidential: boolean; unestablished: UnestablishedBoard[] }> {
+): Promise<{
+  items: Item[];
+  confidential: boolean;
+  unestablished: UnestablishedBoard[];
+  writers: Map<string, NostrBoardWriter>;
+}> {
   const out: Item[] = [];
+  const writers = new Map<string, NostrBoardWriter>();
   let confidential = false;
   const unestablished: UnestablishedBoard[] = [];
   const unwrap = deps.keyUnwrapper(identity);
@@ -548,11 +558,90 @@ export async function loadBoardItems(
         b.coord,
       );
       out.push(...src.loadItems(events));
+
+      // ready-b2b: the WRITER for this board, built from the same snapshot the
+      // read just folded. It is per-board because authority is per-board — the
+      // grant levels, the owner pubkey and whether the board is confidential all
+      // differ across the portfolio, and a writer that averaged them would be
+      // wrong for every board but one.
+      writers.set(
+        b.coord,
+        new NostrBoardWriter({
+          signerPubkey: identity.pubkey,
+          signer: canSign(identity.auth) ? nip07Signer() : undefined,
+          board: { ownerPubkey: b.ownerPubkey, boardD: b.boardD, title: b.title },
+          relays,
+          snapshot: events,
+          grantLevels: deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD).levels,
+          confidential: state !== "public",
+        }),
+      );
     } catch {
       // Skip this board; the others still render.
     }
   }
-  return { items: out, confidential, unestablished };
+  return { items: out, confidential, unestablished, writers };
+}
+
+/** nip07Signer returns the extension's SIGNING surface, or undefined when it
+ * cannot sign. Kept beside the read-side nip44Provider for the same reason that
+ * one exists: the page reaches the extension through exactly two narrow
+ * functions, and neither of them can ever be a key. */
+function nip07Signer(win: Window = window): Nip07Signer | undefined {
+  const ns = win.nostr as (Window["nostr"] & Partial<Nip07Signer>) | undefined;
+  return ns && typeof ns.signEvent === "function" ? (ns as unknown as Nip07Signer) : undefined;
+}
+
+/**
+ * boardScopedWriter routes each write to the writer for the board the ITEM
+ * lives on. The board view is explicitly cross-board, so "the writer" is not one
+ * object: authority, confidentiality and the owner pubkey are per-board
+ * properties, and an item's board coordinate is the only thing that says which
+ * set applies. An item whose board produced no writer (it failed to load) is
+ * refused rather than written to a neighbouring board.
+ *
+ * EXPORTED FOR TESTS.
+ */
+export function boardScopedWriter(
+  writers: Map<string, NostrBoardWriter>,
+  itemBoard: Map<string, string>,
+): BoardWriter {
+  const pick = (itemId: string): NostrBoardWriter => {
+    const coord = itemBoard.get(itemId);
+    const w = coord ? writers.get(coord) : undefined;
+    if (!w) {
+      throw new NotAuthorizedError(
+        `no writable board is loaded for item ${itemId} — reload the board, or check that the owner ` +
+          `granted this key access`,
+      );
+    }
+    return w;
+  };
+  const on = <T>(itemId: string, f: (w: NostrBoardWriter) => Promise<T>): Promise<T> => {
+    try {
+      return f(pick(itemId));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  };
+  return {
+    moveStatus: (id, to) => on(id, (w) => w.moveStatus(id, to)),
+    resolveGate: (id, approve, reason) => on(id, (w) => w.resolveGate(id, approve, reason)),
+    claim: (id, reason) => on(id, (w) => w.claim(id, reason)),
+    close: (id, resolution, reason) => on(id, (w) => w.close(id, resolution, reason)),
+    setTitle: (id, title) => on(id, (w) => w.setTitle(id, title)),
+    setPriority: (id, priority) => on(id, (w) => w.setPriority(id, priority)),
+    setLabel: (id, label, present) => on(id, (w) => w.setLabel(id, label, present)),
+    whyReadOnly: () => {
+      // The board-level answer, for the detail pane's actions block: read-only
+      // only when EVERY loaded board is. With a mixed portfolio the actions stay
+      // available and the per-board writer refuses the ones it must.
+      const reasons = [...writers.values()].map((w) => w.whyReadOnly());
+      if (reasons.length === 0) return "Read-only: no board finished loading.";
+      const blocking = reasons.filter((r) => r !== undefined);
+      return blocking.length === reasons.length ? blocking[0] : undefined;
+    },
+  };
 }
 
 /**
@@ -838,7 +927,7 @@ export async function afterLogin(
     }
 
     const linkKeys = fragmentKeyMap(fragment);
-    const { items, confidential, unestablished } = await loadBoardItems(
+    const { items, confidential, unestablished, writers } = await loadBoardItems(
       boards,
       relays,
       authorityEvents,
@@ -859,6 +948,10 @@ export async function afterLogin(
       .join(" ");
 
     mountBoardWorkspace(root, items, {
+      writer: boardScopedWriter(
+        writers,
+        new Map(items.filter((i) => i.boardCoord).map((i) => [i.id, i.boardCoord!])),
+      ),
       viewerId: identity.pubkey,
       boards: boards.map((b) => ({ coord: b.coord, title: b.title || "(confidential board)" })),
       identityLine: `Logged in as ${safeEncodeNpub(identity.pubkey)}${canSign(identity.auth) ? "" : " (read-only)"}`,
