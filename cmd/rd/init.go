@@ -160,6 +160,43 @@ func initNostr(cwd, name, description string, public bool, relays []string, loca
 		return fmt.Errorf("appending board event to nostr log: %w", err)
 	}
 
+	// ready-cbc: bootstrap confidentiality EAGERLY, at init time, rather than
+	// waiting for the owner's first WRITE (boardConfidentialEnvelope,
+	// confidential.go). Without this, a board sits un-bootstrapped from the
+	// moment `rd init` returns until the owner's first `rd create`/etc — and the
+	// browser can NEVER perform that bootstrap itself: minting the self-grant
+	// means wrapping (NIP-44 encrypting) the CEK to the owner's own key, which
+	// needs ECDH over the secret key the page is architecturally forbidden to
+	// hold (web/board/src/lib/keyunwrap.ts's Nip44Provider deliberately has no
+	// `encrypt`). So an owner who ran `rd init` and opened the board page before
+	// ever writing from the CLI stayed read-only in the browser, even though
+	// ready-191 already taught the page how to SEAL a write once it holds a CEK.
+	// Minting here — right after the board event, before anything else — closes
+	// that gap: the board is bootstrapped from birth, so the browser can read
+	// the self-grant, unwrap the CEK via nip44.decrypt (already in the signer
+	// surface), and write immediately. A --public board seals nothing and gets
+	// no CEK, matching boardIsConfidential's own definition.
+	if !public {
+		pub, ok, perr := nostrPublisher()
+		if perr != nil {
+			return fmt.Errorf("provisioning publisher to bootstrap the confidential board key: %w", perr)
+		}
+		if !ok {
+			return fmt.Errorf("cannot resolve the project directory to bootstrap the confidential board key")
+		}
+		cek, err := rdSync.MintKey()
+		if err != nil {
+			return fmt.Errorf("minting confidential board CEK: %w", err)
+		}
+		ltk, err := rdSync.MintKey()
+		if err != nil {
+			return fmt.Errorf("minting confidential board LTK: %w", err)
+		}
+		if _, err := publishOwnerCEKSelfGrant(pub, owner, boardD, cek, ltk, 1); err != nil {
+			return fmt.Errorf("bootstrapping confidential board key: %w", err)
+		}
+	}
+
 	if jsonOutput {
 		out := map[string]interface{}{
 			"name":        name,

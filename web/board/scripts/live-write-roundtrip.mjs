@@ -827,6 +827,53 @@ async function main() {
     // to be somebody else decrypting, or it proves nothing about the wire.
     const readerKey = CONFIDENTIAL ? await mintKey(vite) : undefined;
 
+    // ready-cbc's OWN done condition, checked BEFORE a single CLI write happens
+    // below (the seeding loop is next): a confidential board's owner self-grant
+    // (kind 39301, the CEK+LTK a browser needs to fetch and nip44.decrypt) must
+    // already be on the relay from `rd init` alone. Before this fix, that grant
+    // did not exist until the owner's first WRITE (boardConfidentialEnvelope's
+    // bootstrap-on-first-write) — so an owner who opened the board page right
+    // after `rd init`, and before ever running `rd create`, stayed read-only. A
+    // FRESH reader (empty log, never seen anything but the relay) is what makes
+    // this a check on what the relay retains, not on this process's own state.
+    if (CONFIDENTIAL) {
+      step("ready-cbc: `rd init` ALONE (zero CLI writes yet) already bootstrapped the owner self-grant");
+      const bootstrapHome = path.join(tmp, "bootstrap-check-home");
+      const bootstrapDir = path.join(tmp, "bootstrap-check");
+      mkdirSync(bootstrapHome, { recursive: true });
+      mkdirSync(path.join(bootstrapDir, ".ready"), { recursive: true });
+      writeFileSync(
+        path.join(bootstrapDir, ".ready", "config.json"),
+        JSON.stringify(
+          {
+            project_name: "bootstrap-check",
+            board: coord,
+            public: false,
+            relay_endpoints: [{ url: RELAY, read: true, write: false }],
+          },
+          null,
+          2,
+        ),
+      );
+      rd(rdBin, bootstrapDir, bootstrapHome, ["sync"]);
+      const bootstrapLogPath = path.join(bootstrapDir, ".ready", "nostr-log.jsonl");
+      const bootstrapEvents = existsSync(bootstrapLogPath)
+        ? readFileSync(bootstrapLogPath, "utf8")
+            .split("\n")
+            .filter((l) => l.trim() !== "")
+            .map((l) => JSON.parse(l))
+        : [];
+      const selfGrants = bootstrapEvents.filter((e) => e.kind === 39301 && e.pubkey === owner);
+      if (selfGrants.length === 0) {
+        throw new Error(
+          "rd init did NOT eagerly bootstrap the confidential board: no owner self-grant (kind 39301) reached " +
+            "the relay before any CLI write ran — a browser opening this board right after `rd init` would be " +
+            "stuck read-only until someone wrote from the CLI first",
+        );
+      }
+      log(`  owner self-grant already on the relay (${selfGrants.length} event) before the first CLI write`);
+    }
+
     step("seed the items each operation acts on (rd's OWN writer, published to the relay)");
     const ids = {
       move: `${BOARD_D}-move`,
