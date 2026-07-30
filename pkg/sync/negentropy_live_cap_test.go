@@ -36,7 +36,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,27 +229,195 @@ func TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt(t *testing.T) {
 // The configured relay: a cap STRICTLY BELOW the limit rd asks for
 // ---------------------------------------------------------------------------
 
-// subCapRelayURL names a relay whose per-REQ cap is BELOW SyncPageLimit. No
-// public relay is, and neither relay this repo can otherwise reach could be told
-// to be — which is why the sub-limit cap was, for two revisions, the one
-// load-bearing premise under cappedRelay that had been measured against nothing.
+// The relay this experiment needs — one whose per-REQ cap is BELOW the limit rd
+// asks for — does not exist in the wild: no public relay is configured that way,
+// and neither relay this repo can otherwise reach could be told to be. For two
+// revisions that made the sub-limit cap the one load-bearing premise under
+// cappedRelay measured against nothing, and for one more it made the measurement
+// a transcript in a commit message that nobody else could re-run, because the
+// test skipped unless an operator had already stood a relay up by hand.
 //
-// It is not an inability. strfry's cap is its own `maxFilterLimit`, so one can be
-// stood up in about ten seconds:
+// So the test stands its own up. strfry's cap is its own `maxFilterLimit`, the
+// image is small, and the container is ready in about a second — measured 0.5s
+// wall for the whole proof once the image is local. That turns the central
+// premise from a one-off transcript into something any checkout can re-derive.
+const (
+	// subCapRelayImageDefault is the strfry distribution the experiment runs
+	// against. Overridable via RD_NOSTR_SUBCAP_RELAY_IMAGE so a CI runner can
+	// pin a digest; the behaviours it is here to measure are ASSERTED below, so
+	// a distribution that behaves differently fails loudly rather than quietly
+	// measuring something else.
+	subCapRelayImageDefault = "dockurr/strfry:latest"
+
+	// subCapRelayMaxFilterLimit is the cap written into that relay's config. It
+	// must be strictly below BOTH SyncPageLimit (or the window rd asks for is
+	// never clamped) and subCapBoardSize (or nothing is withheld) — the
+	// discriminating band the test asserts it is standing in.
+	subCapRelayMaxFilterLimit = 400
+
+	// subCapRelayContainerPrefix names the containers this file creates, so a
+	// crashed run leaves something greppable: `docker ps -a | grep rd-strfry-subcap`.
+	subCapRelayContainerPrefix = "rd-strfry-subcap"
+)
+
+// subCapRelayURL returns a relay whose per-REQ cap is below SyncPageLimit,
+// standing one up if the environment has not supplied one.
+//
+// RD_NOSTR_SUBCAP_RELAY_URL still wins when set: an operator who has a suitably
+// configured relay already running (or is on a host without docker) can point the
+// proof at it, and no container is created. The relay it names must have a
+// per-REQ cap strictly below subCapBoardSize, or the test says so and fails.
+//
+// STANDING ONE UP BY HAND. Every line below was run verbatim on 2026-07-30 and
+// the test passed against the result; the earlier revision of this doc omitted
+// the tmpfs mount and strfry died on the spot with
+// `strfry error: mdb_env_open: No such file or directory` (see startSubCapRelay
+// for why). From an empty scratch directory:
 //
 //	docker run --rm --entrypoint cat dockurr/strfry:latest \
 //	  /etc/strfry.conf.default > strfry.conf
 //	sed -i 's/maxFilterLimit = 500/maxFilterLimit = 400/' strfry.conf
 //	sed -i 's|plugin = "/app/write-policy.py"|plugin = ""|' strfry.conf
 //	docker run -d --name rd-strfry-cap400 -p 127.0.0.1:17777:7777 \
-//	  -v $PWD/strfry.conf:/etc/strfry.conf dockurr/strfry:latest
+//	  --tmpfs /app/strfry-db \
+//	  -v "$PWD/strfry.conf:/etc/strfry.conf" dockurr/strfry:latest
 //	RD_NOSTR_LIVE_RELAY=1 RD_NOSTR_SUBCAP_RELAY_URL=ws://127.0.0.1:17777 \
 //	  go test ./pkg/sync/ -run TestLiveRelay_ASubLimitCapped
+//	docker rm -f rd-strfry-cap400
+func subCapRelayURL(t *testing.T) string {
+	t.Helper()
+	if r := os.Getenv("RD_NOSTR_SUBCAP_RELAY_URL"); r != "" {
+		t.Logf("using the relay named by RD_NOSTR_SUBCAP_RELAY_URL (%s); not starting a container", r)
+		return r
+	}
+	return startSubCapRelay(t)
+}
+
+// startSubCapRelay runs a throwaway strfry with maxFilterLimit below
+// SyncPageLimit and returns its ws:// URL. The container is removed when the test
+// ends; its logs are dumped first if the test failed.
 //
-// (The write-policy line matters: the image ships a pubkey whitelist that NAKs
-// every publish with "blocked: pubkey … not in whitelist", which looks exactly
-// like an empty board.)
-func subCapRelayURL() string { return os.Getenv("RD_NOSTR_SUBCAP_RELAY_URL") }
+// THE THREE THINGS THAT MAKE THIS WORK, each of which cost a failed attempt:
+//
+//   - The db directory. `db = "./strfry-db/"` resolves to /app/strfry-db, and the
+//     image does NOT contain it — strfry will not create it either, so a plain
+//     `docker run` of this image dies immediately with
+//     `strfry error: mdb_env_open: No such file or directory`. A tmpfs mount at
+//     that path both creates it and keeps the throwaway board in RAM.
+//   - The write policy. The image ships `plugin = "/app/write-policy.py"`, a
+//     pubkey whitelist that NAKs every publish with
+//     "blocked: pubkey … not in whitelist" — which from the client looks exactly
+//     like an empty board. It has to be turned off.
+//   - The cap itself, edited into the shipped default config rather than into a
+//     config this file embeds, so the rest of the relay's settings stay upstream's.
+//     Both edits are checked for having actually applied: if the upstream config
+//     changes shape, this fails here with the reason rather than downstream with a
+//     measurement that silently means nothing.
+//
+// The host port is assigned by docker (`-p 127.0.0.1::7777`) and read back, so
+// concurrent runs on one machine do not collide over a fixed port.
+func startSubCapRelay(t *testing.T) string {
+	t.Helper()
+	image := subCapRelayImageDefault
+	if env := os.Getenv("RD_NOSTR_SUBCAP_RELAY_IMAGE"); env != "" {
+		image = env
+	}
+
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Fatalf("this proof stands its own sub-limit-capped relay up and no `docker` is on PATH (%v). Either install docker, or run a strfry with maxFilterLimit < %d yourself and name it in RD_NOSTR_SUBCAP_RELAY_URL (see startSubCapRelay for what the config needs). This is NOT skipped: it is the only live witness that a relay clamps rd's DOWNLOAD below what negentropy promised, which is the premise the paging walk exists to defeat.",
+			err, SyncPageLimit)
+	}
+	run := func(timeout time.Duration, args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, docker, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// The daemon has to be reachable before anything below means anything: a
+	// docker binary with no daemon behind it fails four different ways otherwise.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if out, err := exec.CommandContext(ctx, docker, "version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
+		cancel()
+		t.Fatalf("docker is installed but its daemon is not reachable (%v):\n%s\nStart it, or name an already-running sub-limit-capped relay in RD_NOSTR_SUBCAP_RELAY_URL.", err, out)
+	}
+	cancel()
+
+	pctx, pcancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if err := exec.CommandContext(pctx, docker, "image", "inspect", image).Run(); err != nil {
+		pcancel()
+		t.Logf("pulling %s (not present locally)", image)
+		run(5*time.Minute, "pull", image)
+	} else {
+		pcancel()
+	}
+
+	// The shipped default config, with exactly two edits.
+	conf := run(60*time.Second, "run", "--rm", "--entrypoint", "cat", image, "/etc/strfry.conf.default")
+	patch := func(s, old, new string) string {
+		t.Helper()
+		if n := strings.Count(s, old); n != 1 {
+			t.Fatalf("%s's /etc/strfry.conf.default contains %d occurrences of %q, want exactly 1 — the image's config changed shape and this experiment can no longer configure it. Fix the substitution here; do not let it measure an unconfigured relay.", image, n, old)
+		}
+		return strings.Replace(s, old, new, 1)
+	}
+	conf = patch(conf, "maxFilterLimit = 500", fmt.Sprintf("maxFilterLimit = %d", subCapRelayMaxFilterLimit))
+	conf = patch(conf, `plugin = "/app/write-policy.py"`, `plugin = ""`)
+	confPath := filepath.Join(t.TempDir(), "strfry.conf")
+	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	name := fmt.Sprintf("%s-%d", subCapRelayContainerPrefix, time.Now().UnixNano())
+	run(2*time.Minute, "run", "-d", "--name", name,
+		"-p", "127.0.0.1::7777",
+		"--tmpfs", "/app/strfry-db", // the image has no db dir; strfry will not make one
+		"-v", confPath+":/etc/strfry.conf:ro",
+		image)
+	t.Cleanup(func() {
+		if t.Failed() {
+			out, _ := exec.Command(docker, "logs", "--tail", "50", name).CombinedOutput()
+			t.Logf("sub-cap relay %s logs:\n%s", name, out)
+		}
+		if out, err := exec.Command(docker, "rm", "-f", name).CombinedOutput(); err != nil {
+			t.Logf("removing sub-cap relay container %s: %v\n%s", name, err, out)
+		}
+	})
+
+	hostPort := run(30*time.Second, "port", name, "7777/tcp")
+	if i := strings.IndexByte(hostPort, '\n'); i >= 0 {
+		hostPort = strings.TrimSpace(hostPort[:i])
+	}
+	if hostPort == "" {
+		t.Fatalf("docker port %s 7777/tcp returned nothing — the container is not publishing a host port", name)
+	}
+	url := "ws://" + hostPort
+
+	// Ready when it answers a REQ, not merely when docker says "Up": strfry opens
+	// its listener a beat after the process starts, and a publish into that beat
+	// fails as a connection error that reads like a broken relay.
+	deadline := time.Now().Add(60 * time.Second)
+	for attempt := 1; ; attempt++ {
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := nostr.FetchMany(rctx, url, map[string]any{"kinds": []int{KindCard}, "limit": 1})
+		rcancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			logs, _ := exec.Command(docker, "logs", "--tail", "50", name).CombinedOutput()
+			t.Fatalf("sub-cap relay %s (container %s) never answered a REQ after %d attempts: %v\n%s", url, name, attempt, err, logs)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Logf("stood up a sub-limit-capped relay: %s (image %s, maxFilterLimit=%d, container %s)", url, image, subCapRelayMaxFilterLimit, name)
+	return url
+}
 
 // subCapBoardSize sits strictly between the relay's cap and SyncPageLimit, which
 // is the band where the two candidate termination rules DISAGREE: at 450 the
@@ -261,7 +431,12 @@ const subCapBoardSize = 450
 // configured to have one, and it is the live witness for every behaviour
 // cappedRelay models.
 //
-// MEASURED 2026-07-30, dockurr/strfry with maxFilterLimit=400, 600-event board:
+// MEASURED 2026-07-30 by a standalone probe against dockurr/strfry with
+// maxFilterLimit=400 over a 600-event board. The rows are recorded here because
+// the sweep across limits is wider than the proof needs; the three that carry the
+// argument (NEG-OPEN honours the limit, the REQ clamps, the walk defeats it) are
+// re-derived by the assertions below on every run, against a relay this test
+// stands up itself:
 //
 //	NEG-OPEN limit=100/399/400/401/500 -> 100/399/400/401/500   HONOURED
 //	NEG-OPEN limit=1000/5000/none      -> 600 (the whole board) HONOURED
@@ -282,17 +457,17 @@ const subCapBoardSize = 450
 //	relayWindow >= SyncPageLimit -> downloaded=400 of 450, pages=1, no error
 //	the `until` cursor           -> downloaded=450,        pages=3
 //
-// Skipped unless RD_NOSTR_SUBCAP_RELAY_URL names such a relay, because a relay
-// with this configuration has to be created on purpose. The command that creates
-// it is in subCapRelayURL's doc above.
+// A relay with this configuration has to be created on purpose, so this test
+// creates one (startSubCapRelay) rather than waiting for an env var to name one.
+// It therefore RUNS under the package's own live invocation
+// `RD_NOSTR_LIVE_RELAY=1 go test ./pkg/sync/` — it does not skip, which is the
+// point: the premise above is the one this whole file exists to hold, and a
+// premise nobody can re-run is a transcript, not a proof.
 func TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently(t *testing.T) {
 	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
 		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live sub-limit-cap measurement")
 	}
-	relay := subCapRelayURL()
-	if relay == "" {
-		t.Skip("set RD_NOSTR_SUBCAP_RELAY_URL to a relay whose maxFilterLimit is below SyncPageLimit (see subCapRelayURL for the docker one-liner)")
-	}
+	relay := subCapRelayURL(t)
 	k, err := nostr.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +491,7 @@ func TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently(t *testing.T) {
 			t.Fatalf("publish event %d: %v", i, a.Err)
 		}
 		if !a.Accepted {
-			t.Fatalf("relay refused event %d: %q — if this says \"not in whitelist\", the image's write-policy plugin is still enabled; see subCapRelayURL", i, a.Message)
+			t.Fatalf("relay refused event %d: %q — if this says \"not in whitelist\", the image's write-policy plugin is still enabled; see startSubCapRelay", i, a.Message)
 		}
 	}
 	filter := BoardSyncFilter(boardCoord, nil)
@@ -351,8 +526,8 @@ func TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently(t *testing.T) {
 	}
 	t.Logf("MEASURED: a REQ for those %d ids returned %d events and NO error", len(one.Need), len(fetched))
 	if len(fetched) >= len(one.Need) {
-		t.Fatalf("%s served all %d requested ids — its per-REQ cap is not below SyncPageLimit, so this test measures nothing. Point RD_NOSTR_SUBCAP_RELAY_URL at a relay with maxFilterLimit < %d",
-			relay, len(one.Need), SyncPageLimit)
+		t.Fatalf("%s served all %d requested ids — its per-REQ cap is not below the %d ids negentropy named, so this test measures nothing. The relay this test stands up is configured maxFilterLimit=%d; if RD_NOSTR_SUBCAP_RELAY_URL is set, that relay's cap must be below %d too",
+			relay, len(fetched), len(one.Need), subCapRelayMaxFilterLimit, subCapBoardSize)
 	}
 
 	// (3) AND THE WALK STILL LANDS THE WHOLE BOARD. Under the retired
