@@ -68,7 +68,12 @@ Counts are compared as a PROJECTION, not as raw totals. Kinds 30301/30302/39301
 are addressable: a relay keeps one event per coordinate while the local log keeps
 every historical re-materialization, so a correctly-backfilled board legitimately
 shows fewer events on the relay. What must match is the set of coordinates, the
-winning event for each, and every non-addressable status event by id.`,
+winning event for each, and every non-addressable status event by id.
+
+A coordinate that fully matches but whose local history shows a plaintext
+predecessor is named under superseded_coords, not missing_coords or
+stale_coords: a deliberate re-seal mints a new event id, so it does not count
+against match.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		relays, _ := cmd.Flags().GetStringArray("relay")
 		boardsMode, _ := cmd.Flags().GetBool("boards")
@@ -147,9 +152,9 @@ winning event for each, and every non-addressable status event by id.`,
 			}
 		} else {
 			for _, a := range results {
-				fmt.Printf("%s  board=%s match=%v  items local=%d relay=%d  events local=%d relay=%d  definition=%v  missing_coords=%d stale_coords=%d missing_status=%d verify_failures=%d\n",
+				fmt.Printf("%s  board=%s match=%v  items local=%d relay=%d  events local=%d relay=%d  definition=%v  missing_coords=%d stale_coords=%d superseded_coords=%d missing_status=%d verify_failures=%d\n",
 					a.Relay, a.BoardCoord, a.Match, a.LocalItems, a.RelayItems, a.LocalEvents, a.RelayEvents,
-					a.BoardDefinitionOnRelay, len(a.MissingCoords), len(a.StaleCoords), a.MissingRegular, a.RelayVerifyFailures)
+					a.BoardDefinitionOnRelay, len(a.MissingCoords), len(a.StaleCoords), len(a.SupersededCoords), a.MissingRegular, a.RelayVerifyFailures)
 			}
 		}
 		if firstErr != nil {

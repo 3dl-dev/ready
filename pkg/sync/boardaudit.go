@@ -84,6 +84,22 @@ type BoardRelayAudit struct {
 	MissingCoords     []string `json:"missing_coords,omitempty"`
 	StaleCoords       []string `json:"stale_coords,omitempty"`
 
+	// SupersededCoords (ready-fcd) names coordinates that FULLY MATCH the relay
+	// (got.ID == want.ID — not Missing, not Stale) where the local winner is a
+	// CONFIDENTIAL event and an OLDER PLAINTEXT event for that same coordinate
+	// exists in the local log. That is exactly the shape a deliberate re-seal
+	// leaves behind (ready-336): kind-30302 is addressable, so publishing the
+	// sealed replacement EVICTS the plaintext copy from the relay via ordinary
+	// NIP-33 replacement — no delete, no error, nothing to repair. Without this
+	// field, an operator re-sealing 24 boards has no way to tell "this coordinate
+	// changed on purpose" from "this coordinate is corrupt or mid-repair" apart
+	// from re-deriving the whole history by hand — and re-sealing mints new event
+	// ids for every coordinate it touches, so the first audit after a bulk re-seal
+	// would otherwise report mass, indistinguishable "staleness" across boards.
+	// Purely informational: a superseded coordinate is by definition matched
+	// (got.ID == want.ID), so its presence here never affects Match.
+	SupersededCoords []string `json:"superseded_coords,omitempty"`
+
 	// MissingRegular counts local non-addressable events (the status chain) the
 	// relay did not serve; MissingRegularSample is a bounded sample of their ids
 	// for diagnosis.
@@ -98,7 +114,10 @@ type BoardRelayAudit struct {
 
 	// Match is the pass criterion: the board definition is present, no
 	// addressable coordinate is missing or stale, no regular event is missing,
-	// and nothing the relay served failed verification.
+	// and nothing the relay served failed verification. SupersededCoords is
+	// deliberately NOT part of this criterion: by construction every coordinate
+	// in it already has got.ID == want.ID, so a board whose only irregularity is
+	// a fully-converged re-seal reports Match == true.
 	Match bool `json:"match"`
 }
 
@@ -149,6 +168,11 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 	localByID := map[string]*nostr.Event{}        // id -> event, for delta assembly
 	localItems := map[string]bool{}
 	localSeen := map[string]bool{}
+	// localHadPlaintext records every coordinate that the local log EVER held a
+	// non-confidential (plaintext) event for — including versions long since
+	// superseded. The log is append-only (ready-336), so this is the only place
+	// that fact survives once a re-seal's sealed replacement wins the coordinate.
+	localHadPlaintext := map[string]bool{}
 	for _, e := range localEvents {
 		if e == nil || localSeen[e.ID] || !EventBelongsToBoard(e, boardCoord) {
 			continue
@@ -166,6 +190,9 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 			continue
 		}
 		c := coord(e.Kind, e.PubKey, tagValue(e, "d"))
+		if !isConfidential(e) {
+			localHadPlaintext[c] = true
+		}
 		if cur, ok := localAddressable[c]; !ok || newerThan(e, cur) {
 			localAddressable[c] = e
 		}
@@ -234,15 +261,28 @@ func auditBoard(ctx context.Context, relayURL string, localEvents []*nostr.Event
 		got, ok := relayAddressable[c]
 		switch {
 		case !ok:
+			// Nothing on the relay for this coordinate at all: a genuine gap,
+			// indistinguishable from "never published" by any local evidence.
 			audit.MissingCoords = append(audit.MissingCoords, c)
 		case got.ID != want.ID && newerThan(want, got):
 			// The relay retained an event the local log considers OLDER — the
 			// regression this whole ordering discipline exists to prevent.
 			audit.StaleCoords = append(audit.StaleCoords, c)
+		case got.ID == want.ID && isConfidential(want) && localHadPlaintext[c]:
+			// The relay's winner IS the local winner — this coordinate is fully
+			// converged, not missing or stale — but the local log shows an older
+			// PLAINTEXT version once held this same slot. That is precisely what
+			// a deliberate re-seal leaves behind (ready-336): the sealed
+			// replacement evicted the plaintext copy via ordinary addressable
+			// replacement, minting a new event id in the process. Name it so an
+			// operator (or a bulk re-seal pass across 24 boards) can tell "this
+			// changed on purpose" from silence, without it counting against Match.
+			audit.SupersededCoords = append(audit.SupersededCoords, c)
 		}
 	}
 	sort.Strings(audit.MissingCoords)
 	sort.Strings(audit.StaleCoords)
+	sort.Strings(audit.SupersededCoords)
 
 	var missingRegular []string
 	for id := range localRegular {
