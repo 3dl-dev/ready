@@ -169,6 +169,18 @@ type Item struct {
 	// not a property of the item, and must be re-derived every projection rather than
 	// carried across a boundary as a frozen fact.
 	Redacted bool `json:"-"`
+
+	// Notes is the item's progress trail — the `rd progress` notes, in
+	// chronological order. It is DERIVED, per projection, from the item's own
+	// kind-1111 note events plus whatever a legacy card still carries embedded in
+	// its Content (pkg/state/trail.go, board-fold-spec.md §5.7-§5.9).
+	//
+	// It is deliberately SEPARATE from Context, which is and stays exactly the
+	// card's Content: that separation is what stops a card from growing with its
+	// trail until the item can no longer be published at all (ready-ed4). Render
+	// the two together with AssembleTrail; never concatenate them into a field a
+	// write path might read back and re-publish.
+	Notes []ProgressNote `json:"notes,omitempty"`
 }
 
 // HistoryEntry is a single audit trail entry for a work item.

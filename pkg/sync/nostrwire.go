@@ -173,6 +173,11 @@ type CardSpec struct {
 	// verbatim so a value, once set, propagates unchanged forever after.
 	CreatedAt int64
 
+	// PendingNotes carries progress-trail entries that have no kind-1111 event yet
+	// (ready-ed4) — full doc on CardSpecPendingNotesDoc at this file's end, kept
+	// there so this addition shifts as few cited line numbers as possible.
+	PendingNotes []state.ProgressNote
+
 	// Enc, when non-nil, puts this card in CONFIDENTIAL mode (epic ready-216): the
 	// free-text fields (Title, Context, WaitingOn) are AEAD-sealed into
 	// event.Content and the clear title/waiting_on tags are dropped; when Enc.LTK
@@ -652,7 +657,7 @@ func itemIDForEvent(e *nostr.Event) string {
 	if e.Kind == KindCard {
 		return tagValue(e, "d")
 	}
-	if isStatusKind(e.Kind) {
+	if isStatusKind(e.Kind) || isNoteKind(e.Kind) { // kind-1111 notes carry the same anchors (ready-ed4)
 		if d := tagValue(e, "d"); d != "" {
 			return d
 		}
@@ -726,3 +731,18 @@ func BoardSpecFromEvent(e *nostr.Event) BoardSpec {
 		Archived:    IsBoardArchived(e),
 	}
 }
+
+// CardSpecPendingNotesDoc documents CardSpec.PendingNotes (ready-ed4), placed at
+// file end for the same reason ArchivedTagValue's block is: board-fold-spec.md
+// cites this file by EXACT line number and a mid-file doc comment shifts every
+// citation below it for no reason connected to what changed.
+//
+// PendingNotes are progress-trail entries that still have NO kind-1111 note event
+// of their own — precisely the notes the fold recovered from a LEGACY card's
+// inline trail (state.SplitCardTrail). They are NOT card content and never touch
+// the card event's tags or Content. Every card-publishing Publisher method mints
+// one note event per entry ALONGSIDE the card, in the SAME batch and BEFORE the
+// card itself, so an over-limit card can be compacted without the relay's copy of
+// the item losing the trail that card used to carry. Nil for every card written
+// after ready-ed4, so this is inert on the common path.
+const CardSpecPendingNotesDoc = "see CardSpec.PendingNotes"

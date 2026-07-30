@@ -115,24 +115,33 @@ func BuildHistoricalStatusEventWithBoard(k *nostr.Key, itemID, rdStatus, changed
 // read back and re-emitted), never by create.
 func CardSpecFromItem(item *state.Item, boardD string) CardSpec {
 	return CardSpec{
-		ItemID:      item.ID,
-		Title:       item.Title,
-		Status:      item.Status,
-		Priority:    item.Priority,
-		Assignee:    item.By,
-		Type:        item.Type,
-		Context:     item.Context,
-		BoardD:      boardD,
-		Deps:        item.BlockedBy,
-		Gate:        item.Gate,
-		WaitingType: item.WaitingType,
-		WaitingOn:   item.WaitingOn,
-		Labels:      item.Labels,
-		ETA:         item.ETA,
-		Level:       item.Level,
-		For:         item.For,
-		ParentID:    item.ParentID,
-		Due:         item.Due,
+		ItemID:   item.ID,
+		Title:    item.Title,
+		Status:   item.Status,
+		Priority: item.Priority,
+		Assignee: item.By,
+		Type:     item.Type,
+		// Context is the card's BASE description ONLY — the projection guarantees
+		// item.Context never holds the progress trail (ready-ed4, nostrproject.go's
+		// SplitCardTrail call). That is what stops a republish from re-inflating the
+		// card with every note ever written on the item.
+		Context: item.Context,
+		// ...and the notes that have no event of their own yet ride along, so the
+		// compacted card and the events preserving what it dropped are published in
+		// the SAME batch. Empty on the overwhelmingly common path (a card written
+		// after this change carries no inline trail to recover).
+		PendingNotes: PendingNotes(item.Notes),
+		BoardD:       boardD,
+		Deps:         item.BlockedBy,
+		Gate:         item.Gate,
+		WaitingType:  item.WaitingType,
+		WaitingOn:    item.WaitingOn,
+		Labels:       item.Labels,
+		ETA:          item.ETA,
+		Level:        item.Level,
+		For:          item.For,
+		ParentID:     item.ParentID,
+		Due:          item.Due,
 		// CREATION TIME CARRY-FORWARD (ready-4ec rework): every live republish
 		// (update/claim/close/cancel/delegate/gate/approve/dep add) funnels through
 		// this function, so re-emitting the item's CURRENT CreatedAt as the card's

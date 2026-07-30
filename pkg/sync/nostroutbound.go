@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
+	"github.com/3dl-dev/ready/pkg/state"
 )
 
 // Publisher publishes rd item events to the local log and to write relays.
@@ -192,6 +193,9 @@ func (p *Publisher) PublishItemWithReason(ctx context.Context, board *BoardSpec,
 	if err != nil {
 		return res, err
 	}
+	if err := p.appendPendingNotes(&events, card, createdAt); err != nil {
+		return res, err
+	}
 	events = append(events, ce)
 
 	issueID, issueEvent, err := p.ensureIssueEvent(card, createdAt)
@@ -236,7 +240,11 @@ func (p *Publisher) PublishStatusChange(ctx context.Context, card CardSpec, reas
 	if err != nil {
 		return res, err
 	}
-	events := []*nostr.Event{ce}
+	var events []*nostr.Event
+	if err := p.appendPendingNotes(&events, card, createdAt); err != nil {
+		return res, err
+	}
+	events = append(events, ce)
 	if issueEvent != nil {
 		events = append(events, issueEvent)
 	}
@@ -291,7 +299,11 @@ func (p *Publisher) PublishCardEdit(ctx context.Context, card CardSpec, createdA
 	if err != nil {
 		return res, err
 	}
-	return p.publishEvents(ctx, res, []*nostr.Event{ce})
+	var events []*nostr.Event
+	if err := p.appendPendingNotes(&events, card, createdAt); err != nil {
+		return res, err
+	}
+	return p.publishEvents(ctx, res, append(events, ce))
 }
 
 // PublishBoard re-publishes EVERY event already durable in the local
@@ -821,4 +833,98 @@ func appendPendingEvent(path string, e *nostr.Event) error {
 		return err
 	}
 	return f.Sync()
+}
+
+// --- ready-ed4: progress notes as their own events ------------------------
+//
+// Appended at file end (same reason as nostrwire.go's ready-a9b block):
+// board-fold-spec.md cites this file by exact line number.
+
+// appendPendingNotes mints one kind-1111 note event for each of card's
+// PendingNotes and appends them to events, BEFORE the caller appends the card
+// itself.
+//
+// ORDER IS THE POINT. PendingNotes are exactly the trail entries the fold
+// recovered from a LEGACY card's inline content, and the card the caller is
+// about to publish no longer contains them (§5.7). Publishing the notes first
+// means that at no instant does a relay hold the compacted card without also
+// holding the events carrying what was compacted out of it — if the batch is cut
+// short, the worst outcome is a duplicated trail, never a lost one. (The local
+// authoritative log is unaffected either way: phase 1 appends every event
+// unconditionally, ready-c3e.)
+//
+// EACH NOTE GETS ITS OWN created_at, createdAt+i. Two textually identical notes
+// bearing the same "ts" would otherwise hash to the SAME event id and the second
+// would be silently swallowed as a duplicate — a real way to lose a line of the
+// trail, since "retrying the same thing" is a genuinely common note. The
+// increment is what makes them distinct events, and it keeps the batch's own
+// (created_at, id) order equal to the trail order the fold will replay.
+//
+// Inert (no events, no error) for a card with no pending notes, which is every
+// card written after ready-ed4.
+func (p *Publisher) appendPendingNotes(events *[]*nostr.Event, card CardSpec, createdAt int64) error {
+	for i, n := range card.PendingNotes {
+		ne, err := BuildNoteEvent(p.Key, NoteSpec{
+			ItemID:     card.ItemID,
+			At:         n.At,
+			Text:       n.Text,
+			BoardCoord: cardBoardCoord(p.Key, card),
+			Enc:        card.Enc,
+		}, createdAt+int64(i))
+		if err != nil {
+			return err
+		}
+		*events = append(*events, ne)
+	}
+	return nil
+}
+
+// PublishNote is the write path for `rd progress`: it publishes ONE kind-1111
+// note event and, on the common path, TOUCHES NOTHING ELSE.
+//
+// That "nothing else" is the entire fix. Before ready-ed4 a progress note was a
+// card edit — it appended to the card's Content and republished the whole card,
+// so the card grew by the size of every note ever written until it crossed the
+// relay's 64 KiB ceiling and the item could never be published again. Here the
+// card is not rebuilt, not re-signed, and not sent; the only thing that grows is
+// the number of events, and no single event grows at all.
+//
+// THE ONE EXCEPTION is a legacy item whose card still carries its trail inline
+// (card.PendingNotes non-empty). Then this ALSO mints those notes as events and
+// republishes the now-compacted card — which is how an item that is ALREADY over
+// the limit gets un-bricked: `rd progress` on vms-760 shrinks its card to the
+// base description, preserves every historical note as its own event, and leaves
+// the item writable. No migration command and no operator ritual; the recovery
+// is a side effect of the next note.
+func (p *Publisher) PublishNote(ctx context.Context, card CardSpec, note state.ProgressNote, createdAt int64) (PublishResult, error) {
+	var res PublishResult
+	res.ItemID = card.ItemID
+
+	var events []*nostr.Event
+	if err := p.appendPendingNotes(&events, card, createdAt); err != nil {
+		return res, err
+	}
+	// The live note is stamped AFTER every recovered one so the batch's
+	// (created_at, id) order matches the trail order.
+	ne, err := BuildNoteEvent(p.Key, NoteSpec{
+		ItemID:     card.ItemID,
+		At:         note.At,
+		Text:       note.Text,
+		BoardCoord: cardBoardCoord(p.Key, card),
+		Enc:        card.Enc,
+	}, createdAt+int64(len(card.PendingNotes)))
+	if err != nil {
+		return res, err
+	}
+	events = append(events, ne)
+	// Republish the card ONLY to compact a legacy one. On every other progress
+	// note the card is left exactly as it is — that is what keeps it from growing.
+	if len(card.PendingNotes) > 0 {
+		ce, cerr := BuildCardEvent(p.Key, card, createdAt+int64(len(card.PendingNotes))+1)
+		if cerr != nil {
+			return res, cerr
+		}
+		events = append(events, ce)
+	}
+	return p.publishEvents(ctx, res, events)
 }

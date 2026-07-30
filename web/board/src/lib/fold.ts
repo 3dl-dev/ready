@@ -19,8 +19,11 @@ import {
   shouldQuarantine,
   decryptCardPayload,
   decryptStatusReason,
+  decryptNoteText,
   PLACEHOLDER_TEXT,
 } from "./envelope";
+import type { ProgressNote } from "./trail";
+import { splitCardTrail, formatNoteTimestamp } from "./trail";
 import type { BoardDecryptor, EncryptedBoardSet } from "./envelope";
 
 export const KindBoard = 30301;
@@ -31,6 +34,11 @@ export const KindStatusClosed = 1632;
 export const KindStatusDraft = 1633;
 export const KindIssue = 1621;
 export const KindRoleGrant = 39301;
+/** KindNote is the NIP-22 comment kind rd publishes one of per progress note
+ * (ready-ed4, spec §2.7). Progress notes used to live INSIDE the addressable
+ * card's content, so every note rewrote the whole card larger until it crossed
+ * the relay's 64 KiB ceiling and the item could never be published again. */
+export const KindNote = 1111;
 
 /** isStatusKind mirrors nostrwire.go's isStatusKind (ready-816): an explicit
  * allowlist of the kinds rd itself writes and folds authoritatively —
@@ -44,10 +52,16 @@ function isStatusKind(kind: number): boolean {
   return kind === KindStatusOpen || kind === KindStatusResolved || kind === KindStatusClosed;
 }
 
+/** isNoteKind mirrors nostrnotes.go's isNoteKind: an explicit equality test,
+ * matching isStatusKind's allowlist shape rather than any range. */
+function isNoteKind(kind: number): boolean {
+  return kind === KindNote;
+}
+
 /** itemIDForEvent mirrors nostrwire.go's itemIDForEvent. */
 function itemIDForEvent(e: NostrEvent): string {
   if (e.kind === KindCard) return tagValue(e, "d");
-  if (isStatusKind(e.kind)) {
+  if (isStatusKind(e.kind) || isNoteKind(e.kind)) {
     const d = tagValue(e, "d");
     if (d !== "") return d;
     const a = tagValue(e, "a");
@@ -204,7 +218,77 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
       item.waiting_on = undefined;
     }
   }
+  // LEGACY TRAIL RECOVERY (spec §5.7) — mirrors nostrproject.go's itemFromCard.
+  // A card written by any pre-ready-ed4 rd carries the item's whole progress
+  // trail inline in its content; split it back apart so context is only the base
+  // description and the recovered notes head the trail with NO msg_id (the
+  // marker that says "this note has no event of its own yet"). Runs AFTER the
+  // confidential substitution so a sealed card's DECRYPTED context is what gets
+  // split, and is skipped for a redacted item whose context is a placeholder,
+  // not content.
+  if (item.redacted !== true) {
+    const { base, notes } = splitCardTrail(item.context ?? "");
+    item.context = base;
+    item.description = base;
+    if (notes.length > 0) item.notes = notes;
+  }
   return item;
+}
+
+/** foldNoteEvents projects kind-1111 events onto trail entries, decrypting each
+ * on a confidential board. Mirrors nostrnotes.go's noteFromEvent: a note whose
+ * text this reader cannot open is DROPPED rather than rendered as a placeholder
+ * — a row of "[encrypted]" lines carries no information while misrepresenting
+ * the item as having had that many notes (spec §5.8). */
+function foldNoteEvents(
+  events: NostrEvent[],
+  dec: BoardDecryptor | null,
+): { note: ProgressNote; created_at: number }[] {
+  const out: { note: ProgressNote; created_at: number }[] = [];
+  for (const e of events) {
+    let text = e.content;
+    if (isConfidential(e)) {
+      const plain = decryptNoteText(e, dec);
+      if (plain === null) continue;
+      text = plain;
+    }
+    let at = tagValue(e, "ts");
+    if (at === "") at = formatNoteTimestamp(e.created_at);
+    out.push({ note: { at, text, msg_id: e.id }, created_at: e.created_at });
+  }
+  return out;
+}
+
+/** mergeTrail mirrors nostrnotes.go's assembleTrail. THE ORDER IS NORMATIVE
+ * (spec §5.9) and both folds implement it identically:
+ *
+ *  1. ascending `at`, compared as a STRING — the timestamp layout is fixed-width
+ *     and zero-padded, so lexicographic order IS chronological order and neither
+ *     reader has to parse a date (nor agree on what an unparseable one means);
+ *  2. ties: card-embedded notes before note events — a recovered legacy note
+ *     always predates the event that will later mint it;
+ *  3. ties within card-embedded notes: their order in the card content;
+ *  4. ties within note events: ascending created_at, then ascending event id.
+ *
+ * Array.prototype.sort is required to be stable (ES2019+), which is what makes
+ * rules 2-4 fall out of the order this array is built in. */
+function mergeTrail(
+  cardNotes: ProgressNote[],
+  events: { note: ProgressNote; created_at: number }[],
+): ProgressNote[] {
+  if (cardNotes.length === 0 && events.length === 0) return [];
+  events.sort((a, b) =>
+    a.created_at !== b.created_at
+      ? a.created_at - b.created_at
+      : a.note.msg_id! < b.note.msg_id!
+        ? -1
+        : a.note.msg_id! > b.note.msg_id!
+          ? 1
+          : 0,
+  );
+  const out: ProgressNote[] = [...cardNotes, ...events.map((e) => e.note)];
+  out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return out;
 }
 
 /** projectItems mirrors pkg/sync.ProjectItems end to end. `events` is the
@@ -240,6 +324,9 @@ export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions
 
   const winningCard = new Map<string, NostrEvent>();
   const statusEvents = new Map<string, NostrEvent[]>();
+  /** kind-1111 progress notes per item (ready-ed4). Append-only like
+   * statusEvents — a note is never latest-wins, the whole set IS the trail. */
+  const noteEvents = new Map<string, NostrEvent[]>();
   const boardMaintainers = new Map<string, Set<string>>();
   const addBoardMaintainer = (coord: string, pubkey: string): void => {
     if (coord === "" || pubkey === "") return;
@@ -280,7 +367,11 @@ export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions
     if (opts.pinnedBoard !== "" && e.kind === KindCard && tagValue(e, "a") !== opts.pinnedBoard) continue;
 
     // §3.9 — fail-closed fold gate (confidential boards).
-    if ((e.kind === KindCard || isStatusKind(e.kind)) && shouldQuarantine(e, opts.encryptedBoards)) continue;
+    if (
+      (e.kind === KindCard || isStatusKind(e.kind) || isNoteKind(e.kind)) &&
+      shouldQuarantine(e, opts.encryptedBoards)
+    )
+      continue;
 
     // §3.10 — classification.
     seen.add(e.id);
@@ -291,6 +382,13 @@ export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions
       const list = statusEvents.get(itemID);
       if (list) list.push(e);
       else statusEvents.set(itemID, [e]);
+    } else if (isNoteKind(e.kind)) {
+      // NO author-or-maintainer narrowing, unlike status events (spec §5.10): a
+      // note cannot change one field of the item, it only appends a line to the
+      // trail, so the read-trust gate above IS the whole authority rule.
+      const list = noteEvents.get(itemID);
+      if (list) list.push(e);
+      else noteEvents.set(itemID, [e]);
     }
   }
 
@@ -310,6 +408,12 @@ export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions
   for (const [itemID, card] of winningCard) {
     const author = card.pubkey;
     const item = itemFromCard(card, opts.decryptor);
+    // §5.7-§5.9 — PROGRESS TRAIL. itemFromCard already reduced item.context to
+    // the card's BASE description, moving any notes a legacy card still carries
+    // inline into item.notes; merge the item's own kind-1111 note events in on
+    // top, in the normative order.
+    item.notes = mergeTrail(item.notes ?? [], foldNoteEvents(noteEvents.get(itemID) ?? [], opts.decryptor));
+    if (item.notes.length === 0) delete item.notes;
 
     // §6.4 — status-authority set.
     const maintainerSigners = new Set<string>();

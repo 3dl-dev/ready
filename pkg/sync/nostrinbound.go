@@ -42,7 +42,7 @@ type ReconcileResult struct {
 // at least the self pubkey (rdconfig.Config.TrustSet).
 func ReconcileItem(ctx context.Context, relays []string, log *NostrLog, itemID string, trusted map[string]bool, timeout time.Duration) (ReconcileResult, error) {
 	filter := map[string]any{
-		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft},
+		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindNote},
 		"#d":    []string{itemID},
 	}
 	return reconcile(ctx, relays, log, filter, itemID, trusted, timeout)
@@ -78,7 +78,7 @@ func ReconcileBoard(ctx context.Context, relays []string, log *NostrLog, boardCo
 		// selects them; without a board scope they arrive with the rest of the board's
 		// events. itemIDForEvent maps a grant to its "d" (boardD:grantee), a non-item id,
 		// so a grant is merged into the log but never mistaken for a card/status.
-		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant},
+		"kinds": []int{KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant, KindNote},
 	}
 	if boardCoord != "" {
 		filter["#a"] = []string{boardCoord}

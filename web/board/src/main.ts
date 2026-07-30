@@ -183,7 +183,7 @@ const AUTHORITY_KINDS = [KIND_BOARD, KIND_ROLE_GRANT];
  * load and then never updates, which is worse than not being live at all: the
  * board would look current and be selectively stale.
  */
-const BOARD_KINDS = [30302, 1630, 1631, 1632, 1633, 39301];
+const BOARD_KINDS = [30302, 1630, 1631, 1632, 1633, 39301, 1111];
 
 /** dedupeSnapshot merges event lists from separate REQs into one snapshot. The
  * single-board path (ready-5c5) needs two REQs — the two authority kinds hang

@@ -10,6 +10,8 @@
 // board-fold-spec.md). Item is otherwise a straight field-for-field mirror
 // of state.Item's JSON tags; see the table at board-fold-spec.md §5.1.
 
+import type { ProgressNote } from "./trail";
+
 export interface HistoryEntry {
   timestamp: string;
   from_status: string;
@@ -54,6 +56,21 @@ export interface Item {
   updated_at: bigint;
 
   history?: HistoryEntry[];
+
+  /**
+   * notes mirrors state.Item.Notes: the item's progress trail, in chronological
+   * order, DERIVED per projection from the item's own kind-1111 note events plus
+   * whatever a legacy card still carries embedded in its content (spec
+   * §5.7-§5.9, lib/trail.ts).
+   *
+   * It is deliberately SEPARATE from `context`, which is and stays exactly the
+   * card's content: that separation is what stops a card from growing with its
+   * trail until the item can no longer be published at all (ready-ed4). Render
+   * the two together with assembleTrail; never concatenate them into a field a
+   * write path might read back and re-publish — buildCardEvent takes
+   * item.context verbatim.
+   */
+  notes?: ProgressNote[];
 
   labels?: string[];
   label_warnings?: string[]; // never populated by the nostr fold (§10.2) — carried only so the field can be asserted absent.
@@ -168,6 +185,20 @@ export function encodeItem(item: Item): Record<string, unknown> {
   arr("labels", item.labels);
   arr("label_warnings", item.label_warnings);
   arr("cross_campfire_warnings", item.cross_campfire_warnings);
+  // `notes` sits LAST, matching state.Item's field order (the Notes field is
+  // declared after Redacted in Go, and encoding/json emits struct fields in
+  // declaration order) — vector and live-parity comparisons are on the decoded
+  // object, but keeping the order honest is what lets a byte-level diff of the
+  // two encodings stay readable. Each entry carries at + text always, msg_id only
+  // when the note has an event of its own (omitempty), mirroring
+  // state.ProgressNote's tags exactly.
+  if (item.notes && item.notes.length > 0) {
+    out.notes = item.notes.map((n) => {
+      const pn: Record<string, unknown> = { at: n.at, text: n.text };
+      if (n.msg_id !== undefined && n.msg_id !== "") pn.msg_id = n.msg_id;
+      return pn;
+    });
+  }
   // `redacted` is deliberately absent: state.Item.Redacted is `json:"-"` on the
   // Go side (state.go:171), so emitting it here would break both the vector
   // comparison and live parity with `rd list --json`. Do not "complete" this

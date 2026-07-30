@@ -246,6 +246,26 @@ func decryptStatusReason(e *nostr.Event, dec BoardDecryptor) (string, bool) {
 	return pl.Reason, true
 }
 
+// decryptNoteText returns the decrypted body of a confidential kind-1111
+// progress note, or ok=false when this reader cannot open it (no CEK for the
+// event's epoch, or AEAD failure). Fail-closed: the caller DROPS the note rather
+// than folding ciphertext, or a placeholder, into the item's trail.
+func decryptNoteText(e *nostr.Event, dec BoardDecryptor) (string, bool) {
+	cek, ok := cekFor(e, dec)
+	if !ok {
+		return "", false
+	}
+	raw, err := openContent(cek, e.Content)
+	if err != nil {
+		return "", false
+	}
+	var pl notePayload
+	if err := json.Unmarshal(raw, &pl); err != nil {
+		return "", false
+	}
+	return pl.Text, true
+}
+
 const (
 	// encVersion is the current envelope-version discriminator carried in the
 	// clear ["enc","1"] marker tag. A future format bumps this; readers and the
@@ -289,6 +309,14 @@ type cardPayload struct {
 // event's Content.
 type statusPayload struct {
 	Reason string `json:"reason"`
+}
+
+// notePayload is the plaintext JSON blob sealed into a confidential kind-1111
+// progress-note event's Content (ready-ed4). Structurally identical to
+// statusPayload — one free-text string — but named for its own event so the
+// wire field is "reason" nowhere a note is concerned.
+type notePayload struct {
+	Text string `json:"text"`
 }
 
 // sealContent encrypts plaintext under the per-board CEK and returns the
@@ -367,6 +395,22 @@ func sealStatusPayload(env *Envelope, reason string) (string, error) {
 	raw, err := json.Marshal(statusPayload{Reason: reason})
 	if err != nil {
 		return "", fmt.Errorf("sync: envelope: marshal status payload: %w", err)
+	}
+	return sealContent(env.CEK, raw)
+}
+
+// sealNotePayload marshals + seals a kind-1111 progress note's text (ready-ed4).
+//
+// It reuses notePayload — the SAME single-free-text-field shape a status reason
+// uses — deliberately: a note and a close reason are the same thing to the
+// envelope (one free-text string attached to an event about an item), and
+// minting a second sealed-payload shape for it would add a variant to the frozen
+// envelope spec that no reader distinguishes anyway. The named wrapper exists so
+// call sites say what they are sealing.
+func sealNotePayload(env *Envelope, text string) (string, error) {
+	raw, err := json.Marshal(notePayload{Text: text})
+	if err != nil {
+		return "", fmt.Errorf("sync: envelope: marshal note payload: %w", err)
 	}
 	return sealContent(env.CEK, raw)
 }

@@ -193,15 +193,23 @@ Example:
 			return fmt.Errorf("item %s is already %s", item.ID, item.Status)
 		}
 
-		// Append notes to existing context with a timestamp separator.
-		now := time.Now().UTC().Format("2006-01-02T15:04Z")
-		newContext := item.Context
-		if newContext != "" {
-			newContext = newContext + "\n\n[" + now + "] " + notes
-		} else {
-			newContext = "[" + now + "] " + notes
+		// A NOTE IS ITS OWN EVENT (ready-ed4). This used to build a new context
+		// string — the old one plus "\n\n[<ts>] <notes>" — and hand it to
+		// runUpdateNostr, which republished the WHOLE 30302 card carrying it. Every
+		// note therefore made the card permanently bigger, and past 64 KiB the relay
+		// stops accepting the card at all: the item can no longer be claimed, closed,
+		// or progressed, and its trail has to be abandoned to a new item (vms-760).
+		// Publishing a kind-1111 note event instead leaves the card untouched, so
+		// nothing about the item grows with the number of notes written on it.
+		note := state.ProgressNote{
+			At:   state.FormatNoteTimestamp(time.Now().UTC().Unix()),
+			Text: notes,
 		}
-		return runUpdateNostr(itemID, nostrUpdateSpec{context: newContext, hasFieldUpdate: true})
+		if err := publishItemNoteNostr(item, note); err != nil {
+			return fmt.Errorf("nostr publish (progress): %w", err)
+		}
+		return emitMutationResult(fmt.Sprintf("progress noted on %s", item.ID),
+			map[string]any{"item_id": item.ID, "at": note.At, "note": note.Text})
 	},
 }
 
