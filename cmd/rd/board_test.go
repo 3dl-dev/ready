@@ -972,15 +972,16 @@ func TestEncodeNpubForTest_MatchesCanonicalVector(t *testing.T) {
 
 // --- live-relay proof (done #2) ------------------------------------------
 
-// resolveLiveBoardOwnerKey resolves an ALLOWLISTED portfolio key for the
+// resolveLiveBoardOwnerKey resolves this machine's stable portfolio key for the
 // live-relay proof, mirroring pkg/sync/live_relay_key_test.go's liveRelayKey
 // resolution order (RD_NOSTR_TEST_SECRET_HEX, then RD_NOSTR_TEST_KEY_PATH,
 // then the machine's own persistent identity) plus this machine's actual
-// default rd home key path, since $HOME/.cf/nostr-identity.json is not always
-// where the admitted key lives (this workshop machine's is
-// $HOME/.config/rd/nostr-identity.json — RDHome()'s own default). The locked
-// relays reject a non-admitted author (ready-266), so a write-proof test
-// needs an admitted key or it cannot prove anything and must skip.
+// default rd home key path, since $HOME/.cf/nostr-identity.json (the pre-XDG
+// campfire home) is not where rd stores the identity after the nostr cutover
+// (this workshop machine's is $HOME/.config/rd/nostr-identity.json —
+// RDHome()'s own default). The proof shares a grant and then reads it back off
+// the relay, so it needs a stable author; it is NOT gated on rd's retired
+// ready-266 relay write-allowlist (ready-5fd unfenced the LAN relays).
 func resolveLiveBoardOwnerKey(t *testing.T) *nostr.Key {
 	t.Helper()
 	if h := os.Getenv("RD_NOSTR_TEST_SECRET_HEX"); h != "" {
@@ -1005,7 +1006,7 @@ func resolveLiveBoardOwnerKey(t *testing.T) *nostr.Key {
 			return k
 		}
 	}
-	t.Skip("no allowlisted portfolio key available: set RD_NOSTR_TEST_SECRET_HEX or RD_NOSTR_TEST_KEY_PATH (the write-allowlisted relays reject non-admitted keys; ready-266)")
+	t.Skipf("no stable portfolio key available: RD_NOSTR_TEST_SECRET_HEX is unset and no readable rd nostr identity was found at any candidate path %v. The proof shares a grant and reads it back off the relay, so it needs a stable author; run `rd init` to materialize one, or set RD_NOSTR_TEST_SECRET_HEX / RD_NOSTR_TEST_KEY_PATH. NOT a relay-fence skip: rd's relay write-allowlist (ready-266) was RETIRED in ready-5fd.", candidates)
 	return nil
 }
 

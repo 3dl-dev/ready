@@ -20,11 +20,10 @@ import (
 //	board sync filter)  ->  machine B negentropy-syncs  ->  the grant lands in logB  ->
 //	DeriveReadTrust(logB, owner, boardD) includes the contributor.
 //
-// The contributor key is fresh and never writes, so no relay allowlisting of it is
-// needed — the point is that the owner's ONE signed grant is sufficient to admit it,
-// cross-machine, which is exactly what GAP-1 delivers. Gated behind
-// RD_NOSTR_LIVE_RELAY=1 with an allowlisted owner key (the relays reject non-admitted
-// authors, ready-266).
+// The contributor key is fresh and never writes — the point is that the owner's ONE
+// signed grant is sufficient to admit it, cross-machine, which is exactly what GAP-1
+// delivers. Gated behind RD_NOSTR_LIVE_RELAY=1 with a STABLE owner key (the proof
+// reads the owner's own writes back off the relay; not rd's retired ready-266 fence).
 func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	if os.Getenv("RD_NOSTR_LIVE_RELAY") != "1" {
 		t.Skip("set RD_NOSTR_LIVE_RELAY=1 to run the live grant-propagation proof")
@@ -32,7 +31,7 @@ func TestLiveRelay_GrantPropagatesToDerivedTrust(t *testing.T) {
 	relay := liveRelayURL(t)
 	t.Logf("live relay: %s", relay)
 
-	owner := liveRelayKey(t)  // allowlisted — may write to the locked relays.
+	owner := liveRelayKey(t)  // stable author — the proof reads its own writes back.
 	contributor := testKey(t) // fresh key, never granted before this run, never writes.
 	boardD := liveTestBoardD(t)
 	boardCoord := BoardCoord(owner.PubKeyHex(), boardD)
