@@ -81,6 +81,47 @@
 //     cross-implementation LTK agreement web/board/confidential_write_test.go
 //     asserts in-process.
 //
+// THE GATE RAIL, RESOLVED FROM THE BOARD (ready-186). Operation 7 used to click
+// the detail pane's banner with no reason at all. It now drives the RAIL — the
+// page's signature element, and the thing the item exists to make actionable —
+// and asserts the six clauses that make "actionable" mean something:
+//
+//   1 approve and reject each publish the §22.2/§22.3 event, and the gate leaves
+//     `rd gates` ON THE INDEPENDENT READER (not on the page's own say-so);
+//   2 Gate / GateMsgID clear exactly as read-spec §9 requires, read out of
+//     pkg/sync.ProjectItems — `rd gates` and `rd list --json` are BOTH that
+//     projection (cmd/rd/root.go allProjectItems -> cmd/rd/nostr.go:990), so the
+//     assertion is on the fold, never on the UI;
+//   3 what the gate was blocking becomes workable, and the board shows it with
+//     NO reload — asserted by reading the live DOM after the publish settles;
+//   4 an empty reason resolves NOTHING: the page refuses locally and the relay
+//     never sees an event, which is checked by re-reading independently;
+//   5 the rail collapses to "Nothing needs you right now" once the LAST gate is
+//     resolved, and the ruling is in the item's history with the right actor;
+//   6 a key with no authority cannot resolve a gate — refused client-side (no
+//     buttons, a stated reason) AND at the READ-SIDE AUTHORITY GATE: a genuinely
+//     signed gate-resolve from that key is dropped by §3.4 read-trust, proven by
+//     splicing it into an independent reader's relay-sourced log and re-folding.
+//
+// AND THE SHAPE THAT MAKES CLAUSES 3 AND 5 FALSIFIABLE. Every gate this script
+// used to seed was `waiting`, so "the item became workable" and "the rail
+// collapsed" could both be true of a board whose optimistic patch ignored §8.4
+// entirely. A BLOCKED-and-gated seed (§9.7 — the ordinary design gate; the ruling
+// is usually what unblocks the chain) is now seeded and ruled on from the rail,
+// and it asserts the two things only that shape can: that the rail's membership
+// really is views.GatesFilter's (§13.10 admits `blocked`; a narrower predicate
+// leaves the item with NO ruling affordance in the browser, while `rd approve`
+// resolves it fine), and that the approved card does NOT slide into Moving —
+// §22.2's "if the item is still blocked, §8.4 recomputes Status=blocked on the
+// next fold regardless of the published `active`".
+//
+// WHY THE READ-SIDE HALF IS SPLICED IN RATHER THAN PUBLISHED. wss://relay.3dl.network
+// enforces a tenant write-allowlist, so an ungranted key's event never reaches
+// the relay at all (that refusal is asserted too, separately). Splicing the same
+// SIGNED bytes into the reader's log asks the strictly harder question — "if a
+// hostile or merely careless relay DID serve this, does the fold admit it?" —
+// and answers it against the real projection rather than the wire policy.
+//
 // THIS IS A MANUAL PROOF, NOT A CI JOB. It needs the live relay, a Chromium on
 // disk, and the local machine's allowlisted rd key — none of which CI has. The
 // deterministic half of the same guarantee DOES run in CI:
@@ -98,7 +139,7 @@
 // dependency at a version that could drift from the one vite pins.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, rmSync, existsSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -256,6 +297,27 @@ function independentRead(bin, tmp, coord, tag, readerSecret) {
   return new Map(items.map((i) => [i.id, i]));
 }
 
+/**
+ * readerRd runs an rd command inside a reader directory independentRead ALREADY
+ * created and synced — no second `rd sync`, so the log is exactly the set of
+ * events the relay served for that read. Used for the views whose membership IS
+ * the assertion (`rd gates`), and for splicing a forged event in and re-folding
+ * WITHOUT giving the reader a chance to refetch and paper over it.
+ */
+function readerRd(bin, tmp, tag, args) {
+  return rd(bin, path.join(tmp, `reader-${tag}`), path.join(tmp, `reader-${tag}-home`), args);
+}
+
+/** readerGateIds is `rd gates` on an independent reader, as a Set of item ids.
+ * views.GatesFilter over pkg/sync.ProjectItems — the same projection rd's own
+ * gates view uses, which is the point: "the gate left `rd gates`" has to be
+ * answered by rd, not by the page. */
+function readerGateIds(bin, tmp, tag) {
+  const parsed = JSON.parse(readerRd(bin, tmp, tag, ["gates", "--json"]));
+  const items = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
+  return new Set(items.map((i) => i.id));
+}
+
 /** readerEvents returns every event of `kind` addressing `itemId` from a
  * reader's freshly-synced log — i.e. the SERIALIZED BYTES the relay retains and
  * handed back, not a projection of them. ready-191's done condition is asserted
@@ -349,6 +411,93 @@ async function directRelayPublish(vite, secret, coord) {
       resolve({ accepted: null, message: "connection failed" });
     };
   });
+}
+
+/**
+ * forgeGateApprove builds the event pair that WOULD resolve `itemId`'s gate —
+ * §22.2's card-with-the-gate-tags-stripped plus its kind-1630 — signed by
+ * whatever key `secret` names. Used for ready-186 clause 6 in BOTH directions:
+ * once with an ungranted key (must be refused) and once with an authorized one
+ * (must work), because only the pair distinguishes "refused for lack of
+ * authority" from "refused because the events were malformed".
+ *
+ * IT STARTS FROM THE ITEM'S REAL WINNING CARD, copied tag for tag and byte for
+ * byte in content, so the forgery cannot fail for any reason except authority —
+ * including on a confidential board, where the sealed content is replayed
+ * verbatim rather than (impossibly) re-sealed by a key that holds no CEK.
+ * created_at is pushed ahead of the real card so §4.1 would make it the winner.
+ */
+async function forgeGateApprove(vite, secret, coord, winningCard, itemId, reason) {
+  const mod = await vite.ssrLoadModule("/src/lib/schnorrsign.ts");
+  const pub = mod.xOnlyPubkey(secret);
+  const at = Math.floor(Date.now() / 1000) + 5;
+  const DROPPED = new Set(["gate", "waiting_type", "waiting_on"]);
+  const tags = (winningCard.tags ?? [])
+    .filter((t) => !DROPPED.has(t[0]))
+    .map((t) => (t[0] === "s" ? ["s", "active"] : t));
+  const card = mod.signNostrEvent({ created_at: at, kind: 30302, tags, content: winningCard.content ?? "" }, secret);
+  const status = mod.signNostrEvent(
+    {
+      created_at: at,
+      kind: 1630,
+      tags: [
+        ["a", `30302:${pub}:${itemId}`],
+        ["d", itemId],
+        ["status", "active"],
+        ["e", card.id],
+        ["a", coord],
+      ],
+      content: reason,
+    },
+    secret,
+  );
+  return [card, status];
+}
+
+/** offerToRelay sends events to the relay and returns the FIRST OK frame — the
+ * relay's own verdict, not an inference from the socket staying open. */
+function offerToRelay(events) {
+  const ws = new WebSocket(RELAY);
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ accepted: null, message: "timed out" }), 25000);
+    ws.onopen = () => {
+      for (const e of events) ws.send(JSON.stringify(["EVENT", e]));
+    };
+    ws.onmessage = (m) => {
+      const f = JSON.parse(m.data);
+      if (f[0] !== "OK") return;
+      clearTimeout(t);
+      resolve({ accepted: f[2], message: f[3] ?? "" });
+      try {
+        ws.close();
+      } catch {
+        /* closed */
+      }
+    };
+    ws.onerror = () => {
+      clearTimeout(t);
+      resolve({ accepted: null, message: "connection failed" });
+    };
+  });
+}
+
+/** spliceIntoReaderLog appends signed events straight into a reader's
+ * relay-sourced log, WITHOUT a resync. It asks the strictly harder question the
+ * relay's write policy hides: if these bytes were served, does the fold admit
+ * them? Nothing here is published — the events exist only in that reader's
+ * directory, which independentRead threw away nothing else into. */
+function spliceIntoReaderLog(tmp, tag, events) {
+  const file = path.join(tmp, `reader-${tag}`, ".ready", "nostr-log.jsonl");
+  appendFileSync(file, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+}
+
+/** readerItems re-projects an ALREADY-synced reader directory (no second sync),
+ * so a spliced-in event is folded by the same pkg/sync.ProjectItems the reader
+ * uses for everything else. */
+function readerItems(bin, tmp, tag) {
+  const parsed = JSON.parse(readerRd(bin, tmp, tag, ["list", "--json", "--all"]));
+  const items = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
+  return new Map(items.map((i) => [i.id, i]));
 }
 
 /** injectedSignerJs bundles the REAL secp256k1 signer as an IIFE that installs
@@ -474,6 +623,72 @@ async function dragCardToColumn(cdp, id, column) {
   `);
 }
 
+/**
+ * resolveGateInRail types a reason into the RAIL's entry for `id` and clicks
+ * Approve or Reject there. Deliberately not the detail pane: the rail is the
+ * surface ready-186 exists to make actionable, and a proof that only ever
+ * clicked the detail banner would leave the rail's own control unexercised.
+ *
+ * A missing entry, or an entry with no reason field, THROWS rather than
+ * returning false — "the gate could not be resolved" and "the gate was resolved"
+ * must never be reported by the same silent path.
+ */
+async function resolveGateInRail(cdp, id, approve, reason) {
+  return cdp.evaluate(`
+    const li = document.querySelector('.gate-item[data-id=${JSON.stringify(id)}]');
+    if (!li) throw new Error("no gate rail entry for ${id}");
+    const input = li.querySelector(".gate-reason-input");
+    if (!input) throw new Error("the rail offers no reason field for ${id} (read-only?)");
+    input.value = ${JSON.stringify(reason)};
+    const btn = li.querySelector(${JSON.stringify(approve ? ".gate-approve" : ".gate-deny")});
+    if (!btn) throw new Error("no ${approve ? "Approve" : "Reject"} button in the rail for ${id}");
+    btn.click();
+    return true;
+  `);
+}
+
+/** resolveGateInDetail does the same from the detail pane's banner, so both
+ * mounting points of the control are exercised live. */
+async function resolveGateInDetail(cdp, id, approve, reason) {
+  await selectCard(cdp, id);
+  return cdp.evaluate(`
+    const banner = document.querySelector(".detail-pane .gate-banner");
+    if (!banner) throw new Error("no gate banner in the detail pane for ${id}");
+    const input = banner.querySelector(".gate-reason-input");
+    if (!input) throw new Error("the detail banner offers no reason field for ${id} (read-only?)");
+    input.value = ${JSON.stringify(reason)};
+    banner.querySelector(${JSON.stringify(approve ? ".gate-approve" : ".gate-deny")}).click();
+    return true;
+  `);
+}
+
+/** railState reports what the gate rail shows RIGHT NOW: whether it is in its
+ * empty state, its whole text, and the ids it still lists. Read straight off the
+ * live DOM, which is what "the board reflects it without a manual refresh"
+ * means. */
+async function railState(cdp) {
+  return JSON.parse(
+    await cdp.evaluate(`
+      const rail = document.querySelector(".gate-rail");
+      return JSON.stringify({
+        empty: !!rail?.classList.contains("empty"),
+        text: rail?.textContent ?? "",
+        ids: [...document.querySelectorAll(".gate-item")].map((li) => li.dataset.id),
+      });
+    `),
+  );
+}
+
+/** columnOfCard reports which of the three columns the card is rendered in, or
+ * "(gone)". The only observation that actually witnesses "the card moved". */
+async function columnOfCard(cdp, id) {
+  return cdp.evaluate(`
+    const card = [...document.querySelectorAll(".card")].find((c) =>
+      c.querySelector(".card-id")?.textContent?.trim() === ${JSON.stringify(id)});
+    return card?.closest(".column")?.dataset.column ?? "(gone)";
+  `);
+}
+
 async function clickIn(cdp, selector) {
   return cdp.evaluate(`
     const n = document.querySelector(${JSON.stringify(selector)});
@@ -565,6 +780,22 @@ async function main() {
       label: `${BOARD_D}-label`,
       gateOk: `${BOARD_D}-gateok`,
       gateNo: `${BOARD_D}-gateno`,
+      // ready-186 clause 4 (an empty reason must publish NOTHING) and clause 5
+      // (the rail collapses when the LAST gate goes). A third gate is what makes
+      // "the last one" a real state rather than an artefact of there only ever
+      // having been one.
+      gateLast: `${BOARD_D}-gatelast`,
+      // BLOCKED AND GATED — the ordinary shape of a design gate, and the shape
+      // this script's first round could not observe at all. Every gate above is
+      // `waiting`, which made clauses 3 and 5 UNFALSIFIABLE for the one case
+      // §22.2 singles out in words: "if the item is still blocked, §8.4
+      // recomputes Status=blocked on the next fold regardless of the published
+      // `active`". A page that slid this card into Moving would have been green
+      // here. gateBlockedDep is its live (non-terminal) blocker; it is CLAIMED at
+      // seed time so it sits in Moving rather than adding a seventh card to the
+      // Ready column, where the CARD_CAP disclosure would hide one.
+      gateBlocked: `${BOARD_D}-gateblk`,
+      gateBlockedDep: `${BOARD_D}-gateblkdep`,
       rapid: `${BOARD_D}-rapid`,
       reject: `${BOARD_D}-reject`,
       // ready-191: written by RD, carrying the SAME label the browser adds to
@@ -589,23 +820,31 @@ async function main() {
         ...(k === "rdlabel" ? ["--label", SHARED_LABEL] : []),
       ]);
     }
-    rd(rdBin, projectDir, writerHome, ["claim", ids.gateOk, "--reason", "for the gate"]);
-    rd(rdBin, projectDir, writerHome, ["claim", ids.gateNo, "--reason", "for the gate"]);
+    for (const gated of [ids.gateOk, ids.gateNo, ids.gateLast]) {
+      rd(rdBin, projectDir, writerHome, ["claim", gated, "--reason", "for the gate"]);
+      rd(rdBin, projectDir, writerHome, [
+        "gate",
+        gated,
+        "--gate-type",
+        "design",
+        "--description",
+        "needs a browser ruling",
+      ]);
+    }
+    // The blocked-and-gated seed, in the order the state actually arises: the
+    // dependency is wired FIRST (so §8.4 derives `blocked`), and the gate is
+    // raised on top of it. §9.7 keeps the gate fields under the block, and §9.1's
+    // own post-check accepts `blocked` — so this is a state rd produces and rd
+    // considers pending, which is exactly why the board has to as well.
+    rd(rdBin, projectDir, writerHome, ["claim", ids.gateBlockedDep, "--reason", "the blocker is live work"]);
+    rd(rdBin, projectDir, writerHome, ["dep", "add", ids.gateBlocked, ids.gateBlockedDep]);
     rd(rdBin, projectDir, writerHome, [
       "gate",
-      ids.gateOk,
+      ids.gateBlocked,
       "--gate-type",
       "design",
       "--description",
-      "needs a browser ruling",
-    ]);
-    rd(rdBin, projectDir, writerHome, [
-      "gate",
-      ids.gateNo,
-      "--gate-type",
-      "design",
-      "--description",
-      "needs a browser ruling",
+      "needs a browser ruling while still blocked",
     ]);
     if (readerKey) {
       // The owner wraps this board's CEK to the reader's pubkey. `rd grant` IS
@@ -719,7 +958,8 @@ async function main() {
       // A FRESH reader per check — the tag is a monotonic sequence, never the
       // operation number, so two branches of the same operation cannot reuse a
       // directory and quietly read a log that is no longer empty.
-      const items = independentRead(rdBin, tmp, coord, `${++seq}-${RUN}`, readerKey);
+      const tag = `${++seq}-${RUN}`;
+      const items = independentRead(rdBin, tmp, coord, tag, readerKey);
       const it = items.get(id);
       const problems = [];
       if (!it) problems.push(`item ${id} absent from the independent projection`);
@@ -736,6 +976,10 @@ async function main() {
         log(`  OK — independent rd projects ${id} exactly as intended`);
       }
       results.push({ n, name, id, ok: problems.length === 0, problems });
+      // The reader that answered this check, so a caller can ask it further
+      // questions (`rd gates`, `rd show`) WITHOUT syncing a second time — the
+      // membership of a view has to be read out of the same fold the fields were.
+      return { tag, items, item: it };
     };
 
     await check(
@@ -824,30 +1068,334 @@ async function main() {
       { labels: [SHARED_LABEL] },
     );
 
-    await check(
-      7,
-      "gate approve",
-      async () => {
-        await selectCard(cdp, ids.gateOk);
-        await clickIn(cdp, ".gate-approve");
-        return settle(cdp);
-      },
-      ids.gateOk,
-      { status: "active", gate: undefined },
-    );
+    // ── 7: THE GATE RAIL, RESOLVED FROM THE BOARD (ready-186) ────────────────
+    //
+    // The approve is driven from the RAIL, with a typed reason, and every
+    // assertion below is on the independent reader's fold or on the live DOM —
+    // never on the page's own model of what it just did.
+    const GATE_STILL_LISTED = (tag) => readerGateIds(rdBin, tmp, tag);
+    const APPROVE_REASON = "approved from the browser gate rail";
+    {
+      const railBefore = await railState(cdp);
+      const approved = await check(
+        7,
+        "gate approve, from the rail, with a reason",
+        async () => {
+          await resolveGateInRail(cdp, ids.gateOk, true, APPROVE_REASON);
+          return settle(cdp);
+        },
+        ids.gateOk,
+        // Clause 2, on pkg/sync.ProjectItems' own output: §9/§22.2 clear BOTH
+        // Gate and GateMsgID. `gate_msg_id` is omitempty, so absent === cleared.
+        { status: "active", gate: undefined, gate_msg_id: undefined, waiting_type: undefined },
+      );
+      const problems = [];
+      // Clause 1: the gate LEFT `rd gates` on the independent reader.
+      const stillGated = GATE_STILL_LISTED(approved.tag);
+      if (stillGated.has(ids.gateOk)) problems.push(`${ids.gateOk} is STILL listed by 'rd gates' on the independent reader`);
+      if (!stillGated.has(ids.gateNo)) problems.push(`${ids.gateNo}'s untouched gate vanished from 'rd gates' — the approve hit the wrong item`);
 
-    step("bonus: gate reject keeps the gate open (same operation, other branch)");
-    await check(
-      7,
-      "gate reject",
-      async () => {
-        await selectCard(cdp, ids.gateNo);
-        await clickIn(cdp, ".gate-deny");
-        return settle(cdp);
-      },
-      ids.gateNo,
-      { status: "waiting", gate: "design" },
-    );
+      // Clause 5 (history/actor): the ruling is in the item's history, attributed
+      // to the key that signed it, with the reason the human typed.
+      const last = (approved.item?.history ?? []).at(-1);
+      if (last?.to_status !== "active") problems.push(`last history entry is to_status=${JSON.stringify(last?.to_status)}, want "active"`);
+      if (last?.changed_by !== owner) problems.push(`ruling attributed to ${JSON.stringify(last?.changed_by)}, want the signing key ${owner}`);
+      if (last?.note !== APPROVE_REASON) problems.push(`history note is ${JSON.stringify(last?.note)}, want ${JSON.stringify(APPROVE_REASON)}`);
+
+      // Clause 3: the board reflected it with NO reload — the rail dropped the
+      // entry and the card is workable (the "moving" column), read off the live
+      // DOM of the same page instance that did the write.
+      const railAfter = await railState(cdp);
+      if (!railBefore.ids.includes(ids.gateOk)) problems.push("the rail never listed the gate in the first place");
+      if (railAfter.ids.includes(ids.gateOk)) problems.push("the rail still lists the resolved gate — the board did not reflect it");
+      const column = await columnOfCard(cdp, ids.gateOk);
+      if (column !== "moving") problems.push(`the resolved item's card is in column ${JSON.stringify(column)}, want "moving"`);
+
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  rail: ${JSON.stringify(railBefore.ids)} -> ${JSON.stringify(railAfter.ids)}; card column now ${column}`);
+      log(`  history: ${JSON.stringify(last)}`);
+      log(`  'rd gates' on the independent reader: ${JSON.stringify([...stillGated])}`);
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({ n: 7, name: "approve leaves rd gates, clears Gate/GateMsgID, unblocks the item live", id: ids.gateOk, ok, problems });
+    }
+
+    // ── 7b: THE BLOCKED-AND-GATED CASE, which is the ORDINARY one ────────────
+    //
+    // Everything above rules on a `waiting` gate. §13.10 admits `blocked` too and
+    // §9.2/§22.2 make it approvable, and blocked-and-gated is the NORMAL shape of
+    // a design gate because the ruling is usually what unblocks the chain. Two
+    // things are only falsifiable here:
+    //
+    //   MEMBERSHIP — `rd gates` lists this item (asserted on the independent
+    //   reader FIRST, so "the rail should show it" is rd's claim, not this
+    //   script's). If the rail's predicate is narrower than GatesFilter, the item
+    //   has no ruling affordance in the browser at all and the run fails below.
+    //
+    //   THE SNAP-BACK — §22.2: "if the item is still blocked, §8.4 recomputes
+    //   Status=blocked on the next fold regardless of the published `active`."
+    //   So the card must NOT move to Moving. The page never re-folds after load,
+    //   which is what makes the live DOM a real witness here: whatever the
+    //   optimistic patch decided is still on screen when this is read.
+    const BLOCKED_APPROVE_REASON = "approved while still blocked — the block is not mine to clear";
+    {
+      const problems = [];
+
+      // rd's own verdict on the seed, before the browser is asked anything.
+      const beforeTag = `gateblk-before-${RUN}`;
+      const beforeItems = independentRead(rdBin, tmp, coord, beforeTag, readerKey);
+      const beforeGates = readerGateIds(rdBin, tmp, beforeTag);
+      const seed = beforeItems.get(ids.gateBlocked);
+      const blocker = beforeItems.get(ids.gateBlockedDep);
+      if (seed?.status !== "blocked") problems.push(`the seed is status=${JSON.stringify(seed?.status)}, want "blocked" — this case is not set up`);
+      if ((seed?.gate_msg_id ?? "") === "") problems.push("the seed carries no GateMsgID — §9.7 did not retain the gate under the block");
+      if (["done", "cancelled", "failed"].includes(blocker?.status)) {
+        problems.push(`the blocker is ${blocker?.status} — nothing would keep the item blocked, so the assertion below is vacuous`);
+      }
+      if (!beforeGates.has(ids.gateBlocked)) {
+        problems.push("'rd gates' does not list the blocked-and-gated seed — the divergence below cannot be attributed to the board");
+      }
+
+      step("ready-186: a BLOCKED-and-gated item is rulable FROM THE RAIL (§13.10), and does not snap back (§22.2)");
+      const railBefore = await railState(cdp);
+      const columnBefore = await columnOfCard(cdp, ids.gateBlocked);
+      const inRail = railBefore.ids.includes(ids.gateBlocked);
+      if (!inRail) {
+        problems.push(
+          `'rd gates' lists ${ids.gateBlocked} but the BOARD's rail does not (rail: ${JSON.stringify(railBefore.ids)}) — ` +
+            "the rail's membership predicate is narrower than views.GatesFilter, so this gate has no ruling affordance in the browser",
+        );
+      }
+
+      let message = "";
+      if (inRail) {
+        await resolveGateInRail(cdp, ids.gateBlocked, true, BLOCKED_APPROVE_REASON);
+        message = await settle(cdp);
+        if (message) log(`  page reported: ${message}`);
+      }
+
+      const afterTag = `gateblk-after-${RUN}`;
+      const afterItems = independentRead(rdBin, tmp, coord, afterTag, readerKey);
+      const afterGates = readerGateIds(rdBin, tmp, afterTag);
+      const after = afterItems.get(ids.gateBlocked);
+      if (inRail) {
+        // Clause 2, on the fold: all the gate fields clear…
+        for (const field of ["gate", "gate_msg_id", "waiting_type"]) {
+          if ((after?.[field] ?? "") !== "") problems.push(`${field} = ${JSON.stringify(after?.[field])} after approve, want cleared`);
+        }
+        // …and clause 1: the gate leaves `rd gates` even though the item stays blocked.
+        if (afterGates.has(ids.gateBlocked)) problems.push(`${ids.gateBlocked} is STILL listed by 'rd gates' after an approve`);
+        // §8.4: the BLOCK survives the ruling. This is the assertion the
+        // waiting-only seeds could not make.
+        if (after?.status !== "blocked") {
+          problems.push(`the independent fold projects status=${JSON.stringify(after?.status)}, want "blocked" (§8.4 outlives §22.2's published "active")`);
+        }
+        // Clause 5: the ruling and its actor are in history.
+        const last = (after?.history ?? []).at(-1);
+        if (last?.note !== BLOCKED_APPROVE_REASON) problems.push(`history note is ${JSON.stringify(last?.note)}, want ${JSON.stringify(BLOCKED_APPROVE_REASON)}`);
+        if (last?.changed_by !== owner) problems.push(`ruling attributed to ${JSON.stringify(last?.changed_by)}, want ${owner}`);
+
+        // Clause 3, off the LIVE DOM: the rail dropped it with no reload, and the
+        // card did NOT slide into Moving — because the fold, read above, says
+        // blocked. A board that disagreed with that projection is the failure
+        // §22.2 describes.
+        const railAfter = await railState(cdp);
+        if (railAfter.ids.includes(ids.gateBlocked)) problems.push("the rail still lists the resolved gate — the board did not reflect it");
+        const columnAfter = await columnOfCard(cdp, ids.gateBlocked);
+        if (columnAfter !== "blocked") {
+          problems.push(
+            `the board shows the approved-but-still-blocked card in column ${JSON.stringify(columnAfter)}; the independent fold says ` +
+              `status=${JSON.stringify(after?.status)}, so the card must stay in "blocked" — it would snap back on the next read`,
+          );
+        }
+        log(`  rail: ${JSON.stringify(railBefore.ids)} -> ${JSON.stringify(railAfter.ids)}`);
+        log(`  card column: ${columnBefore} -> ${columnAfter} (must stay "blocked": the gate cleared, the block did not)`);
+        log(`  independent fold: status=${after?.status} gate=${JSON.stringify(after?.gate)} gate_msg_id=${JSON.stringify(after?.gate_msg_id)}`);
+        log(`  'rd gates' independently: ${JSON.stringify([...afterGates])}`);
+      }
+
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({
+        n: 7,
+        name: "a BLOCKED-and-gated item is rulable from the rail and stays blocked afterwards",
+        id: ids.gateBlocked,
+        ok,
+        problems,
+      });
+    }
+
+    step("ready-186 clause 4: an EMPTY reason resolves nothing, publishes nothing");
+    {
+      const before = independentRead(rdBin, tmp, coord, `noreason-before-${RUN}`, readerKey).get(ids.gateLast);
+      const beforeEvents = readerEvents(tmp, `noreason-before-${RUN}`, ids.gateLast, 1630).length;
+      // Type nothing. The button must refuse locally — no signer prompt, no relay
+      // frame, no optimistic change.
+      await resolveGateInRail(cdp, ids.gateLast, true, "");
+      const message = await settle(cdp);
+      const rail = await railState(cdp);
+      const after = independentRead(rdBin, tmp, coord, `noreason-after-${RUN}`, readerKey).get(ids.gateLast);
+      const afterEvents = readerEvents(tmp, `noreason-after-${RUN}`, ids.gateLast, 1630).length;
+      const problems = [];
+      if (!/reason is required/i.test(message)) problems.push(`the page said ${JSON.stringify(message)} — it must say a reason is required`);
+      if (!rail.ids.includes(ids.gateLast)) problems.push("the rail dropped the gate anyway — an empty reason changed the board");
+      if (after?.status !== before?.status) problems.push(`status moved ${before?.status} -> ${after?.status} on an empty reason`);
+      if ((after?.gate_msg_id ?? "") === "") problems.push("the gate's GateMsgID cleared on an empty reason");
+      if (afterEvents !== beforeEvents) {
+        problems.push(`the relay gained ${afterEvents - beforeEvents} status event(s) for a refusal that must publish NOTHING`);
+      }
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  page said: ${message.trim() || "(nothing)"}`);
+      log(`  status events on the relay for ${ids.gateLast}: ${beforeEvents} -> ${afterEvents} (must not change)`);
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({ n: 7, name: "an empty reason is refused locally and publishes nothing", id: ids.gateLast, ok, problems });
+    }
+
+    step("ready-186 clause 1 (other branch): reject keeps the gate OPEN, from the detail pane");
+    const REJECT_REASON = "not yet — rejected from the browser";
+    {
+      const rejected = await check(
+        7,
+        "gate reject, from the detail pane's banner",
+        async () => {
+          await resolveGateInDetail(cdp, ids.gateNo, false, REJECT_REASON);
+          return settle(cdp);
+        },
+        ids.gateNo,
+        // §22.3 changes NO field: the gate is still open and still pending.
+        { status: "waiting", gate: "design", waiting_type: "gate" },
+      );
+      const problems = [];
+      if (!GATE_STILL_LISTED(rejected.tag).has(ids.gateNo)) problems.push("a REJECTED gate left 'rd gates' — rejection must keep it open");
+      const last = (rejected.item?.history ?? []).at(-1);
+      if (last?.note !== REJECT_REASON) problems.push(`the rejection reason is not in history (got ${JSON.stringify(last?.note)})`);
+      if (last?.changed_by !== owner) problems.push(`rejection attributed to ${JSON.stringify(last?.changed_by)}, want ${owner}`);
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  history: ${JSON.stringify(last)}`);
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({ n: 7, name: "reject preserves the ruling and leaves the gate pending", id: ids.gateNo, ok, problems });
+    }
+
+    step("ready-186 clause 6: no authority = no ruling, client-side AND at the read-side authority gate");
+    {
+      const problems = [];
+      // ANTI-TAUTOLOGY FIRST. Everything below asserts an ABSENCE (no buttons,
+      // no state change), and an absence proves nothing unless the presence is
+      // witnessed in the same run, on the same board, at the same moment. So:
+      // what does the AUTHORIZED page show for this very gate, right now?
+      const asOwner = JSON.parse(
+        await cdp.evaluate(`
+          const li = document.querySelector('.gate-item[data-id=${JSON.stringify(ids.gateLast)}]');
+          return JSON.stringify({
+            gatesShown: document.querySelectorAll(".gate-item").length,
+            approve: li ? li.querySelectorAll(".gate-approve").length : 0,
+            reason: li ? li.querySelectorAll(".gate-reason-input").length : 0,
+          });
+        `),
+      );
+      if (asOwner.approve !== 1 || asOwner.reason !== 1) {
+        problems.push(`the AUTHORIZED page does not offer the control either (${JSON.stringify(asOwner)}) — the check below would be vacuous`);
+      }
+
+      // (a) CLIENT-SIDE. Same board, same still-pending gate, a key nobody granted.
+      const noAuth = await mintKey(vite);
+      await openBoard(cdp, origin, coord, esbuild, noAuth.secret, { expectCards: false });
+      const stated = JSON.parse(
+        await cdp.evaluate(`
+          const note = document.querySelector(".gate-resolve .read-only-note")?.textContent
+            ?? document.querySelector(".read-only-note")?.textContent ?? "";
+          return JSON.stringify({
+            note,
+            approve: document.querySelectorAll(".gate-approve").length,
+            deny: document.querySelectorAll(".gate-deny").length,
+            reason: document.querySelectorAll(".gate-reason-input").length,
+            gatesShown: document.querySelectorAll(".gate-item").length,
+          });
+        `),
+      );
+      if (stated.approve + stated.deny + stated.reason !== 0) {
+        problems.push(`an ungranted key was offered ${stated.approve + stated.deny + stated.reason} gate control(s)`);
+      }
+      // The reason must be STATED, and must be the honest one for this mode (see
+      // the done-condition-6 block below for why confidentiality answers first).
+      const wantRefusal = CONFIDENTIAL ? /cannot seal|seals its free text/i : /no write grant/i;
+      if (stated.gatesShown > 0 && !wantRefusal.test(stated.note)) {
+        problems.push(`the rail showed the gate but said ${JSON.stringify(stated.note)} instead of why it cannot be ruled on`);
+      }
+
+      // (b) THE READ-SIDE AUTHORITY GATE. Build the gate-resolve that WOULD clear
+      // this gate — the item's own current card with the gate tags stripped and
+      // s=active, plus the matching kind-1630 — and sign it with the ungranted
+      // key. Offer it to the relay (refused), then splice the same signed bytes
+      // into an independent reader's relay-sourced log and re-fold: §3.4
+      // read-trust must drop it even when the events are in front of the reader.
+      const cardTag = `authz-card-${RUN}`;
+      independentRead(rdBin, tmp, coord, cardTag, readerKey);
+      const winningCard = readerEvents(tmp, cardTag, ids.gateLast, 30302).at(-1);
+      if (!winningCard) throw new Error(`no card for ${ids.gateLast} to build a forged resolve from`);
+
+      const forged = await forgeGateApprove(vite, noAuth.secret, coord, winningCard, ids.gateLast, "forged approval");
+      const relaySaid = await offerToRelay(forged);
+
+      const spliceTag = `authz-forged-${RUN}`;
+      independentRead(rdBin, tmp, coord, spliceTag, readerKey);
+      spliceIntoReaderLog(tmp, spliceTag, forged);
+      const forgedGates = readerGateIds(rdBin, tmp, spliceTag);
+      const forgedItems = readerItems(rdBin, tmp, spliceTag);
+      if (!forgedGates.has(ids.gateLast)) problems.push("the READ-SIDE authority gate ADMITTED an ungranted key's gate-resolve — the gate cleared");
+      if (forgedItems.get(ids.gateLast)?.status !== "waiting") {
+        problems.push(`the forged resolve moved the item to status=${forgedItems.get(ids.gateLast)?.status}`);
+      }
+
+      // ANTI-TAUTOLOGY for (b): the IDENTICAL event shape, signed by a key that
+      // DOES have authority, must clear the gate in the same reader. Without
+      // this, "the gate stayed open" is equally explained by a malformed forgery.
+      const authentic = await forgeGateApprove(vite, identity.secret_hex, coord, winningCard, ids.gateLast, "authentic approval");
+      const controlTag = `authz-control-${RUN}`;
+      independentRead(rdBin, tmp, coord, controlTag, readerKey);
+      spliceIntoReaderLog(tmp, controlTag, authentic);
+      const controlGates = readerGateIds(rdBin, tmp, controlTag);
+      if (controlGates.has(ids.gateLast)) {
+        problems.push("the SAME event shape signed by an authorized key did NOT clear the gate — the refusal above proves nothing about authority");
+      }
+
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  authorized page offers: ${JSON.stringify(asOwner)}`);
+      log(`  ungranted page offers:  ${JSON.stringify(stated)}`);
+      log(`  relay said about the forged resolve: accepted=${relaySaid.accepted} ${relaySaid.message}`);
+      log(`  spliced into an independent log — gate still pending: ${forgedGates.has(ids.gateLast)}; control (authorized signer) cleared it: ${!controlGates.has(ids.gateLast)}`);
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({ n: 6, name: "an ungranted key cannot resolve a gate: client-side AND read-side", id: ids.gateLast, ok, problems });
+
+      // Back to the owner's page for clause 5 — the rail has to be emptied by a
+      // key that can actually rule.
+      await openBoard(cdp, origin, coord, esbuild, identity.secret_hex);
+    }
+
+    step("ready-186 clause 5: the LAST gate resolved collapses the rail to its quiet line");
+    {
+      await resolveGateInRail(cdp, ids.gateNo, true, "approved on the second look");
+      await settle(cdp);
+      await resolveGateInRail(cdp, ids.gateLast, true, "approved, with a reason this time");
+      await settle(cdp);
+      const rail = await railState(cdp);
+      const tag = `lastgate-${RUN}`;
+      independentRead(rdBin, tmp, coord, tag, readerKey);
+      const stillGated = readerGateIds(rdBin, tmp, tag);
+      const problems = [];
+      if (!rail.empty) problems.push(`the rail is not in its empty state (still lists ${JSON.stringify(rail.ids)})`);
+      if (rail.text !== "Nothing needs you right now") problems.push(`the rail reads ${JSON.stringify(rail.text)}`);
+      if (stillGated.size !== 0) problems.push(`'rd gates' on the independent reader still lists ${JSON.stringify([...stillGated])}`);
+      const ok = problems.length === 0;
+      if (!ok) failures++;
+      log(`  rail now: ${JSON.stringify(rail.text)}; 'rd gates' independently: ${JSON.stringify([...stillGated])}`);
+      log(`  ${ok ? "PASS" : "FAIL"} ${problems.join("; ")}`);
+      results.push({ n: 7, name: "the last gate resolved empties BOTH the rail and rd gates", id: "-", ok, problems });
+    }
 
     // ── ready-191: THE CONFIDENTIAL CLAUSE, asserted ON THE WIRE ─────────────
     //

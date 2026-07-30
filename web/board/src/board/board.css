@@ -153,6 +153,30 @@
   color: var(--ink-2);
   flex: none;
 }
+/* ready-186: the rail's ACTIONABLE half — a required reason, then Approve /
+   Reject. Sits beside its gate item (.gate-item is display:contents, so both
+   are flex children of .gate-list) and wraps under it on a narrow viewport. */
+.gate-resolve {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1 1 260px;
+  flex-wrap: wrap;
+}
+.gate-reason-input {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 9px;
+  flex: 1 1 120px;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--gate-line);
+  border-radius: 5px;
+}
+.gate-reason-input::placeholder { color: var(--ink-3); }
+.gate-reason-input:focus { outline: 2px solid var(--gate); outline-offset: 1px; }
+.gate-resolve .read-only-note { margin: 0; font-size: 11.5px; color: var(--ink-2); }
 
 /* The quiet state. Grey border, panel ground, no pulse — it must read as
    "nothing to do", not as a disabled alarm. */
