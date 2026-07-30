@@ -25,6 +25,23 @@
 #   not work: git resolves its own builtins before consulting an alias of the
 #   same name, so `alias.stash` is silently ignored (measured, not assumed).
 #
+# WHO RUNS IT — the guard must not depend on a human remembering:
+#   * hooks/post-checkout re-asserts it on every `git worktree add`, which is
+#     the worktree-creation path dispatched agents come through;
+#   * scripts/wt_stash_test.go's TestStashGuard_SelfInstallsInThisClone runs it
+#     on the `go test ./...` baseline every agent and CI already execute;
+#   * .github/workflows/go-test.yml runs it explicitly and fails the job if it
+#     does not fire.
+#
+#   STATED LIMITATION: the FIRST activation in a brand-new clone still has to
+#   come from one of the three above (in practice: the first test run). git
+#   deliberately provides no way for a repository to install its own hooks at
+#   clone time — that would be arbitrary code execution on `git clone` — so
+#   "zero-step activation on clone" is not achievable and is not claimed. What
+#   is claimed: after any one of those three has run once, every worktree of
+#   the clone is covered, including ones created later, because hooks live in
+#   shared state.
+#
 # WHERE IT INSTALLS: the directory git itself will read hooks from, i.e.
 # `git rev-parse --git-path hooks`, which honors core.hooksPath. A previous
 # version wrote to `--git-common-dir`/hooks unconditionally and would have
