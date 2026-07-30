@@ -20,7 +20,7 @@
 //
 // The live relay + real browser + real rd CLI version of this same proof is
 // scripts/live-roundtrip-both-ways.mjs.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterLogin, defaultDeps, startLiveUpdates, type BoardDeps, type Identity } from "./main";
 import { authTransition } from "./lib/auth";
 import { neverUnwraps } from "./lib/keyunwrap";
@@ -168,6 +168,14 @@ describe("ready-4359: the OPEN board reflects a change made elsewhere, with no r
     expect(live.kinds).toEqual(backfill.kinds);
     expect(live["#a"]).toEqual([COORD]);
     expect(live.authors).toBeUndefined();
+    // ready-e51: and the CURSOR main.ts chose — the newest instant the load
+    // already folded, so a reconnect asks for the gap rather than replaying the
+    // whole board. relaylive.test.ts pins what subscribeToRelays does with a
+    // `since` it is GIVEN; this is the only place that observes which one
+    // main.ts gives it, and dropping it left every other case green.
+    const newestLoaded = SNAPSHOT.reduce((max, e) => (e.created_at > max ? e.created_at : max), 0);
+    expect(newestLoaded).toBeGreaterThan(0); // not trivially satisfiable by `undefined === undefined`
+    expect(live.since).toBe(newestLoaded);
     // A live REQ that is still open is the whole point.
     expect(handle.openSubscriptions()).toBeGreaterThan(0);
   });
@@ -193,6 +201,75 @@ describe("ready-4359: the OPEN board reflects a change made elsewhere, with no r
     // Still exactly one live subscription — not two racing to re-fold into a
     // workspace only one of them owns.
     expect(handle.openSubscriptions()).toBe(first);
+  });
+});
+
+describe("ready-e51: an item the rd CLI created after load is WRITABLE, not merely visible", () => {
+  // ready-4359 states this as a delivered property: "the item->board map kept
+  // current so a CLI-created item is writable, not just visible", implemented as
+  // one line inside afterLogin's onItems —
+  //   for (const i of next) if (i.boardCoord) itemBoard.set(i.id, i.boardCoord);
+  // Deleting that line left 832/832 vitest green and the live harness green too
+  // (scripts/live-roundtrip-both-ways.mjs asserts the CLI-created item APPEARS,
+  // then performs its convergence write on an item that existed at load). The
+  // case above proves the card renders; nothing proved it could be acted on.
+  //
+  // WHAT BREAKS WITHOUT IT: boardScopedWriter routes by the item->board map, so
+  // an item that arrived live has no entry and every action on it is refused
+  // with "no writable board is loaded for item …" — the page showing work it
+  // silently cannot act on, which is the one failure mode the line exists to
+  // prevent.
+  //
+  // THE ASSERTION IS THE SIGNER'S CALL, not the DOM. A refusal from
+  // boardScopedWriter is thrown by pick() BEFORE the writer builds or signs
+  // anything, so "was the extension asked to sign an event for THIS item" is the
+  // exact discriminator, and it cannot be satisfied by an optimistic patch.
+  it("claiming it reaches the signer with an event addressed to that item", async () => {
+    const { deps, handle } = liveDeps([...SNAPSHOT]);
+    // The board owner is a maintainer by construction (rolegrant.deriveLevels),
+    // so authority is not what this case is about. The signer REJECTS after
+    // recording the call: the write is refused at the extension instead of
+    // dialling a relay that never answers OK, which keeps the test hermetic and
+    // fast while still proving the writer was reached.
+    const signEvent = vi.fn(async (_e: { kind: number; tags: string[][] }) => {
+      throw new Error("extension declined (test)");
+    });
+    window.nostr = { getPublicKey: async () => OWNER, signEvent } as unknown as Window["nostr"];
+    const signing: Identity = { pubkey: OWNER, auth: authTransition({ type: "login", method: "extension" }) };
+    try {
+      await afterLogin(root, signing, { kind: "board", board: COORD, relays: [RELAY] }, deps);
+      expect(cardIds()).toEqual(["live-1"]);
+
+      for (const e of created("live-writable", "Created by rd after load", 1_780_000_200)) handle.push(e);
+      await settleLive();
+      expect(cardIds()).toContain("live-writable");
+
+      // Act on it exactly as a human would: select the new card, click Claim.
+      (root.querySelector('.card[data-id="live-writable"]') as HTMLElement).click();
+      const claim = root.querySelector(".act-claim") as HTMLElement | null;
+      expect(claim, "the new card's detail pane must offer Claim").not.toBeNull();
+      claim!.click();
+      await settleLive();
+
+      // ROUTED: the extension was asked to sign a card for THIS item. Without
+      // the live itemBoard update the write is refused before this point.
+      expect(signEvent).toHaveBeenCalled();
+      const signedFor = signEvent.mock.calls.map((c) => c[0].tags.find((t) => t[0] === "d")?.[1]);
+      expect(signedFor).toContain("live-writable");
+      // …and the refusal the missing map entry produces is demonstrably absent.
+      expect(root.querySelector(".transient-error")?.textContent ?? "").not.toContain("no writable board is loaded");
+
+      // ANTI-TAUTOLOGY: the same click on an item that WAS present at load
+      // routes too, so "the signer gets called for anything" is not what is
+      // being observed — the discriminator is the item id, not the call count.
+      signEvent.mockClear();
+      (root.querySelector('.card[data-id="live-1"]') as HTMLElement).click();
+      (root.querySelector(".act-claim") as HTMLElement).click();
+      await settleLive();
+      expect(signEvent.mock.calls.map((c) => c[0].tags.find((t) => t[0] === "d")?.[1])).toContain("live-1");
+    } finally {
+      delete (window as { nostr?: unknown }).nostr;
+    }
   });
 });
 
