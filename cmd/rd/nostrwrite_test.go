@@ -907,6 +907,225 @@ func TestNostrNative_GateOnBlockedItem_RaiseListResolve(t *testing.T) {
 	assertNoDotCf(t)
 }
 
+// TestNostrNative_GatesFilter_ListsOrdinaryWaitingGate is a ready-d19 matrix cell
+// alongside ready-e0e's blocked-item coverage: an ordinary gate raised on a plain
+// item that was NEVER blocked must also surface in `rd gates` / `rd gates --json`
+// (the Waiting branch of views.GatesFilter, not just its Blocked branch), and —
+// because it was never blocked — the human-readable row must NOT carry the
+// [BLOCKED] flag gates.go prints only for status=blocked rows. Without this test,
+// a change that only special-cased the blocked path (e.g. an "if blocked"
+// early-return that skipped the ordinary waiting case) could pass ready-e0e's own
+// regression test while breaking the far more common non-blocked gate.
+func TestNostrNative_GatesFilter_ListsOrdinaryWaitingGate(t *testing.T) {
+	setupNostrNativeProject(t)
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "Plain gate", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runGateNostr(id, "review", "sanity check the numbers"); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	it, _ := nostrResolveItem(id)
+	if it.Status != state.StatusWaiting {
+		t.Fatalf("status = %q; want waiting", it.Status)
+	}
+
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+
+	jsonOutput = true
+	jsonOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (json): %v", err)
+		}
+	})
+	var listed []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &listed); err != nil {
+		t.Fatalf("rd gates --json output is not valid JSON: %v; output:\n%s", err, jsonOut)
+	}
+	found := false
+	for _, row := range listed {
+		if row["id"] == id {
+			found = true
+			if row["status"] != string(state.StatusWaiting) {
+				t.Errorf("row status=%v; want %q", row["status"], state.StatusWaiting)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("rd gates --json did not list ordinary waiting-gated item %s; listed=%v", id, listed)
+	}
+
+	jsonOutput = false
+	humanOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (human): %v", err)
+		}
+	})
+	if !strings.Contains(humanOut, id) {
+		t.Fatalf("rd gates human output missing %s; got:\n%s", id, humanOut)
+	}
+	for _, line := range strings.Split(humanOut, "\n") {
+		if strings.Contains(line, id) && strings.Contains(line, "[BLOCKED]") {
+			t.Fatalf("ordinary (never-blocked) gated item %s incorrectly flagged [BLOCKED]; got:\n%s", id, humanOut)
+		}
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_GateLifecycle_ScheduledItem is the ready-d19 matrix cell for
+// status=scheduled — reachable only via `rd update --status scheduled`
+// (update.go/runUpdateNostr); rd gate/approve/reject never mint it themselves.
+// A gate raised on a scheduled item must succeed (scheduled is non-terminal and
+// non-blocked), forcing the item to waiting exactly like the inbox/active cases —
+// runGateNostr assigns item.Status = StatusWaiting directly, a real explicit
+// target status per NonDerivedStatus's doc (pkg/sync/nostrmigrate.go), so the
+// card-declared gate/wait promotion pass in applyDepAndGateStatus never has to
+// guess at it. The gate must then be visible in `rd gates` and resolvable by
+// approve without waiting for the scheduled ETA to arrive.
+func TestNostrNative_GateLifecycle_ScheduledItem(t *testing.T) {
+	setupNostrNativeProject(t)
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "Scheduled thing", itemType: "task", priority: "p2"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runUpdateNostr(id, nostrUpdateSpec{statusTo: state.StatusScheduled, hasStatusUpdate: true}); err != nil {
+		t.Fatalf("update to scheduled: %v", err)
+	}
+	it, _ := nostrResolveItem(id)
+	if it.Status != state.StatusScheduled {
+		t.Fatalf("status = %q; want scheduled", it.Status)
+	}
+
+	if err := runGateNostr(id, "budget", "confirm spend before the scheduled date"); err != nil {
+		t.Fatalf("gate on scheduled item must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(id)
+	if it.Status != state.StatusWaiting {
+		t.Fatalf("after gate, status = %q; want waiting (gate supersedes scheduled)", it.Status)
+	}
+	if it.WaitingType != "gate" || it.GateMsgID == "" {
+		t.Fatalf("after gate on scheduled item, waitingType=%q gateMsgID=%q; want gate/non-empty", it.WaitingType, it.GateMsgID)
+	}
+
+	origJSON := jsonOutput
+	jsonOutput = true
+	jsonOut := captureStdoutPipe(t, func() {
+		if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+			t.Fatalf("gatesCmd.RunE (json): %v", err)
+		}
+	})
+	jsonOutput = origJSON
+	var listed []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &listed); err != nil {
+		t.Fatalf("rd gates --json output is not valid JSON: %v; output:\n%s", err, jsonOut)
+	}
+	found := false
+	for _, row := range listed {
+		if row["id"] == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rd gates --json did not list scheduled-origin gated item %s; listed=%v", id, listed)
+	}
+
+	if err := runApproveNostr(id, "go ahead, don't wait for the date"); err != nil {
+		t.Fatalf("approve of scheduled-origin gate must succeed, got: %v", err)
+	}
+	it, _ = nostrResolveItem(id)
+	if it.Status != state.StatusActive {
+		t.Fatalf("after approve, status = %q; want active", it.Status)
+	}
+	assertNoDotCf(t)
+}
+
+// TestNostrNative_GateApproveReject_TerminalStates is the ready-d19 matrix cell
+// for every terminal status (done, cancelled, failed): rd gate must FAIL LOUDLY
+// rather than print false success for an escalation that can never surface
+// (ready-e0e's point 3, generalized here to every terminal state rather than just
+// the one it happened to be fixed for); rd gates must never list a terminal item;
+// and rd approve / rd reject must both refuse a terminal item — including one
+// that WAS gated right up until it closed, which proves the terminal branch of
+// applyDepAndGateStatus (which clears WaitingType/WaitingOn/GateMsgID for every
+// terminal item) actually reaches the close path, not merely a freshly-created
+// terminal fixture that never had gate fields to begin with.
+func TestNostrNative_GateApproveReject_TerminalStates(t *testing.T) {
+	for _, resolution := range []string{"done", "cancelled", "failed"} {
+		t.Run(resolution, func(t *testing.T) {
+			setupNostrNativeProject(t)
+			dir := mustDir(t)
+
+			// Case A: gate it first (a real pending gate), THEN close — proves the
+			// gate fields are actually cleared on close, not just absent because it
+			// was never gated.
+			id, err := runCreateNostr(dir, nostrCreateSpec{title: "Gated then closed", itemType: "task", priority: "p1"})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if err := runGateNostr(id, "design", "confirm before closing"); err != nil {
+				t.Fatalf("gate: %v", err)
+			}
+			if err := runCloseNostr(id, resolution, "closing anyway", "closed"); err != nil {
+				t.Fatalf("close (%s): %v", resolution, err)
+			}
+			it, _ := nostrResolveItem(id)
+			if !state.IsTerminal(it) {
+				t.Fatalf("status = %q after close(%s); want terminal", it.Status, resolution)
+			}
+
+			if err := runGateNostr(id, "design", "too late"); err == nil {
+				t.Fatalf("gate on a %s item must FAIL, got nil (false success on an escalation that can never surface)", it.Status)
+			}
+
+			origJSON := jsonOutput
+			jsonOutput = true
+			jsonOut := captureStdoutPipe(t, func() {
+				if err := gatesCmd.RunE(gatesCmd, nil); err != nil {
+					t.Fatalf("gatesCmd.RunE (json): %v", err)
+				}
+			})
+			jsonOutput = origJSON
+			var listed []map[string]any
+			if err := json.Unmarshal([]byte(jsonOut), &listed); err != nil {
+				t.Fatalf("rd gates --json invalid JSON: %v; output:\n%s", err, jsonOut)
+			}
+			for _, row := range listed {
+				if row["id"] == id {
+					t.Fatalf("rd gates --json lists terminal (%s) item %s; must never surface a gate that cannot be resolved", resolution, id)
+				}
+			}
+
+			if err := runApproveNostr(id, "too late"); err == nil {
+				t.Fatalf("approve of a terminal (%s) item must fail, got nil", resolution)
+			}
+			if err := runRejectNostr(id, "too late"); err == nil {
+				t.Fatalf("reject of a terminal (%s) item must fail, got nil", resolution)
+			}
+
+			// Case B: a plain never-gated item closed the same way must ALSO refuse
+			// gate/approve/reject — the far more common terminal shape.
+			plainID, err := runCreateNostr(dir, nostrCreateSpec{title: "Never gated", itemType: "task", priority: "p1"})
+			if err != nil {
+				t.Fatalf("create plain: %v", err)
+			}
+			if err := runCloseNostr(plainID, resolution, "closing", "closed"); err != nil {
+				t.Fatalf("close plain (%s): %v", resolution, err)
+			}
+			if err := runGateNostr(plainID, "design", "too late"); err == nil {
+				t.Fatalf("gate on a never-gated terminal (%s) item must fail, got nil", resolution)
+			}
+			if err := runApproveNostr(plainID, "n/a"); err == nil {
+				t.Fatalf("approve on a never-gated terminal (%s) item must fail, got nil", resolution)
+			}
+			if err := runRejectNostr(plainID, "n/a"); err == nil {
+				t.Fatalf("reject on a never-gated terminal (%s) item must fail, got nil", resolution)
+			}
+			assertNoDotCf(t)
+		})
+	}
+}
+
 func mustDir(t *testing.T) string {
 	t.Helper()
 	dir, ok := readyProjectDir()
