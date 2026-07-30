@@ -312,17 +312,37 @@ export async function loadBoardItems(
       const { state, why } = confidentialityOf(keyring, b.coord, events, linkKeys !== undefined);
       if (state !== "public") confidential = true;
       if (state === "unknown") unestablished.push({ name: b.title || b.boardD, why: why ?? "no-grant" });
+      const encryptedBoards = encryptedBoardsOf(keyring, state);
       const src = foldItemSource(
         {
           trusted: null,
           maintainers: null,
           pinnedBoard: b.coord,
           decryptor: keyring,
-          encryptedBoards: encryptedBoardsOf(keyring, state),
+          encryptedBoards,
         },
         b.coord,
       );
       out.push(...src.loadItems(events));
+
+      // ready-191: the WRITE-side envelope. A confidential board is writable from
+      // this page exactly while the session holds its CEK — the same key the read
+      // above just used, from the same keyring, so a board whose cards render is
+      // a board whose cards can be republished, and one that renders
+      // "[encrypted]" stays read-only and says so.
+      //
+      // THE EPOCH IS currentEpoch(), THE HIGHEST HELD — not the newest grant seen
+      // and not the epoch of the card being edited. See BoardKeyring.currentEpoch's
+      // doc: a member who missed a rotation seals under its stale highest epoch,
+      // which the owner (who minted the rotation and self-wrapped it) can still
+      // read; sealing under any other held epoch publishes a card part of the
+      // board cannot read, and nothing on the READ path would ever report it.
+      const epoch = keyring.currentEpoch(b.coord);
+      const cek = epoch === null ? null : keyring.cek(b.coord, epoch);
+      const enc =
+        state !== "public" && epoch !== null && cek !== null
+          ? { cek, epoch, ltk: keyring.ltk(b.coord) }
+          : null;
 
       // ready-b2b: the WRITER for this board, built from the same snapshot the
       // read just folded. It is per-board because authority is per-board — the
@@ -339,6 +359,13 @@ export async function loadBoardItems(
           snapshot: events,
           grantLevels: deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD).levels,
           confidential: state !== "public",
+          enc,
+          // The writer projects its own view to build the next write from; it
+          // must decrypt and quarantine exactly as the read above did, or it
+          // would refuse every write on a confidential board (refuseRedacted)
+          // and show the user a different board than the page does.
+          decryptor: keyring,
+          encryptedBoards,
         }),
       );
     } catch {

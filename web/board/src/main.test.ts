@@ -50,7 +50,8 @@ import { fetchEventsFromRelays, type NostrFilter } from "./lib/relay";
 import { boardCoord, type DiscoveredBoard } from "./lib/boarddiscovery";
 import * as boarddiscoveryModule from "./lib/boarddiscovery";
 import { encodeNpub } from "./lib/npub";
-import { neverUnwraps } from "./lib/keyunwrap";
+import { fakeNip44Signer } from "./lib/fakesigner";
+import { neverUnwraps, nip07KeyUnwrapper } from "./lib/keyunwrap";
 import {
   makeNip01Relay,
   type Nip01RelayConfig,
@@ -68,10 +69,24 @@ import {
   BOARD_COORD as CONF_COORD,
   BOARD_D as CONF_BOARD_D,
   OWNER_PUB as CONF_OWNER,
+  OWNER_SEC as CONF_OWNER_SEC,
+  CEK_EPOCH1,
+  CEK_EPOCH2,
+  LTK as CONF_LTK,
+  CUTOVER as CONF_CUTOVER,
   boardEvent as confBoardEvent,
   cards as confCards,
+  // ready-191 rework 4: the adversarial post-cutover cleartext card, named so
+  // the writer's quarantine can be asserted against the very event it drops.
+  cardSmuggledCleartext,
+  expectedPlaintext as confExpected,
   grants as confGrants,
 } from "./lib/confidential.fixtures";
+// ready-191 rework: reading the browser's own sealed write back through the real
+// fold, as an independent key-holder would. Same seam main.ts projects through.
+import { foldItemSource } from "./lib/itemsource";
+import { PLACEHOLDER, labelToken, type BoardDecryptor, type EncryptedBoardSet } from "./lib/envelope";
+import { hexToBytes } from "./lib/sha256";
 import {
   OWNER,
   OTHER,
@@ -1271,5 +1286,266 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
     // for this key — it is only being outranked.
     const signingWriter = await writerFor(extension(STRANGER), GATE_BOARD, GATE_SNAPSHOT, []);
     expect(signingWriter.whyReadOnly()).toMatch(/no write grant/i);
+  });
+
+  // ── ready-191: the confidential refusal is about the KEY, not the board ────
+  //
+  // Every case above holds `keyUnwrapper: () => neverUnwraps`, so no CEK ever
+  // reaches the page and the confidential board is correctly read-only. That is
+  // half the contract. The other half — the half that made every board created
+  // by a plain `rd init` read-only in the browser — is that a session which DOES
+  // hold the board's key must be able to write, sealed. This case runs the REAL
+  // loadBoardItems with a working unwrapper and asserts it threaded the key all
+  // the way into the writer.
+  it("ready-191: the SAME confidential board becomes writable once the session holds its CEK", async () => {
+    const board: DiscoveredBoard = {
+      coord: CONF_COORD,
+      ownerPubkey: CONF_OWNER,
+      boardD: CONF_BOARD_D,
+      title: "Confidential Board",
+    };
+    const identity = extension(CONF_OWNER);
+    // The extension signs as the confidential board's owner — publish.ts checks
+    // the returned event was signed as built, so the identity and the signer must
+    // be the same key.
+    const confSign = vi.fn(async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+      signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, CONF_OWNER_SEC),
+    );
+    window.nostr = { getPublicKey: async () => CONF_OWNER, signEvent: confSign } as unknown as Window["nostr"];
+
+    const deps: BoardDeps = {
+      loadRelays: async () => [],
+      fetchEvents: async () => CONF_SNAPSHOT,
+      // The real grant → NIP-44 unwrap → CEK path, with a spec-validated NIP-44
+      // v2 implementation standing in for the extension (nip44ref.test.ts).
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
+    };
+    // `items` is the PAGE's projection — what the user is looking at. Captured
+    // so the writer's own projection can be compared against it below.
+    const { items: pageItems, writers } = await loadBoardItems(
+      [board],
+      [],
+      confGrants,
+      identity,
+      deps,
+      () => {},
+    );
+    const writer = writers.get(board.coord)!;
+
+    // NOT read-only — and specifically not for the confidentiality reason, which
+    // is the branch this item narrowed.
+    expect(writer.whyReadOnly()).toBeUndefined();
+
+    // ANTI-TAUTOLOGY: the writer really did decrypt, so the write below rebuilds
+    // the card from REAL content rather than being refused as redacted.
+    const conf1 = confExpected.find((e) => e.id === "conf-001")!;
+    expect(writer.items().get("conf-001")!.title).toBe(conf1.title);
+    expect(writer.items().get("conf-001")!.redacted).toBeFalsy();
+
+    // The only thing left to stop the write is the empty relay list, which stops
+    // it AFTER the events are built and signed.
+    await expect(writer.setPriority("conf-001", "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(confSign).toHaveBeenCalled();
+
+    // What it signed was SEALED: no clear title tag, the enc markers present, and
+    // the item's real title nowhere in the serialized event.
+    const card = (await confSign.mock.results[0].value) as NostrEvent;
+    expect(card.kind).toBe(30302);
+    expect(card.tags.some((t) => t[0] === "title")).toBe(false);
+    expect(card.tags).toContainEqual(["enc", "1"]);
+    // …and sealed under the epoch main.ts SELECTED, not merely under some epoch.
+    // This session holds 1 and 2; the board's current epoch is 2. See the case
+    // below for why the marker's presence alone is not enough.
+    expect(card.tags).toContainEqual(["cek_epoch", "2"]);
+    expect(JSON.stringify(card)).not.toContain(conf1.title);
+
+    // ── ready-191 rework: WHICH LTK the labels were tokenized under ──────────
+    //
+    // The sibling of the epoch line, and the same blind spot. main.ts's
+    // `ltk: keyring.ltk(b.coord)` was witnessed by nothing: replacing it with
+    // new Uint8Array(32).fill(7) left the whole suite green, and `undefined` —
+    // which drops the `l` tags entirely — was green too. The Go conformance test
+    // asserts the token FORMAT but INJECTS the LTK, so it never sees main.ts's
+    // SELECTION.
+    //
+    // WHAT A WRONG LTK COSTS: the tokens are opaque, so a card tokenized under
+    // the wrong key looks exactly as correct as a right one on the wire and in
+    // the DOM. What breaks is the relay-side `#l` equality filter these tokens
+    // exist for — the browser's "crypto" and rd's "crypto" stop being the same
+    // string, so a label query silently returns a board missing every card the
+    // browser wrote, with nothing anywhere reporting a fault.
+    //
+    // Asserted against the FIXTURE's LTK (the one the Go writer used to seal the
+    // cards this page just read), not against anything the page produced — so
+    // this is a cross-implementation agreement, not self-consistency.
+    expect(conf1.labels).toEqual(["crypto", "board"]);
+    expect(card.tags).toContainEqual(["l", labelToken(hexToBytes(CONF_LTK), "crypto")]);
+    expect(card.tags).toContainEqual(["l", labelToken(hexToBytes(CONF_LTK), "board")]);
+    // ANTI-TAUTOLOGY: the tokens are not the label text — the clear labels never
+    // went on the wire, which is the OTHER half of what tokenizing is for.
+    expect(card.tags).not.toContainEqual(["l", "crypto"]);
+    expect(card.tags).not.toContainEqual(["l", "board"]);
+
+    // ── ready-191 rework 4: WHICH confidentiality gate the WRITER projects through ──
+    //
+    // The third and worst member of the same family as the epoch and LTK lines,
+    // found by the witness audit those two produced. main.ts hands the writer the
+    // SAME `encryptedBoards` gate the page's read just used. That argument was
+    // witnessed by nothing: replacing it with a fail-open
+    //   { cutover: () => ({ cutover: 0, ok: false }) }
+    // — the exact shape confidentiality.ts's own encryptedBoardsOf doc calls "the
+    // bug this item fixes" — left the whole 768-case suite green, measured.
+    //
+    // WHAT THE FAIL-OPEN COSTS, on this shipped fixture: conf-005 is an
+    // attacker-authored POST-cutover CLEARTEXT card. The page withholds it
+    // (main.confidential.test.ts). A fail-open writer PROJECTS it, title and all,
+    // and setPriority then seals the attacker's plaintext into an owner-SIGNED
+    // card tagged ["enc","1"],["cek_epoch","2"]. Quarantined content laundered
+    // into an authentic sealed card under the owner's own key — this item's done
+    // condition ("an independent rd decrypts to exactly the intended state")
+    // failing in the worst available direction, since the laundered card is
+    // indistinguishable from a real one to every downstream reader.
+    //
+    // PREMISE: the adversarial event really is on the board this writer holds, so
+    // its absence below is a QUARANTINE and not an empty fixture.
+    expect(CONF_SNAPSHOT).toContain(cardSmuggledCleartext);
+    expect(cardSmuggledCleartext.tags).toContainEqual(["title", "SMUGGLED CLEARTEXT TITLE"]);
+
+    // THE CLAIM: the writer's own projection withholds it, exactly as the page's
+    // does — one board, one verdict.
+    expect(writer.items().has("conf-005")).toBe(false);
+    // …and under no other id either: the quarantine is asserted on the CONTENT
+    // the attacker smuggled, not only on the "d" they filed it under.
+    for (const projected of writer.items().values()) {
+      expect(projected.title).not.toContain("SMUGGLED CLEARTEXT");
+      expect(projected.context ?? "").not.toContain("SMUGGLED CLEARTEXT");
+    }
+    expect([...writer.items().keys()].sort()).toEqual(pageItems.map((i) => i.id).sort());
+
+    // ANTI-TAUTOLOGY 1: the gate is a CUTOVER, not "the writer drops every
+    // plaintext card". conf-006 carries a clear title too and is grandfathered
+    // in, by this projection, because it predates the cutover.
+    expect(writer.items().get("conf-006")!.title).toBe("Legacy plaintext card");
+
+    // ANTI-TAUTOLOGY 2: "not in the projection" is not "unwritable in general" —
+    // the same writer wrote conf-001 twenty lines up.
+    //
+    // AND THE CONSEQUENCE ITSELF: the laundering write is refused BEFORE anything
+    // is built or signed. Under the fail-open mutation this call instead reaches
+    // the relay, and the signer is handed a sealed card whose plaintext is the
+    // attacker's title — so `confSign` gaining a call is the leak, and its call
+    // count is asserted unchanged rather than merely "an error was thrown".
+    const signsBefore = confSign.mock.calls.length;
+    await expect(writer.setPriority("conf-005", "p0")).rejects.toMatchObject({
+      name: "WriteRefusedError",
+      code: "unknown_item",
+    });
+    expect(confSign.mock.calls.length).toBe(signsBefore);
+  });
+
+  // ── ready-191 rework: WHICH epoch the seal used ───────────────────────────
+  //
+  // The case above asserts the enc marker is PRESENT. That is not enough, and it
+  // was measured: mutating main.ts's selection to
+  //   const epoch = keyring.currentEpoch(b.coord) === null ? null : 1
+  // published ["cek_epoch","1"] on a board whose current epoch is 2, and the
+  // ENTIRE vitest suite plus the Go conformance test stayed green. Every other
+  // confidential case fixes the epoch at 1 with a keyring holding only epoch 1,
+  // so `currentEpoch()` was the one line in the write path nothing exercised.
+  //
+  // WHAT A STALE-EPOCH SEAL COSTS, and why no read-side assertion can catch it:
+  // the card is sealed under a key the WRITER still holds, so it renders
+  // perfectly for the writer and for anyone else who predates the rotation.
+  // The people it is broken for are the ones who joined after — including rd on
+  // another machine, holding only the current epoch — and they see "[encrypted]"
+  // forever, with nothing anywhere reporting a fault. That is this item's own
+  // done condition ("an independent rd decrypts to exactly the intended state")
+  // failing silently, so it is asserted the way the independent reader would
+  // find out: by FOLDING the published event with a decryptor that holds only
+  // the post-rotation key.
+  it("ready-191: the browser seals under the CURRENT epoch — a reader holding ONLY the post-rotation key opens what it wrote", async () => {
+    const board: DiscoveredBoard = {
+      coord: CONF_COORD,
+      ownerPubkey: CONF_OWNER,
+      boardD: CONF_BOARD_D,
+      title: "Confidential Board",
+    };
+    const identity = extension(CONF_OWNER);
+    const confSign = vi.fn(async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+      signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, CONF_OWNER_SEC),
+    );
+    window.nostr = { getPublicKey: async () => CONF_OWNER, signEvent: confSign } as unknown as Window["nostr"];
+
+    const deps: BoardDeps = {
+      loadRelays: async () => [],
+      fetchEvents: async () => CONF_SNAPSHOT,
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
+    };
+    const { writers } = await loadBoardItems([board], [], confGrants, identity, deps, () => {});
+    const writer = writers.get(board.coord)!;
+
+    // ANTI-TAUTOLOGY, and the whole reason this fixture can pin a SELECTION:
+    // this session holds BOTH epochs. conf-001 was sealed under epoch 1 and
+    // conf-003 under epoch 2, and both open here — so epoch 1 is genuinely
+    // available to seal under, and picking 2 is a choice rather than the only
+    // thing that could have happened.
+    const conf1 = confExpected.find((e) => e.id === "conf-001")!;
+    const conf3 = confExpected.find((e) => e.id === "conf-003")!;
+    expect(conf1.epoch).toBe(1);
+    expect(conf3.epoch).toBe(2);
+    expect(writer.items().get("conf-001")!.title).toBe(conf1.title);
+    expect(writer.items().get("conf-003")!.title).toBe(conf3.title);
+
+    await expect(writer.setPriority("conf-001", "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    const card = (await confSign.mock.results[0].value) as NostrEvent;
+    expect(card.kind).toBe(30302);
+    expect(card.tags).toContainEqual(["cek_epoch", "2"]);
+
+    // THE INDEPENDENT READER: someone granted at the rotation, holding the
+    // post-rotation key and nothing else — rd on another machine, or any member
+    // minted after the revoke. Real key bytes and the real fold, so "opens" is an
+    // AEAD outcome and not a flag the test set.
+    const postRotationOnly: BoardDecryptor = {
+      cek: (coord, epoch) => (coord === CONF_COORD && epoch === 2 ? hexToBytes(CEK_EPOCH2) : null),
+    };
+    const preRotationOnly: BoardDecryptor = {
+      cek: (coord, epoch) => (coord === CONF_COORD && epoch === 1 ? hexToBytes(CEK_EPOCH1) : null),
+    };
+    const confidentialBoard: EncryptedBoardSet = {
+      cutover: (coord) =>
+        coord === CONF_COORD ? { cutover: CONF_CUTOVER, ok: true } : { cutover: 0, ok: false },
+    };
+    const readBack = (dec: BoardDecryptor) =>
+      foldItemSource(
+        {
+          trusted: null,
+          maintainers: null,
+          pinnedBoard: CONF_COORD,
+          decryptor: dec,
+          encryptedBoards: confidentialBoard,
+        },
+        CONF_COORD,
+      )
+        // The board event and the ONE event the browser just published — nothing
+        // else, so what is read back can only have come out of the write path.
+        .loadItems([confBoardEvent, card])
+        .find((i) => i.id === "conf-001")!;
+
+    const opened = readBack(postRotationOnly);
+    expect(opened.redacted).toBeFalsy();
+    expect(opened.title).toBe(conf1.title);
+    expect(opened.context).toBe(conf1.context);
+    // …decrypted to EXACTLY the intended state, which is the mutation the write
+    // was for.
+    expect(opened.priority).toBe("p0");
+
+    // ANTI-TAUTOLOGY for the line above: the pre-rotation key does NOT open the
+    // same bytes, so `opened` is a real decrypt and not "any key works". This is
+    // also the assertion a stale-epoch seal inverts — under the epoch-1 mutation
+    // this reader is the one that opens it and the post-rotation member above is
+    // the one that gets [encrypted].
+    const stale = readBack(preRotationOnly);
+    expect(stale.redacted).toBe(true);
+    expect(stale.title).toBe(PLACEHOLDER);
   });
 });

@@ -46,11 +46,40 @@
 // memory, injected into the page's signer, and is never logged, printed or
 // written anywhere by this script.
 //
-// WHY A PUBLIC BOARD. rd seals free text on a confidential board and this page
-// has no seal path (see src/board/writeevents.ts's header), so the browser
-// REFUSES to write to a confidential board rather than silently downgrading it
-// to plaintext. The proof board is therefore created with `rd init --public`,
-// which is also the mode testdata/write.vectors.json pins.
+// TWO BOARD MODES, AND WHY BOTH ARE RUN (ready-191). This script's header used
+// to say "WHY A PUBLIC BOARD: rd seals free text on a confidential board and
+// this page has no seal path, so the browser REFUSES to write to a confidential
+// board". That was true when ready-b2b shipped and it is FALSE NOW: ready-191
+// gave the page the seal half of the envelope (src/lib/envelope.ts's SEAL half,
+// src/board/writeevents.ts's enc branches), so a confidential board is writable
+// from the browser exactly while the session HOLDS the board's CEK. The refusal
+// did not go away — it narrowed to `confidential && !enc`, which is still the
+// only honest answer when no key reached the page.
+//
+//   node scripts/live-write-roundtrip.mjs                 -> `rd init --public`
+//   node scripts/live-write-roundtrip.mjs --confidential  -> plain `rd init`
+//
+// `--public` is the mode testdata/write.vectors.json pins, so the default run
+// stays the one that lines up with the deterministic vectors. `--confidential`
+// is the mode `rd init` DEFAULTS to — i.e. every real project board — and it is
+// the only run that can support ready-191's done condition, which says "a real
+// browser" and "an independent rd decrypts it". What the confidential run adds
+// on top of the seven operations:
+//
+//   - the injected signer grows a REAL NIP-44 v2 `nip44.decrypt` (lib/nip44ref.ts,
+//     validated against the official spec vectors), because that is the only way
+//     a CEK can reach the page: the board client cannot do ECDH, so it asks the
+//     signer to open the owner-signed grant (src/lib/keyunwrap.ts's header);
+//   - the independent reader is a SEPARATE key that the board owner `rd grant`s,
+//     so the read-back genuinely DECRYPTS rather than being the writer reading
+//     its own log — a keyless reader is asserted separately, and sees nothing;
+//   - the published card is inspected ON THE WIRE out of the reader's own synced
+//     log: no clear `title`/`waiting_on` tag, the enc + cek_epoch markers present,
+//     and no free text the browser authored anywhere in the serialized event;
+//   - the browser's `l` label token is compared to the token RD'S OWN WRITER
+//     emitted for the SAME label on the SAME board — the live form of the
+//     cross-implementation LTK agreement web/board/confidential_write_test.go
+//     asserts in-process.
 //
 // THIS IS A MANUAL PROOF, NOT A CI JOB. It needs the live relay, a Chromium on
 // disk, and the local machine's allowlisted rd key — none of which CI has. The
@@ -83,9 +112,18 @@ const CHROME =
 const argv = process.argv.slice(2);
 const KEEP = argv.includes("--keep");
 const RELAY = argv.includes("--relay") ? argv[argv.indexOf("--relay") + 1] : "wss://relay.3dl.network";
+/** ready-191: run the whole proof against a CONFIDENTIAL board (plain `rd init`,
+ * the default mode) instead of a `--public` one. See this file's header. */
+const CONFIDENTIAL = argv.includes("--confidential");
 
 const RUN = Date.now().toString(36);
-const BOARD_D = `b2blive${RUN}`;
+const BOARD_D = `${CONFIDENTIAL ? "c191live" : "b2blive"}${RUN}`;
+
+/** The label BOTH implementations attach, on different items of the same board.
+ * On a confidential board the `l` tag is an HMAC token under the board LTK, so
+ * rd's token and the browser's token for this one string must be byte-identical
+ * or the relay-side `#l` equality filter silently stops matching across writers. */
+const SHARED_LABEL = "browser-written";
 
 const log = (...a) => console.log(...a);
 const step = (s) => console.log(`\n── ${s}`);
@@ -167,15 +205,33 @@ function rd(bin, cwd, home, args) {
 
 /**
  * independentRead is the whole point of this script. It builds a reader that
- * has NEVER seen the browser's events: a brand-new RD_HOME (its own fresh key)
- * and a brand-new project directory whose nostr-log.jsonl does not exist until
- * `rd sync` pulls it from the relay. Trust resolves to the board author, whose
- * 30301 board and 39301 self-grant are themselves fetched from the relay.
+ * has NEVER seen the browser's events: a brand-new RD_HOME and a brand-new
+ * project directory whose nostr-log.jsonl does not exist until `rd sync` pulls
+ * it from the relay. Trust resolves to the board author, whose 30301 board and
+ * 39301 self-grant are themselves fetched from the relay.
+ *
+ * `readerSecret` (ready-191, confidential runs): the reader's IDENTITY, as
+ * opposed to its log, cannot be fresh on a confidential board — a CEK is
+ * NIP-44-wrapped TO a pubkey, so a key nobody granted decrypts nothing and the
+ * read-back would be a wall of [encrypted] that proves only that the envelope
+ * is fail-closed. So the confidential runs pin ONE separate key, `rd grant` it
+ * from the owner ONCE, and give every fresh reader that same identity. The log
+ * is still empty every time, which is the independence that matters here: the
+ * relay is the only possible source of every event the reader projects. A
+ * reader given NO secret is genuinely keyless, and the keyless case is asserted
+ * on its own below (it must see the placeholder, never the free text).
  */
-function independentRead(bin, tmp, coord, tag) {
+function independentRead(bin, tmp, coord, tag, readerSecret) {
   const home = path.join(tmp, `reader-${tag}-home`);
   const dir = path.join(tmp, `reader-${tag}`);
   mkdirSync(home, { recursive: true });
+  if (readerSecret) {
+    writeFileSync(
+      path.join(home, "nostr-identity.json"),
+      JSON.stringify({ version: 1, secret_hex: readerSecret.secret, pubkey_hex: readerSecret.pubkey }),
+      { mode: 0o600 },
+    );
+  }
   mkdirSync(path.join(dir, ".ready"), { recursive: true });
   writeFileSync(
     path.join(dir, ".ready", "config.json"),
@@ -183,7 +239,7 @@ function independentRead(bin, tmp, coord, tag) {
       {
         project_name: `reader-${tag}`,
         board: coord,
-        public: true,
+        public: !CONFIDENTIAL,
         relay_endpoints: [{ url: RELAY, read: true, write: false }],
       },
       null,
@@ -199,6 +255,27 @@ function independentRead(bin, tmp, coord, tag) {
   const items = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
   return new Map(items.map((i) => [i.id, i]));
 }
+
+/** readerEvents returns every event of `kind` addressing `itemId` from a
+ * reader's freshly-synced log — i.e. the SERIALIZED BYTES the relay retains and
+ * handed back, not a projection of them. ready-191's done condition is asserted
+ * on these: "no plaintext title/context/label ever on the wire" is a claim about
+ * the event, and a projection that renders the right title says nothing about
+ * it. */
+function readerEvents(tmp, tag, itemId, kind) {
+  const file = path.join(tmp, `reader-${tag}`, ".ready", "nostr-log.jsonl");
+  const out = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    const e = JSON.parse(line);
+    if (e.kind !== kind) continue;
+    if (!e.tags?.some((t) => t[0] === "d" && t[1] === itemId)) continue;
+    out.push(e);
+  }
+  return out;
+}
+
+const tagValues = (ev, name) => (ev.tags ?? []).filter((t) => t[0] === name).map((t) => t[1]);
 
 /**
  * readerStatusStamps returns the created_at of every NIP-34 STATUS event for
@@ -276,13 +353,24 @@ async function directRelayPublish(vite, secret, coord) {
 
 /** injectedSignerJs bundles the REAL secp256k1 signer as an IIFE that installs
  * window.nostr before any page script runs. See this file's header for exactly
- * what this does and does not prove. */
+ * what this does and does not prove.
+ *
+ * THE nip44 NAMESPACE (ready-191) is what makes a confidential run possible at
+ * all. The page cannot do ECDH — the secret key never enters it — so the ONLY
+ * way a board CEK reaches it is `window.nostr.nip44.decrypt(ownerPubkey, wrap)`
+ * over the owner-signed 39301 grant (src/lib/keyunwrap.ts's header). The crypto
+ * underneath is src/lib/nip44ref.ts, which is validated against the official
+ * NIP-44 v2 test vectors (nip44ref.test.ts), and the UTF-8 string boundary every
+ * real extension has is reproduced exactly (TextDecoder, non-fatal) rather than
+ * shortcut — that boundary is why pkg/sync/keydist.go seals hex, and a shortcut
+ * here would hide a regression in it. */
 async function injectedSignerJs(esbuild, secretHex) {
   const built = await esbuild.build({
     absWorkingDir: BOARD_DIR,
     stdin: {
       contents: `
         import { signNostrEvent, xOnlyPubkey } from "./src/lib/schnorrsign";
+        import { open as nip44Open } from "./src/lib/nip44ref";
         const SECRET = "__SECRET__";
         window.nostr = {
           async getPublicKey() { return xOnlyPubkey(SECRET); },
@@ -291,6 +379,13 @@ async function injectedSignerJs(esbuild, secretHex) {
               { created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content },
               SECRET,
             );
+          },
+          nip44: {
+            async decrypt(counterpartyPubHex, ciphertext) {
+              // Throws on a MAC failure / wrong recipient, exactly as an
+              // extension does; the page treats that as "no such key".
+              return new TextDecoder("utf-8").decode(nip44Open(SECRET, counterpartyPubHex, ciphertext));
+            },
           },
         };
       `,
@@ -408,7 +503,22 @@ async function main() {
     const rdBin = path.join(tmp, "rd");
     execFileSync("go", ["build", "-o", rdBin, "./cmd/rd"], { cwd: REPO_ROOT, stdio: "inherit" });
 
-    step("provision the throwaway board (owner key, PUBLIC, fresh board-d)");
+    // Stood up BEFORE the board is provisioned (ready-191) because mintKey draws
+    // keys through it, and a confidential run needs the independent reader's key
+    // to exist before `rd grant` can address the CEK to it.
+    step("prepare the injected signer (REAL secp256k1 — see this file's header)");
+    const vite = await createServer({
+      root: BOARD_DIR,
+      configFile: false,
+      logLevel: "error",
+      server: { middlewareMode: true },
+      appType: "custom",
+      optimizeDeps: { noDiscovery: true },
+    });
+    cleanup.push(() => vite.close());
+    const esbuild = (await import("esbuild")).default ?? (await import("esbuild"));
+
+    step(`provision the throwaway board (owner key, ${CONFIDENTIAL ? "CONFIDENTIAL" : "PUBLIC"}, fresh board-d)`);
     const writerHome = path.join(tmp, "writer-home");
     mkdirSync(writerHome, { recursive: true });
     const idPath = path.join(
@@ -423,7 +533,10 @@ async function main() {
     const initOut = JSON.parse(
       rd(rdBin, projectDir, writerHome, [
         "init",
-        "--public",
+        // ready-191: plain `rd init` IS the confidential mode — omitting the flag
+        // is the whole difference, and it is the mode every real project board
+        // is created in.
+        ...(CONFIDENTIAL ? [] : ["--public"]),
         "--no-commit-binding",
         "--relay",
         RELAY,
@@ -435,6 +548,12 @@ async function main() {
     const coord = initOut.board;
     const owner = initOut.owner;
     log(`  board ${coord}`);
+
+    // THE INDEPENDENT READER'S KEY (confidential runs only). Minted here, granted
+    // by the owner below, and used by every independentRead() call for the rest of
+    // the run. It is NOT the browser's key and NOT the owner's: the read-back has
+    // to be somebody else decrypting, or it proves nothing about the wire.
+    const readerKey = CONFIDENTIAL ? await mintKey(vite) : undefined;
 
     step("seed the items each operation acts on (rd's OWN writer, published to the relay)");
     const ids = {
@@ -448,7 +567,15 @@ async function main() {
       gateNo: `${BOARD_D}-gateno`,
       rapid: `${BOARD_D}-rapid`,
       reject: `${BOARD_D}-reject`,
+      // ready-191: written by RD, carrying the SAME label the browser adds to
+      // ids.label below. On a confidential board the two `l` tags must be the
+      // identical HMAC token — see the comparison after the seven operations.
+      rdlabel: `${BOARD_D}-rdlabel`,
     };
+    // The shared label has to exist in the project registry before rd will
+    // attach it. The BROWSER's label-add path does not consult the registry, so
+    // this is a precondition of rd's half of the comparison only.
+    rd(rdBin, projectDir, writerHome, ["label", "define", SHARED_LABEL, "--description", "written from a browser"]);
     for (const [k, id] of Object.entries(ids)) {
       rd(rdBin, projectDir, writerHome, [
         "create",
@@ -459,6 +586,7 @@ async function main() {
         "task",
         "--priority",
         "p2",
+        ...(k === "rdlabel" ? ["--label", SHARED_LABEL] : []),
       ]);
     }
     rd(rdBin, projectDir, writerHome, ["claim", ids.gateOk, "--reason", "for the gate"]);
@@ -479,14 +607,42 @@ async function main() {
       "--description",
       "needs a browser ruling",
     ]);
+    if (readerKey) {
+      // The owner wraps this board's CEK to the reader's pubkey. `rd grant` IS
+      // the whole invite — there is no relay-side admission involved.
+      rd(rdBin, projectDir, writerHome, ["grant", readerKey.pubkey]);
+    }
     rd(rdBin, projectDir, writerHome, ["relay", "flush"]);
 
     step("BASELINE: an independent reader sees the seeds through the relay only");
-    const baseline = independentRead(rdBin, tmp, coord, "baseline");
+    const baseline = independentRead(rdBin, tmp, coord, "baseline", readerKey);
     for (const id of Object.values(ids)) {
       if (!baseline.has(id)) throw new Error(`seed ${id} did not reach the relay — the proof cannot start`);
     }
     log(`  ${baseline.size} items read back independently`);
+
+    if (CONFIDENTIAL) {
+      // PRECONDITIONS FOR THE WHOLE CONFIDENTIAL RUN, checked before a single
+      // browser write, so a later failure can never be blamed on a board that
+      // was not really confidential or a reader that could not really decrypt.
+      const seed = baseline.get(ids.move);
+      if (!seed || seed.title !== "browser write proof: move") {
+        throw new Error(
+          `the granted reader could not DECRYPT rd's own seeded card (title=${JSON.stringify(seed?.title)}) — ` +
+            "the grant did not take, and nothing below would prove anything",
+        );
+      }
+      const blind = independentRead(rdBin, tmp, coord, `keyless-${RUN}`);
+      const blindSeed = blind.get(ids.move);
+      if (!blindSeed) throw new Error("the KEYLESS reader lost the item entirely — expected a placeholder, not absence");
+      if (blindSeed.title === seed.title) {
+        throw new Error(
+          "a reader holding NO grant read the seeded title in the clear — this board is not confidential, " +
+            "so every no-plaintext claim below would be vacuous",
+        );
+      }
+      log(`  ANTI-TAUTOLOGY ok: granted reader sees ${JSON.stringify(seed.title)}, keyless reader sees ${JSON.stringify(blindSeed.title)}`);
+    }
 
     step("build the shipped bundle and serve it");
     execFileSync("npx", ["vite", "build", "--outDir", path.join(tmp, "dist"), "--emptyOutDir"], {
@@ -515,18 +671,6 @@ async function main() {
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     cleanup.push(() => server.close());
     const origin = `http://127.0.0.1:${server.address().port}`;
-
-    step("prepare the injected signer (REAL secp256k1 — see this file's header)");
-    const vite = await createServer({
-      root: BOARD_DIR,
-      configFile: false,
-      logLevel: "error",
-      server: { middlewareMode: true },
-      appType: "custom",
-      optimizeDeps: { noDiscovery: true },
-    });
-    cleanup.push(() => vite.close());
-    const esbuild = (await import("esbuild")).default ?? (await import("esbuild"));
 
     step("launch Chromium and open the board");
     const chrome = spawn(
@@ -575,7 +719,7 @@ async function main() {
       // A FRESH reader per check — the tag is a monotonic sequence, never the
       // operation number, so two branches of the same operation cannot reuse a
       // directory and quietly read a log that is no longer empty.
-      const items = independentRead(rdBin, tmp, coord, `${++seq}-${RUN}`);
+      const items = independentRead(rdBin, tmp, coord, `${++seq}-${RUN}`, readerKey);
       const it = items.get(id);
       const problems = [];
       if (!it) problems.push(`item ${id} absent from the independent projection`);
@@ -670,14 +814,14 @@ async function main() {
         await selectCard(cdp, ids.label);
         await cdp.evaluate(`
           const input = document.querySelector(".act-label-input");
-          input.value = "browser-written";
+          input.value = ${JSON.stringify(SHARED_LABEL)};
           document.querySelector(".act-label-add").click();
           return true;
         `);
         return settle(cdp);
       },
       ids.label,
-      { labels: ["browser-written"] },
+      { labels: [SHARED_LABEL] },
     );
 
     await check(
@@ -705,6 +849,86 @@ async function main() {
       { status: "waiting", gate: "design" },
     );
 
+    // ── ready-191: THE CONFIDENTIAL CLAUSE, asserted ON THE WIRE ─────────────
+    //
+    // Everything above is asserted on the independent rd's PROJECTION. A
+    // projection that renders the right title proves the reader works and says
+    // nothing about what crossed the socket. ready-191's done condition is a
+    // claim about the EVENT: "produces a card an independent rd decrypts to
+    // exactly the intended state, with no plaintext title/context/label ever on
+    // the wire — asserted by inspecting the published event". So this block
+    // reads the raw JSONL the reader's own `rd sync` pulled off the relay and
+    // asserts against the bytes.
+    if (CONFIDENTIAL) {
+      step("ready-191: the browser's card ON THE WIRE — sealed, and its label token is RD's");
+      const tag = `wire-${RUN}`;
+      const items = independentRead(rdBin, tmp, coord, tag, readerKey);
+      const problems = [];
+
+      // The RETITLED card: the browser authored this exact string, so if it
+      // appears anywhere in the serialized event the seal did not happen.
+      const NEW_TITLE = "retitled in a real browser";
+      const titleCards = readerEvents(tmp, tag, ids.title, 30302);
+      const browserCard = titleCards.find((e) => e.pubkey === owner && tagValues(e, "enc").includes("1"));
+      if (titleCards.length === 0) problems.push(`no kind:30302 card for ${ids.title} in the relay-sourced log`);
+      else if (!browserCard) problems.push(`the card for ${ids.title} carries no ["enc","1"] marker — it was NOT sealed`);
+      else {
+        const wire = JSON.stringify(browserCard);
+        if (wire.includes(NEW_TITLE)) problems.push(`PLAINTEXT ON THE WIRE: the browser's title appears in the event`);
+        if (tagValues(browserCard, "title").length > 0) problems.push("the card carries a CLEAR title tag");
+        if (tagValues(browserCard, "waiting_on").length > 0) problems.push("the card carries a CLEAR waiting_on tag");
+        if (tagValues(browserCard, "cek_epoch").length !== 1) problems.push("the card carries no cek_epoch marker");
+        // The clear ROUTING tags must survive — the envelope seals free text
+        // only, and a card that sealed its routing would be unfilterable.
+        if (!tagValues(browserCard, "a").includes(coord)) problems.push("the card lost its clear board coordinate");
+        // …and the independent rd, holding a granted key, decrypts it to exactly
+        // the string the browser authored.
+        const projected = items.get(ids.title);
+        if (projected?.title !== NEW_TITLE) {
+          problems.push(`independent rd decrypted the title to ${JSON.stringify(projected?.title)}, want ${JSON.stringify(NEW_TITLE)}`);
+        }
+        log(`  browser card event id ${browserCard.id}`);
+        log(`  its tags: ${JSON.stringify(browserCard.tags)}`);
+        log(`  independent rd decrypts it to: title=${JSON.stringify(projected?.title)} status=${projected?.status}`);
+      }
+
+      // THE LABEL TOKEN, cross-implementation and live. rd attached SHARED_LABEL
+      // to ids.rdlabel; the browser attached the same string to ids.label. On a
+      // confidential board both `l` tags are HMAC-SHA256(board LTK, label), so
+      // they must be the SAME string — that equality is the entire reason the
+      // token exists (a relay's #l filter matches exact bytes).
+      const rdCard = readerEvents(tmp, tag, ids.rdlabel, 30302).at(-1);
+      const browserLabelCard = readerEvents(tmp, tag, ids.label, 30302).at(-1);
+      const rdTokens = rdCard ? tagValues(rdCard, "l") : [];
+      const browserTokens = browserLabelCard ? tagValues(browserLabelCard, "l") : [];
+      if (rdTokens.length !== 1) problems.push(`rd's own card carries ${rdTokens.length} l tags, want exactly 1`);
+      else if (rdTokens[0] === SHARED_LABEL) problems.push("rd emitted the label in the CLEAR on a confidential board");
+      else if (browserTokens.length !== 1) problems.push(`the browser's card carries ${browserTokens.length} l tags, want exactly 1`);
+      else if (browserTokens[0] === SHARED_LABEL) problems.push("the browser emitted the label in the CLEAR");
+      else if (browserTokens[0] !== rdTokens[0]) {
+        problems.push(`LABEL TOKENS DIVERGE: browser ${browserTokens[0]} vs rd ${rdTokens[0]} for the same label`);
+      } else {
+        log(`  label token agreement: rd and the browser both emitted ["l","${rdTokens[0]}"] for ${JSON.stringify(SHARED_LABEL)}`);
+      }
+
+      // ANTI-TAUTOLOGY: a reader with NO grant is fail-closed on the browser's
+      // card specifically — not merely on rd's seeds.
+      const blind = independentRead(rdBin, tmp, coord, `wireblind-${RUN}`);
+      const blindTitle = blind.get(ids.title);
+      if (!blindTitle) problems.push("the keyless reader lost the browser-written item entirely");
+      else if (blindTitle.title === NEW_TITLE) problems.push("a reader with NO grant read the browser's title in the clear");
+      else log(`  keyless reader sees: title=${JSON.stringify(blindTitle.title)} (fail-closed)`);
+
+      const ok = problems.length === 0;
+      if (!ok) {
+        failures++;
+        log(`  FAIL ${problems.join("; ")}`);
+      } else {
+        log("  PASS — sealed on the wire, decrypted by an independent rd, label token identical to rd's");
+      }
+      results.push({ n: "C", name: "confidential: sealed on the wire, decrypted independently", id: ids.title, ok, problems });
+    }
+
     // ── done condition 5: two rapid writes to the same item do not collide ──
     step("done condition 5: two RAPID writes to the same item, later one wins");
     {
@@ -723,7 +947,7 @@ async function main() {
       `);
       await settle(cdp, 20000);
       const tag = `rapid-${RUN}`;
-      const items = independentRead(rdBin, tmp, coord, tag);
+      const items = independentRead(rdBin, tmp, coord, tag, readerKey);
       const it = items.get(ids.rapid);
       const stamps = readerStatusStamps(tmp, tag, ids.rapid);
       const monotonic = stamps.every((s, i) => i === 0 || s > stamps[i - 1]);
@@ -754,7 +978,7 @@ async function main() {
       rd(rdBin, projectDir, writerHome, ["grant", grantedButNotAdmitted.pubkey]);
       rd(rdBin, projectDir, writerHome, ["relay", "flush"]);
 
-      const before = independentRead(rdBin, tmp, coord, `reject-before-${RUN}`).get(ids.reject);
+      const before = independentRead(rdBin, tmp, coord, `reject-before-${RUN}`, readerKey).get(ids.reject);
       const page = await openBoard(cdp, origin, coord, esbuild, grantedButNotAdmitted.secret);
       log(`  signed in as a granted-but-not-admitted key (${page.cards} cards)`);
       await dragCardToColumn(cdp, ids.reject, "moving");
@@ -764,7 +988,7 @@ async function main() {
           c.querySelector(".card-id")?.textContent?.trim() === ${JSON.stringify(ids.reject)});
         return card?.closest(".column")?.dataset.column ?? "(gone)";
       `);
-      const after = independentRead(rdBin, tmp, coord, `reject-after-${RUN}`).get(ids.reject);
+      const after = independentRead(rdBin, tmp, coord, `reject-after-${RUN}`, readerKey).get(ids.reject);
       const saysWhy = /restricted|not admitted|reject/i.test(message);
       const ok = saysWhy && after?.status === before?.status;
       if (!ok) failures++;
@@ -796,7 +1020,15 @@ async function main() {
         return JSON.stringify({ note, actions });
       `);
       const { note, actions } = JSON.parse(stated);
-      const clientRefused = /no write grant/i.test(note) && actions === 0;
+      // WHICH REFUSAL, AND WHY THE MODE CHANGES IT (ready-191). whyReadOnly()
+      // tests CONFIDENTIALITY first, then signer, then grant level. On a public
+      // board the first branch is inapplicable and the reader is told about the
+      // missing grant. On a CONFIDENTIAL board this key holds no CEK either, so
+      // the honest first answer is the seal — "no read key reached this session,
+      // so the browser cannot seal what it writes". Accepting the grant sentence
+      // there would let a page that had silently stopped sealing pass this check.
+      const wantRefusal = CONFIDENTIAL ? /cannot seal|seals its free text/i : /no write grant/i;
+      const clientRefused = wantRefusal.test(note) && actions === 0;
 
       // …and SEPARATELY, the relay refuses the same key's event on the wire.
       const relayRefusal = await directRelayPublish(vite, noGrant.secret, coord);
@@ -811,7 +1043,7 @@ async function main() {
 
     step("SUMMARY");
     for (const r of results) log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.n}. ${r.name}  ${r.problems.join("; ")}`);
-    log(`\nboard: ${coord}`);
+    log(`\nboard: ${coord}  (${CONFIDENTIAL ? "CONFIDENTIAL — plain `rd init`" : "PUBLIC — `rd init --public`"})`);
     log(`relay: ${RELAY}`);
     log(`${results.filter((r) => r.ok).length}/${results.length} operations converged`);
   } finally {

@@ -25,15 +25,42 @@
 // module. A divergence here is precisely the silent client/rd disagreement
 // ready-b2b exists to catch: do not "fix" a vector to match this file.
 //
-// CONFIDENTIAL BOARDS ARE REFUSED, NOT DOWNGRADED. rd's writer seals free text
-// under the board CEK on a confidential board (pkg/sync/envelope.go). This
-// module has no seal path (lib/envelope.ts is open-only), so publishing a card
-// here for a confidential board would emit the title/context in the CLEAR — a
-// data leak, and a silent divergence from every rd-authored card on that board.
-// buildWrite therefore refuses when the board is confidential. See
-// WriteRefusedError and the `confidential` refusal below.
+// CONFIDENTIAL BOARDS ARE SEALED, AND STILL REFUSED WHEN THEY CANNOT BE
+// (ready-191). rd's writer seals free text under the board CEK on a confidential
+// board (pkg/sync/envelope.go); `rd init` DEFAULTS to confidential, so a page
+// that cannot seal is read-only on every board created the normal way. This
+// module now seals: WriteEnv.enc carries the injected {CEK, epoch, LTK} and the
+// builders below take exactly the branches BuildCardEvent /
+// BuildStatusEventWithIssueRoot / ensureIssueEvent take on the Go side —
+//
+//   - the clear `title` and `waiting_on` tags DISAPPEAR (their values move into
+//     the sealed Content blob);
+//   - `l` labels become owner-keyed HMAC tokens under the LTK, or — with no LTK
+//     held — are OMITTED entirely rather than emitted in the clear;
+//   - Content becomes base64(nonce ‖ AEAD) over {title,context,waiting_on,labels}
+//     for a card, and over {reason} for a status event;
+//   - the two clear markers ["enc","1"] and ["cek_epoch","<n>"] are appended;
+//   - the NIP-34 kind:1621 issue event is SUPPRESSED, exactly as
+//     Publisher.ensureIssueEvent suppresses it — its clear `subject` tag and
+//     Content are the item's title and context, i.e. the two most sensitive
+//     fields the envelope exists to seal.
+//
+// THE REFUSAL REMAINS, and is now precisely scoped: a confidential board with NO
+// enc envelope (the page holds no CEK — no grant, no key-bearing link) is still
+// refused outright. Downgrading such a card to plaintext would leak the title
+// and context AND silently diverge from every rd-authored card on the board.
+// See WriteRefusedError and the `confidential` refusal below. Do not "simplify"
+// that branch away: `enc` being present is the ONLY thing that makes writing
+// here safe.
 
 import { computeEventId } from "../lib/nostrevent";
+import {
+  encMarkerTags,
+  labelToken,
+  sealCardPayload,
+  sealStatusPayload,
+  type SealEnvelope,
+} from "../lib/envelope";
 import {
   KindBoard,
   KindCard,
@@ -97,8 +124,14 @@ export interface WriteEnv {
   issueEventIds: Map<string, string>;
   /** unix SECONDS for every event in this write (NIP-01). */
   createdAt: number;
-  /** true when the board seals free text. Every write is refused (see header). */
+  /** true when the board seals free text. Without `enc` every write is refused
+   * (see header); with `enc` every write is SEALED. */
   confidential?: boolean;
+  /** the injected sealing material for a confidential board — the CEK this page
+   * holds for the board's current epoch, that epoch, and the LTK when held.
+   * Absent/null on a plaintext board, and absent on a confidential board this
+   * reader holds no key for (which is what the refusal is for). */
+  enc?: SealEnvelope | null;
 }
 
 export type WriteOp =
@@ -199,12 +232,22 @@ export function buildBoardEvent(
   });
 }
 
-/** buildCardEvent mirrors BuildCardEvent's plaintext branch, tag for tag, in
- * order: d, created?, title, a(board), s, rank, priority, itype, p(assignee),
- * i*(deps), gate, waiting_type, waiting_on, l*(labels), eta, level, for,
- * parent, due. Content is the item's context. */
+/** buildCardEvent mirrors BuildCardEvent tag for tag, in order: d, created?,
+ * title, a(board), s, rank, priority, itype, p(assignee), i*(deps), gate,
+ * waiting_type, waiting_on, l*(labels), eta, level, for, parent, due. Content is
+ * the item's context.
+ *
+ * CONFIDENTIAL MODE (env.enc set) takes the same three deviations BuildCardEvent
+ * takes and no others: the clear `title` tag is dropped, the clear `waiting_on`
+ * tag is dropped, and each `l` label becomes an LTK HMAC token (or is dropped
+ * entirely when no LTK is held — never emitted in the clear). Content becomes
+ * the sealed {title,context,waiting_on,labels} blob and the two clear markers
+ * are APPENDED LAST, after `due`, exactly where encMarkerTags lands them in Go.
+ * Every other routing tag is byte-identical to the plaintext branch — that is
+ * the whole point of the envelope: relay-indexed routing stays plaintext. */
 export function buildCardEvent(env: WriteEnv, item: Item): BuiltEvent {
   if (item.id === "") throw new WriteRefusedError("empty_item_id", "card event: empty item id");
+  const enc = env.enc ?? null;
   const tags: string[][] = [["d", item.id]];
   // TRUE CREATION TIME (ready-4ec): carry the item's own creation time forward
   // as a "created" tag so a browser-authored republish does not reset it —
@@ -213,7 +256,7 @@ export function buildCardEvent(env: WriteEnv, item: Item): BuiltEvent {
   // event's own created_at, correct for exactly the one card a fresh item has
   // never republished yet.
   if (item.created_at > 0n) tags.push(["created", (item.created_at / 1_000_000_000n).toString(10)]);
-  tags.push(["title", item.title ?? ""]);
+  if (enc === null) tags.push(["title", item.title ?? ""]);
   if (env.boardD !== "") tags.push(["a", boardCoord(env.boardAuthor || env.signer, env.boardD)]);
   const status = nonDerivedStatus(item);
   if (status !== "") tags.push(["s", status]);
@@ -226,24 +269,55 @@ export function buildCardEvent(env: WriteEnv, item: Item): BuiltEvent {
   for (const dep of item.blocked_by ?? []) if (dep !== "") tags.push(["i", dep]);
   if (item.gate) tags.push(["gate", item.gate]);
   if (item.waiting_type) tags.push(["waiting_type", item.waiting_type]);
-  if (item.waiting_on) tags.push(["waiting_on", item.waiting_on]);
-  for (const label of item.labels ?? []) if (label !== "") tags.push(["l", label]);
+  if (item.waiting_on && enc === null) tags.push(["waiting_on", item.waiting_on]);
+  for (const label of item.labels ?? []) {
+    if (label === "") continue;
+    if (enc === null) {
+      tags.push(["l", label]);
+    } else if (enc.ltk) {
+      // Confidential + tokenization: the clear l value is an owner-keyed HMAC
+      // token (equality-filterable at a relay, not readable); the plaintext
+      // label rides inside the sealed Content for member-side rendering.
+      tags.push(["l", labelToken(enc.ltk, label)]);
+    }
+    // Confidential with NO LTK: emit NO l tag. A plaintext label tag would leak
+    // the label value, and rd filters labels client-side off the decrypted
+    // payload anyway — so there is nothing to lose and a leak to avoid.
+  }
   if (item.eta) tags.push(["eta", item.eta]);
   if (item.level) tags.push(["level", item.level]);
   if (item.for) tags.push(["for", item.for]);
   if (item.parent_id) tags.push(["parent", item.parent_id]);
   if (item.due) tags.push(["due", item.due]);
+  let content = item.context ?? "";
+  if (enc !== null) {
+    content = sealCardPayload(enc, {
+      title: item.title ?? "",
+      context: item.context ?? "",
+      waitingOn: item.waiting_on ?? "",
+      labels: (item.labels ?? []).filter((l) => l !== ""),
+    });
+    tags.push(...encMarkerTags(enc));
+  }
   return withId({
     pubkey: env.signer,
     created_at: env.createdAt,
     kind: KindCard,
     tags,
-    content: item.context ?? "",
+    content,
   });
 }
 
 /** buildIssueEvent mirrors BuildIssueEvent (NIP-34 kind:1621 issue root, minted
- * once per item). */
+ * once per item).
+ *
+ * NEVER CALLED ON A CONFIDENTIAL BOARD. Its `subject` tag is the item's title in
+ * the clear and its Content is the item's context in the clear — the two fields
+ * the envelope seals. Publisher.ensureIssueEvent returns ("", nil, nil) for
+ * `card.Enc != nil` for exactly that reason, and publishStatusChange /
+ * buildFullCreate below suppress it on the same condition. A generic NIP-34
+ * client cannot read a confidential board's cards anyway, so the interop anchor
+ * buys nothing there and costs everything. */
 export function buildIssueEvent(env: WriteEnv, item: Item): BuiltEvent {
   return withId({
     pubkey: env.signer,
@@ -261,19 +335,33 @@ export function buildIssueEvent(env: WriteEnv, item: Item): BuiltEvent {
  * "a" anchor FIRST (rd's projection reads only the first match), then d, status,
  * the card's concrete "e" id, the NIP-10 root-marked issue "e" id, and finally
  * the board-membership "a" coordinate (ready-7ec, so a board-scoped negentropy
- * filter matches status events too). */
+ * filter matches status events too).
+ *
+ * CONFIDENTIAL MODE seals the close/change reason — free text, and on a status
+ * event the ONLY free text — into Content as {"reason":...} and appends the two
+ * clear markers. Their POSITION is normative and non-obvious: Go appends them
+ * inside BuildStatusEventWithIssueRoot BEFORE the issue-root "e" tag and BEFORE
+ * the board "a" tag, so the order is a(card), d, status, e(card), enc,
+ * cek_epoch, [e(issue,root)], a(board). On a confidential board the issue anchor
+ * is suppressed, so what actually ships is that list without the e(issue). */
 export function buildStatusEvent(
   env: WriteEnv,
   args: { itemId: string; status: string; cardEventId: string; issueEventId: string; reason: string },
 ): BuiltEvent {
   if (args.itemId === "") throw new WriteRefusedError("empty_item_id", "status event: empty item id");
   if (args.status === "") throw new WriteRefusedError("empty_status", "status event: empty status");
+  const enc = env.enc ?? null;
   const tags: string[][] = [
     ["a", cardCoord(env.signer, args.itemId)],
     ["d", args.itemId],
     ["status", args.status],
   ];
   if (args.cardEventId !== "") tags.push(["e", args.cardEventId]);
+  let content = args.reason;
+  if (enc !== null) {
+    content = sealStatusPayload(enc, args.reason);
+    tags.push(...encMarkerTags(enc));
+  }
   if (args.issueEventId !== "") tags.push(["e", args.issueEventId, "", "root"]);
   if (env.boardD !== "") tags.push(["a", boardCoord(env.boardAuthor || env.signer, env.boardD)]);
   return withId({
@@ -281,7 +369,7 @@ export function buildStatusEvent(
     created_at: env.createdAt,
     kind: statusKindFor(args.status),
     tags,
-    content: args.reason,
+    content,
   });
 }
 
@@ -300,11 +388,19 @@ function publishCardEdit(env: WriteEnv, item: Item): BuiltEvent[] {
 function publishStatusChange(env: WriteEnv, item: Item, reason: string): BuiltEvent[] {
   const card = buildCardEvent(env, item);
   const events: BuiltEvent[] = [card];
-  let issueId = env.issueEventIds.get(item.id) ?? "";
-  if (issueId === "") {
-    const issue = buildIssueEvent(env, item);
-    issueId = issue.id;
-    events.push(issue);
+  // CONFIDENTIAL: no issue event, and no issue anchor — ensureIssueEvent returns
+  // ("", nil, nil) for card.Enc != nil WITHOUT even looking one up, so a board
+  // that carries issue events from a plaintext era does not get its status
+  // events re-anchored to them either. Mirror that: do not consult
+  // env.issueEventIds at all.
+  let issueId = "";
+  if (!env.enc) {
+    issueId = env.issueEventIds.get(item.id) ?? "";
+    if (issueId === "") {
+      const issue = buildIssueEvent(env, item);
+      issueId = issue.id;
+      events.push(issue);
+    }
   }
   events.push(
     buildStatusEvent(env, {
@@ -342,14 +438,20 @@ export function buildFullCreate(env: WriteEnv, item: Item): BuiltEvent[] {
   }
   const card = buildCardEvent(env, item);
   events.push(card);
-  const issue = buildIssueEvent(env, item);
-  events.push(issue);
+  // CONFIDENTIAL: the kind:1621 issue root is suppressed (see buildIssueEvent's
+  // doc), so the status event carries no issue-root anchor.
+  let issueId = "";
+  if (!env.enc) {
+    const issue = buildIssueEvent(env, item);
+    issueId = issue.id;
+    events.push(issue);
+  }
   events.push(
     buildStatusEvent(env, {
       itemId: item.id,
       status: nonDerivedStatus(item),
       cardEventId: card.id,
-      issueEventId: issue.id,
+      issueEventId: issueId,
       reason: "",
     }),
   );
@@ -427,11 +529,23 @@ function hasPendingGate(item: Item): boolean {
  * vectors assert.
  */
 export function buildWrite(env: WriteEnv, op: WriteOp): BuiltEvent[] {
-  if (env.confidential) {
+  // FAIL CLOSED WHEN THERE IS NOTHING TO SEAL WITH. A confidential board with an
+  // enc envelope is written SEALED by the builders above; a confidential board
+  // WITHOUT one means this page holds no CEK for it (no grant addressed to this
+  // key, no key-bearing link), and the only card it could produce is a plaintext
+  // one. That is a leak of the title and context, and a silent divergence from
+  // every rd-authored card on the board. Refuse instead — the same refusal
+  // ready-b2b shipped, now narrowed to the case that still warrants it.
+  if (env.confidential && !env.enc) {
     throw new WriteRefusedError(
       "confidential",
-      "this board seals its free text (confidential board) and the browser cannot seal a card yet — " +
-        "writing here would publish the title and context in the clear. Use the rd CLI for this board.",
+      // See NostrBoardWriter.whyReadOnly for why the remedy is a GRANT and not a
+      // key-bearing link: a link supplies the CEK but opens read-only, so it
+      // cannot make this board writable.
+      "this board seals its free text (confidential board) and no read key for it reached this " +
+        "session, so the browser cannot seal a card — writing here would publish the title and " +
+        "context in the clear. Use the rd CLI for this board, or ask its owner to grant this key " +
+        "(rd grant <npub>).",
     );
   }
   switch (op.op) {

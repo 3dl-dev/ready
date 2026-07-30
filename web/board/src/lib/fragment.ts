@@ -35,20 +35,32 @@
 //                                     never mints this shape either.
 //   ...&ltk=<hex>                 -- LEGACY, PARSED BUT NOT EMITTED. `rd board
 //                                     --with-key` used to append the board's
-//                                     label-token key. It was dropped on
-//                                     least-privilege grounds: nothing in this
-//                                     app reads an LTK — BoardKeyring.ltk() and
-//                                     envelope.labelToken() have no caller
-//                                     outside their own tests, because labels
-//                                     are filtered client-side on decrypted
-//                                     plaintext and the relay-side `#l` filter
-//                                     path (spec §7) has not been built. A link
-//                                     minted by an older build still carries
-//                                     one and must keep working, so decodeKeyParams
-//                                     still accepts and validates ltk=. When an
-//                                     LTK consumer lands, re-add EMISSION in
-//                                     cmd/rd/board.go (see its LEAST PRIVILEGE
-//                                     note) — nothing has to change here.
+//                                     label-token key; it was dropped on
+//                                     least-privilege grounds. A link minted by
+//                                     an older build still carries one and must
+//                                     keep working, so decodeKeyParams still
+//                                     accepts and validates ltk=.
+//
+//                                     STILL NOT EMITTED AFTER ready-191, and the
+//                                     reason CHANGED. The old reason ("nothing
+//                                     in this app reads an LTK") is now FALSE:
+//                                     the browser write path tokenizes labels
+//                                     under BoardKeyring.ltk() via
+//                                     envelope.labelToken() (main.ts's `enc`,
+//                                     board/writeevents.ts). The reason it stays
+//                                     out of the LINK is that a link-key session
+//                                     CANNOT WRITE AT ALL — cek= implies pk=
+//                                     implies `method: "readOnly"` implies no
+//                                     signer implies every write refused — so an
+//                                     LTK in the fragment would buy that session
+//                                     nothing and would put write-shaped key
+//                                     material in a URL minted to be READ. The
+//                                     ruling and its witness:
+//                                     src/main.fragmentkey.test.ts, "a LINK-KEY
+//                                     session holds the board's CEK and still
+//                                     writes NOTHING". Re-adding emission is a
+//                                     confidentiality-posture change, not a
+//                                     cleanup.
 //   (empty)                       -- plain visit, no board/claim context —
 //                                     the own-boards discovery path (done
 //                                     condition 3) with relays from config.

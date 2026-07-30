@@ -23,8 +23,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterLogin, defaultDeps, loadBoardItems, main, type BoardDeps, type Identity } from "./main";
 import { authTransition, canSign } from "./lib/auth";
 import { fakeNip44Signer } from "./lib/fakesigner";
-import { neverUnwraps } from "./lib/keyunwrap";
-import { PLACEHOLDER } from "./lib/envelope";
+import { neverUnwraps, nip07KeyUnwrapper } from "./lib/keyunwrap";
+import { PLACEHOLDER, labelToken } from "./lib/envelope";
+import { NotAuthorizedError } from "./board/nostrwriter";
+import { RelayRejectedError } from "./lib/publish";
+import { signNostrEvent } from "./lib/schnorrsign";
 import { bytesToHex, hexToBytes } from "./lib/sha256";
 import { tagValue } from "./lib/nostrevent";
 import type { NostrEvent } from "./lib/nostrevent";
@@ -244,11 +247,14 @@ describe("a fragment key does NOT weaken any existing guarantee", () => {
 // FORM — and a visitor who logged in there with a NIP-07 extension held a
 // SIGNING session that was still handed the link's CEKs. Probed before the fix
 // on exactly this fixture: an `extension` identity opened four sealed titles
-// from link keys alone. No write escalation followed (a board carrying link keys
-// is never "public" — confidentiality.ts — and NostrBoardWriter refuses every
-// write to a confidential board), but the premise the bypass rests on was false,
-// and the only thing standing in for it was an unrelated control that ready-034c
-// is actively changing.
+// from link keys alone. No write escalation followed AT THE TIME, because
+// NostrBoardWriter then refused every write to a confidential board outright —
+// but THAT MITIGATION IS GONE: ready-191 gave the page a seal path, so the
+// refusal narrowed to `confidential && !enc`, and a session holding the link's
+// CEK now has an `enc`. What stands between a link's keys and a write today is
+// the structural chain alone — cek= implies pk= implies read-only implies no
+// signer — which is exactly why the premise being false mattered. Witnessed on
+// the WRITE side by this file's ready-191 block at the bottom.
 //
 // fragment.ts now refuses cek= without pk=, so the chain is structural: CEKs
 // imply a viewer, a viewer implies read-only, read-only implies no signer. This
@@ -600,9 +606,13 @@ describe("PER-BOARD KEY SCOPE — a key for one board is never offered to anothe
 });
 
 // ---------------------------------------------------------------------------
-// The LTK is no longer emitted (least privilege: keyring.ltk() and labelToken()
-// have no production consumer). A link minted by an older build still carries
-// one, so the PARSE side stays tolerant — that is what these two cases pin.
+// The LTK is no longer emitted in a link. Its ORIGINAL reason ("keyring.ltk()
+// and labelToken() have no production consumer") stopped being true at ready-191
+// — the write path reads both — and the reason it stays out is now that a
+// link-key session cannot write at all, so the key would buy it nothing (see the
+// ruling block at the bottom of this file, and fragment.ts's header). A link
+// minted by an older build still carries one, so the PARSE side stays tolerant —
+// that is what these two cases pin.
 // ---------------------------------------------------------------------------
 describe("a legacy link that still carries ltk= keeps working", () => {
   it("renders exactly the same titles as the same link without ltk=", async () => {
@@ -637,5 +647,225 @@ describe("a legacy link that still carries ltk= keeps working", () => {
       Object.defineProperty(window, "history", { value: origHistory, configurable: true, writable: true });
       window.location.hash = "";
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ready-191 — THE LINK-KEY SESSION AND WRITES. THE RULING, AND ITS WITNESS.
+//
+// THE QUESTION. There are two production session shapes that can hold a
+// confidential board's CEK: the GRANT session (an extension login, keyring built
+// from owner-signed 39301 grants, which carry a wrapped LTK) and the LINK-KEY
+// session (what `rd board --with-key` prints, fed through applyFragmentKeys into
+// the same keyring). Every write assertion this item made — which epoch, which
+// LTK, which confidentiality gate (main.test.ts) — runs on the GRANT session. On
+// the LINK-KEY session `keyring.ltk(coord)` is NULL, because cmd/rd/board.go
+// dropped ltk= emission on least-privilege grounds (pinned by
+// cmd/rd/board_withkey_test.go), so writeevents.ts's `else if (enc.ltk)` would
+// take the FALSE branch and publish a card with no `l` tag at all — while rd's
+// writer emits HMAC label tokens for the same board. So: must a link-key session
+// emit label tokens, or must it not write labels at all?
+//
+// THE RULING: A LINK-KEY SESSION MUST NOT WRITE AT ALL — not merely "must not
+// write labels". That is strictly stronger than either horn of the question, and
+// it is not a rule invented here; it is the chain ready-de7 and ready-1af already
+// made STRUCTURAL, restated and now witnessed on the WRITE side:
+//
+//     cek= implies pk=           (fragment.ts refuses a cek= with no pk=)
+//     pk=  implies readOnly      (main.ts mints `method: "readOnly"` for a link viewer)
+//     readOnly implies no signer (loadBoardItems: `canSign(...) ? nip07Signer() : undefined`)
+//     no signer implies refusal  (whyReadOnly(), re-checked by applyNow())
+//
+// So the LTK question never arises on this path: no event is built, therefore no
+// `l` tag is emitted, therefore nothing can diverge from rd's tokens. The
+// alternative — re-adding LTK emission to the link so a bearer URL could write —
+// would hand write-shaped key material to whoever holds a link that was minted to
+// be READ, and would reopen the least-privilege decision fragment.ts made
+// deliberately. It is refused here rather than escalated because nothing in this
+// item needs it: the browser write path's own session shape is the GRANT session,
+// which is the one that holds an LTK.
+//
+// AND THE RESIDUAL BRANCH IS NOT A DIVERGENCE EITHER. `enc` present with `ltk`
+// null is still reachable from a grant that carries no `ltk` tag, and there the
+// browser emits NO `l` tag — EXACTLY what rd's own writer does in the same state
+// (pkg/sync/nostrwire.go's `case spec.Enc != nil:` branch: "Confidential board
+// with NO LTK: emit NO clear l tag"). Unit-pinned on the TS side by
+// writeevents.test.ts's "labels with no LTK in hand", and pinned as
+// CROSS-IMPLEMENTATION agreement by web/board/confidential_write_test.go's
+// no-LTK subtest. The two implementations agree in both states, which is what
+// the "two implementations diverging on the wire" worry actually asked.
+//
+// WHY THIS BLOCK LIVES HERE and drives the REAL loadBoardItems: the claim is
+// about a SESSION, and a session is a composition. Nothing at the unit layer can
+// say "the page, given this fragment, builds a writer that cannot write" —
+// nostrwriter.test.ts can only say "a writer constructed with no signer refuses",
+// which assumes the very thing in question.
+// ---------------------------------------------------------------------------
+describe("ready-191: a LINK-KEY session holds the board's CEK and still writes NOTHING", () => {
+  const confidentialBoard: DiscoveredBoard = {
+    coord: BOARD_COORD,
+    ownerPubkey: OWNER_PUB,
+    boardD: BOARD_D,
+    title: "Confidential Board",
+  };
+
+  /** A REAL, WORKING NIP-07 extension holding the OWNER's key, installed for
+   * every case below. That is the hazard being measured: it can sign, and it can
+   * NIP-44-decrypt every grant in the fixture. "It was never called" therefore
+   * means the control refused, not that there was nothing to call. */
+  let signEvent: ReturnType<typeof vi.fn>;
+  let origHistory: History;
+
+  beforeEach(() => {
+    const nip44 = fakeNip44Signer(OWNER_SEC);
+    signEvent = vi.fn(
+      async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+        signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, OWNER_SEC),
+    );
+    window.nostr = {
+      getPublicKey: async () => OWNER_PUB,
+      signEvent,
+      nip44: { decrypt: (pk: string, ct: string) => nip44.decrypt(pk, ct) },
+    } as unknown as Window["nostr"];
+    origHistory = window.history;
+    Object.defineProperty(window, "history", {
+      value: { replaceState: vi.fn() },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    delete window.nostr;
+    Object.defineProperty(window, "history", { value: origHistory, configurable: true, writable: true });
+  });
+
+  /** THE LINK-KEY SESSION, built by the REAL composition root. `keyUnwrapper` is
+   * neverUnwraps, so the extension above cannot contribute a single key: every
+   * CEK this session holds came from the FRAGMENT, which is what makes it the
+   * link-key shape and not a grant session wearing a link. Relays are empty so
+   * that IF a write were ever built and signed it would fail at the RELAY
+   * boundary (RelayRejectedError) — a different, distinguishable outcome from
+   * the refusal being asserted. */
+  const linkKeySession = (keys = bothEpochKeys()) =>
+    loadBoardItems(
+      [confidentialBoard],
+      [],
+      SNAPSHOT,
+      linkIdentity(OWNER_PUB),
+      { loadRelays: async () => [], fetchEvents: async () => SNAPSHOT, keyUnwrapper: () => neverUnwraps },
+      () => {},
+      new Map([[BOARD_COORD, keys]]),
+    );
+
+  /** THE GRANT SESSION on the SAME board, same fixture, same extension: an
+   * extension login and the PRODUCTION unwrapper, with NO fragment keys at all.
+   * The only thing that differs from linkKeySession is the session shape. */
+  const grantSession = () =>
+    loadBoardItems(
+      [confidentialBoard],
+      [],
+      SNAPSHOT,
+      { pubkey: OWNER_PUB, auth: authTransition({ type: "login", method: "extension" }) },
+      {
+        loadRelays: async () => [],
+        fetchEvents: async () => SNAPSHOT,
+        keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(OWNER_SEC)),
+      },
+      () => {},
+    );
+
+  it("the link's CEK really did reach the writer: the refusal names the SIGNER, not the seal", async () => {
+    const { confidential, writers } = await linkKeySession();
+    const writer = writers.get(BOARD_COORD)!;
+
+    // The board IS confidential — established from its own snapshot plus the
+    // link, not assumed (confidentiality.ts / ready-daf).
+    expect(confidential).toBe(true);
+    // whyReadOnly() tests CONFIDENTIALITY FIRST (nostrwriter.ts; the order is
+    // pinned by main.test.ts's ready-1af ORDER cases). So on a board that IS
+    // confidential, reaching the SIGNER branch is possible only when `enc` is
+    // non-null — i.e. this assertion is the observable form of "main.ts built a
+    // seal envelope out of the LINK's key and handed it to the writer". It is not
+    // a restatement of "no extension": it is "the key arrived AND the write is
+    // still refused".
+    const why = writer.whyReadOnly()!;
+    expect(why).toContain("no NIP-07 extension is available to sign");
+    expect(why).not.toContain("cannot seal what it writes");
+
+    // ANTI-TAUTOLOGY: the link's keys genuinely decrypt, so the refusals below
+    // are not "there was nothing this session could have written anyway".
+    const projected = writer.items().get(expectedPlaintext[0].id)!;
+    expect(projected.title).toBe(expectedPlaintext[0].title);
+    expect(projected.redacted).toBeFalsy();
+  });
+
+  it("every board write operation is refused, and the signer is never reached", async () => {
+    const { writers } = await linkKeySession();
+    const writer = writers.get(BOARD_COORD)!;
+    const id = expectedPlaintext[0].id;
+
+    // All seven affordances, not a representative one: the ruling is "this
+    // session writes NOTHING", and a per-operation gate could be missing on any
+    // single one of them.
+    const ops: [string, () => Promise<void>][] = [
+      ["moveStatus", () => writer.moveStatus(id, "active")],
+      ["claim", () => writer.claim(id, "")],
+      ["close", () => writer.close(id, "done", "")],
+      ["setTitle", () => writer.setTitle(id, "rewritten from a bearer link")],
+      ["setPriority", () => writer.setPriority(id, "p0")],
+      ["setLabel", () => writer.setLabel(id, "crypto", false)],
+      ["resolveGate", () => writer.resolveGate(id, true, "")],
+    ];
+    for (const [name, run] of ops) {
+      await expect(run(), `${name} was not refused`).rejects.toBeInstanceOf(NotAuthorizedError);
+    }
+
+    // THE SIGNATURE BOUNDARY. Not "an error was thrown" — nothing was ever handed
+    // to the extension to sign, so no event of any shape (with or without an `l`
+    // tag) can have been built for this board. This is the assertion that makes
+    // the LTK question moot on this path.
+    expect(signEvent).not.toHaveBeenCalled();
+    // …and the writer's own projection did not move: nothing reached publish.
+    expect(writer.items().get(id)!.title).toBe(expectedPlaintext[0].title);
+    expect(writer.items().get(id)!.status).not.toBe("active");
+  });
+
+  it("a LEGACY link that DOES carry ltk= is refused identically — the ruling is about the session, not the key set", async () => {
+    // The one shape where `enc.ltk` would be non-null on a link-key session. If
+    // the ruling were "no LTK, therefore no labels", this link would be a write
+    // path. It is not: the refusal is the missing signer, which no key fixes.
+    const { writers } = await linkKeySession(bothEpochKeysWithLegacyLTK());
+    const writer = writers.get(BOARD_COORD)!;
+    expect(writer.whyReadOnly()).toContain("no NIP-07 extension is available to sign");
+    await expect(writer.setLabel(expectedPlaintext[0].id, "crypto", false)).rejects.toBeInstanceOf(
+      NotAuthorizedError,
+    );
+    expect(signEvent).not.toHaveBeenCalled();
+  });
+
+  it("ANTI-TAUTOLOGY: the SAME board and the SAME extension DO write once the session is a GRANT session", async () => {
+    // Without this, every refusal above could mean the fixture board is simply
+    // unwritable, or that the extension was broken. Only the session SHAPE
+    // differs here — no fragment keys, an extension login, the production
+    // unwrapper — and the write goes all the way to the relay boundary, sealed,
+    // carrying the label tokens rd's own writer produced for this board's LTK.
+    const { writers } = await grantSession();
+    const writer = writers.get(BOARD_COORD)!;
+    expect(writer.whyReadOnly()).toBeUndefined();
+
+    await expect(writer.setPriority(expectedPlaintext[0].id, "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    expect(signEvent).toHaveBeenCalled();
+
+    const card = (await signEvent.mock.results[0].value) as NostrEvent;
+    expect(card.kind).toBe(30302);
+    expect(card.tags).toContainEqual(["enc", "1"]);
+    expect(card.tags.some((t) => t[0] === "title")).toBe(false);
+    // The `l` tag the link-key session can never emit, because it never gets
+    // here: an HMAC token under the FIXTURE's LTK — the key the Go writer used to
+    // seal the cards this page just read, so this is cross-implementation
+    // agreement and not self-consistency.
+    expect(card.tags).toContainEqual(["l", labelToken(hexToBytes(LTK), "crypto")]);
+    expect(card.tags).not.toContainEqual(["l", "crypto"]);
   });
 });

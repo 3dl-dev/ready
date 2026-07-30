@@ -27,6 +27,7 @@
 // append-only local log.
 
 import { projectItems, KindCard, KindIssue } from "../lib/fold";
+import type { BoardDecryptor, EncryptedBoardSet, SealEnvelope } from "../lib/envelope";
 import type { NostrEvent } from "../lib/nostrevent";
 import { tagValue } from "../lib/nostrevent";
 import {
@@ -56,10 +57,36 @@ export interface NostrWriterDeps {
   snapshot: readonly NostrEvent[];
   /** pubkey -> grant level, from deriveLevels over the board's 39301 grants. */
   grantLevels: Map<string, number>;
-  /** True when the board seals free text — every write is refused (see
-   * writeevents.ts's header: this page has no seal path and must not downgrade
-   * a confidential board's card to plaintext). */
+  /** True when the board seals free text. Combined with `enc` below: with a
+   * seal envelope every write is SEALED; without one every write is refused
+   * (writeevents.ts's header — a confidential board's card must never be
+   * downgraded to plaintext). */
   confidential?: boolean;
+  /** The board's sealing material — the CEK this session holds for the board's
+   * current epoch, that epoch, and the LTK when held (ready-191). Derived by
+   * main.ts from the BoardKeyring, which builds it from owner-signed grants
+   * unwrapped through the NIP-07 signer or from a key-bearing link. Null on a
+   * confidential board this reader holds no key for. */
+  enc?: SealEnvelope | null;
+  /** The board's key material, as an fold-facing decryptor (lib/keyring.ts's
+   * BoardKeyring satisfies it). REQUIRED on a confidential board and ignored on
+   * a plaintext one.
+   *
+   * WITHOUT IT EVERY CONFIDENTIAL WRITE IS REFUSED, and for a good reason that
+   * is easy to mistake for a bug: this writer projects its own view of the board
+   * (items() below) to build the next write from, so a projection told not to
+   * decrypt marks every sealed card Redacted — and writeevents.ts's
+   * refuseRedacted then refuses, correctly, because republishing a card built
+   * from "[encrypted]" placeholders would overwrite the real content with them
+   * irreversibly. The fix is to hand the writer the keys it already has, not to
+   * soften that guard. Same shape of defect as ready-56b on the read side. */
+  decryptor?: BoardDecryptor | null;
+  /** The fold's confidentiality gate for this board (main.ts's
+   * encryptedBoardsOf). Passed so the writer's own projection quarantines
+   * exactly what the page's read projection quarantined — a writer that
+   * rendered a card the reader withheld would hand the user a different board to
+   * act on than the one they are looking at. */
+  encryptedBoards?: EncryptedBoardSet | null;
   /** Called with the refreshed projection after a successful publish. */
   onApplied?: (items: Map<string, Item>) => void;
   publishOptions?: PublishOptions;
@@ -96,10 +123,23 @@ export class NostrBoardWriter implements BoardWriter {
    * undefined when it can. The UI shows it up front rather than only on the
    * first failed drag. */
   whyReadOnly(): string | undefined {
-    if (this.deps.confidential) {
+    // A confidential board is writable HERE only while this session holds the
+    // board's key: the write path seals under it (ready-191). Holding no key is
+    // not a reason to publish plaintext, it is a reason to stay read-only.
+    if (this.deps.confidential && !this.deps.enc) {
       return (
-        "This board seals its free text (confidential). Editing it from the browser would publish the " +
-        "title and context in the clear, so writes are disabled here — use the rd CLI."
+        // THE REMEDY NAMED HERE IS A GRANT, NOT A LINK (ready-191). An earlier
+        // revision offered "open the board with a key-bearing link", which is
+        // false as advice: a `--with-key` link DOES supply the CEK, but it opens
+        // read-only by construction (cek= implies pk= implies `method:
+        // "readOnly"` implies no signer), so following it lands the reader on the
+        // SIGNER refusal below rather than on a writable board. A grant addressed
+        // to a key an extension can sign with is the only thing that makes a
+        // confidential board writable here.
+        "This board seals its free text (confidential) and no read key for it reached this session, so " +
+        "the browser cannot seal what it writes. Editing it here would publish the title and context in " +
+        "the clear, so writes are disabled — use the rd CLI, or ask the board owner to grant this key " +
+        "(rd grant <npub>) and sign in with a NIP-07 extension."
       );
     }
     if (!this.deps.signer || !hasSigner({ nostr: this.deps.signer as unknown as Window["nostr"] })) {
@@ -125,8 +165,8 @@ export class NostrBoardWriter implements BoardWriter {
       trusted: null,
       maintainers: null,
       pinnedBoard: `30301:${this.deps.board.ownerPubkey}:${this.deps.board.boardD}`,
-      decryptor: null,
-      encryptedBoards: null,
+      decryptor: this.deps.decryptor ?? null,
+      encryptedBoards: this.deps.encryptedBoards ?? null,
     });
   }
 
@@ -165,6 +205,7 @@ export class NostrBoardWriter implements BoardWriter {
       issueEventIds: this.issueEventIds(),
       createdAt: this.nextCreatedAt(itemId),
       confidential: this.deps.confidential,
+      enc: this.deps.enc ?? null,
     };
   }
 
