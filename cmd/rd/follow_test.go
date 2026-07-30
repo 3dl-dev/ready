@@ -1168,3 +1168,117 @@ func TestFollow_NoEmailReusesPriorIdentify(t *testing.T) {
 		t.Errorf("email %s did not resolve after follow — reuse failed", mine)
 	}
 }
+
+// TestFollow_UppercaseHexOwner_BindsTheOwnersBoards is ready-3e1 at
+// cmd/rd/follow.go's bare-hex entry point (resolveFollowTarget), driven end-to-end
+// through runFollow against a SEEDED snapshot — the same harness as
+// TestFollow_BindsAllOwnerBoardsKeepingKey, with one character class different in
+// the argument.
+//
+// `rd follow <64-hex>` accepts A-F (isHex is a case-insensitive FORMAT check) and,
+// before this fix, carried the as-typed string into DiscoverOwnerBoards, whose
+// owner set is keyed on each board event's PubKey — always lowercase. So an
+// uppercase owner matched NO board and `rd follow` aborted with "discovered no
+// boards for %q — the owner may not have published any boards to these relays, or
+// you don't trust their key": a wrong diagnosis pointing the operator at their
+// relay list and their trust graph, for an owner who published a board and whom
+// they do trust. Reverting the normalizeHexPubkey call in resolveFollowTarget
+// turns this test red on exactly that error.
+//
+// It also asserts the persisted coordinate is canonical in BOTH files rd writes
+// (.ready/config.json and the COMMITTED .ready/board.json), so a case difference
+// can never travel to a clone.
+func TestFollow_UppercaseHexOwner_BindsTheOwnersBoards(t *testing.T) {
+	base := t.TempDir()
+	rdHome := filepath.Join(base, "rdhome")
+	if err := os.MkdirAll(rdHome, 0o700); err != nil {
+		t.Fatalf("mkdir rdhome: %v", err)
+	}
+	t.Setenv("RD_HOME", rdHome)
+	t.Setenv("RD_NOSTR_RELAY_URL", "")
+	t.Setenv("RD_NOSTR", "")
+	t.Setenv("RD_NOSTR_READ", "")
+
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	owner := k.PubKeyHex()
+
+	const boardName = "upperproj"
+	be, err := rdSync.BuildBoardEvent(k, rdSync.BoardSpec{BoardD: boardName, Title: boardName, Maintainers: []string{owner}}, 1000)
+	if err != nil {
+		t.Fatalf("BuildBoardEvent: %v", err)
+	}
+	coord := rdSync.BoardCoord(owner, boardName)
+	card, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{
+		ItemID:      "ready-upper",
+		Title:       "ready-upper",
+		Status:      state.StatusActive,
+		Type:        "task",
+		BoardD:      boardName,
+		BoardAuthor: owner,
+	}, 1000)
+	if err != nil {
+		t.Fatalf("BuildCardEvent: %v", err)
+	}
+	seeded := []*nostr.Event{be, card}
+
+	origFetch := followFetch
+	followFetch = func(_ context.Context, _ []string, _ map[string]any) ([]*nostr.Event, error) {
+		return seeded, nil
+	}
+	t.Cleanup(func() { followFetch = origFetch })
+
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	// THE INPUT UNDER TEST: the owner's own pubkey, typed in uppercase.
+	upper := strings.ToUpper(owner)
+	rep, err := runFollow(followOpts{
+		who:    upper,
+		root:   root,
+		relays: []string{"wss://seed.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("rd follow <UPPERCASE-hex owner>: %v — the owner published a board and IS trusted; "+
+			"the only difference from the working call is letter case", err)
+	}
+
+	if len(rep.Boards) != 1 || rep.Boards[0] != coord {
+		t.Fatalf("rd follow discovered boards %v, want [%s]", rep.Boards, coord)
+	}
+	dir, ok := rep.BoardDirs[boardName]
+	if !ok {
+		t.Fatalf("board %q was not bound: %+v", boardName, rep.BoardDirs)
+	}
+
+	// Both persisted bindings carry the canonical lowercase coordinate.
+	cfg, err := rdconfig.LoadSyncConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if cfg.Board != coord {
+		t.Errorf(".ready/config.json board = %q, want the canonical %q", cfg.Board, coord)
+	}
+	binding, err := rdconfig.LoadBoardBinding(dir)
+	if err != nil {
+		t.Fatalf("LoadBoardBinding: %v", err)
+	}
+	if binding.Board != coord {
+		t.Errorf("committed .ready/board.json board = %q, want the canonical %q — a non-canonical "+
+			"coordinate here is a dead binding that travels to every clone", binding.Board, coord)
+	}
+
+	// And the resolved target itself is canonical, not merely the coordinate the
+	// board event happened to supply.
+	keys, _, err := resolveFollowTarget(upper, "", seeded, owner)
+	if err != nil {
+		t.Fatalf("resolveFollowTarget(<UPPERCASE>): %v", err)
+	}
+	if len(keys) != 1 || keys[0] != owner {
+		t.Errorf("resolveFollowTarget(<UPPERCASE>) = %v, want [%s] (canonical lowercase)", keys, owner)
+	}
+}

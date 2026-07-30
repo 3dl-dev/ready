@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/identity"
@@ -107,7 +106,10 @@ TRUST: readers honor this alias only if this key is already in their trust closu
 			// case — that key's OWN future signed alias signs with its canonical
 			// lowercase PubKeyHex(), so an uppercase p tag here can never match it,
 			// silently locking that key out of the trust closure it was meant to join.
-			pubkeys = append(pubkeys, strings.ToLower(pk))
+			// ready-3e1: routed through normalizeHexPubkey (cmd/rd/join.go) rather
+			// than calling strings.ToLower here, so every hex-pubkey entry point
+			// shares one definition of canonical form. Behaviour is unchanged.
+			pubkeys = append(pubkeys, normalizeHexPubkey(pk))
 		}
 
 		spec := identity.AliasSpec{

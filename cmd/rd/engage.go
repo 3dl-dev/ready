@@ -31,7 +31,12 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		playbookID := args[0]
 		project, _ := cmd.Flags().GetString("project")
-		forParty, _ := cmd.Flags().GetString("for")
+		// ready-3e1: --for is a PARTY token that ends up on the for tag of EVERY
+		// card this playbook instantiates — signed and distributed, same shape as
+		// `rd create --for`. Normalized at the entry point via the guarded
+		// normalizePartyToken.
+		forPartyRaw, _ := cmd.Flags().GetString("for")
+		forParty := normalizePartyToken(forPartyRaw)
 		varFlags, _ := cmd.Flags().GetStringArray("var")
 
 		// Parse --var key=value flags.
