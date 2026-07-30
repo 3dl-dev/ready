@@ -561,6 +561,86 @@ func (b *builder) vConfidentialNoDecryptor() error {
 	})
 }
 
+// vConfidentialNoTitlePlaceholderViews mirrors confidentialViews() but for
+// ready-v31 rather than the shared ready-v28 confidentialEvents fixture: the
+// item is gate-promoted to waiting either way, because every field the gate
+// reads is a CLEAR routing tag.
+func vConfidentialNoTitlePlaceholderViews() map[string][]string {
+	return vw(map[string][]string{
+		"ready": {"ready-v31"}, "focus": {"ready-v31"},
+		"pending": {"ready-v31"}, "gates": {"ready-v31"},
+	})
+}
+
+// vConfidentialNoTitlePlaceholder pins the ready-02e round-2 gap: the reader
+// holds the CORRECT CEK for the right (board coordinate, epoch) slot, the AEAD
+// Open genuinely SUCCEEDS, but the opened plaintext is a well-formed JSON
+// object that carries NO "title" key at all ({"context":"..."}). This must
+// still fail closed to the placeholder — it is not the same failure mode as
+// vConfidentialWrongCEK / vConfidentialNoDecryptor, which both fail at the
+// AEAD Open and never reach an unmarshal at all. json.Unmarshal into the typed
+// Go cardPayload struct cannot itself distinguish a MISSING "title" key from a
+// present-but-empty one (the zero value is "" either way), so before this fix
+// decryptCardPayload (pkg/sync/envelope.go) returned ok=true with Title=="",
+// and the item rendered a BLANK title with the confidential signal (Redacted)
+// silently cleared — indistinguishable from a real empty-titled card. The
+// status event decrypts normally (its own sealed reason has nothing to do
+// with the card's title shape), which isolates the assertion to
+// decryptCardPayload's shape gate alone.
+func (b *builder) vConfidentialNoTitlePlaceholder() error {
+	cek, err := hexKey(cekGoodHex)
+	if err != nil {
+		return err
+	}
+	ltk, err := hexKey(ltkHex)
+	if err != nil {
+		return err
+	}
+	env := &rdsync.Envelope{CEK: cek, Epoch: 1, LTK: &ltk}
+	card, err := b.cardWithRawContent(b.owner, rdsync.CardSpec{
+		ItemID: "ready-v31", Status: state.StatusActive, Priority: "p0", Type: "decision",
+		Gate: "design", WaitingType: "gate", Labels: []string{"security"}, Enc: env,
+	}, t0, cek, []byte(`{"context":"a body with no title field"}`))
+	if err != nil {
+		return err
+	}
+	status, err := b.status(b.owner, "ready-v31", state.StatusActive, "sealed reason", t0+100, env)
+	if err != nil {
+		return err
+	}
+	items, err := itemsJSON(&state.Item{
+		ID: "ready-v31", MsgID: card.ID,
+		Title: "[encrypted]", Context: "[encrypted]", Description: "[encrypted]",
+		Type: "decision", Priority: "p0", Status: state.StatusWaiting,
+		Gate: "design", WaitingType: "gate", WaitingSince: rfc(t0 + 100), GateMsgID: card.ID,
+		Labels: []string{labelTokenHex(ltk, "security")}, CreatedAt: nanos(t0), UpdatedAt: nanos(t0 + 100),
+		History: []state.HistoryEntry{
+			{Timestamp: rfc(t0 + 100), FromStatus: "", ToStatus: state.StatusActive, ChangedBy: b.ownerPub, Note: "sealed reason"},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return b.add(Vector{
+		Name:        "confidential_no_title_payload_placeholder",
+		SpecClauses: []string{"11.7", "11.8", "11.9", "10.3"},
+		Note: "The reader holds the CORRECT CEK for the right (board coordinate, epoch) slot — the AEAD " +
+			"Open genuinely succeeds — but the opened plaintext is a well-formed JSON object with no " +
+			"\"title\" key at all. This is NOT the wrong-CEK or no-decryptor failure mode (both fail " +
+			"before any unmarshal); it is a shape failure AFTER a successful decrypt, and must still " +
+			"fail closed to \"[encrypted]\" rather than an empty title. The status event decrypts " +
+			"normally (its sealed reason renders as-is), isolating the assertion to the card title's " +
+			"shape gate alone.",
+		Options: Options{
+			Trusted:         trust(b.ownerPub),
+			Decryptor:       &DecryptorSpec{Keys: []CEKEntry{{BoardCoord: b.boardCoord, Epoch: 1, CEKHex: cekGoodHex}}},
+			EncryptedBoards: &EncryptedBoardsSpec{Boards: []BoardCutover{{BoardCoord: b.boardCoord, Cutover: t0 - 200}}},
+		},
+		Events: []*nostr.Event{card, status},
+		Expect: Expect{Items: items, Views: vConfidentialNoTitlePlaceholderViews()},
+	})
+}
+
 // vFoldGateQuarantine pins §3.9 / §11.3 / §11.4: on a confidential board a
 // plaintext or malformed event is QUARANTINED, except a genuine pre-cutover
 // plaintext card.

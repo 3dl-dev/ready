@@ -267,27 +267,177 @@ export class BoardWorkspace {
     this.render();
   }
 
-  /** The single write call site. Always goes through `writer`; on rejection
-   * (today, always — see write.ts) the card never moves and a transient
-   * error is shown, rather than faking an optimistic success. */
-  async handleDrop(itemId: string, toStatus: Item["status"]): Promise<void> {
+  /**
+   * optimistic is the single write call site's shape (ready-b2b done condition
+   * 4): apply the change to the card IMMEDIATELY so the board feels direct,
+   * then publish. If the write is refused — client-side (no grant, terminal
+   * item) or by the relay — put the card back exactly as it was and say, in
+   * plain words, what happened. `patch` returns the undo.
+   *
+   * The revert restores a SNAPSHOT of the item taken before the patch, not an
+   * inverse operation, so a partially-applied multi-field change cannot leave
+   * the card in a state neither the user nor the relay ever saw.
+   */
+  /**
+   * buildActions is the detail pane's write surface: the five operations that
+   * are not a drag (claim, close) or the gate banner (approve/reject) —
+   * retitle, re-prioritise, and label add/remove. Together with the drag
+   * handler and the gate banner these are the seven writes v1 ships.
+   *
+   * When the writer says this identity cannot write, the actions are not
+   * rendered at all and the reason is stated instead. A disabled-looking button
+   * that fails on click is a worse answer than saying "read-only, and here is
+   * why" — and it is the interface half of the security model: no NIP-07
+   * provider means read-only, said plainly, never a prompt for a secret key.
+   */
+  private buildActions(item: Item): HTMLElement {
+    const section = el("div", { className: "detail-section detail-actions" }, [
+      el("h3", { textContent: "Actions" }),
+    ]);
+    const readOnly = this.writer.whyReadOnly?.();
+    if (readOnly) {
+      section.append(el("p", { className: "read-only-note", textContent: readOnly }));
+      return section;
+    }
+
+    const row = el("div", { className: "action-row" });
+    if (!isTerminal(item)) {
+      const claim = el("button", { className: "act pri act-claim", textContent: "Claim" });
+      claim.addEventListener("click", () => void this.handleClaim(item.id));
+      const close = el("button", { className: "act act-close", textContent: "Close (done)" });
+      close.addEventListener("click", () => void this.handleClose(item.id, "done"));
+      row.append(claim, close);
+    }
+    section.append(row);
+
+    const titleInput = el("input", { className: "act-title-input", type: "text", value: item.title });
+    const titleSave = el("button", { className: "act act-title-save", textContent: "Rename" });
+    titleSave.addEventListener("click", () => void this.handleRetitle(item.id, titleInput.value));
+    section.append(el("div", { className: "action-row" }, [titleInput, titleSave]));
+
+    const prioSelect = el("select", { className: "act-priority" });
+    for (const p of ["p0", "p1", "p2", "p3"]) {
+      const opt = el("option", { value: p, textContent: p.toUpperCase() });
+      if (item.priority === p) opt.selected = true;
+      prioSelect.append(opt);
+    }
+    prioSelect.addEventListener("change", () => void this.handleSetPriority(item.id, prioSelect.value));
+    section.append(el("div", { className: "action-row" }, [el("span", { textContent: "Priority" }), prioSelect]));
+
+    const labelInput = el("input", { className: "act-label-input", type: "text", placeholder: "label" });
+    const labelAdd = el("button", { className: "act act-label-add", textContent: "Add label" });
+    labelAdd.addEventListener("click", () => {
+      const v = labelInput.value.trim();
+      if (v !== "") void this.handleSetLabel(item.id, v, true);
+    });
+    const labelRemove = el("button", { className: "act act-label-remove", textContent: "Remove label" });
+    labelRemove.addEventListener("click", () => {
+      const v = labelInput.value.trim();
+      if (v !== "") void this.handleSetLabel(item.id, v, false);
+    });
+    section.append(el("div", { className: "action-row" }, [labelInput, labelAdd, labelRemove]));
+
+    return section;
+  }
+
+  private async optimistic(itemId: string, patch: (item: Item) => void, publish: () => Promise<void>): Promise<void> {
+    const idx = this.items.findIndex((i) => i.id === itemId);
+    if (idx < 0) {
+      this.transientError = `unknown item ${itemId}`;
+      this.render();
+      return;
+    }
+    const before = this.items[idx];
+    const after = { ...before };
+    patch(after);
+    this.items = this.items.slice();
+    this.items[idx] = after;
+    this.transientError = undefined;
+    this.render();
+
     try {
-      await this.writer.moveStatus(itemId, toStatus);
-      this.transientError = undefined;
+      await publish();
     } catch (err) {
+      this.items = this.items.slice();
+      this.items[idx] = before;
       this.transientError = err instanceof Error ? err.message : String(err);
     }
     this.render();
   }
 
+  async handleDrop(itemId: string, toStatus: Item["status"]): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        it.status = toStatus;
+      },
+      () => this.writer.moveStatus(itemId, toStatus),
+    );
+  }
+
   async handleGateResolve(itemId: string, approve: boolean): Promise<void> {
-    try {
-      await this.writer.resolveGate(itemId, approve);
-      this.transientError = undefined;
-    } catch (err) {
-      this.transientError = err instanceof Error ? err.message : String(err);
-    }
-    this.render();
+    await this.optimistic(
+      itemId,
+      (it) => {
+        if (approve) {
+          it.gate = undefined;
+          it.status = "active";
+        }
+      },
+      () => this.writer.resolveGate(itemId, approve),
+    );
+  }
+
+  async handleClaim(itemId: string): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        it.status = "active";
+        if (this.viewerId) it.by = this.viewerId;
+      },
+      () => this.writer.claim(itemId),
+    );
+  }
+
+  async handleClose(itemId: string, resolution = "done"): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        it.status = resolution as Item["status"];
+      },
+      () => this.writer.close(itemId, resolution),
+    );
+  }
+
+  async handleRetitle(itemId: string, title: string): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        it.title = title;
+      },
+      () => this.writer.setTitle(itemId, title),
+    );
+  }
+
+  async handleSetPriority(itemId: string, priority: string): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        it.priority = priority;
+      },
+      () => this.writer.setPriority(itemId, priority),
+    );
+  }
+
+  async handleSetLabel(itemId: string, label: string, present: boolean): Promise<void> {
+    await this.optimistic(
+      itemId,
+      (it) => {
+        const labels = (it.labels ?? []).filter((l) => l !== label);
+        it.labels = present ? [...labels, label] : labels;
+      },
+      () => this.writer.setLabel(itemId, label, present),
+    );
   }
 
   // ── naming ────────────────────────────────────────────────────────────────
@@ -1111,6 +1261,8 @@ export class BoardWorkspace {
       banner.append(approve, deny);
       pane.append(banner);
     }
+
+    pane.append(this.buildActions(item));
 
     if (item.context) {
       pane.append(el("p", { className: "detail-context", textContent: item.context }));

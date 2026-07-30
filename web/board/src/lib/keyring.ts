@@ -106,6 +106,7 @@ export class BoardKeyring {
   private readonly ceks = new Map<string, Map<number, Uint8Array>>();
   private readonly ltks = new Map<string, Uint8Array>();
   private readonly cutovers = new Map<string, number>();
+  private readonly grantEpochFloors = new Map<string, number>();
 
   /** cek returns the content key for (coord, epoch), or null when this reader
    * holds none. Null is the fail-closed answer and every caller renders the
@@ -134,6 +135,27 @@ export class BoardKeyring {
     return this.cutovers.get(coord) ?? null;
   }
 
+  /**
+   * grantEpochFloor returns the LOWEST cek_epoch named by any owner CEK grant
+   * that was served for this board, or null when none was.
+   *
+   * It exists because `cutover` above is a MINIMUM and therefore only ever moves
+   * LATER when events go missing — so the cutover alone cannot say whether the
+   * EARLIEST grant is among the ones that arrived. This can, for the case that
+   * matters (ready-daf round 2): epochs increase by one per rotation and a card
+   * cannot be sealed under an epoch before that epoch's grant exists, so a sealed
+   * card naming an epoch BELOW this floor is proof that an older grant — and thus
+   * an earlier cutover — was not served. main.ts's confidentialityOf is the
+   * consumer; see the witness comments there.
+   *
+   * Board-GLOBAL and tracked from the same grants as the cutover: every owner
+   * CEK grant regardless of grantee, so it does not vary with who is reading.
+   * DISTINCT from `epochs()`, which is only what THIS reader can decrypt.
+   */
+  grantEpochFloor(coord: string): number | null {
+    return this.grantEpochFloors.get(coord) ?? null;
+  }
+
   /** epochs lists the CEK epochs this reader holds for a board, ascending.
    * Diagnostics and tests only. */
   epochs(coord: string): number[] {
@@ -159,6 +181,12 @@ export class BoardKeyring {
   noteCutover(coord: string, at: number): void {
     const cur = this.cutovers.get(coord);
     if (cur === undefined || at < cur) this.cutovers.set(coord, at);
+  }
+
+  /** @internal */
+  noteGrantEpoch(coord: string, epoch: number): void {
+    const cur = this.grantEpochFloors.get(coord);
+    if (cur === undefined || epoch < cur) this.grantEpochFloors.set(coord, epoch);
   }
 }
 
@@ -205,8 +233,11 @@ export async function deriveBoardKeyring(
     if (g.cekEpoch < 1) continue;
 
     // Board-global cutover: earliest owner CEK-bearing grant, tracked
-    // regardless of who the grant is addressed to.
+    // regardless of who the grant is addressed to. The epoch floor is tracked
+    // from the SAME grants, in the same place, so the two can never disagree
+    // about which grants were counted (ready-daf round 2).
     kr.noteCutover(coord, g.createdAt);
+    kr.noteGrantEpoch(coord, g.cekEpoch);
 
     // CHECK 3 — the SIGNED p tag must name this reader.
     if (g.grantee !== readerPubkey) continue;
@@ -245,6 +276,13 @@ export async function deriveBoardKeyring(
  *    when, still comes ONLY from owner-signed grants (see cutover()), so the
  *    fold gate that quarantines post-cutover cleartext is untouched: a link
  *    cannot declare a board confidential, and cannot declare it public either.
+ *  - Nothing here touches `grantEpochFloors` either, and that omission is a
+ *    CONTROL (ready-daf round 2). A link carries keys for the epochs its minter
+ *    happened to hold; feeding those into the floor would let a link silence the
+ *    epoch witness — hand a reader a link with an epoch-1 key and the floor drops
+ *    to 1, so an epoch-1 sealed card stops contradicting a served epoch-2-only
+ *    grant set, and the manufactured late cutover goes undetected. The floor must
+ *    stay a statement about the GRANTS THAT ARRIVED and nothing else.
  *  - Nothing here touches event verification. Every card still has to pass its
  *    own signature check in the fold, and every fetch is still #a-scoped to a
  *    board that survived verification.

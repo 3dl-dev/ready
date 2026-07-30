@@ -10,7 +10,7 @@
 // clause and the pkg/sync/nostrproject.go line range it mirrors.
 
 import type { NostrEvent } from "./nostrevent";
-import { verifyEvent, tagValue, tagValues } from "./nostrevent";
+import { verifiedEvents, tagValue, tagValues } from "./nostrevent";
 import type { Item, HistoryEntry } from "./state";
 import { StatusBlocked, StatusWaiting, isTerminal } from "./state";
 import { deriveLevels, parseBoardCoord, boardCoord, AUTHORITATIVE_FOREVER } from "./rolegrant";
@@ -192,6 +192,12 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
       else item.waiting_on = undefined;
       if (pl.labels && pl.labels.length > 0) item.labels = pl.labels;
     } else {
+      // FAIL-CLOSED, AND MARKED — mirroring nostrproject.go:633-641. `redacted`
+      // is the in-band signal that stops a future write path from re-sealing this
+      // placeholder as the item's real content (state.ts's Item.redacted has the
+      // full argument); the read substitution alone is safe, the
+      // read-then-republish round trip is what destroys data.
+      item.redacted = true;
       item.title = PLACEHOLDER_TEXT;
       item.context = PLACEHOLDER_TEXT;
       item.description = PLACEHOLDER_TEXT;
@@ -205,12 +211,28 @@ function itemFromCard(e: NostrEvent, dec: BoardDecryptor | null): Item {
  * signed-event log slice (append order); a `null` element exercises spec
  * §3.1. Returns a Map keyed by rd item id, matching Go's map[string]*state.Item. */
 export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions): Map<string, Item> {
+  // §3.1 (null skip) + §3.3 (signature) HOISTED out of the replay loop, once,
+  // for the whole snapshot — and everything downstream, including
+  // deriveLevels, reads only `verified` (ready-75a). Previously deriveLevels
+  // was handed the RAW array while verifyEvent lived in the loop below, so an
+  // unsigned kind-39301 spoofing the owner's pubkey could undo a revocation.
+  //
+  // Hoisting §3.3 above §3.2 (dedup) does NOT change the fold's output, so the
+  // normative gate order (spec §3) is preserved observably: verifyEvent is a
+  // pure function of the event, and an event that fails it took `continue`
+  // without touching `seen` or any accumulator. So for any input, the set of
+  // events that reach §3.4 and the order they reach it in are identical —
+  // including the duplicate-id cases (a forgery reusing a genuine id is
+  // dropped here instead of at §3.3, and the genuine event still lands first
+  // in `seen`).
+  const verified = verifiedEvents(events);
+
   let levels = new Map<string, number>();
   let until = new Map<string, number>();
   if (opts.pinnedBoard !== "") {
     const { owner, boardD, ok } = parseBoardCoord(opts.pinnedBoard);
     if (ok) {
-      const derived = deriveLevels(events, owner, boardD);
+      const derived = deriveLevels(verified, owner, boardD);
       levels = derived.levels;
       until = derived.until;
     }
@@ -231,13 +253,11 @@ export function projectItems(events: (NostrEvent | null)[], opts: ProjectOptions
   const winningBoard = new Map<string, NostrEvent>();
   const seen = new Set<string>();
 
-  for (const e of events) {
-    // §3.1 — a null event is skipped.
-    if (e === null) continue;
+  for (const e of verified) {
+    // §3.1 (null) and §3.3 (signature) were applied by verifiedEvents above —
+    // `verified` contains no nulls and nothing that failed schnorr.
     // §3.2 — dedup by event id, first occurrence authoritative.
     if (seen.has(e.id)) continue;
-    // §3.3 — signature.
-    if (!verifyEvent(e)) continue;
     // §3.4 — read-trust.
     if (!trusts(opts, e.pubkey) && !grantTrusts(levels, e.pubkey)) continue;
     // §3.5 — point-in-time read-trust (prospective revocation).

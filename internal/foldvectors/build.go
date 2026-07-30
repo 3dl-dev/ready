@@ -19,7 +19,9 @@ package foldvectors
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +29,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	"github.com/3dl-dev/ready/pkg/state"
@@ -121,9 +125,16 @@ func Build() (*File, error) {
 		b.vBoardPinRejectsForeignBoard,
 		b.vGrantRevocationPointInTime,
 		b.vClaimSingleUseAcrossRevoke,
+		b.vGrantCapOnlyOwnerGrantsMaintainer,
+		b.vGrantCapContributorMayNotDelegate,
+		b.vGrantCapOwnerIsIrrevocable,
+		b.vGrantCapPeerMaintainerProtected,
+		b.vRevokeBoundaryAtTheInstant,
+		b.vGrantLevelConfersStatusAuthority,
 		b.vConfidentialGrantedReader,
 		b.vConfidentialWrongCEK,
 		b.vConfidentialNoDecryptor,
+		b.vConfidentialNoTitlePlaceholder,
 		b.vFoldGateQuarantine,
 		b.vViewsLattice,
 		b.vItemTimestampEncoding,
@@ -186,6 +197,53 @@ func (b *builder) card(k *nostr.Key, spec rdsync.CardSpec, createdAt int64) (*no
 // "a", what the confidential fold gate reads) — the live write path's shape.
 func (b *builder) status(k *nostr.Key, itemID, rdStatus, reason string, createdAt int64, env *rdsync.Envelope) (*nostr.Event, error) {
 	return rdsync.BuildStatusEventWithIssueRoot(k, itemID, rdStatus, "", "", b.boardCoord, reason, createdAt, env)
+}
+
+// sealRaw re-implements pkg/sync's unexported sealContent (envelope.go, spec
+// §3 wire format: base64Std(nonce(12) ‖ ChaCha20-Poly1305(CEK, nonce,
+// plaintext))) so this package can construct a sealed Content blob carrying
+// arbitrary — including MALFORMED — plaintext, not just a genuine marshaled
+// cardPayload/statusPayload. pkg/sync deliberately does not export a seal
+// primitive: production code only ever seals a real payload struct. This is
+// fixture-construction-only, mirroring the documented wire format rather than
+// reaching into pkg/sync's internals.
+func sealRaw(cek [32]byte, plaintext []byte) (string, error) {
+	aead, err := chacha20poly1305.New(cek[:])
+	if err != nil {
+		return "", fmt.Errorf("foldvectors: sealRaw: init aead: %w", err)
+	}
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("foldvectors: sealRaw: read nonce: %w", err)
+	}
+	ct := aead.Seal(nil, nonce, plaintext, nil)
+	out := make([]byte, 0, len(nonce)+len(ct))
+	out = append(out, nonce...)
+	out = append(out, ct...)
+	return base64.StdEncoding.EncodeToString(out), nil
+}
+
+// cardWithRawContent builds and signs a normal 30302 card via spec (so tags —
+// d, a, s, priority, itype, cek_epoch, enc — are the genuine write-path
+// shape), then OVERWRITES Content with a hand-sealed blob and re-signs (the
+// event id/signature cover Content, so a post-hoc Content swap must
+// re-sign — the same pattern vFoldGateQuarantine uses for its non-base64
+// malformed case). Used to construct a card that opens (AEAD succeeds) but
+// does not carry the expected cardPayload shape.
+func (b *builder) cardWithRawContent(k *nostr.Key, spec rdsync.CardSpec, createdAt int64, cek [32]byte, rawPlaintext []byte) (*nostr.Event, error) {
+	ce, err := b.card(k, spec, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := sealRaw(cek, rawPlaintext)
+	if err != nil {
+		return nil, err
+	}
+	ce.Content = sealed
+	if err := ce.Sign(k); err != nil {
+		return nil, fmt.Errorf("foldvectors: cardWithRawContent: re-sign: %w", err)
+	}
+	return ce, nil
 }
 
 // add records a vector after checking its hand-authored expectation against the

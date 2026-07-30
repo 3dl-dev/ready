@@ -82,6 +82,19 @@ export interface Item {
    * pane can render it the day the fold starts filling it in, without a
    * second round of UI work. Until then it is always empty. */
   crossBoardWarnings?: string[];
+
+  /** Mirror of state.Item.Redacted (state.go:157-171) / the fold's
+   * Item.redacted: this item's confidential free text could not be decrypted, so
+   * title/context hold "[encrypted]" and NOT the item's content.
+   *
+   * It is the signal a WRITE must refuse on (ready-daf). Every write here is a
+   * whole-card republish, so mutating an item whose text this reader cannot read
+   * would re-seal the placeholder as its content and destroy the original —
+   * exactly what cmd/rd's refuseRedactedRepublish guard prevents on the CLI side.
+   * board/write.ts is intent-shaped and unimplemented today; whatever lands on it
+   * MUST check this flag, which is why the field is threaded to the UI item now
+   * rather than after the write path exists. */
+  redacted?: boolean;
 }
 
 export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled", "failed"]);

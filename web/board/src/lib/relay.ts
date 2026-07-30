@@ -18,6 +18,7 @@
 //     main.ts) rather than conclude the relay is broken.
 
 import type { NostrEvent } from "./nostrevent";
+import { dedupeExact, eventIdentity } from "./nostrevent";
 
 export type RelayStatus = "connecting" | "open" | "eose" | "error" | "timeout";
 
@@ -106,8 +107,10 @@ const DEFAULT_MAX_PAGES = 200;
  *     clamp is the only cap-agnostic option.
  *   - moves `until` back to the oldest created_at of the page just received.
  *     `until` is INCLUSIVE, so each page re-serves the events sitting exactly
- *     on the boundary; they are de-duplicated by id.
- *   - stops the first time a page contributes NO new id. That is the only
+ *     on the boundary; those exact re-serves are de-duplicated by FULL CONTENT
+ *     (eventIdentity), never by the self-declared id — see the SECURITY note on
+ *     `collected` below.
+ *   - stops the first time a page contributes NO new event. That is the only
  *     termination signal available: "page smaller than requested" cannot be
  *     used when no limit was requested, and a relay that clamps to a cap below
  *     what we asked for would trip it falsely.
@@ -134,7 +137,28 @@ function fetchFromOneRelay(
   maxPages: number,
 ): Promise<NostrEvent[]> {
   return new Promise((resolve, reject) => {
-    const collected = new Map<string, NostrEvent>();
+    // SECURITY (ready-dd5). `collected` is keyed on eventIdentity — the FULL
+    // signed content plus the signature — NOT on the self-declared `id`. This
+    // layer has verified NOTHING: the signature is not checked until the fold.
+    // An id-keyed map here made a SINGLE hostile relay a delete primitive
+    // needing no valid signature: it emits a tampered copy asserting a genuine
+    // event's id, wins the id slot, and the genuine event that follows is
+    // dropped inside this function — before the cross-relay merge, and so
+    // before anything could verify either copy. Content keying means dedup only
+    // ever collapses byte-identical re-serves (the boundary events the `until`
+    // walk re-delivers, and the same event served twice); every adversarial
+    // near-copy survives to the fold, which verifies BEFORE it records an id as
+    // seen (fold.ts §3.2/§3.3). The cross-relay merge in
+    // fetchEventsFromRelays applies the same rule — BOTH sites must, or the
+    // earlier one silently reinstates the defect.
+    //
+    // No signature is verified here on purpose: that would double the schnorr
+    // cost of every page load, and every consumer (discoverOwnerBoards,
+    // deriveBoardKeyring, projectItems) verifies already. Nor was id keying
+    // ever a volume defence — one relay can already emit unlimited events with
+    // distinct ids; `maxPages` is the volume bound.
+    const seen = new Set<string>();
+    const collected: NostrEvent[] = [];
     const paging = filter.limit === undefined;
     let until = filter.until;
     let pages = 0;
@@ -189,14 +213,16 @@ function fetchFromOneRelay(
       let oldest = Number.POSITIVE_INFINITY;
       for (const e of pageEvents) {
         if (!e || typeof e.id !== "string") continue;
-        if (!collected.has(e.id)) {
-          collected.set(e.id, e);
+        const key = eventIdentity(e);
+        if (!seen.has(key)) {
+          seen.add(key);
+          collected.push(e);
           added++;
         }
         if (typeof e.created_at === "number" && e.created_at < oldest) oldest = e.created_at;
       }
       if (!paging || added === 0 || oldest === Number.POSITIVE_INFINITY || pages >= maxPages) {
-        finish(() => resolve(Array.from(collected.values())));
+        finish(() => resolve(collected));
         return;
       }
       until = oldest;
@@ -252,8 +278,8 @@ function fetchFromOneRelay(
 
 /**
  * fetchEventsFromRelays queries every relay in `relays` in parallel, retrying
- * each independently up to `retries` times, and returns the de-duplicated
- * (by event id) union of every event seen before that relay's EOSE. A relay
+ * each independently up to `retries` times, and returns the union of every
+ * event seen before that relay's EOSE with EXACT duplicates collapsed. A relay
  * that never succeeds (blocked mixed content, unreachable, cold-start
  * timeout exhausted) is dropped silently from the result — it never makes
  * the whole call reject, per the ready-634 tolerate-unusable-relays
@@ -295,14 +321,24 @@ export async function fetchEventsFromRelays(
   });
 
   const settled = await Promise.allSettled(perRelay);
-  const byId = new Map<string, NostrEvent>();
+  // ready-dd5: this transport is UNVERIFIED — no signature has been checked
+  // yet — so it must not dedup on the self-declared event id. `byId.set(e.id,
+  // e)` let a forgery asserting a genuine event's id EVICT the genuine event
+  // (last write won), after which the fold rejected the forgery and the real
+  // event was simply gone. dedupeExact collapses byte-identical copies only
+  // (the same event served by two relays), so adversarial near-copies all
+  // survive to the fold, which verifies BEFORE recording an id as seen.
+  //
+  // fetchFromOneRelay's paging dedup enforces the SAME rule one layer earlier.
+  // BOTH sites are load-bearing: with only this one fixed, a single hostile
+  // relay still deleted the genuine event inside its own walk, so nothing
+  // reached this merge to be preserved.
+  const collected: NostrEvent[] = [];
   let anySucceeded = false;
   for (const result of settled) {
     if (result.status === "fulfilled") {
       anySucceeded = true;
-      for (const e of result.value) {
-        if (e && typeof e.id === "string") byId.set(e.id, e);
-      }
+      for (const e of result.value) collected.push(e);
     }
   }
   if (!anySucceeded && relays.length > 0) {
@@ -311,5 +347,5 @@ export async function fetchEventsFromRelays(
       .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
     throw new Error(`relay: could not reach any relay: ${reasons.join("; ")}`);
   }
-  return Array.from(byId.values());
+  return dedupeExact(collected);
 }
