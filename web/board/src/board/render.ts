@@ -32,7 +32,34 @@ export type SwimlaneMode = "project" | "epic" | "priority" | "off";
 export interface BoardRef {
   coord: string;
   title: string;
+  /**
+   * This board's own load outcome (main.ts's BoardLoadState), or undefined when
+   * the caller has nothing to say about it — the single-board callers and every
+   * test that predates ready-27b. Undefined renders exactly as "open" did: no
+   * marker, no status row.
+   *
+   * It is a per-BOARD field and not a workspace-level notice because the
+   * portfolio view's whole subject is several boards at once, and a portfolio-
+   * wide sentence cannot answer "is what I am seeing THIS project's work?".
+   */
+  state?: "open" | "withholding" | "sealed" | "unreadable-grant" | "failed";
+  /** One sentence a person can act on, shown in the board-status list. */
+  detail?: string;
 }
+
+/** The short marker each non-open board carries in the left tree, beside its
+ * count. Deliberately a WORD and not an icon or a colour: the count next to it
+ * is a number the reader would otherwise read as this project's work. */
+const BOARD_STATE_LABEL: Record<NonNullable<BoardRef["state"]>, string> = {
+  open: "",
+  // "items withheld" and not "partial": the reader has to know the number beside
+  // it is smaller than the board, which "partial" leaves open to being read as
+  // "some cards are sealed".
+  withholding: "items withheld",
+  sealed: "sealed",
+  "unreadable-grant": "key unreadable",
+  failed: "did not load",
+};
 
 export interface WorkspaceOptions {
   /** The logged-in identity, for the "yours" status-line/detail rendering. */
@@ -226,6 +253,7 @@ export class BoardWorkspace {
   private readonly viewerId?: string;
   private readonly boards: BoardRef[];
   private readonly boardTitles: Map<string, string>;
+  private readonly boardByCoord: Map<string, BoardRef>;
   private readonly identityLine?: string;
   private readonly emptyBoardsNote?: string;
   private readonly notice?: string;
@@ -254,6 +282,7 @@ export class BoardWorkspace {
     this.viewerId = options.viewerId;
     this.boards = options.boards ?? [];
     this.boardTitles = new Map(this.boards.map((b) => [b.coord, b.title]));
+    this.boardByCoord = new Map(this.boards.map((b) => [b.coord, b]));
     this.identityLine = options.identityLine;
     this.emptyBoardsNote = options.emptyBoardsNote;
     this.notice = options.notice;
@@ -638,6 +667,8 @@ export class BoardWorkspace {
     if (this.notice) {
       top.append(el("p", { className: "confidential-notice", textContent: this.notice }));
     }
+    const boardStatus = this.buildBoardStatus();
+    if (boardStatus) top.append(boardStatus);
     top.append(this.buildGateRail());
     this.container.append(top);
 
@@ -664,6 +695,39 @@ export class BoardWorkspace {
     }
 
     this.container.append(this.buildFooter());
+  }
+
+  /**
+   * buildBoardStatus names EVERY board this view could not show in full, one row
+   * each, with the reason (ready-27b). Returns null when every board opened, so
+   * the ordinary portfolio grows no paragraph.
+   *
+   * WHY A LIST AND NOT A SENTENCE. The workspace already carries a `notice`, and
+   * that notice is a portfolio-wide total by construction ("N of M titles were
+   * decrypted"). Over ~24 boards from several owners those totals cannot answer
+   * the only question a reader has in front of a project's node — is this
+   * project's work all here? — and 14 of the live boards are in a state
+   * (browser-unreadable grants) that a total renders as an anonymous fraction.
+   * One row per board, named by its own title, is the smallest thing that says
+   * WHICH project is affected and WHAT the reader can do about it.
+   *
+   * The row carries data-board-coord for the same reason the tree node does: what
+   * the page says about a board must be checkable per board, from outside.
+   */
+  private buildBoardStatus(): HTMLElement | null {
+    const degraded = this.boards.filter((b) => b.state !== undefined && b.state !== "open");
+    if (degraded.length === 0) return null;
+    const list = el("ul", { className: "board-status" });
+    for (const b of degraded) {
+      list.append(
+        el("li", { className: `board-status-row board-status-${b.state!}`, dataset: { boardCoord: b.coord } }, [
+          el("b", { className: "board-status-name", textContent: b.title }),
+          " — ",
+          el("span", { className: "board-status-detail", textContent: b.detail ?? "" }),
+        ]),
+      );
+    }
+    return list;
   }
 
   /** Open = every item that is not in a terminal status. The tally counts what
@@ -879,6 +943,8 @@ export class BoardWorkspace {
         dotColour: "var(--line)",
         twisty: "▾",
         boardCoord: this.boardTitles.has(key) ? key : undefined,
+        boardState: this.boardByCoord.get(key)?.state,
+        boardDetail: this.boardByCoord.get(key)?.detail,
         current: this.scopeProject === key,
         onClick: () => {
           this.scopeProject = this.scopeProject === key ? undefined : key;
@@ -931,19 +997,36 @@ export class BoardWorkspace {
     dotColour: string;
     twisty?: string;
     boardCoord?: string;
+    boardState?: NonNullable<BoardRef["state"]>;
+    boardDetail?: string;
     current: boolean;
     onClick: () => void;
   }): HTMLElement {
     const dataset: Record<string, string> = { scope: spec.scope };
     if (spec.boardCoord) dataset.boardCoord = spec.boardCoord;
+    // ready-27b: the state travels as an ATTRIBUTE as well as visible text, for
+    // the same reason data-board-coord does — it is how a live run can check,
+    // per board, that what the page says about a board is what the load found.
+    if (spec.boardState) dataset.boardState = spec.boardState;
     const node = el("button", { className: "node", dataset });
     node.setAttribute("aria-current", String(spec.current));
     node.append(
       el("span", { className: "tw", textContent: spec.twisty ?? "" }),
       el("span", { className: "dot" }),
       el("span", { className: "nm", textContent: spec.name }),
-      el("span", { className: "ct", textContent: String(spec.count) }),
     );
+    // The marker sits BETWEEN the name and the count, so the count is never read
+    // on its own: "0" beside "did not load" is not a claim about the board's
+    // work, and "0" alone is.
+    if (spec.boardState && spec.boardState !== "open") {
+      const mark = el("span", {
+        className: `board-state board-state-${spec.boardState}`,
+        textContent: BOARD_STATE_LABEL[spec.boardState],
+      });
+      if (spec.boardDetail) mark.title = spec.boardDetail;
+      node.append(mark);
+    }
+    node.append(el("span", { className: "ct", textContent: String(spec.count) }));
     (node.querySelector(".dot") as HTMLElement).style.background = spec.dotColour;
     node.addEventListener("click", spec.onClick);
     return node;
