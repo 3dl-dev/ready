@@ -70,7 +70,29 @@ func TestLiveRelay_TwoMachineConvergence(t *testing.T) {
 	}
 	time.Sleep(1 * time.Second)
 
-	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
+	// Scoped to THIS RUN'S board, which is what `rd nostr sync` builds whenever a
+	// board is pinned — the shipped configuration (cmd/rd/nostr.go nostrSyncCmd).
+	//
+	// It used to be BoardSyncFilter("", []string{k.PubKeyHex()}): the whole
+	// PORTFOLIO of a key that every agent on this machine writes to. Two things
+	// made that unusable as a controlled experiment, both of which only became
+	// visible once sync stopped truncating at the relay's cap (ready-bec):
+	//
+	//   - it is not this test's data. Measured: 20839 events / 26MB pulled into
+	//     each of the two logs, of which two were the items under test, taking
+	//     178s — and whatever the portfolio's other writers did meanwhile landed
+	//     inside the window between the first sync and the re-sync.
+	//   - it is an `authors` filter, which UNDER-RETURNS on this relay (ready-5c5
+	//     measured 42 of 56 boards for a paged kind+authors query against 56 of 56
+	//     for the same walk without it). A relay that omits events it holds makes
+	//     negentropy report them as events the machine must upload: the re-sync
+	//     moved 317 events it did not need to move, none of them this test's.
+	//
+	// The claim proven here is UNCHANGED — two machines converge, and a converged
+	// re-sync moves zero event bytes — and it is now measured over exactly the
+	// events this test authored instead of over a shared portfolio nothing here
+	// controls.
+	filter := BoardSyncFilter(BoardCoord(k.PubKeyHex(), boardD), nil)
 
 	// Each machine syncs against the relay.
 	rA, err := NegentropySync(ctx, relay, logA, filter, map[string]bool{k.PubKeyHex(): true}, 30*time.Second, false)
@@ -212,7 +234,13 @@ func TestLiveRelay_NegentropyDownloadTrustGate(t *testing.T) {
 	// A fresh machine with an EMPTY log syncs, requesting k's events, but trusts only
 	// `stranger` — NOT k. The relay serves X; the download gate must drop every event.
 	syncLog := NewNostrLog(filepath.Join(dir, "sync", NostrLogFile))
-	filter := BoardSyncFilter("", []string{k.PubKeyHex()})
+	// Scoped to THIS RUN'S board (see TestLiveRelay_TwoMachineConvergence for the
+	// measurements): the portfolio-wide author filter this used to carry pulled
+	// 20k unrelated events through the gate on the trusting half, which measures
+	// the relay's backlog rather than the gate. The gate is what is under test and
+	// it is unchanged — the same author, the same events, admitted or dropped by
+	// the trust set alone.
+	filter := BoardSyncFilter(BoardCoord(k.PubKeyHex(), boardD), nil)
 	untrusting := map[string]bool{stranger.PubKeyHex(): true}
 	r, err := NegentropySync(context.Background(), relay, syncLog, filter, untrusting, 30*time.Second, false)
 	if err != nil {

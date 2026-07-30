@@ -39,7 +39,12 @@ type SyncResult struct {
 	Relay string
 	// LocalBefore is how many filter-matching events the local log held pre-sync.
 	LocalBefore int
-	// Need / Have are the diff sizes negentropy computed.
+	// Need / Have are the diff sizes negentropy computed, summed over the walk's
+	// windows and de-duplicated (ready-bec). Need is every distinct id the relay
+	// held that the local log lacked. Have is every distinct local id a window
+	// could establish the relay lacks — an id below a CAPPED window's floor is
+	// simply out of that window's view, not missing, so it is left to the window
+	// that can actually see it rather than counted (and re-uploaded) here.
 	Need int
 	Have int
 	// Downloaded is how many NEW events were merged into the local log (<= Need;
