@@ -14,7 +14,7 @@
 // silence.
 //
 //	tGrantE1  1750000100  the board really goes confidential here
-//	conf-008  1750000205  owner-signed PLAINTEXT — post-cutover, must be withheld
+//	conf-010  1750000205  owner-signed PLAINTEXT — post-cutover, must be withheld
 //	tGrantE2  1750000310  the cutover a relay manufactures by dropping epoch 1
 //
 // THE TWO WITNESSES, both signature-verified and both relay-INDEPENDENT. A relay
@@ -37,7 +37,7 @@
 // both fire would let either guard be deleted with the suite still green.
 //
 // EVERY CASE IS PAIRED WITH ITS OPPOSITE. Serve the same board's grants in full
-// and conf-008 must STILL be quarantined (it is post-cutover cleartext either
+// and conf-010 must STILL be quarantined (it is post-cutover cleartext either
 // way) while the page says nothing about an unestablished state; and a sealed card
 // at an epoch ABOVE everything the grants cover must NOT trip the epoch witness,
 // because omitting a LATER grant cannot move a minimum earlier.
@@ -53,6 +53,7 @@ import { tagValue, type NostrEvent } from "./lib/nostrevent";
 import type { ParsedFragment } from "./lib/fragment";
 import {
   BOARD_COORD,
+  cardForgedSignature,
   CEK_EPOCH1,
   CUTOVER,
   CUTOVER_IF_EPOCH1_WITHHELD,
@@ -88,6 +89,39 @@ import {
  * attack, it is the default state of a rotated board.
  */
 const GRANTS_MINUS_EPOCH1 = grants.filter((g) => tagValue(g, "cek_epoch") !== "1");
+
+/**
+ * The item ids of this suite's two events, READ OFF the fixture rather than
+ * written out here.
+ *
+ * WHY DERIVED. The fold keys a card by its item id and keeps the NEWEST
+ * revision, so two fixture events sharing an id do not coexist — the later one
+ * displaces the earlier. ready-02e landed sealed cards that had both of these
+ * ids before ready-daf's were renumbered to conf-010/conf-011, and while that
+ * collision stood, `not.toContain("conf-008")` reported on whichever event won
+ * the fold instead of on the gap card: it went red with the cleartext correctly
+ * withheld, and — the dangerous direction — a later sealed revision of the same
+ * id would equally have stood in for a LEAKED plaintext one and let the
+ * assertion pass. Reading the id from the event that is actually served makes
+ * that failure mode unreachable, and NO_ID_COLLISION below refuses to let a
+ * future fixture reintroduce it.
+ */
+const GAP_ID = tagValue(cardGapPlaintext, "d");
+const STALE_EPOCH_ID = tagValue(cardEpoch1AfterRotation, "d");
+
+/**
+ * The cards in `cards` that a fail-CLOSED gate must still admit: every
+ * well-formed SEALED envelope whose signature verifies. Nothing else survives —
+ * with the cutover unestablished, no plaintext card can be grandfathered, and
+ * the forged-signature card is dropped before the gate ever sees it.
+ *
+ * Derived, not a magic number, because `cards` is a shared fixture that other
+ * items legitimately extend (ready-02e added two). A hardcoded total turns every
+ * such addition into a false failure here and tempts the next person to "fix" it
+ * by editing the expectation — which is exactly how a fail-closed assertion
+ * quietly stops being one. The rule is what is asserted; the count follows it.
+ */
+const SEALED_ADMITTED = cards.filter((c) => tagValue(c, "enc") === "1" && c.id !== cardForgedSignature.id);
 
 let root: HTMLElement;
 
@@ -144,6 +178,24 @@ it("FIXTURE INVARIANT: the gap card sits strictly between the true and the manuf
   expect(GRANTS_MINUS_EPOCH1.some((g) => tagValue(g, "cek_epoch") === "2")).toBe(true);
 });
 
+it("FIXTURE INVARIANT: NO_ID_COLLISION — this suite's events share no item id with `cards`", () => {
+  // The hazard the ready-02e merge exposed, pinned so it cannot come back. If a
+  // card in the shared `cards` set ever takes conf-010 or conf-011 again, the
+  // fold's newest-revision-wins rule silently substitutes it for the event this
+  // suite is actually testing, and the withheld/rendered assertions below stop
+  // measuring the gap card at all. Fail here, loudly, instead of there, subtly.
+  const sharedIds = cards.map((c) => tagValue(c, "d"));
+  expect(sharedIds).not.toContain(GAP_ID);
+  expect(sharedIds).not.toContain(STALE_EPOCH_ID);
+  expect(GAP_ID).not.toBe(STALE_EPOCH_ID);
+  // And no two cards in the shared set collide with each other either.
+  expect(new Set(sharedIds).size).toBe(sharedIds.length);
+  // The admitted-set rule really selects something, so a count derived from it
+  // can never pass by being vacuously zero.
+  expect(SEALED_ADMITTED.length).toBeGreaterThanOrEqual(4);
+  expect(SEALED_ADMITTED.map((c) => tagValue(c, "d"))).not.toContain(tagValue(cardGrandfatheredPlaintext, "d"));
+});
+
 describe("PARTIAL omission: dropping only the OLDEST grants moves the cutover LATER", () => {
   /** The exploit snapshot: the whole board, the gap card, and every grant EXCEPT
    * the epoch-1 ones. Nothing forged, nothing altered — four events not sent. */
@@ -153,10 +205,10 @@ describe("PARTIAL omission: dropping only the OLDEST grants moves the cutover LA
     await afterLogin(root, signingIdentity(STRANGER_PUB), boardFragment, deps(EXPLOIT, STRANGER_SEC));
 
     // THIS IS THE BYPASS. With the epoch-1 grants dropped the derived cutover is
-    // 1750000310, conf-008 was authored at 1750000205, so shouldQuarantine's
+    // 1750000310, conf-010 was authored at 1750000205, so shouldQuarantine's
     // grandfather clause admitted it — title and body, in clear, on a board the
     // page called "confidential" with a straight face.
-    expect(renderedItems().map((i) => i.id)).not.toContain("conf-008");
+    expect(renderedItems().map((i) => i.id)).not.toContain(GAP_ID);
     expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
     expect(pageText()).not.toContain(GAP_PLAINTEXT_BODY);
   });
@@ -187,13 +239,19 @@ describe("PARTIAL omission: dropping only the OLDEST grants moves the cutover LA
 
     // Fail-closed is not selective. With the cutover unestablished, "authored
     // before the board went confidential" is not a claim this page can make about
-    // ANY plaintext card, so conf-006 goes out with conf-008.
+    // ANY plaintext card, so conf-006 goes out with conf-010.
     //
     // Counted, not asserted as absent text: conf-006 is `done`, terminal items
     // have no column, so not.toContain("Legacy plaintext card") would pass either
-    // way. ADMITTED: conf-001..004 (sealed, well-formed). WITHHELD: conf-005,
-    // conf-006, conf-008 (plaintext). DROPPED: conf-007 (forged signature).
-    expect(everythingCount()).toBe("4");
+    // way. ADMITTED: exactly the sealed, signature-valid cards. WITHHELD: every
+    // plaintext one — conf-005, conf-006 and the gap card. DROPPED before the
+    // gate: conf-007 (forged signature).
+    //
+    // This is the count that DISCRIMINATES: the anti-tautology case below serves
+    // the same events with the grants complete and gets SEALED_ADMITTED + 1,
+    // the extra one being conf-006 grandfathered on the true cutover. Equality
+    // here is the claim that the fail-closed path grandfathers nothing at all.
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length));
   });
 
   it("holds for the MEMBER, who still holds the epoch-2 key the served grants carry", async () => {
@@ -204,7 +262,7 @@ describe("PARTIAL omission: dropping only the OLDEST grants moves the cutover LA
 
     expect(notice()).toContain("CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED");
     expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
-    expect(everythingCount()).toBe("4");
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length));
   });
 });
 
@@ -230,7 +288,7 @@ describe("WITNESS A in isolation — a sealed card OLDER than the derived cutove
 
     expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
     expect(notice()).toContain("CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED");
-    // conf-001 admitted (sealed, well-formed, placeholder), conf-008 withheld.
+    // conf-001 admitted (sealed, well-formed, placeholder), conf-010 withheld.
     expect(everythingCount()).toBe("1");
     expect(renderedItems().map((i) => i.title)).toEqual([PLACEHOLDER]);
   });
@@ -260,7 +318,7 @@ describe("WITNESS B in isolation — a sealed card at an epoch no served grant c
 
     expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
     expect(notice()).toContain("CONFIDENTIALITY STATE COULD NOT BE ESTABLISHED");
-    // conf-009 admitted as a placeholder, conf-008 withheld.
+    // conf-011 admitted as a placeholder, conf-010 withheld.
     expect(everythingCount()).toBe("1");
     expect(renderedItems().map((i) => i.title)).toEqual([PLACEHOLDER]);
   });
@@ -288,7 +346,7 @@ describe("WITNESS B in isolation — a sealed card at an epoch no served grant c
     };
     await afterLogin(root, signingIdentity(MEMBER_PUB), withEpoch1Key, deps(STALE_EPOCH, MEMBER_SEC));
 
-    // The key really works — conf-009 is sealed under epoch 1 and its title opens,
+    // The key really works — conf-011 is sealed under epoch 1 and its title opens,
     // so this is not passing because the reader was left blind.
     expect(pageText()).toContain(EPOCH1_AFTER_ROTATION_TITLE);
     // And the cleartext is still withheld and the state still unestablished.
@@ -301,25 +359,29 @@ describe("ANTI-TAUTOLOGY: complete grants still establish the cutover", () => {
   /** The exploit snapshot with the four epoch-1 grants PUT BACK. */
   const COMPLETE: NostrEvent[] = [boardEvent, ...grants, ...cards, cardGapPlaintext];
 
-  it("conf-008 is STILL withheld — it was always post-cutover cleartext", async () => {
+  it("conf-010 is STILL withheld — it was always post-cutover cleartext", async () => {
     await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(COMPLETE, MEMBER_SEC));
 
     // The gap card is not evidence of anything; it is the thing being smuggled.
     // With the real cutover known it is quarantined by the ORDINARY rule, which
     // is why the exploit had to move the cutover rather than forge a card.
     expect(pageText()).not.toContain(GAP_PLAINTEXT_TITLE);
-    expect(renderedItems().map((i) => i.id)).not.toContain("conf-008");
+    expect(renderedItems().map((i) => i.id)).not.toContain(GAP_ID);
   });
 
   it("says nothing about an unestablished state, and grandfathers conf-006", async () => {
     await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(COMPLETE, MEMBER_SEC));
 
     // If either witness fired here, the fix would be quarantining every rotated
-    // board wholesale instead of reacting to a contradiction. ADMITTED:
-    // conf-001..004 plus the genuinely pre-cutover conf-006.
+    // board wholesale instead of reacting to a contradiction. ADMITTED: every
+    // sealed card, plus EXACTLY ONE more — the genuinely pre-cutover conf-006,
+    // grandfathered on the true cutover. That +1 against the identical snapshot
+    // with the epoch-1 grants withheld is the whole difference between an
+    // established cutover and an unestablished one, and it is what makes the
+    // fail-closed count above a discriminating assertion rather than a tally.
     expect(notice()).not.toContain("COULD NOT BE ESTABLISHED");
     expect(notice()).toContain("titles were decrypted in your browser");
-    expect(everythingCount()).toBe("5");
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length + 1));
   });
 
   it("an epoch ABOVE every served grant is NOT a witness", async () => {

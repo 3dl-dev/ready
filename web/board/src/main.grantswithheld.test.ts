@@ -34,7 +34,7 @@ import { fakeNip44Signer } from "./lib/fakesigner";
 import { nip07KeyUnwrapper, neverUnwraps } from "./lib/keyunwrap";
 import { PLACEHOLDER } from "./lib/envelope";
 import { hexToBytes } from "./lib/sha256";
-import type { NostrEvent } from "./lib/nostrevent";
+import { tagValue, type NostrEvent } from "./lib/nostrevent";
 import type { FragmentKeys, ParsedFragment } from "./lib/fragment";
 import {
   BOARD_COORD,
@@ -47,6 +47,7 @@ import {
   STRANGER_SEC,
   boardEvent,
   cardEpoch1A,
+  cardForgedSignature,
   cardGrandfatheredPlaintext,
   cards,
   expectedPlaintext,
@@ -59,6 +60,38 @@ const WITHHELD: NostrEvent[] = [boardEvent, ...cards];
 
 /** The same board with everything served. The control. */
 const SERVED: NostrEvent[] = [boardEvent, ...grants, ...cards];
+
+/**
+ * The cards in `cards` that a fail-CLOSED gate must still admit: every
+ * well-formed SEALED envelope whose signature verifies. With the cutover
+ * unestablished nothing else survives — no plaintext card can be grandfathered,
+ * and the forged-signature card is dropped before the gate sees it.
+ *
+ * DERIVED, NOT HARDCODED, and the reason matters. `cards` is a fixture several
+ * items share and legitimately extend: ready-02e added two more sealed cards
+ * after this suite was written, and every hardcoded total here went red for a
+ * reason that had nothing to do with confidentiality. A magic number invites the
+ * next person to bump it back to green, which is precisely how a fail-closed
+ * assertion stops being one. So the RULE is asserted and the count follows it;
+ * SEALED_ADMITTED_IDS below is anchored against the ids known when this was
+ * written, so the derivation cannot go vacuous.
+ */
+const SEALED_ADMITTED = cards.filter((c) => tagValue(c, "enc") === "1" && c.id !== cardForgedSignature.id);
+const SEALED_ADMITTED_IDS = SEALED_ADMITTED.map((c) => tagValue(c, "d")).sort();
+
+it("FIXTURE INVARIANT: the admitted set is the sealed, signature-valid cards and nothing else", () => {
+  // Anchors the derivation. The four original sealed cards must be in it; the
+  // two plaintext ones and the forged one must not — whatever else `cards`
+  // grows. Without this the count assertions below could be satisfied by an
+  // empty set.
+  for (const id of ["conf-001", "conf-002", "conf-003", "conf-004"]) {
+    expect(SEALED_ADMITTED_IDS).toContain(id);
+  }
+  expect(SEALED_ADMITTED_IDS).not.toContain(tagValue(cardGrandfatheredPlaintext, "d"));
+  expect(SEALED_ADMITTED_IDS).not.toContain(tagValue(cardForgedSignature, "d"));
+  expect(SEALED_ADMITTED_IDS).not.toContain("conf-005");
+  expect(new Set(SEALED_ADMITTED_IDS).size).toBe(SEALED_ADMITTED_IDS.length);
+});
 
 let root: HTMLElement;
 
@@ -151,12 +184,13 @@ describe("grants withheld: the confidentiality state is UNKNOWN and fails CLOSED
     // status is `done` and a terminal item has no column, so its title is not on
     // the page even when it IS admitted — `not.toContain("Legacy plaintext
     // card")` would pass either way and prove nothing. The admitted-set count is
-    // the number the gate actually moves: 4 here, 5 with the grants served (see
-    // the control below).
+    // the number the gate actually moves: exactly the sealed cards here, one
+    // MORE with the grants served (see the control below), the extra one being
+    // conf-006. That difference of one is the assertion.
     //
-    // conf-001..004 admitted (all sealed), conf-005 + conf-006 quarantined,
-    // conf-007 dropped for its forged signature.
-    expect(everythingCount()).toBe("4");
+    // Every sealed card admitted, conf-005 + conf-006 quarantined, conf-007
+    // dropped for its forged signature.
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length));
   });
 
   it("says the confidentiality state could not be established, and names the board", async () => {
@@ -186,7 +220,10 @@ describe("grants withheld: the confidentiality state is UNKNOWN and fails CLOSED
     await afterLogin(root, signingIdentity(STRANGER_PUB), boardFragment, deps(WITHHELD, STRANGER_SEC));
 
     const items = renderedItems();
-    expect(items.map((i) => i.id).sort()).toEqual(["conf-001", "conf-002", "conf-003", "conf-004"]);
+    // The rendered set is exactly the sealed, signature-valid cards — anchored
+    // by the FIXTURE INVARIANT above, so this cannot be satisfied by an empty
+    // or drifting expectation.
+    expect(items.map((i) => i.id).sort()).toEqual(SEALED_ADMITTED_IDS);
     for (const i of items) {
       expect(i.title).toBe(PLACEHOLDER);
       expect(i.sealed).toBe(true);
@@ -223,7 +260,9 @@ describe("ANTI-TAUTOLOGY: with the grants served, nothing is over-withheld", () 
     // The established path is unchanged: cutover known, conf-006 grandfathered
     // in, conf-005 still quarantined. If this went red the fix would be
     // quarantining boards wholesale rather than reacting to unestablished state.
-    expect(everythingCount()).toBe("5");
+    // EXACTLY ONE more than the withheld case: conf-006, grandfathered on a
+    // cutover that is now known.
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length + 1));
     expect(notice()).not.toContain("COULD NOT BE ESTABLISHED");
     expect(notice()).toContain("titles were decrypted in your browser");
     expect(pageText()).not.toContain("SMUGGLED CLEARTEXT TITLE");
@@ -277,10 +316,10 @@ describe("grants withheld, but the LINK carries the read key", () => {
   it("keeps the quarantine on: a key is not a cutover", async () => {
     await afterLogin(root, readOnlyIdentity(OWNER_PUB), keyFragment(), deps(WITHHELD, null));
     // Link keys add reading power; they establish no instant, so the smuggled
-    // cleartext stays out and the grandfathered card stays out with it — 4
-    // admitted, not 6.
+    // cleartext stays out and the grandfathered card stays out with it — the
+    // sealed cards only, not those plus the two plaintext ones.
     expect(pageText()).not.toContain("SMUGGLED CLEARTEXT TITLE");
-    expect(everythingCount()).toBe("4");
+    expect(everythingCount()).toBe(String(SEALED_ADMITTED.length));
   });
 
   it("a link key alone is enough evidence even when every sealed card is withheld too", async () => {

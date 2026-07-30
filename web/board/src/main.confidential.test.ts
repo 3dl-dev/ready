@@ -142,6 +142,33 @@ describe("a granted member sees decrypted titles in the page", () => {
     expect(byId.get("conf-001")!.title).toBe(expectedPlaintext[0].title);
   });
 
+  // ready-02e: conf-008 and conf-009 are sealed under epoch 1, which MEMBER_SEC
+  // holds — the AEAD open genuinely succeeds (real CEK, real tag). But the
+  // opened plaintext is not a {title: string, ...} card payload: conf-008
+  // opens to a JSON array, conf-009 opens to an object with no title field at
+  // all. A decryption that "succeeds" at the AEAD layer but does not yield a
+  // usable card must still render the placeholder AND carry .sealed — not a
+  // blank title with no visual signal that something was withheld. Asserted
+  // through the real render path (afterLogin -> fold -> mountBoardWorkspace),
+  // per the adversary's note that a DOM-assignment stand-in is weak evidence.
+  it("treats a sealed payload that opens to a non-object as a decryption FAILURE, not a blank title", async () => {
+    await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(MEMBER_SEC));
+    const byId = new Map(renderedItems().map((i) => [i.id, i]));
+    const got = byId.get("conf-008")!;
+    expect(got.title).toBe(PLACEHOLDER);
+    expect(got.title.trim()).not.toBe("");
+    expect(got.sealed).toBe(true);
+  });
+
+  it("treats a sealed payload with no string title as a decryption FAILURE, not a blank title", async () => {
+    await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(MEMBER_SEC));
+    const byId = new Map(renderedItems().map((i) => [i.id, i]));
+    const got = byId.get("conf-009")!;
+    expect(got.title).toBe(PLACEHOLDER);
+    expect(got.title.trim()).not.toBe("");
+    expect(got.sealed).toBe(true);
+  });
+
   it("never lets the forged card or the smuggled cleartext card reach the DOM", async () => {
     await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(MEMBER_SEC));
     const ids = renderedItems().map((i) => i.id);
@@ -290,12 +317,15 @@ describe("the confidential path does not disturb a plaintext board", () => {
     await afterLogin(root, signingIdentity(MEMBER_PUB), boardFragment, deps(MEMBER_SEC));
 
     const everything = root.querySelector('.left-tree .node[data-scope=""] .ct')?.textContent;
-    // conf-001..004 + conf-006 admitted; conf-005 (post-cutover cleartext) and
+    // conf-001..004 + conf-006 + conf-008 + conf-009 admitted (ready-02e's
+    // conf-008/009 are well-formed confidential events — the fold gate admits
+    // them; it is decryptCardPayload's SHAPE check, one layer deeper, that
+    // fails them to the placeholder); conf-005 (post-cutover cleartext) and
     // conf-007 (forged signature) dropped.
-    expect(everything).toBe("5");
+    expect(everything).toBe("7");
 
     const ids = renderedItems().map((i) => i.id).sort();
-    expect(ids).toEqual(["conf-001", "conf-002", "conf-003", "conf-004"]);
+    expect(ids).toEqual(["conf-001", "conf-002", "conf-003", "conf-004", "conf-008", "conf-009"]);
     expect(pageText()).not.toContain("SMUGGLED CLEARTEXT");
   });
 

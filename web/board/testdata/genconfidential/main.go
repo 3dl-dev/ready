@@ -23,11 +23,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
 	rdsync "github.com/3dl-dev/ready/pkg/sync"
@@ -71,7 +75,45 @@ const (
 	// created_at is later than any grant, so it cannot witness a too-late cutover
 	// by time; only its EPOCH does.
 	tCardE1Late = 1750000700
+	// ready-02e: two cards whose ciphertext opens cleanly (real CEK, real AEAD
+	// tag) but whose plaintext is NOT a {title: string, ...} card payload. The
+	// AEAD succeeding must not be mistaken for a decryption SUCCESS. They are
+	// conf-008 and conf-009; see the ITEM ID NOTE below.
+	tCardNonObject = 1750000220
+	tCardNoTitle   = 1750000230
 )
+
+// ITEM ID NOTE — ready-daf and ready-02e were written in parallel and BOTH
+// originally minted conf-008/conf-009. That collision is not cosmetic: the fold
+// keys a card by its item id and keeps the NEWEST revision, so ready-02e's
+// sealed conf-008 (created_at 1750000220) silently displaced ready-daf's
+// plaintext conf-008 (1750000205). An assertion of the form "the rendered set
+// does not contain conf-008" then stops measuring whether the cleartext was
+// withheld — it reports on whichever event won the fold, and would report a
+// PASS for a withheld gap card and, worse, could MASK a leak by letting a
+// later sealed revision of the same id stand in for a leaked plaintext one.
+// ready-daf's two events were therefore renumbered to conf-010/conf-011.
+// Every fixture card must have an id no other fixture card shares; the
+// invariant is asserted in main.grantsomission.test.ts.
+
+// sealRaw mirrors pkg/sync/envelope.go's unexported sealContent byte-for-byte
+// (base64Std(nonce(12) || ChaCha20-Poly1305(cek, nonce, plaintext))) so this
+// generator can seal a plaintext blob that is NOT a valid {title,...} card
+// payload — sealCardPayload only ever marshals a well-formed cardPayload
+// struct, so it cannot produce the malformed-shape fixtures ready-02e needs.
+func sealRaw(cek [32]byte, plaintext []byte) (string, error) {
+	aead, err := chacha20poly1305.New(cek[:])
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ct := aead.Seal(nil, nonce, plaintext, nil)
+	out := append(append([]byte{}, nonce...), ct...)
+	return base64.StdEncoding.EncodeToString(out), nil
+}
 
 type expectedItem struct {
 	ID        string   `json:"id"`
@@ -317,7 +359,7 @@ func run() error {
 	// grandfathers it — which is the fail-open this round closes. Nothing about
 	// it is forged: the real Go writer signed it with the real owner key.
 	gapSpec := rdsync.CardSpec{
-		ItemID: "conf-008", Title: "GAP CLEARTEXT TITLE",
+		ItemID: "conf-010", Title: "GAP CLEARTEXT TITLE",
 		Context: "GAP CLEARTEXT BODY", Status: "active", Priority: "p1", Type: "task",
 	}
 	cardGapPlaintext, err := card(gapSpec, nil, tGapPlaintext)
@@ -330,12 +372,49 @@ func run() error {
 	// every grant in the fixture, so it can never witness a too-late cutover by
 	// time — only by naming an epoch no served grant covers.
 	staleSpec := rdsync.CardSpec{
-		ItemID: "conf-009", Title: "Sealed under epoch 1 after the rotation",
+		ItemID: "conf-011", Title: "Sealed under epoch 1 after the rotation",
 		Context: "A stale writer sealed this under the old epoch.",
 		Status:  "active", Priority: "p2", Type: "task",
 	}
 	cardE1AfterRotation, err := card(staleSpec, env1, tCardE1Late)
 	if err != nil {
+		return err
+	}
+	// ready-02e: a genuinely confidential, correctly-signed card (member holds
+	// epoch 1, the AEAD tag is real) whose sealed plaintext is a JSON ARRAY —
+	// opens cleanly, is not an object at all. decryptCardPayload must treat
+	// this as a decryption FAILURE, not a title-less success.
+	cardNonObject, err := card(rdsync.CardSpec{
+		ItemID: "conf-008", Title: "IGNORED — content is overwritten below",
+		Status: "active", Priority: "p2", Type: "task",
+	}, env1, tCardNonObject)
+	if err != nil {
+		return err
+	}
+	nonObjectSealed, err := sealRaw(cek1, []byte(`["not","an","object"]`))
+	if err != nil {
+		return err
+	}
+	cardNonObject.Content = nonObjectSealed
+	if err := cardNonObject.Sign(owner); err != nil {
+		return err
+	}
+
+	// ready-02e: same shape of defect, but the opened plaintext IS a JSON
+	// object — just one with no string `title` field.
+	cardNoTitle, err := card(rdsync.CardSpec{
+		ItemID: "conf-009", Title: "IGNORED — content is overwritten below",
+		Status: "active", Priority: "p2", Type: "task",
+	}, env1, tCardNoTitle)
+	if err != nil {
+		return err
+	}
+	noTitleSealed, err := sealRaw(cek1, []byte(`{"context":"an object, but no title field at all"}`))
+	if err != nil {
+		return err
+	}
+	cardNoTitle.Content = noTitleSealed
+	if err := cardNoTitle.Sign(owner); err != nil {
 		return err
 	}
 
@@ -379,6 +458,8 @@ func run() error {
 	writeEvent(&b, "cardSmuggledCleartext", cardSmuggled)
 	writeEvent(&b, "cardGrandfatheredPlaintext", cardGrandfathered)
 	writeEvent(&b, "cardForgedSignature", forged)
+	writeEvent(&b, "cardSealedNonObject", cardNonObject)
+	writeEvent(&b, "cardSealedNoTitle", cardNoTitle)
 
 	b.WriteString("/** ready-daf round 2: the owner CEK grant for epoch 1 signed AFTER the rotation.\n * NOT part of `grants` — served alone, it establishes a cutover far later than the\n * truth while leaving the epoch set covered from 1. */\n")
 	writeEvent(&b, "grantEpoch1Late", grantE1Late)
@@ -388,7 +469,7 @@ func run() error {
 	writeEvent(&b, "cardEpoch1AfterRotation", cardE1AfterRotation)
 
 	b.WriteString("/** Every confidential card in the fixture, in relay-delivery order. */\n")
-	b.WriteString("export const cards: NostrEvent[] = [\n  cardEpoch1A,\n  cardEpoch1B,\n  cardEpoch2,\n  cardEpochNobodyHolds,\n  cardSmuggledCleartext,\n  cardGrandfatheredPlaintext,\n  cardForgedSignature,\n];\n\n")
+	b.WriteString("export const cards: NostrEvent[] = [\n  cardEpoch1A,\n  cardEpoch1B,\n  cardEpoch2,\n  cardEpochNobodyHolds,\n  cardSmuggledCleartext,\n  cardGrandfatheredPlaintext,\n  cardForgedSignature,\n  cardSealedNonObject,\n  cardSealedNoTitle,\n];\n\n")
 
 	exp, err := json.MarshalIndent(expected, "", "  ")
 	if err != nil {
