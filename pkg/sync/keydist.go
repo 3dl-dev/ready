@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	"github.com/3dl-dev/ready/pkg/nip44"
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -117,6 +118,16 @@ type BoardKeyring struct {
 	ceks    map[string]map[int][32]byte // boardCoord -> epoch -> CEK
 	ltks    map[string][32]byte         // boardCoord -> LTK
 	cutover map[string]int64            // boardCoord -> first-epoch cutover (unix seconds)
+	// epochFloor is the LOWEST cek_epoch named by any owner CEK-bearing grant that
+	// was SERVED for the board — board-global, tracked from exactly the grants that
+	// set cutover, and independent of which epochs THIS reader can open. It is the
+	// yardstick for §11.13a's second witness: a sealed card naming an epoch below
+	// it proves the grant that minted that epoch never arrived.
+	epochFloor map[string]int // boardCoord -> lowest served owner-grant epoch
+	// withheld marks a board whose derived cutover the board's OWN verified sealed
+	// cards contradict (§11.13a, grantsWithheld). Cutover then reports the
+	// fail-closed shape instead of the derived instant.
+	withheld map[string]bool // boardCoord -> derived cutover refuted
 }
 
 // CEK implements BoardDecryptor.
@@ -146,11 +157,42 @@ func (kr *BoardKeyring) LTK(coord string) ([32]byte, bool) {
 
 // Cutover implements EncryptedBoardSet: the board-global created_at of the first
 // CEK epoch, ok=true iff the board is confidential (has any CEK-bearing grant).
+//
+// A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (§11.13a, ready-9a6 — the Go
+// port of the browser hardening ready-daf landed in
+// web/board/src/lib/confidentiality.ts). The instant is a MINIMUM over the grants
+// that were SERVED, omission can only ever REMOVE grants, so the derived instant
+// is always >= the truth and the fail-open case is exactly "strictly greater":
+// every plaintext card authored between the true cutover and the derived one
+// satisfies shouldQuarantine's grandfather clause and folds in clear. When the
+// board's own verified sealed cards CONTRADICT the derived instant (see
+// grantsWithheld), this returns cutover 0 with ok=TRUE — the fail-closed shape:
+// ok=true keeps the fold gate ON while cutover 0 grandfathers nothing, so every
+// event that is not a well-formed sealed envelope is withheld. ok=false (gate
+// inert) and a LATE cutover (grandfathers everything) are both the fail-open
+// direction and are deliberately not used here.
+//
+// WHY GO IS NARROWER THAN THE BROWSER. This keyring is derived from the LOCAL
+// append-only log (cmd/rd/nostr.go's nostrProjectAllItems), not from one live
+// relay answer, so a grant that was EVER synced stays. The exposure is a log that
+// never received the earliest grants: a fresh join or clone whose sync only ever
+// reached an omitting or lossy relay, or a rotated board on a NIP-01-conformant
+// relay — kind 39301 is addressable with d = <boardD>:<grantee>, so after a
+// rotation only each grantee's NEWEST grant is retained and the epoch-1 grants
+// are legitimately gone.
+//
+// The "no grant reached me at all" case keeps §11.13's answer (ok=false, gate
+// inert); adopting the browser's third state for it would change what the shared
+// conformance vectors mean and is deliberately out of scope here (§4's
+// divergence-zone rule).
 func (kr *BoardKeyring) Cutover(coord string) (int64, bool) {
 	if kr == nil {
 		return 0, false
 	}
 	c, ok := kr.cutover[coord]
+	if ok && kr.withheld[coord] {
+		return 0, true
+	}
 	return c, ok
 }
 
@@ -192,7 +234,13 @@ func (kr *BoardKeyring) CurrentEpoch(coord string) (epoch int, cek [32]byte, ok 
 // THE OWNER (boardAuthor, the authz root) contribute CEKs.
 func DeriveBoardKeyring(events []*nostr.Event, reader *nostr.Key, boardAuthor, boardD string) *BoardKeyring {
 	coord := BoardCoord(boardAuthor, boardD)
-	kr := &BoardKeyring{ceks: map[string]map[int][32]byte{}, ltks: map[string][32]byte{}, cutover: map[string]int64{}}
+	kr := &BoardKeyring{
+		ceks:       map[string]map[int][32]byte{},
+		ltks:       map[string][32]byte{},
+		cutover:    map[string]int64{},
+		epochFloor: map[string]int{},
+		withheld:   map[string]bool{},
+	}
 	readerPub := reader.PubKeyHex()
 	for _, e := range events {
 		if e == nil || e.Kind != KindRoleGrant {
@@ -221,9 +269,14 @@ func DeriveBoardKeyring(events []*nostr.Event, reader *nostr.Key, boardAuthor, b
 			continue
 		}
 		// Board-global cutover: earliest owner CEK-bearing grant (public created_at,
-		// tracked regardless of who the grant is addressed to).
+		// tracked regardless of who the grant is addressed to). The epoch floor is
+		// tracked from exactly the same grants — it is the lowest epoch this answer
+		// covers, which is what §11.13a's epoch witness measures against.
 		if cur, seen := kr.cutover[coord]; !seen || g.CreatedAt < cur {
 			kr.cutover[coord] = g.CreatedAt
+		}
+		if cur, seen := kr.epochFloor[coord]; !seen || g.CEKEpoch < cur {
+			kr.epochFloor[coord] = g.CEKEpoch
 		}
 		// Only grants addressed to the reader (signed p tag) can yield the reader's
 		// keys, and only if the wrap actually opens for the reader's key.
@@ -242,5 +295,79 @@ func DeriveBoardKeyring(events []*nostr.Event, reader *nostr.Key, boardAuthor, b
 			}
 		}
 	}
+	// §11.13a: the derived cutover is believed only when nothing in this same
+	// snapshot contradicts it. Runs once, here, so Cutover stays a map lookup.
+	if at, derived := kr.cutover[coord]; derived && grantsWithheld(events, coord, at, kr.epochFloor[coord]) {
+		kr.withheld[coord] = true
+	}
 	return kr
+}
+
+// grantsWithheld reports whether the board's own sealed cards PROVE that owner
+// CEK grants older than the ones served are missing — i.e. whether the derived
+// cutover is strictly later than the true one (spec §11.13a; the browser port is
+// web/board/src/lib/confidentiality.ts's grantsWithheld over grantEpochFloor).
+//
+// Two witnesses, both carried by the sealed events themselves and both
+// signature-verified, so a relay (or a lossy local log) can SUPPRESS them but can
+// neither forge nor alter them — sealing needs a board CEK, signing needs the
+// author's key, and created_at/cek_epoch are inside the signed id:
+//
+//   - TIME. A verified sealed event on this board OLDER than the derived cutover
+//     proves the board was already confidential before that instant: something
+//     sealed it, so a CEK already existed, so an owner CEK grant older than every
+//     served one must exist. No assumption about epoch numbering is needed.
+//   - EPOCH. A verified sealed event naming a cek_epoch BELOW epochFloor proves
+//     that epoch's grant was not served — a card cannot seal under an epoch whose
+//     CEK does not exist yet. Epochs increase by one per rotation (§11.10,
+//     §11.11), so a lower epoch is an OLDER grant, and an older grant moves the
+//     minimum earlier. This catches what TIME cannot: a stale writer's card sealed
+//     under the old epoch but published AFTER the manufactured cutover.
+//
+// An epoch ABOVE everything the served grants cover is deliberately NOT a
+// contradiction. It also proves a grant is missing, but a missing LATER grant
+// cannot move a MINIMUM, so the cutover still stands and quarantining the board
+// would cost visibility for no security gain.
+//
+// Being wrong here costs visibility only (the board withholds MORE), never
+// confidentiality, which is why no authorship check on the sealed card is needed:
+// any verified sealed event on the coordinate is admissible testimony.
+//
+// The signature check runs LAST, and only for an event that would actually
+// testify: it is the expensive one, and on a well-formed board no event reaches
+// it at all.
+func grantsWithheld(events []*nostr.Event, coord string, cutover int64, epochFloor int) bool {
+	for _, e := range events {
+		if e == nil || !isConfidential(e) || boardCoordOf(e) != coord {
+			continue
+		}
+		witness := e.CreatedAt < cutover // TIME
+		if !witness {
+			if ep, ok := cekEpochOf(e); ok && ep < epochFloor { // EPOCH
+				witness = true
+			}
+		}
+		if !witness {
+			continue
+		}
+		// A relay is untrusted and so is a merged log: an unverifiable event
+		// witnesses nothing, in either direction. Same rule the grant scan above
+		// applies.
+		if e.Verify() != nil {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// cekEpochOf parses the clear ["cek_epoch","<int>"] marker, ok=false when the tag
+// is absent or unparseable — the same parse cekFor and encWellFormed apply
+// (pkg/sync/envelope.go), read here as evidence rather than as a key lookup.
+func cekEpochOf(e *nostr.Event) (int, bool) {
+	ep, err := strconv.Atoi(tagValue(e, tagCEKEpoch))
+	if err != nil {
+		return 0, false
+	}
+	return ep, true
 }

@@ -522,3 +522,43 @@ func rekeyBoardOnRevoke(dir string, pub *rdSync.Publisher, boardAuthor, boardD, 
 	_, err = rotateBoardEpoch(pub, boardAuthor, boardD, plan)
 	return err
 }
+
+// sealedItemCreatedAt is the per-item monotonic write clock (nostrNextCreatedAt
+// over the item's own drift scope), FLOORED at the board's own confidentiality
+// cutover. It is the write-side half of §11.13a (ready-9a6).
+//
+// WHY THE FLOOR EXISTS. A reader now refuses a derived cutover that the board's
+// own verified sealed cards contradict (grantsWithheld, pkg/sync/keydist.go), and
+// the first witness is a sealed card OLDER than the cutover — which rd's OWN
+// bootstrap otherwise manufactures, with no relay misbehaviour anywhere:
+// cutoverCreatedAt (:33-49) deliberately stamps the CEK self-grant at
+// max(log)+1 so the strict `created_at < cutover` grandfather clause still keeps a
+// same-second plaintext card, while the card sealed by that very command is
+// stamped `now` — one second EARLIER than the cutover it was sealed under. The
+// board then contradicts itself on every subsequent read and fails closed, taking
+// every grandfathered plaintext card with it. `rd init && rd create` and
+// `rd confidential enable` on a board written this second both land there.
+//
+// A card stamped exactly AT the cutover is not a witness (the comparison is
+// strict) and is quarantine-legal either way (a well-formed sealed envelope is
+// never quarantined), so the floor is the minimum move that removes the
+// contradiction at the source.
+//
+// sealed=false (plaintext board, or a card this write did not seal) returns the
+// unfloored instant: only a SEALED card can testify, and a plaintext board has no
+// cutover to floor at.
+func sealedItemCreatedAt(dir string, pub *rdSync.Publisher, itemID string, sealed bool) int64 {
+	at := nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(itemID))
+	if !sealed {
+		return at
+	}
+	events, err := pub.Log.ReadAll()
+	if err != nil {
+		return at
+	}
+	pin := nostrPinnedBoard(dir)
+	if cut, ok := boardReadKeyring(dir, pub.Key, events).Cutover(pin); ok && cut > at {
+		return cut
+	}
+	return at
+}

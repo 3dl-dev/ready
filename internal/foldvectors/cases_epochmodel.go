@@ -102,10 +102,10 @@ func (b *builder) readerKeyring(readerSecret string) Options {
 // SHIPPED BROWSER. A sealed card plus no derived cutover is the one board shape on
 // which the two conformant readers diverge:
 //
-//	rd's Go fold applies §11.13 alone — no cutover derived, so Cutover() reports
-//	    the board plaintext, the quarantine gate is inert, and the plaintext card
-//	    folds. §11.13a states outright that "the Go reader does not yet apply
-//	    §11.13a" (ready-9a6).
+//	rd's Go fold reports no cutover here, so Cutover() reports the board
+//	    plaintext, the quarantine gate is inert, and the plaintext card folds. Go
+//	    applies §11.13a's CONTRADICTION rule (ready-9a6) but not the browser's
+//	    no-grant arm, and §11.13a records exactly that.
 //	The browser applies §11.13a on top: a derived cutover is a LOWER BOUND, and a
 //	    verified sealed card with NO served owner grant is the "no-grant" arm of
 //	    the unestablished state — state "unknown", gate ON, cutover 0 — so the
@@ -117,7 +117,7 @@ func (b *builder) readerKeyring(readerSecret string) Options {
 // says a reader "MUST treat a derived cutover as unusable when the board's own
 // snapshot CONTRADICTS it", "fails closed exactly as for 'no grant at all' — gate
 // ON, cutover 0", and names confidentialityOf as its reference implementation; the
-// same clause records that the Go reader does not implement it. So the divergence
+// same clause records that the Go reader does not adopt that no-grant arm. So the divergence
 // is SANCTIONED BY THE SPEC, and the thing at fault is the FIXTURE: a conformance
 // vector is the shared contract, so its expectations must hold for every
 // conformant reader, and this one could only ever hold for one of them.

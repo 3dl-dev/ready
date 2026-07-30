@@ -195,6 +195,32 @@ func TestConfidentialEnableMigration(t *testing.T) {
 	if !newSealed {
 		t.Fatal("new card should be sealed at rest")
 	}
+
+	// §11.13a (ready-9a6): the board must not CONTRADICT ITS OWN cutover. `rd
+	// confidential enable` stamps the CEK self-grant at max(log)+1 precisely so the
+	// strict `created_at < cutover` grandfather clause keeps the same-second plaintext
+	// card above — which puts the cutover one second in the FUTURE, and the card this
+	// same test seals is stamped "now". A sealed card OLDER than the cutover is
+	// §11.13a's TIME witness, so without sealedItemCreatedAt's floor the reader would
+	// refuse the derived cutover on every subsequent read and drop the grandfathered
+	// card the assertions above just proved readable — no relay misbehaviour anywhere.
+	kr := rdSync.DeriveBoardKeyring(events, k, owner, boardD)
+	cut, ok := kr.Cutover(coord)
+	if !ok || cut == 0 {
+		t.Fatalf("board contradicts its own cutover: Cutover = (%d, %v), want the derived instant", cut, ok)
+	}
+	for _, e := range events {
+		if e.Kind != 30302 {
+			continue
+		}
+		if _, sealed := tagVal(e.Tags, "enc"); !sealed {
+			continue
+		}
+		if e.CreatedAt < cut {
+			d, _ := tagVal(e.Tags, "d")
+			t.Fatalf("sealed card %s stamped %d, BEFORE its own board's cutover %d — §11.13a TIME witness", d, e.CreatedAt, cut)
+		}
+	}
 }
 
 // TestTwoIdentityConfidentialCLI is the two-identity CLI end-to-end (ready-deb):

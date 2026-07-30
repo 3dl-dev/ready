@@ -15,13 +15,15 @@
 // here is a pure move: same functions, same behaviour, now importable by the
 // conformance runner without booting the app.
 //
-// §11.13a IS A CLIENT-SIDE HARDENING THE GO FOLD DOES NOT IMPLEMENT
-// (pkg/sync/keydist.go derives the cutover per §11.13 and trusts it; tracked as
-// ready-9a6). A conformance vector is the SHARED contract, so no vector may carry
-// an expectation that depends on which of the two layers a reader runs. That is
-// not a claim that this file agrees with plain §11.13 — it is a constraint on the
-// VECTORS, enforced by fold.vectors.test.ts's divergence-zone test and by the Go
-// suite folding the same committed file with the plain §11.13 derivation.
+// THE GO FOLD NOW APPLIES §11.13a's CONTRADICTION RULE TOO (ready-9a6:
+// pkg/sync/keydist.go's grantsWithheld, same two witnesses), but NOT this file's
+// third path into "unknown" — a verified sealed card with no served owner grant
+// still reports plaintext there, per plain §11.13. A conformance vector is the
+// SHARED contract, so no vector may carry an expectation that depends on which of
+// the two layers a reader runs. That is not a claim that this file agrees with
+// plain §11.13 — it is a constraint on the VECTORS, enforced by
+// fold.vectors.test.ts's divergence-zone test and by the Go suite folding the same
+// committed file with its own derivation.
 
 import type { BoardKeyring } from "./keyring";
 import type { EncryptedBoardSet } from "./envelope";

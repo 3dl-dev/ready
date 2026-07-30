@@ -380,7 +380,7 @@ func publishItemStatusChangeNostr(item *state.Item, reason string) error {
 	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
 		return err
 	}
-	res, err := pub.PublishStatusChange(context.Background(), card, reason, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
+	res, err := pub.PublishStatusChange(context.Background(), card, reason, sealedItemCreatedAt(dir, pub, item.ID, card.Enc != nil))
 	if err != nil {
 		return err
 	}
@@ -428,7 +428,7 @@ func publishItemCardEditNostr(item *state.Item) error {
 	if err := setCardEnvelope(dir, pub, boardAuthor, board.BoardD, &card); err != nil {
 		return err
 	}
-	res, err := pub.PublishCardEdit(context.Background(), card, nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID)))
+	res, err := pub.PublishCardEdit(context.Background(), card, sealedItemCreatedAt(dir, pub, item.ID, card.Enc != nil))
 	if err != nil {
 		return err
 	}
