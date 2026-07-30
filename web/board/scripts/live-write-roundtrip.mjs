@@ -763,6 +763,92 @@ async function settle(cdp, ms = 9000) {
   return cdp.evaluate(`return document.querySelector(".transient-error")?.textContent ?? "";`);
 }
 
+/**
+ * ownedBoardCount answers "how many unarchived boards does this key own, right
+ * now, on the relay" — a kind-only walk paged backwards with `until` at limit
+ * 500, exactly the shape archive-stray-boards.mjs and live-portfolio.mjs's own
+ * oracle use, and for the same reason (relay measurement discipline: an
+ * `authors` filter silently under-returns on wss://relay.3dl.network — measured
+ * 42/56 vs 56/56 for the same walk, ready-5c5).
+ *
+ * WHY THIS EXISTS (ready-153 rework): the finally block below archives this
+ * run's own throwaway board, but a harness that only trusts its own archive
+ * call proves nothing if that call is deleted or starts failing — the earlier
+ * version of this file did exactly that and still reported 18/18, green. This
+ * is the assertion that makes a stopped cleanup show up as a FAILED run: a
+ * count taken before this script does anything and a count taken after
+ * everything (including the finally block) has run must agree, because the
+ * only board this process is allowed to add to the relay is the one it also
+ * removes.
+ */
+async function ownedBoardCount(relay, ownerPubkey) {
+  const seen = new Map();
+  let until;
+  for (let page = 0; page < 40; page++) {
+    const filter = { kinds: [30301], limit: 500 };
+    if (until !== undefined) filter.until = until;
+    const got = await new Promise((resolve, reject) => {
+      const ws = new WebSocket(relay);
+      const out = [];
+      const sub = `cnt${Math.random().toString(36).slice(2, 10)}`;
+      const t = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          /* closed */
+        }
+        resolve(out);
+      }, 45000);
+      ws.onopen = () => ws.send(JSON.stringify(["REQ", sub, filter]));
+      ws.onmessage = (m) => {
+        const f = JSON.parse(m.data);
+        if (f[0] === "EVENT" && f[1] === sub) out.push(f[2]);
+        else if (f[0] === "EOSE" && f[1] === sub) {
+          clearTimeout(t);
+          try {
+            ws.send(JSON.stringify(["CLOSE", sub]));
+            ws.close();
+          } catch {
+            /* closed */
+          }
+          resolve(out);
+        }
+      };
+      ws.onerror = () => {
+        clearTimeout(t);
+        reject(new Error(`relay ${relay}: connection failed`));
+      };
+    });
+    let added = 0;
+    let oldest = until;
+    for (const e of got) {
+      if (!seen.has(e.id)) {
+        seen.set(e.id, e);
+        added++;
+      }
+      if (oldest === undefined || e.created_at < oldest) oldest = e.created_at;
+    }
+    if (added === 0 || got.length < 500) break;
+    if (oldest === undefined) break;
+    until = oldest - 1;
+  }
+  const byCoord = new Map();
+  for (const e of seen.values()) {
+    if (e.pubkey !== ownerPubkey) continue;
+    const d = (e.tags ?? []).find((t) => t[0] === "d")?.[1];
+    if (!d) continue;
+    const coord = `30301:${e.pubkey}:${d}`;
+    const prev = byCoord.get(coord);
+    if (!prev || e.created_at > prev.created_at) byCoord.set(coord, e);
+  }
+  let count = 0;
+  for (const e of byCoord.values()) {
+    const archived = ((e.tags ?? []).find((t) => t[0] === "archived")?.[1] ?? "") !== "";
+    if (!archived) count++;
+  }
+  return count;
+}
+
 async function main() {
   if (!existsSync(CHROME)) throw new Error(`no Chromium at ${CHROME} (set CHROME_PATH)`);
 
@@ -773,6 +859,18 @@ async function main() {
   // throwaway board EVEN WHEN THE SCRIPT FAILS PARTWAY — a red run must not
   // leave a permanent stray in the owner's portfolio (ready-153).
   let rdBin, projectDir, writerHome, coord;
+
+  // Loaded BEFORE the try block, and used to bracket the ENTIRE run (ready-153):
+  // the owner's own board count, taken before this process creates anything and
+  // compared against the same count taken after the finally block has run.
+  const idPath = path.join(
+    process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
+    "nostr-identity.json",
+  );
+  const identity = JSON.parse(readFileSync(idPath, "utf8"));
+  step("ready-153: count this key's unarchived boards BEFORE the run");
+  const boardsBefore = await ownedBoardCount(RELAY, identity.pubkey_hex);
+  log(`  ${boardsBefore} unarchived board(s) owned by this key, before this run`);
 
   try {
     step("build rd from this tree");
@@ -797,11 +895,6 @@ async function main() {
     step(`provision the throwaway board (owner key, ${CONFIDENTIAL ? "CONFIDENTIAL" : "PUBLIC"}, fresh board-d)`);
     writerHome = path.join(tmp, "writer-home");
     mkdirSync(writerHome, { recursive: true });
-    const idPath = path.join(
-      process.env.RD_HOME ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "rd"),
-      "nostr-identity.json",
-    );
-    const identity = JSON.parse(readFileSync(idPath, "utf8"));
     writeFileSync(path.join(writerHome, "nostr-identity.json"), JSON.stringify(identity), { mode: 0o600 });
 
     projectDir = path.join(tmp, BOARD_D);
@@ -1969,12 +2062,36 @@ async function main() {
         rd(rdBin, projectDir, writerHome, ["board", "archive", coord]);
         log(`  archived throwaway board ${coord}`);
       } catch (err) {
-        console.error(`WARNING: could not archive throwaway board ${coord}: ${err.message}`);
+        // An archive failure is a FAILURE, not a warning (ready-153 rework): the
+        // whole reason this finally block exists is to keep a stray out of the
+        // owner's permanent portfolio, and an error that is only logged still
+        // lets the process exit 0 while that stray persists.
+        failures++;
+        console.error(`FAILURE: could not archive throwaway board ${coord}: ${err.message}`);
       }
     }
     if (KEEP) log(`\nkept: ${tmp}`);
     else rmSync(tmp, { recursive: true, force: true });
   }
+
+  // ready-153: THE PROOF THAT CLEANUP ACTUALLY RAN, not merely that it was
+  // attempted. A count taken before this process touched the relay and a count
+  // taken after everything above (including the finally block) has finished
+  // must agree — the only board this run is entitled to add is the one it also
+  // archives. Delete the `rd board archive` call above and this is the
+  // assertion that goes red; nothing before it would notice.
+  step("ready-153: the owner's board count is unchanged after this run");
+  const boardsAfter = await ownedBoardCount(RELAY, identity.pubkey_hex);
+  const cleanupHeld = boardsAfter === boardsBefore;
+  if (!cleanupHeld) failures++;
+  log(`  boards before: ${boardsBefore}  boards after: ${boardsAfter}`);
+  log(
+    `  ${cleanupHeld ? "PASS" : "FAIL"}  ${
+      cleanupHeld
+        ? "the run left the owner's board count exactly where it started"
+        : "the run LEFT A STRAY BEHIND — board count grew and was not cleaned up"
+    }`,
+  );
 
   process.exit(failures === 0 ? 0 : 1);
 }
