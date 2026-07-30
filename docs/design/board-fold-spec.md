@@ -718,7 +718,7 @@ restates frozen §3 and MUST NOT drift from it.
 owner-signed self-grant (`publishOwnerCEKSelfGrant`,
 `cmd/rd/confidential.go:324-354`) and wraps it to existing members
 (`wrapEpochToMembers`, `:272`). A grant whose `cek_epoch < 1` is rejected outright
-by keyring derivation (`pkg/sync/keydist.go:164-170`) — it contributes neither a
+by keyring derivation (`pkg/sync/keydist.go:264-270`) — it contributes neither a
 key nor a cutover.
 
 **§11.11 Rotation.** A rotation mints a FRESH random CEK at `OldEpoch + 1`
@@ -768,7 +768,7 @@ re-issues at those, not at a fixed `contributor` / epoch label. Re-issuing at a
 hardcoded role would silently demote every maintainer on every rotation.
 
 **§11.12 Keyring derivation retains ALL epochs.** `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:193-246`) scans EVERY historical grant, not latest-wins, so
+(`pkg/sync/keydist.go:235-304`) scans EVERY historical grant, not latest-wins, so
 a member keeps old-epoch CEKs and historical reads survive (`:136-140`). It
 accepts a key only when: kind is 39301 and `Verify()` passes (`:146-151`); the
 grant binds to `(boardAuthor, boardD)` (`:156-158`); the grant is signed by the
@@ -779,9 +779,9 @@ the anti-retarget guard.
 
 **§11.13 Cutover derivation.** The board-global cutover is the EARLIEST
 `created_at` of any owner-signed CEK-bearing grant, tracked regardless of who it
-is addressed to (`pkg/sync/keydist.go:172-175`). `Cutover(coord)` returning
+is addressed to (`pkg/sync/keydist.go:271-280`). `Cutover(coord)` returning
 `ok=true` is exactly "this board is confidential"
-(`pkg/sync/keydist.go:149-155`).
+(`pkg/sync/keydist.go:188-203`).
 
 **§11.13a A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (`ready-daf`).** §11.13
 computes a MINIMUM over the grants a relay chose to serve, and reads on this
@@ -868,11 +868,52 @@ such card, and the reader must hold no key-bearing link. NIP-01 has no proof of
 non-omission, so that constructed answer is undetectable from inside one relay
 answer and MUST NOT be claimed otherwise — in particular, "full and partial omission
 are both detected" is FALSE as an unqualified statement and must not be repeated.
-**The Go reader does not yet apply §11.13a** — `pkg/sync/keydist.go`
-derives the cutover per §11.13 and trusts it; tracked separately (`ready-9a6`).
+
+**The Go reader applies §11.13a's TIME and EPOCH witnesses too** (`ready-9a6`).
+`BoardKeyring` tracks the board-global lowest served owner-grant epoch beside the
+cutover, `grantsWithheld` runs BOTH witnesses over the verified sealed events once
+per derivation, and `Cutover` reports `(0, true)` for a contradicted board — so
+`ProjectItems` quarantines the plaintext cards a manufactured cutover would have
+grandfathered (`pkg/sync/keydist.go`, witnessed by
+`pkg/sync/keydist_grantsomission_test.go`, which folds a post-rotation answer with
+the epoch-1 grants withheld). Two DIVERGENCES from the browser, both narrowing, and
+§4 forbids a conformance vector from depending on either. First, Go does not adopt
+the browser's THIRD state: a verified sealed card with no served owner CEK grant at
+all still reports `ok=false` there (plain §11.13, gate inert), and FIRST EPOCH is
+not ported. Second, Go's exposure is smaller to begin with, because its keyring is
+derived from the LOCAL append-only log (`nostrProjectAllItems`, `cmd/rd/nostr.go`)
+rather than one live relay answer: a grant that was EVER synced stays, so the
+reachable case is a log that never received the earliest grants — a fresh `rd join`
+or clone whose sync only ever met an omitting or lossy relay, or the rotated-board
+case above.
+
+**The write path carries the other half** (`sealedItemCreatedAt`,
+`cmd/rd/confidential.go`): a sealed event must never be stamped BEFORE the cutover
+of the board it seals under, because rd's own bootstrap otherwise manufactures the
+TIME witness against itself — §16.7's `cutoverCreatedAt` stamps the CEK self-grant
+at `max(log)+1` so a same-second plaintext card is still grandfathered, one second
+AFTER the event that same command seals at `now`. That board then fails closed on
+every subsequent read, dropping the grandfathered history the stamp existed to
+preserve, with no relay misbehaviour anywhere.
+
+The floor therefore applies at EVERY sealed write site, not just card creation:
+§18.1 cards (kind 30302) and NIP-34 kind-1630 status events alike carry the `enc` /
+`cek_epoch` markers and the board coordinate, and `grantsWithheld` is KIND-BLIND, so
+an `rd claim` / `rd done` or a card-only edit racing `rd confidential enable` in the
+same wall-clock second poisons the board exactly as a create would. Note the status
+event carries the board coordinate as its SECOND `a` tag — the first is the card's
+own `30302:<signer>:<itemID>` — which is why `boardCoordOf` scans every `a` tag
+rather than reading the first (a reader that read only the first would silently
+exempt every status event from the TIME witness). A create is armed by default
+because a new item's drift scope is empty and so stamps at `now`, while a REPUBLISH
+stamps at `max(item scope)+1` and collides only when the log holds activity newer
+than that item's own last event; the three sites are witnessed independently by
+`TestConfidentialEnableMigration`, `TestConfidentialEnableStatusChangeSameSecond`
+and `TestConfidentialEnableCardEditSameSecond` (`cmd/rd/confidential_test.go`), each
+red when its own site alone is reverted to the unfloored clock.
 
 **§11.14 Current epoch for writes.** `CurrentEpoch` returns the HIGHEST epoch the
-reader holds (`pkg/sync/keydist.go:162-176`). A member that missed a rotation
+reader holds (`pkg/sync/keydist.go:204-218`). A member that missed a rotation
 returns a stale epoch; the owner always holds the true current one
 (`:105-109`).
 
@@ -1459,7 +1500,7 @@ usual cause — a CEK epoch whose grant no longer exists (§16.10).
 **§16.10 A CEK-bearing grant occupies a slot per epoch.** `DeriveBoardKeyring`
 scans ALL historical grants rather than latest-wins, so "a member keeps the
 old-epoch CEKs it was given, so historical reads survive"
-(`pkg/sync/keydist.go:189-192`). For that to hold on a RELAY and not merely in a
+(`pkg/sync/keydist.go:231-234`). For that to hold on a RELAY and not merely in a
 local append-only log, each epoch needs its own addressable slot — a relay keeps
 only the newest event per `(kind, pubkey, d)`. So a grant carrying a wrapped CEK
 is addressed `d = "<boardD>:<grantee>:e<epoch>"`, while a grant with no key
@@ -1471,7 +1512,7 @@ the identical relay-retention reason — see §12.10 (ready-55f).
 Splitting the slot is safe because nothing reads this `d` for meaning: authz
 replay orders latest-per-GRANTEE by `(created_at, id)` and never inspects it
 (`deriveGrants`, `pkg/sync/rolegrant.go:511`), and `DeriveBoardKeyring`
-(`pkg/sync/keydist.go:193`) selects on the `a` board coordinate plus the `p`
+(`pkg/sync/keydist.go:235`) selects on the `a` board coordinate plus the `p`
 grantee tag. The `d` is a relay retention key and nothing more — so a revoke still
 supersedes every earlier grant for that grantee regardless of which slot each one
 occupies.
