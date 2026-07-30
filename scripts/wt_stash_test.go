@@ -184,6 +184,42 @@ func TestStashGuard_RawStashApplyIsNotBlockedButWarnsLoudly(t *testing.T) {
 	}
 }
 
+// TestStashGuard_ApplyBySHAStillWarns_ButWtStashStaysSilent pins the exemption
+// boundary for the detection hook. `git wtstash` must not warn about its own
+// internal `git stash apply <sha>` — it is the safe, per-worktree path — but a
+// hand-typed apply of a shared entry BY SHA must still be loud. An earlier
+// version exempted any command line containing a 40-hex object id, which
+// silenced exactly the hazard the hook exists to surface. The only exemption
+// is now the RD_STASH_GUARD_INTERNAL env var that wt-stash.sh exports.
+func TestStashGuard_ApplyBySHAStillWarns_ButWtStashStaysSilent(t *testing.T) {
+	base := setupBaseRepo(t)
+	wtA := filepath.Join(t.TempDir(), "wt-a")
+	mustAddWorktree(t, base, wtA, "work/a")
+	seedPreGuardStashEntry(t, wtA, "sibling agent's work\n", "sibling wip")
+	mustInstallGuard(t, scriptsDir(t), base)
+
+	sha := strings.TrimSpace(mustGit(t, wtA, "rev-parse", "refs/stash"))
+	out, err := gitOut(wtA, "stash", "apply", sha)
+	if err != nil {
+		t.Fatalf("apply by sha should succeed (unblockable): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ready-f75 stash guard: WARNING") {
+		t.Fatalf("a hand-typed `git stash apply <sha>` of a shared entry must still warn, got:\n%s", out)
+	}
+
+	// The safe path must stay silent through a full push/pop round trip.
+	mustGit(t, wtA, "reset", "--hard", "-q", "HEAD")
+	mustWriteWork(t, wtA, "my own work\n")
+	pushOut := mustGit(t, wtA, "wtstash")
+	popOut := mustGit(t, wtA, "wtstash", "pop")
+	if strings.Contains(pushOut+popOut, "ready-f75 stash guard: WARNING") {
+		t.Fatalf("git wtstash must not warn about its own internals:\npush: %s\npop: %s", pushOut, popOut)
+	}
+	if got := mustReadWork(t, wtA); got != "my own work\n" {
+		t.Fatalf("wtstash round trip lost the work: %q", got)
+	}
+}
+
 // TestStashGuard_RawStashPopIsNotBlockedButWarnsLoudly covers the exact verb
 // from the 2026-07-29 incident, raw. pop applies BEFORE it drops, so no hook
 // runs before the working tree changes and it cannot be prevented. What must

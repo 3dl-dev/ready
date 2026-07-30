@@ -59,15 +59,14 @@ case "$verb" in
   *) exit 0 ;;
 esac
 
-# `git wtstash` applies by explicit SHA, never by stash@{N}. A bare
-# apply/pop (or one naming stash@{N}) is the shared-stack path.
-if [[ "$verb" != *"stash@{"* ]]; then
-  # Reject the explicit-SHA form used by wt-stash.sh: `stash apply --index
-  # --quiet <40-hex>`.
-  if [[ "$verb" =~ [0-9a-f]{40} ]]; then
-    exit 0
-  fi
-fi
+# NOTE: `git wtstash` is exempted solely by RD_STASH_GUARD_INTERNAL above,
+# which is measured to reach this hook (git passes its environment through to
+# hooks; verified for `git wtstash`, and confirmed unset for an ordinary
+# `git add`). An earlier version ALSO exempted any invocation whose command
+# line contained a 40-hex object id, on the theory that only wt-stash.sh
+# applies by explicit SHA. That was redundant and it was a hole: it silenced a
+# hand-typed `git stash apply <sha>` against a shared entry, which is exactly
+# the hazard this hook exists to surface.
 
 {
   echo "ready-f75 stash guard: WARNING — you just applied from the SHARED stash stack."
