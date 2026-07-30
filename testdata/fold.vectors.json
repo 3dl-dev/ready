@@ -1,7 +1,7 @@
 {
-  "version": 2,
+  "version": 3,
   "spec": "docs/design/board-fold-spec.md",
-  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they are NOT bare JSON numbers.",
+  "note": "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold (pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they are NOT bare JSON numbers. A vector whose `options.keyring` is non-null does NOT receive its confidential-board key material as data: it names a reader SECRET plus a board coordinate, and the client MUST derive the reader's CEKs and the board cutover from that vector's own owner-signed kind-39301 grants (spec §11.10-§11.14) and wire the one derived keyring into BOTH fold inputs (decryptor and encrypted-board set). Such a vector also carries `expect.keyring`, which asserts the derived cutover and the current write epoch directly — the latter has no item-level consequence on a read. `options.keyring` is never combined with `options.decryptor` / `options.encrypted_boards`.",
   "timestamp_encoding": "expect.items[].created_at and expect.items[].updated_at are unix-nanosecond int64 values encoded as DECIMAL STRINGS (e.g. \"1700000000000000000\"), not bare JSON numbers. Parse them with BigInt(field), never Number(field) or a generic JSON number parser: JavaScript's Number cannot represent an arbitrary 64-bit integer exactly (Number.MAX_SAFE_INTEGER = 2^53-1 = 9007199254740991), and this field's declared type (arbitrary int64 unix nanoseconds) is not restricted to values that happen to survive that. See board-fold-spec.md §4.8.",
   "keys": [
     {
@@ -44,7 +44,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
       "events": [
@@ -174,7 +175,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -287,7 +289,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -416,7 +419,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -544,7 +548,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -680,7 +685,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -872,7 +878,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1026,7 +1033,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1184,7 +1192,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1339,7 +1348,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1455,7 +1465,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1603,7 +1614,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1757,7 +1769,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -1996,7 +2009,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2108,7 +2122,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2197,7 +2212,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2409,7 +2425,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2663,7 +2680,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2761,7 +2779,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -2920,7 +2939,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3093,7 +3113,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3263,7 +3284,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3381,6 +3403,904 @@
       }
     },
     {
+      "name": "gate_open_projects_a_resolvable_gate",
+      "spec_clauses": [
+        "9.1",
+        "9.6",
+        "13.10",
+        "13.3",
+        "13.5",
+        "4.1",
+        "5.1",
+        "5.6",
+        "6.5"
+      ],
+      "note": "`rd gate` publishes a card revision carrying gate/waiting_type=gate/waiting_on plus a kind-1630 status event whose reason IS the description (§22.1). §9.1 then makes the WRITER re-read its own projection and refuse to report success unless the fold produced gate_msg_id != \"\" AND status in {waiting, blocked} — so those two are not incidental output here, they are the open's success condition, and they are what §13.10 needs to put the item in the gates view. gate_msg_id is the WINNING card's event id (§9.6): there is no gate event, and even the writer learns the id from the fold. waiting_since is derived from updated_at, never written (§22.5). A client that projects the gate but leaves gate_msg_id empty renders an escalation `rd gates` cannot see and `rd approve` cannot resolve. The gating card is a REPUBLISH and carries \"created\": t0 (§5.6), so created_at stays at the item's true creation time while updated_at moves to the gate — gating an item does not make it look new.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "ec517d06eff6511aee140c52c236e7ced9cb0bbfb63ca662769a4c683851f181",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v45"
+            ],
+            [
+              "title",
+              "Needs a ruling"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "597aa83b92f3b4eb4205dd425ebc177726fb565e8d816a228d6592d4784b4a8892f1dfb5c38c20db0937e4e41466d9483eda1a2d0b3fea01b01110ad3bd5d577"
+        },
+        {
+          "id": "4ae06c27698532f7821281cf4f68e5e4da786465632c43937e52c4b147440f91",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v45"
+            ],
+            [
+              "created",
+              "1700000000"
+            ],
+            [
+              "title",
+              "Needs a ruling"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "waiting"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "need a design ruling"
+            ]
+          ],
+          "content": "",
+          "sig": "feb53c31b9af50299371ffef81944b0a6fcb53400283ac4fb9b30cbb3e0240e6564636f56c1f5ba18190316cf9b7d89c6e5a6aa92970b75d34baac98b8844e80"
+        },
+        {
+          "id": "a74ef663d9db15e8bc90cdd26cc6b7ab652a7c6b6a133df59a10dd60660fbf90",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v45"
+            ],
+            [
+              "d",
+              "ready-v45"
+            ],
+            [
+              "status",
+              "waiting"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "need a design ruling",
+          "sig": "14ef39793e1c87bd4ff49e418f0fe6cb4fdf0808255c13280821c816ae59885580b896ceb00e298449a388ea25bdf8952a944e75e83448a8e4e4c8f4d7a773d6"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "gate": "design",
+            "gate_msg_id": "4ae06c27698532f7821281cf4f68e5e4da786465632c43937e52c4b147440f91",
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "waiting",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "need a design ruling"
+              }
+            ],
+            "id": "ready-v45",
+            "msg_id": "4ae06c27698532f7821281cf4f68e5e4da786465632c43937e52c4b147440f91",
+            "priority": "p1",
+            "status": "waiting",
+            "title": "Needs a ruling",
+            "type": "task",
+            "updated_at": "1700000100000000000",
+            "waiting_on": "need a design ruling",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "waiting_type": "gate"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v45"
+          ],
+          "gates": [
+            "ready-v45"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v45"
+          ],
+          "ready": [
+            "ready-v45"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "gate_approve_clears_every_gate_field",
+      "spec_clauses": [
+        "9.2",
+        "9.8",
+        "9.4",
+        "6.5",
+        "5.1",
+        "5.6",
+        "13.4",
+        "13.10"
+      ],
+      "note": "The full open-then-approve log. The approving card carries s=active and NONE of gate / waiting_type / waiting_on (§22.2), so §9.8's no-declared-gate branch clears waiting_on, waiting_type, waiting_since AND gate_msg_id, and §9.4 has nothing to promote — the item is active, not waiting. `gate` is empty for the same reason the others are: it is a card tag and the winning card no longer carries it. Both history rows survive the resolution (§6.5), so the ruling is auditable after the gate is gone; §22.4 warns that approve and reject are distinguishable ONLY by this waiting -\u003e active transition, since there is no resolution tag on the wire. The gates view is empty: a client that kept the earlier card's gate fields, or cleared the status alone, would still be showing a resolved escalation as pending. The approving card carries \"created\": t0 like every republish (§5.6), so resolving a gate does not reset the item's age either.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "7b1858306843d449ca2c66984b6744cba6aaac3fd5b829473ee3ccb1f3a2b519",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v46"
+            ],
+            [
+              "title",
+              "Approve me"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "waiting"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "need a ruling"
+            ]
+          ],
+          "content": "",
+          "sig": "21314369b82a72c2547fe5d020c073cda8c3c23368375744977c92adea2bc6543c83bb3c5bb121634625cd532e50935dbe8b1ff4a5812614881c23509b0a30b5"
+        },
+        {
+          "id": "b6aa0392b3c3ad2fb4dcddc350c11d339c9ac35920b90f3580878a8643cf5752",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v46"
+            ],
+            [
+              "d",
+              "ready-v46"
+            ],
+            [
+              "status",
+              "waiting"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "need a ruling",
+          "sig": "ebce7a1b57e433e111da2a1edd6e52fd2e1a9c8850fa11b49b0dcb5bc7148108ece72830f73a84c6c002998711a9418b5ea6ba44b01a3d44f16f497283a4edb0"
+        },
+        {
+          "id": "63057edf1540715c00112e38e78302e921e3389d5a66ade0c21e206ea630a803",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v46"
+            ],
+            [
+              "created",
+              "1700000000"
+            ],
+            [
+              "title",
+              "Approve me"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "07100b912b76dff26e20d81a837b63c25ad874094dea4101ce3f1aaa0a4d19f2b05b06ff3a5c9b6e6dc74fac184717acf29f08472db8ec593aa464ae3a54bbd5"
+        },
+        {
+          "id": "960a106695703dcba62515ca701289e656640e38b8cad28b26ff7d0be83dd815",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v46"
+            ],
+            [
+              "d",
+              "ready-v46"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "looks good",
+          "sig": "099df6c9f668fb8df3145b7e2514e5bf18fcc2a17d9a52fa07211de3f4f0cfedfad8f904b41cbd84328cd1d78e039c83ba4486faa9ae18646fba16a94dc166e2"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:13:20Z",
+                "from_status": "",
+                "to_status": "waiting",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "need a ruling"
+              },
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "waiting",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "looks good"
+              }
+            ],
+            "id": "ready-v46",
+            "msg_id": "63057edf1540715c00112e38e78302e921e3389d5a66ade0c21e206ea630a803",
+            "priority": "p1",
+            "status": "active",
+            "title": "Approve me",
+            "type": "task",
+            "updated_at": "1700000100000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v46"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v46"
+          ],
+          "work": [
+            "ready-v46"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gate_approve_under_blocking_clears_the_gate_not_the_block",
+      "spec_clauses": [
+        "9.2",
+        "9.8",
+        "8.4",
+        "9.9",
+        "5.1",
+        "5.6",
+        "13.5",
+        "13.10"
+      ],
+      "note": "§9.2 resolves a gate on a BLOCKED item without unblocking it first — the ruling is often exactly what unblocks the chain. The approving card publishes s=active, and the fold overrides it back to `blocked` because ready-v47a is still live (§8.4, §9.9: the dep pass runs before the gate pass). The gate fields clear anyway (§9.8), so the item leaves the gates view while staying in pending: approving answered the question, it did not remove the dependency. The published `active` survives in history as the ruling's audit row even though it is not the item's status — history records what was WRITTEN, status is DERIVED.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "d02d06b9021b21d004aefd8c5791b21094061887cfab2d5a461ff25beb60cf5b",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v47a"
+            ],
+            [
+              "title",
+              "Blocker"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "77292f48e597e8a9b5ea32efd988dca659275498463b28f0f55bf330a0c77e98d6a6651e1d6afddb1d9f085776158ae20130b9ecb7c0e12aa9f7dc7065834d7e"
+        },
+        {
+          "id": "6a13087215794c3370ec64a810285576dad0a18b40a9138d5907a8e37016b800",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v47b"
+            ],
+            [
+              "title",
+              "Blocked and gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "waiting"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "i",
+              "ready-v47a"
+            ],
+            [
+              "gate",
+              "budget"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "spend approval"
+            ]
+          ],
+          "content": "",
+          "sig": "3d66008c05e56ed373b18ca50af4f4da715a6aa04e85f5ce5cdbd8cd3dec3c7d438ee138d3e1a26308334d7be7b0ad4aba513470c48a17f0b3e00a07c6e75f90"
+        },
+        {
+          "id": "d54442791c164ad1cdcc795a310a3ae5229d037f4f3acb576f647b0a29174e86",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v47b"
+            ],
+            [
+              "created",
+              "1700000000"
+            ],
+            [
+              "title",
+              "Blocked and gated"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p0"
+            ],
+            [
+              "priority",
+              "p0"
+            ],
+            [
+              "itype",
+              "decision"
+            ],
+            [
+              "i",
+              "ready-v47a"
+            ]
+          ],
+          "content": "",
+          "sig": "46c358387836c7a67e2b5d90f232596f28bf2931a513b7ef4a58261029533490eb54a83bd09d825e7eabef028ebea6961ef43989bb1cb38987ed90e77bd24278"
+        },
+        {
+          "id": "776cbb43cdcdd074abb959ceeece50d0c0cca38de64d21155b6753c180c68118",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v47b"
+            ],
+            [
+              "d",
+              "ready-v47b"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "spend approved",
+          "sig": "34c9242c9e827b26439af160cfe33dd76d3e5fbe89f699db0c57ca928896ae90537a0abb73197d93cab81f45b5b84a9e1cbac740883aded8657b6d5008965499"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "blocks": [
+              "ready-v47b"
+            ],
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v47a",
+            "msg_id": "d02d06b9021b21d004aefd8c5791b21094061887cfab2d5a461ff25beb60cf5b",
+            "priority": "p1",
+            "status": "active",
+            "title": "Blocker",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          },
+          {
+            "blocked_by": [
+              "ready-v47a"
+            ],
+            "created_at": "1700000000000000000",
+            "for": "",
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "",
+                "to_status": "active",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "spend approved"
+              }
+            ],
+            "id": "ready-v47b",
+            "msg_id": "d54442791c164ad1cdcc795a310a3ae5229d037f4f3acb576f647b0a29174e86",
+            "priority": "p0",
+            "status": "blocked",
+            "title": "Blocked and gated",
+            "type": "decision",
+            "updated_at": "1700000100000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v47a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v47b"
+          ],
+          "ready": [
+            "ready-v47a"
+          ],
+          "work": [
+            "ready-v47a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gate_reject_keeps_the_gate_open",
+      "spec_clauses": [
+        "9.3",
+        "9.6",
+        "6.5",
+        "13.10",
+        "13.5",
+        "4.1",
+        "5.1",
+        "5.6"
+      ],
+      "note": "Rejecting is not a state transition (§9.3, §22.3): the card comes back unchanged and the status event re-affirms `waiting`, producing a SELF-TRANSITION history row (waiting -\u003e waiting) carrying the rejection reason. Every gate field survives and the item stays in the gates view, so the escalation can be ruled on again. Note gate_msg_id MOVED to the republished card's id: §9.6 binds the gate identity to the winning card, so it changes on every republish — a client that cached the old id and used it as a stable gate handle would be resolving a gate that no longer exists. Contrast gate_approve_clears_every_gate_field, whose events are the same shape and differ only in the status value and the dropped tags (§22.4): there is no resolution tag to distinguish them by.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "211d2e1abcf6f08d7ba05b7d90592ccf3436ea1c6ffb078b58064c6961cef0f9",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v48"
+            ],
+            [
+              "title",
+              "Reject me"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "waiting"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "need a ruling"
+            ]
+          ],
+          "content": "",
+          "sig": "6687a9adbf91c6b9e0284e7611e9baa256bed2e81ad2ac9662aca1f8676e68c3190dc66db4578b1a98d37815f2e47b47948bffee8b66fc13891d6742de0241b7"
+        },
+        {
+          "id": "1a9b85ea7b7489bc3e5ea96fb6a0590dfc2c9caff233130923a8725af1789f56",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v48"
+            ],
+            [
+              "d",
+              "ready-v48"
+            ],
+            [
+              "status",
+              "waiting"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "need a ruling",
+          "sig": "f87bfde8b3748ba3cbab61cc40dcdb29626976e5883ad3c7d9bc838a3cc0e885f2d1292536b64ceabe8481f7f5fb5e4399b5a134d8e6e5b8ed76a9a21924b3ae"
+        },
+        {
+          "id": "4347be7a59b4e52dd66a1dc39bea19ac33a1ef6425ecdd409b30d8cc22e2d6ce",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v48"
+            ],
+            [
+              "created",
+              "1700000000"
+            ],
+            [
+              "title",
+              "Reject me"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "waiting"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "gate",
+              "design"
+            ],
+            [
+              "waiting_type",
+              "gate"
+            ],
+            [
+              "waiting_on",
+              "need a ruling"
+            ]
+          ],
+          "content": "",
+          "sig": "c07c1093c83e535b446244c4b5339fd9ca27a83def85f9e1cb247291d9299a8ef85da99a7488e1afd0b09d555b96e9f652ba856ac9c611bbb959aa8d9e2464af"
+        },
+        {
+          "id": "5d5ff554e9ea02fe09fea940613d1cfd77b491cdb8a115382c9ea7cba2118bba",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000100,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready-v48"
+            ],
+            [
+              "d",
+              "ready-v48"
+            ],
+            [
+              "status",
+              "waiting"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "not yet",
+          "sig": "0aa407b673252c681b8c8d7ca453eb7f56a2d9555a5afa2e6e61894c8c2d24ef39d5f5919ab3a1fe96d44ac463972488d6ca403de4fc18be91b2492eab647260"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "gate": "design",
+            "gate_msg_id": "4347be7a59b4e52dd66a1dc39bea19ac33a1ef6425ecdd409b30d8cc22e2d6ce",
+            "history": [
+              {
+                "timestamp": "2023-11-14T22:13:20Z",
+                "from_status": "",
+                "to_status": "waiting",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "need a ruling"
+              },
+              {
+                "timestamp": "2023-11-14T22:15:00Z",
+                "from_status": "waiting",
+                "to_status": "waiting",
+                "changed_by": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                "note": "not yet"
+              }
+            ],
+            "id": "ready-v48",
+            "msg_id": "4347be7a59b4e52dd66a1dc39bea19ac33a1ef6425ecdd409b30d8cc22e2d6ce",
+            "priority": "p1",
+            "status": "waiting",
+            "title": "Reject me",
+            "type": "task",
+            "updated_at": "1700000100000000000",
+            "waiting_on": "need a ruling",
+            "waiting_since": "2023-11-14T22:15:00Z",
+            "waiting_type": "gate"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v48"
+          ],
+          "gates": [
+            "ready-v48"
+          ],
+          "my-work": [],
+          "overdue": [],
+          "pending": [
+            "ready-v48"
+          ],
+          "ready": [
+            "ready-v48"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
       "name": "issue_1621_does_not_fold",
       "spec_clauses": [
         "2.4",
@@ -3395,7 +4315,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3503,7 +4424,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3635,7 +4557,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3801,7 +4724,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -3951,7 +4875,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -4109,7 +5034,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -4239,7 +5165,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -4480,7 +5407,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -4694,7 +5622,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -4873,7 +5802,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -5054,7 +5984,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -5363,7 +6294,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -5672,7 +6604,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -5899,6 +6832,472 @@
       }
     },
     {
+      "name": "grant_binding_requires_the_full_board_coordinate",
+      "spec_clauses": [
+        "12.2",
+        "12.1",
+        "12.8",
+        "3.4",
+        "12.4"
+      ],
+      "note": "Three owner-signed, cap-valid role=contributor grants; only ONE names this board's full coordinate 30301:\u003cowner\u003e:ready. The decoys are each wrong in exactly one component and right in the other — same owner but d=\"other-board\", and d=\"ready\" but a different board author — so the only possible reason to reject them is §12.2's requirement that BOTH match. Neither grantee enters the level map, so §12.8/§3.4 never admits them and ready-v49b and ready-v49c produce NO items; ready-v49a, authored by the correctly-bound grantee, does fold, so the two absences are about binding and not about trust wiring. Loosening either half is a capability leak: match on the owner alone and one project's members can write to every other project that owner runs; match on `d` alone and any stranger who names their board \"ready\" can grant themselves write access to yours.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "ec7ebe55f7e742cdad7e61be8ab7f6c69570c9d862f76abac124532358c3da76",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ]
+          ],
+          "content": "owner admits the agent to THIS board",
+          "sig": "1e7e4c62d15c71fc6f2924235afbfd9a0dbe56e874e519a26cfb299996fe1e5134f2deea12d8b2329d0725c368a644e4e089ba4dd5a6c5d58cc8d500ced35978"
+        },
+        {
+          "id": "3919cda7239620e4ad6fb5ff72140f775e8f3ab19cbe2c251444434f5fd548f5",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999800,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "other-board:2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+            ],
+            [
+              "p",
+              "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:other-board"
+            ],
+            [
+              "role",
+              "contributor"
+            ]
+          ],
+          "content": "owner admits the outsider to a DIFFERENT board",
+          "sig": "9586b09862799975b60288494292d8468bdbd2b375e2f81831b245a32facc33aa6907f682a41b50b8383bf92d084d5d3c19f3c0d90882cb4b5691a7ed32a8f06"
+        },
+        {
+          "id": "075cc3acb517d28e4cb306b29435e99f01af963e6c013e9433dec4ee61c5448c",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ]
+          ],
+          "content": "a grant on ANOTHER owner's board of the same name",
+          "sig": "a3634de3f2587b2934d82d2d429ed7b03adc9717a114478dc8ec5d8dc7c2da6715edfc171e4c887b4821aed6903fcaa8a7c67cfb2ab4f63dda6de311926beaf7"
+        },
+        {
+          "id": "df32d750bd8887e553b09e5e9ea7412c3bf5020ceda3953cd709f8677cf1cd0f",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v49a"
+            ],
+            [
+              "title",
+              "authored by the correctly-bound grantee"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "d3b6906d3c3168b4c406d7e43c005632ca62b952a9a41929f7617ce90d866569065171c497228fcf04fae62908b5686e8ea3488a10db4b23e1c2bc1fbb863ecd"
+        },
+        {
+          "id": "9c3edb4b60c9cbdbd8b59167661c353bfb9335d9602ea0f4ec28494d2f2f8053",
+          "pubkey": "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+          "created_at": 1700000100,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v49b"
+            ],
+            [
+              "title",
+              "authored on the strength of another BOARD's grant"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "93223f9dacf2061c26b5f9e25f9e4d14d4bfee43f629ed2f16c95071c358fb606fbc79f93ea4178674adbeb435def29227e911ee96953d3f11eb4aad162abccd"
+        },
+        {
+          "id": "e4ae71870c5db4ddaf7a9d4f6fee928181db8c27e242353707976937472ad352",
+          "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "created_at": 1700000200,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v49c"
+            ],
+            [
+              "title",
+              "authored on the strength of another OWNER's grant"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "6486f3975c12c39e2493f0fd781ac8094e63d219bc361b1b8643d0d5776c7cc71dd6a6e4d1cf12834467181bf9a3bb405440a454215ed62ed83ac896cd9cf00e"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1700000000000000000",
+            "for": "",
+            "id": "ready-v49a",
+            "msg_id": "df32d750bd8887e553b09e5e9ea7412c3bf5020ceda3953cd709f8677cf1cd0f",
+            "priority": "p1",
+            "status": "inbox",
+            "title": "authored by the correctly-bound grantee",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v49a"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v49a"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
+      "name": "grant_replay_answers_read_trust_and_levels_consistently",
+      "spec_clauses": [
+        "12.9",
+        "12.8",
+        "12.3",
+        "6.2",
+        "6.4",
+        "3.5"
+      ],
+      "note": "One grant set, one replay, two consumers, OPPOSITE answers about the SAME key — which is what §12.9 buys by putting `deriveGrants` behind all of them. The agent is granted contributor and later revoked. Read-trust KEEPS it (§12.8 retains revoked grantees at level 0 precisely so their past events stay admissible), so ready-v50b — its own card, authored before the revoke instant — folds. The level map simultaneously reports 0 (§12.3), below the §6.2 threshold of 2, so its status event on ready-v50a is ignored and the OWNER's item stays `inbox` with an EMPTY history: the event was admitted by §3.5 (t0-150 is before the revoke at t0-100) and then discarded for want of authority, which is the discrimination this vector exists for. Two separate replays get exactly one of these wrong: drop revoked keys from read-trust and ready-v50b disappears; treat read-trust as authority and a decommissioned machine closes items it does not own.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": null
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "afd8b4c44f19233e5fe5648f6f31ecf0d71521b6d6381eec62f7bbee94e135fd",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ]
+          ],
+          "content": "owner admits the agent machine",
+          "sig": "36ee0654199f7cdb569d7ea58ecbd74469726e8fdc48e3b92d3f8a4a9b5e37cecadc64792d1798dc3190f7067737480349e7bac37111da76ba66485eaf28c89e"
+        },
+        {
+          "id": "aa5233208f1bfea1c823aa153115091263dcf883b970b38fa82612f3031d1c51",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999750,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v50a"
+            ],
+            [
+              "title",
+              "owner-authored item"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "f39d20628dccbd9ccfe6c0459ec19787b8eda66bf153eb51f208dea277f99003882aa24c6fa38de9efce30bd837bbbde7bdbc1b51b781370a8d2891a836f8132"
+        },
+        {
+          "id": "413df260720fa32eb1c83afa65c52655ad269d871c47be911f99e2f0f33b2ccf",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1699999800,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v50b"
+            ],
+            [
+              "title",
+              "authored by the agent before its revoke"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "inbox"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "1c9f1b58b1043047cf02ab395c49223cd24e97ed4376bbe4f771c1ef5ba820cb78cb541f741e8143b3a9648166b59e5bedb8a8226a5bcbfdd88c4929ff5a777b"
+        },
+        {
+          "id": "1f2bdfccddc439e565b3a0e80cdbf26a517c207eede9c4b53453512b3d4530c9",
+          "pubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+          "created_at": 1699999850,
+          "kind": 1630,
+          "tags": [
+            [
+              "a",
+              "30302:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:ready-v50a"
+            ],
+            [
+              "d",
+              "ready-v50a"
+            ],
+            [
+              "status",
+              "active"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ]
+          ],
+          "content": "agent claims an item it does not own",
+          "sig": "c6df719938af94e481447ab1c5c35b2a7fa28b3cc1ed9da3027830dc741feb160e9ab4b0c40d9bced49aa01c20db7f0a6fbf47f41fd737ebe0a6ee9360710aa4"
+        },
+        {
+          "id": "ab324fa897f3507711910f273f2344f3917132b36327a370ff757b66c5350c75",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "revoked"
+            ]
+          ],
+          "content": "machine decommissioned",
+          "sig": "0e6c7ea1063d3d58ae94a5dc692c18f0a219727232051253b16a12369ec1396f94849b4e56450a7c0d70ca99a884e27b0cfc7c9930e5df33d55f8307ff04d2eb"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1699999750000000000",
+            "for": "",
+            "id": "ready-v50a",
+            "msg_id": "aa5233208f1bfea1c823aa153115091263dcf883b970b38fa82612f3031d1c51",
+            "priority": "p1",
+            "status": "inbox",
+            "title": "owner-authored item",
+            "type": "task",
+            "updated_at": "1699999750000000000"
+          },
+          {
+            "created_at": "1699999800000000000",
+            "for": "",
+            "id": "ready-v50b",
+            "msg_id": "413df260720fa32eb1c83afa65c52655ad269d871c47be911f99e2f0f33b2ccf",
+            "priority": "p1",
+            "status": "inbox",
+            "title": "authored by the agent before its revoke",
+            "type": "task",
+            "updated_at": "1699999800000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v50a",
+            "ready-v50b"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v50a",
+            "ready-v50b"
+          ],
+          "work": []
+        }
+      }
+    },
+    {
       "name": "grant_level_two_confers_status_authority",
       "spec_clauses": [
         "6.2",
@@ -5915,7 +7314,8 @@
         "maintainers": null,
         "pinned_board": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -6138,12 +7538,13 @@
               "cutover": 1699999800
             }
           ]
-        }
+        },
+        "keyring": null
       },
       "identity": "",
       "events": [
         {
-          "id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
+          "id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6193,11 +7594,11 @@
               "1"
             ]
           ],
-          "content": "bZ1HJQjLYwS3Ki5V0kb2ngtaz0pCJ099eYuAKszK6tSjFpO6OHdMdcU56Z3Tc8SF4PWAMFMI92kTie5IMKtw6Gsc0lQNg3cbRUPe8fuBONytuTDfiqw0RoeuJ1FR5XnHhBPn3x9HzZu6eQfGLqafdKA5+RaWmZTUkCwcYMlJQpbv",
-          "sig": "89f9a7c7a3ec014b9fde6d78205a66a49758df01abf98ea6f6b375f970a2c22f5601af1172af06b3eb7a1817a63233ebd8ebf36a3feb20486cb61402e02d4026"
+          "content": "JWKST6cOhtAXfBYDt4I3CrL7INAfpblXlsrLgjFybcCIb5POBhxxMOLT6W9dLc6pTLihtvvcyooWDuFpa+n24n3s2ErskrJAv65buDPI+ksgNP+vKX4BwDo0daZX6Cv9WxC8bJZ1DxiokVQEd4PXnvQClnsmnPNnvTnTS81AGVws",
+          "sig": "c85791630845dbcf1f61f93b690520979ae54eaae824c9cfba22e2e0e9745a6a313abc465264051121ce04df3d278eaebb1b528f4ec130f818b2e371cca27666"
         },
         {
-          "id": "062d7b934725bb65578dcd9f07c8639b51ea84e61a0116f0e04b909837e37dc1",
+          "id": "165bad2f33674afd5638d8f354a630003165380d11fa705ee26f9431bdfef1d7",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6227,8 +7628,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "8ettj249ttQbZvUQIgnAG4exlIWYDuqEo5Ntp7wA8zz/+G36HeN+Cik3lPFJgQqWh0KBeimw",
-          "sig": "0a8a36824c4a09acf632e8a69723eee6b5aea5aa5863f3725aedfe4775a0f3b6e681aa639b0c820194d1e71ea76e2cc11bf9a9395146d8ffeaac995afc7b55b2"
+          "content": "KrIco3ARsPD8rWwjx8IoNpjkMAOISOfVyaUxA8q6BMwnYEevpAwmQM8QKiDYXvXaUk0aUPVv",
+          "sig": "7d9e95a52353c3ae493ec0ccf9a44d29ed6af78fcc726a35137e614e70d8455c97eadbe2dab1c336c66e13e1969670c8d084f1faff5c2d93ef1ff0f48b335366"
         }
       ],
       "expect": {
@@ -6239,7 +7640,7 @@
             "description": "sealed context",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
+            "gate_msg_id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6253,7 +7654,7 @@
             "labels": [
               "security"
             ],
-            "msg_id": "3471a96794f5ce5fc18abd9b897b87346d067588c2d9367e91dfa51bb664f83e",
+            "msg_id": "7c8a03ac55b2cc2a5c8431d4a83bc059441e2e6a588fcf40882ce7c9f96c9a7f",
             "priority": "p0",
             "status": "waiting",
             "title": "sealed title",
@@ -6316,12 +7717,13 @@
               "cutover": 1699999800
             }
           ]
-        }
+        },
+        "keyring": null
       },
       "identity": "",
       "events": [
         {
-          "id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
+          "id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6371,11 +7773,11 @@
               "1"
             ]
           ],
-          "content": "a4fWSEu3FKolWUgtjEy9z5TqwJHS15e/7qxx5bQSz+cmsotqijjvepM0cf1UQ6gkoGJgsJfqRSWBksJABz0FS8rWotCrOzXRxzhxuj1X0AOlpcTxdCXkaHfXOGzoIWJPIkZPxVlK8z05lX5w3rgO3DfuyQrHtk1hu6al0dhjgYg6",
-          "sig": "1977d5db7f99db6a2c7da2887964a6cbd02d426a70fa2a5bd1464ed3328c7c3c4eacadf077bee0e2e9501179478d82c89bce405c158db1081527d462cb5368ed"
+          "content": "IBZlin+qparPZriCH/ngrolKlaSmL9hwuR6MXNP1GlUeOrAwuGrqeq48LnaUW9EvV2SCY2V7H60BkO8q6IA/WbygRLglM16zDiZ3sOtCo/g92iIf7UU0oC3dfUqUUOALXvjfKHY6aQO4n7yAJ3dsBjFqjE45MK7jA16JIeBXqtyO",
+          "sig": "1266af4c4836413746362cd6262c901d665874f54cf3180c3a0353aedf4d39f1265bf4379b5d194b33d26e98a4a26a6f17dd61a0aec68aec11577c2353493598"
         },
         {
-          "id": "48fdef15337decf8e691be043772fcf3ece5b904f170253dcbfd6f840e12862d",
+          "id": "6d3b902e8deaf18ea8cd8a179495e4ddc97bc31c95a9afc1deee72e69268bc62",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6405,8 +7807,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "oRGVwDAesy3I5slZlEVZjjCjr5IVvSuPQeWiQ41sfMd4RexAEmRcJeYLuY7E4B6vi2uR7JKf",
-          "sig": "7c0284f4c38e10f1d33f61522dd634844f58392c3d3844bdc37b19ead59f16567e53a4aff38b922b09136010b96dcbbb4e83850b054157c1d78f7e66d20cb748"
+          "content": "l83izV0kgHNk1PFXMYUSQnFa8O3DB09J8c3FZtSQ+hLZX2G/ada98ARxQhUZq2et93OrY4Ux",
+          "sig": "5ae3e18c1fbe2f9a6eae4eb19f8242dc0de5c8463cbce6cbf4e7bdb0d3feac4cb46e1bc2a2b4525260a902c9645babea5dcb67fd1de14e2d65fe3d7d89b38bd9"
         }
       ],
       "expect": {
@@ -6417,7 +7819,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
+            "gate_msg_id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6431,7 +7833,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "478b839633eb3b60a29fe6509acc8603d0f59e9238f280c43eb2b68e4b530bad",
+            "msg_id": "7b08e36c6bfc904747387730aee646f930b5b59d2f40f6b79457f22936f7acd3",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -6484,12 +7886,13 @@
               "cutover": 1699999800
             }
           ]
-        }
+        },
+        "keyring": null
       },
       "identity": "",
       "events": [
         {
-          "id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
+          "id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6539,11 +7942,11 @@
               "1"
             ]
           ],
-          "content": "y6vr+QGM7i444rf0DQhE4RKhU0GAMPiSYZhrKhASpOGaAL0qu9yEXFo7RW4DQ/Q1JD50/fmrF//rPdPtiUMhmkEDXLOqxMjhP54M4fK4J4LCc9OVb8Ixn2wsluFw7fAkAT6KVqRTRsbyBQ0nj8W9UAb+2CPWmiqY3e+FaefQbETw",
-          "sig": "14badad5ca6f3fe854504c0807e16ceab668c71157ece7bc483825f67913f4c5e92ec4fa1ec8223cf2349a082a94fa650f9b7e7383a0b7770ca10b7ca1f5b189"
+          "content": "V1FMuY5jvFJ3j+AAp0hF2kjxc03JfFGqVcG25VYNhvjQEl8lou2kClYByVAqUTnAoz51rNpKLNVk9L9xA6fMKWcRgJMBbU3OkiyLF3K0sdQ0oO75xZOWEemn9osNyv///KjPKqVtQXf2rg8RFvhfPCAgOTekkgT3OgZtJNe4dqY9",
+          "sig": "b05cbc41a9c45aa5b2faec0b81ea5a7a0802cc073aad2a0d29a7ca70a2b003e93e8bb1aa1222f2a29c20067d64e99d9d8ac036edc163cb51b39ecfd41fe2e39a"
         },
         {
-          "id": "dd8f3b2a33b171976686450e3601e263a3cd51fa16a4b297c333c2654f095382",
+          "id": "fd5ddd4d9aec7a35259f11435140679536e7a2eec9f095fab8352c88b312f531",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6573,8 +7976,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "2W7QMXsJJn1UPpGjkKdRxs7lIqJs4qX581RN+8gBXkb1o4YwuNqByEr3OeiAb2I3UZ0eavd4",
-          "sig": "14407c60beb55b34d2f72dbb62b8d3d72501f3e412775c8d77908de6a0a6020f2b56285f92e4ed8ce5901f3ca2f77af0ef82bf507ce8152f966799ce3b4c794a"
+          "content": "eImMv67nN2Cs6mvqEvCGLR6jVu1VYPTbQDpv1PfKsbw/xbmCDaBlmPJ+gkSFEBeER9XZIipP",
+          "sig": "20e187024044f25c590324daaf5169920613f4204052b5a49f80596b35b274af9ea84d9ca2879345bf4599e6082ae1beaca5bf13397816697163b15da41d5dd2"
         }
       ],
       "expect": {
@@ -6585,7 +7988,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
+            "gate_msg_id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6599,7 +8002,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "5e9d54e697a9e4f446726167d4d6dadee0d4d18659dda0ad10008f3afd606958",
+            "msg_id": "fd448170d5aac3fedd3ef0d812935454967e77686ee53b8f129840b7edac85a3",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -6660,12 +8063,13 @@
               "cutover": 1699999800
             }
           ]
-        }
+        },
+        "keyring": null
       },
       "identity": "",
       "events": [
         {
-          "id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
+          "id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000000,
           "kind": 30302,
@@ -6715,11 +8119,11 @@
               "1"
             ]
           ],
-          "content": "2Erx5GtoLY9JnHs0p5EpyAFUfr/OobjAVAA3hvSo/IYUwKZQ/TEtzIJD6sUZfWQOrHYXz/NLs7eEyIxESl6bFgrX4xQ=",
-          "sig": "afd41c4061064d585f8f6d3977cdcad2f60169a49dabbbc55c8a89b7720b77c25dd917b8e84051284ff4c2ec984c8083e63dd081afcc1528152c1ed6d9b824c9"
+          "content": "LYCllnpPGFtaKqPbjvArAQGMTizCCPWxUnW9Er+ynyxLpmZXGWG8x+cDdzYORG5lH+9O0Z9SUGCvWf2vOSWr+i0Q1pM=",
+          "sig": "41d8da60caf9f7671918cf7b4741abf7e9ff843c08d3a0e69174296cffa15d882bc021ce7035ed0ce7d126524c8ef6193cd36ac9b22dff3567b5ba6b85373393"
         },
         {
-          "id": "3c3263dd66aca74732fa4de5590d336e561b24783c86f4716b7cb88b090cd43f",
+          "id": "9fecb39354463522969682e5c51da225a71d6affb1d97a4459dcea7b705d8ddc",
           "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
           "created_at": 1700000100,
           "kind": 1630,
@@ -6749,8 +8153,8 @@
               "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
             ]
           ],
-          "content": "y7i7CBUfvZ59BDRxQjyj4/XbA+1UBJAolHD1GXDPVCWo0koEt+J+/5uj9V+4f3cIYHKlQuRT",
-          "sig": "f366e0fd4533b15193448e63fe0501004bd68d72ab431d195b74b98e59692ea0f6a653db86fd78bccdb428e67d25ac946b824370455016aef3a2dda8753d70c2"
+          "content": "Yf+4MptIHwMvhOzgweI1fLHU0hPqUR7lPyK9Jw7vtMpxAmBgRjfMaQ1uluFqovVAE4yZqtSY",
+          "sig": "ab8ff9b8c857c765b87f09bce42e1fa945d9925eedb041a4e574b13e918682f9b475cc18139265da71c426bb39eaac4e0658df21583c18215e9ccda7b76053ba"
         }
       ],
       "expect": {
@@ -6761,7 +8165,7 @@
             "description": "[encrypted]",
             "for": "",
             "gate": "design",
-            "gate_msg_id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
+            "gate_msg_id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
             "history": [
               {
                 "timestamp": "2023-11-14T22:15:00Z",
@@ -6775,7 +8179,7 @@
             "labels": [
               "96a8ae1399a7bf77b92c8d43a5ffe670147450ec40409a2c0957e5c8127828a5"
             ],
-            "msg_id": "e4c9231f83ea92c1d50271500960a8923d789207ca9c31b3bcb7338664d5cb58",
+            "msg_id": "2fd99bd45caee6b1508335f0c131a6529911fe1e91b12513d79083725f2edce6",
             "priority": "p0",
             "status": "waiting",
             "title": "[encrypted]",
@@ -6830,7 +8234,8 @@
               "cutover": 1700000000
             }
           ]
-        }
+        },
+        "keyring": null
       },
       "identity": "",
       "events": [
@@ -7014,6 +8419,705 @@
       }
     },
     {
+      "name": "keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
+      "spec_clauses": [
+        "11.10",
+        "11.13",
+        "11.6",
+        "11.7",
+        "11.3",
+        "12.1"
+      ],
+      "note": "The board's ONLY CEK-bearing grant is owner-signed, carries a genuine NIP-44 wrap of a real 32-byte key, and names cek_epoch 0. §11.10 rejects it outright — epochs are integers \u003e= 1 — so it contributes NEITHER a key NOR a cutover, and this vector asserts both halves because they fail in opposite directions. No key: ready-v51a, sealed under epoch 0 with exactly that CEK, must render the \"[encrypted]\" placeholder (§11.6 refuses to resolve a key the keyring never bound, §11.7 fails closed). No cutover: expect.keyring.confidential is FALSE, so the fold gate is inert and ready-v51b — plaintext, written AFTER the grant — folds in clear instead of being quarantined (§11.3). An implementation that accepted epoch 0 shows the opposite of both: it reads a card it must not, and it hides one it must show. §12.1 is the sibling half of the same guard — an UNPARSEABLE cek_epoch coerces to 0, landing in this same rejection rather than defaulting to a real epoch.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": {
+          "reader_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+          "board_author": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "board_d": "ready"
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "52e0f5ab1d15466ab17cb55c055bca0d14f407ad623548ac88cda7e089528b5b",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "AgUyy8Rw2lDnJs3faMoxx+SRhSbuy1p9L1CQ0Bh5qzHa5PQM8I0Msg3iAyJtFUUCYHjxtg0VVNpWyQiPg8cOlpPhe6CI0PJ8hyFBhes6XGsteh2TA6jXUQzozkO4l9o9WA9JFvWMrVmTTMM3/iQekhbZWNKscBVyJz0NRNi/u1sh/Ho="
+            ],
+            [
+              "cek_epoch",
+              "0"
+            ]
+          ],
+          "content": "epoch-0 key material",
+          "sig": "68ea827b285de6df6e55875323d8d360217ada8c248380e483b0ad313ae5b0e6dde1ee8bf579649dd174833b3c3784ddebc5a7dd30e80b7ba41f6212d3f6636d"
+        },
+        {
+          "id": "221f0adc9ff0bcfe3435bd0ff79054e05e20470c896c6c2e05b1d10bd0b22743",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999800,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v51a"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "0"
+            ]
+          ],
+          "content": "85Xs53+747PPTeofQs9w+2FL3xI72AeZo09JuhWluQrzUz+WpT7VwOeqF35RIOmnVn/560gCgx785HBoHgMZ8VAwbSgMIyK/48wXNFqCK7y9KLffaZZhvFGj+YXbGa6Tu0TeObfo7oEGDXhx",
+          "sig": "7e0b37dcf9446ca1c3f3a918c9a450ec5ba758f4264b47d39ca9c814498d6decd1298030dc72fd18eb7e495af894c26b11228e3c54ea8264dbe1ef618618a68c"
+        },
+        {
+          "id": "55d1c7d90efdb90bb0eb2df33b99d69d704bb3cfae8c5c097420bc502ca4b388",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v51b"
+            ],
+            [
+              "title",
+              "plaintext after the epoch-0 grant"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "40b4e2646fd46d0209a2ff30178841133478d5c64058644272594c8d2a7be7cd0524f28a9190ce426e7254e8ad477caf2e44cc614a6ebddb0e5773c12db5c4f1"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "context": "[encrypted]",
+            "created_at": "1699999800000000000",
+            "description": "[encrypted]",
+            "for": "",
+            "id": "ready-v51a",
+            "msg_id": "221f0adc9ff0bcfe3435bd0ff79054e05e20470c896c6c2e05b1d10bd0b22743",
+            "priority": "p1",
+            "status": "active",
+            "title": "[encrypted]",
+            "type": "task",
+            "updated_at": "1699999800000000000"
+          },
+          {
+            "created_at": "1699999900000000000",
+            "for": "",
+            "id": "ready-v51b",
+            "msg_id": "55d1c7d90efdb90bb0eb2df33b99d69d704bb3cfae8c5c097420bc502ca4b388",
+            "priority": "p1",
+            "status": "active",
+            "title": "plaintext after the epoch-0 grant",
+            "type": "task",
+            "updated_at": "1699999900000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v51a",
+            "ready-v51b"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v51a",
+            "ready-v51b"
+          ],
+          "work": [
+            "ready-v51a",
+            "ready-v51b"
+          ]
+        },
+        "keyring": {
+          "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+          "confidential": false,
+          "cutover": 0,
+          "current_epoch": 0
+        }
+      }
+    },
+    {
+      "name": "keyring_retains_every_epoch_across_a_rotation",
+      "spec_clauses": [
+        "11.12",
+        "11.11",
+        "11.14",
+        "11.13",
+        "11.6",
+        "11.9"
+      ],
+      "note": "Two owner-signed CEK grants to the same reader: epoch 1, then a rotation to epoch 2 carrying a FRESH, unrelated key (§11.11 — the successor is never derived from its predecessor, so a client that computed it instead of unwrapping the grant fails the AEAD and renders ready-v52b as a placeholder). Derivation scans EVERY historical grant rather than latest-wins (§11.12), so BOTH cards decrypt: the rotation closed the future, it did not recall the past (§11.11a — history is never re-sealed). A latest-wins keyring renders the pre-rotation ready-v52a as \"[encrypted]\", which is the whole board on any project that has ever rotated. expect.keyring pins the two derived scalars: cutover is the FIRST grant's created_at, not the rotation's (§11.13), and current_epoch is 2 — the HIGHEST held (§11.14), which is the epoch a new write must seal under, so a client that reported 1 here would publish cards under a superseded key.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": {
+          "reader_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+          "board_author": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "board_d": "ready"
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "adde582c5d06d435283439a127818eeceff36556f07d8f82bd8214cdcb709466",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27:e1"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "AkdEDkttHEPjKfhCLo4qkpfqEWu80uNhAaWen1WevRh3lerc720PSpFnwl+udaXBPOvHra4qa6mQJc0at8JP2brOkpHKljq9B6aVF2ZA291DcF7OBzqqVyaQ73ocY2BKcol0Bdd5h+ZGQC/EjvW6jpxg8rDCB1CITHT7NamOx973zLE="
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "bootstrap epoch 1",
+          "sig": "0c099ac21a5e05d09e73eae5df34853aee65047b8106e3e927ade02dd48f0f3a7cefcd0043a57deae5a20d0a5c2a5004fafcdcf38abb8064c8deb7f6fb8a5649"
+        },
+        {
+          "id": "c854da534e9bd6ba8b99a71b5706eb5b79797e6b166061017c542554783cebe7",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999800,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v52a"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "dwSOQ3L/dK3QjueUvLZy0XE5gV0B/0VwQs5afsBDX7xRPKgKxG9fx8nwqzgi5dSlKaU1s+sypwIHsyc4lKDbZzc8bH1MmjafEgVq2TnsAIhc6WuyJP/tUOV/Dg==",
+          "sig": "f36b72614bafd07280c73513747830c84d4f354cb2431e311f293c3f0dc1d8beffd9fc5aa40c00bff8c58ceb7edb75e07774ad6c0778a43de38cc0de131ac108"
+        },
+        {
+          "id": "14b1db07dd88a24ea864a933e3f637924d7b1b76a31791dba0fa5580af22b8df",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27:e2"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "Am2/KiIr2Sz80BkRhNtAoLOmrQSyTXM3NAn293iyq2sUUk3smamp2mYbcHuk58TuYiLoqvIbVuMEQnvuRDnDjp0OoncTqgz0je05FM8g0GTuuLPqhT/7Xpjvvmw5f3ITlV9nVDtFDTbf24oWrjtAagewq41ddUqajSwjlN1HyxMK94Q="
+            ],
+            [
+              "cek_epoch",
+              "2"
+            ]
+          ],
+          "content": "rotation to epoch 2",
+          "sig": "2844d4af28e70b01aea88581f1f261d23099d894508303072d741fcb7cbafd61491b7b60c4e76187cbd441484108cf04ab1668e44151a166aa991a4f12aa066e"
+        },
+        {
+          "id": "6cafc2789504ab55ff19251966f72c092bb5ed865ec5d8b71595029d45825124",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v52b"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "2"
+            ]
+          ],
+          "content": "+82siWxGUl6LQi0S4A+n1PNQuS0q2XCU9KcTJaaRNfjje1rWsW2sGSSC9m9ojXnubiNnwNCWd4wfOoaUFHujjbq0UoX2dyGptcRGPw+Hd82KT85pTveOFRoF",
+          "sig": "b2104542940e8c7c1bd8636c22f2642c207c1e481cb2258f45a2f6ddc4b06c243832814fa8f7fbb02789e71393bcbb8f065c350f09e69fe82ea2435100c178a2"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "context": "epoch 1 body",
+            "created_at": "1699999800000000000",
+            "description": "epoch 1 body",
+            "for": "",
+            "id": "ready-v52a",
+            "msg_id": "c854da534e9bd6ba8b99a71b5706eb5b79797e6b166061017c542554783cebe7",
+            "priority": "p1",
+            "status": "active",
+            "title": "sealed before the rotation",
+            "type": "task",
+            "updated_at": "1699999800000000000"
+          },
+          {
+            "context": "epoch 2 body",
+            "created_at": "1700000000000000000",
+            "description": "epoch 2 body",
+            "for": "",
+            "id": "ready-v52b",
+            "msg_id": "6cafc2789504ab55ff19251966f72c092bb5ed865ec5d8b71595029d45825124",
+            "priority": "p1",
+            "status": "active",
+            "title": "sealed after the rotation",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v52a",
+            "ready-v52b"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v52a",
+            "ready-v52b"
+          ],
+          "work": [
+            "ready-v52a",
+            "ready-v52b"
+          ]
+        },
+        "keyring": {
+          "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+          "confidential": true,
+          "cutover": 1699999700,
+          "current_epoch": 2
+        }
+      }
+    },
+    {
+      "name": "keyring_cutover_is_the_earliest_owner_grant_whoever_it_names",
+      "spec_clauses": [
+        "11.13",
+        "11.3",
+        "11.4",
+        "11.12",
+        "11.14"
+      ],
+      "note": "The board went confidential at t0-300 with a grant addressed to the AGENT; the reader (the maintainer) is admitted only at t0-100 to that same epoch-1 key. §11.13 derives the cutover from the EARLIEST owner CEK-bearing grant regardless of grantee, so it is t0-300 — asserted directly in expect.keyring and enforced on the items: ready-v53b is plaintext at t0-200, i.e. AFTER the true cutover and BEFORE the reader's own grant, and is quarantined (§11.3), producing NO item at all. A client that derived the cutover from the grants addressed to ITSELF gets t0-100 and renders ready-v53b in clear — on a confidential board a post-cutover plaintext card is an unsealed leak or a forgery, which is exactly what the gate exists to withhold. The two controls bracket it: ready-v53a (plaintext at t0-400, genuinely pre-cutover) is grandfathered and folds (§11.4), and ready-v53c decrypts, so the absence of ready-v53b is the cutover firing and not a missing key.",
+      "options": {
+        "trusted": [
+          "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        ],
+        "maintainers": null,
+        "pinned_board": "",
+        "decryptor": null,
+        "encrypted_boards": null,
+        "keyring": {
+          "reader_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+          "board_author": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "board_d": "ready"
+        }
+      },
+      "identity": "",
+      "events": [
+        {
+          "id": "88b32c302d815ab5f9c382edae4e6b474fbab36535bb462221104144e6889aa0",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999700,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1:e1"
+            ],
+            [
+              "p",
+              "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "AsqpSUpyEWI9v/7GyyKimiPlNT1GsCXxzbQI6gAi6tWCN/gCxqVmRnnOqTaXOZynFnMmXnsdl1s9LblJ4I8uTEeF5YIOqr16oFZL28Emyn6rPeXmGk4jgmN4UjXNgR7wR6sQoXxU8ZTBlOqv2Iz6SeWISU/PNNDDy5v2oIwMtZZjY6Y="
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "bootstrap, first member",
+          "sig": "8c26abe2233378d334f46b0664fff0815d31341fe1d0863888e5f138d5399d4c98b0bfa308ebaa2e827a27ffeee82637c260e90236dab43394832f2653a09817"
+        },
+        {
+          "id": "fea0d6f05cca7e0d7cc2b530641ffb083387bcd2aa737afab1fcd2363c6ac48a",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999600,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v53a"
+            ],
+            [
+              "title",
+              "plaintext before the board went confidential"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "19fae388c6234b9c417368308ce0f71e1a9b8294299f7d0bc90e304b00cb12c17dab40e18a44deaf0dae4c8fb45074830a1e872f716dad5c251a57836972d2dd"
+        },
+        {
+          "id": "553d69089e6d91bcbe2bc9ddaa52d143515b405a6591117b8a60fd8f142e377e",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999800,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v53b"
+            ],
+            [
+              "title",
+              "cleartext leaked after the cutover"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ]
+          ],
+          "content": "",
+          "sig": "b665b6b616a16e9d52778747658c3692e1084187b83754d6532951bc94f55026445b44d92536291c21fda46d728baaf7e16fbbb505181434fafc7e0ff7941503"
+        },
+        {
+          "id": "994c8aebbc3f066115435681459feb4a6b2878f1d32f9954798495095bf7df41",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1699999900,
+          "kind": 39301,
+          "tags": [
+            [
+              "d",
+              "ready:466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27:e1"
+            ],
+            [
+              "p",
+              "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "role",
+              "contributor"
+            ],
+            [
+              "cek",
+              "AsH8ZDevIB/R8t2EdM+2heaUN7sNaWSNcmnfKM2BPSQiyx3qoEusjYHI5cdOsyu1H7XWFaUmQCEwaP27NfjZ4dO96JFVUJi4VSOe69Er8Oj5T++T2BTuq9LAVO4/UlT0D/rKp910UTY/Lq9NBS7TLZ3vHNJBs62TQi0G15okbAmDhBE="
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "second member admitted later",
+          "sig": "c6192f98ff376566cc38f1ced4f0dc5e4da939e3bf9e638e5ec3b974a61cb35baffe68a5299472e82e9ee4d9649814ff9017506e256c71b4007fb978b127548d"
+        },
+        {
+          "id": "c7f6c732bcb33e5a91cc7c2c4e7391066b2acbdd4155cdb21da6c76ed880ae41",
+          "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "created_at": 1700000000,
+          "kind": 30302,
+          "tags": [
+            [
+              "d",
+              "ready-v53c"
+            ],
+            [
+              "a",
+              "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready"
+            ],
+            [
+              "s",
+              "active"
+            ],
+            [
+              "rank",
+              "p1"
+            ],
+            [
+              "priority",
+              "p1"
+            ],
+            [
+              "itype",
+              "task"
+            ],
+            [
+              "enc",
+              "1"
+            ],
+            [
+              "cek_epoch",
+              "1"
+            ]
+          ],
+          "content": "39uSDqWjGf2XB7wZ5lFzIZiPRrJS9MYNjVbSapkfNf9GQct8XqDqtWO0CqCOXzonVMspcEvgceg0+D4Db2sb397lEmfdNX6K0XyUJc/G7zODWMxQ",
+          "sig": "a872f4322c22ba3b3a975fa5074d7a6f48089010f2b762c571b0e9bb77eb1c46504f88cf572348eab92b7d2b5693d492e7bcd502de674666a86f83f53f9b3af7"
+        }
+      ],
+      "expect": {
+        "items": [
+          {
+            "created_at": "1699999600000000000",
+            "for": "",
+            "id": "ready-v53a",
+            "msg_id": "fea0d6f05cca7e0d7cc2b530641ffb083387bcd2aa737afab1fcd2363c6ac48a",
+            "priority": "p1",
+            "status": "active",
+            "title": "plaintext before the board went confidential",
+            "type": "task",
+            "updated_at": "1699999600000000000"
+          },
+          {
+            "context": "epoch 1 body",
+            "created_at": "1700000000000000000",
+            "description": "epoch 1 body",
+            "for": "",
+            "id": "ready-v53c",
+            "msg_id": "c7f6c732bcb33e5a91cc7c2c4e7391066b2acbdd4155cdb21da6c76ed880ae41",
+            "priority": "p1",
+            "status": "active",
+            "title": "sealed and readable",
+            "type": "task",
+            "updated_at": "1700000000000000000"
+          }
+        ],
+        "views": {
+          "delegated": [],
+          "focus": [
+            "ready-v53a",
+            "ready-v53c"
+          ],
+          "gates": [],
+          "my-work": [],
+          "overdue": [],
+          "pending": [],
+          "ready": [
+            "ready-v53a",
+            "ready-v53c"
+          ],
+          "work": [
+            "ready-v53a",
+            "ready-v53c"
+          ]
+        },
+        "keyring": {
+          "board_coord": "30301:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa:ready",
+          "confidential": true,
+          "cutover": 1699999700,
+          "current_epoch": 1
+        }
+      }
+    },
+    {
       "name": "views_lattice",
       "spec_clauses": [
         "13.1",
@@ -7036,7 +9140,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
       "events": [
@@ -7577,7 +9682,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
       "events": [
@@ -7672,7 +9778,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
       "events": [
@@ -7766,7 +9873,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
       "events": [
@@ -7862,7 +9970,8 @@
         "maintainers": null,
         "pinned_board": "",
         "decryptor": null,
-        "encrypted_boards": null
+        "encrypted_boards": null,
+        "keyring": null
       },
       "identity": "",
       "events": [

@@ -20,6 +20,7 @@ import (
 
 	"github.com/3dl-dev/ready/internal/foldvectors"
 	"github.com/3dl-dev/ready/pkg/state"
+	rdsync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 const (
@@ -93,6 +94,24 @@ func TestFoldConformanceVectors(t *testing.T) {
 				if !sameSet(want, gotLabels[atom]) {
 					t.Errorf("label view %q: want %v, got %v", atom, sorted(want), sorted(gotLabels[atom]))
 				}
+			}
+
+			// The derived-keyring expectation (spec §11.10-§11.14). Checked in
+			// BOTH directions: an asserted keyring must match the derivation, and
+			// a vector that derives one must assert it — otherwise a keyring
+			// vector could be silently downgraded to "runs the derivation and
+			// looks at none of it".
+			gotKeyring, kErr := foldvectors.KeyringFactsFor(v)
+			if kErr != nil {
+				t.Fatalf("derive keyring: %v", kErr)
+			}
+			switch {
+			case v.Expect.Keyring == nil && gotKeyring != nil:
+				t.Errorf("vector uses options.keyring but asserts no expect.keyring (derived %+v)", *gotKeyring)
+			case v.Expect.Keyring != nil && gotKeyring == nil:
+				t.Error("vector asserts expect.keyring without options.keyring")
+			case v.Expect.Keyring != nil && *v.Expect.Keyring != *gotKeyring:
+				t.Errorf("keyring: want %+v, got %+v", *v.Expect.Keyring, *gotKeyring)
 			}
 		})
 	}
@@ -280,6 +299,203 @@ func TestGrantAuthorityVectorsRunWithTheGatesEnabled(t *testing.T) {
 				"until map at all (§12, §3.5, §6.2 inert) — the property this vector pins would not run", name)
 		}
 	}
+}
+
+// ready882Clauses is the clause sweep ready-882 owns: three normative
+// subsystems that had ZERO vectors when the corpus cited 82 of the spec's 134
+// clauses — gate lifecycle TRANSITIONS (§9.4-§9.7 were covered, the transitions
+// that produce and resolve a gate were not), the confidential-envelope EPOCH
+// MODEL, and the two grant-replay clauses the escalation-cap vectors leave out.
+//
+// A subsystem with no vector is one where an independent client can disagree
+// with `rd ready` and still pass conformance, which is the exact failure the
+// epic's spec -> vectors -> client ordering exists to prevent. This test is what
+// stops the hole from reopening: adding a clause here is cheap, and REMOVING one
+// requires an entry in clauseExemptions with a stated reason.
+//
+// §12.3 / §12.5 / §12.6 are in the list but were landed by the sibling
+// grant-authority item (cases_grantauthority.go) — they are asserted here so
+// that a regeneration which drops those vectors is caught by this test too,
+// not silently.
+var ready882Clauses = []string{
+	"9.1", "9.2", "9.3", "9.8",
+	"11.10", "11.11", "11.12", "11.13", "11.14",
+	"12.2", "12.3", "12.5", "12.6", "12.9",
+}
+
+// clauseExemptions records a ready882Clauses entry that deliberately has NO
+// vector, with the reason. It is empty today: every clause in the sweep is
+// cited. It exists because the honest alternative to a vector is a stated
+// exemption, never a quiet deletion from the list above — a clause that leaves
+// the list without landing here is a coverage regression disguised as a test
+// edit.
+var clauseExemptions = map[string]string{}
+
+// TestReady882ClauseSweepIsCovered is the done condition of ready-882: each
+// clause in the sweep is either cited by a vector or exempt with a reason.
+func TestReady882ClauseSweepIsCovered(t *testing.T) {
+	f := load(t)
+	citedBy := map[string][]string{}
+	for _, v := range f.Vectors {
+		for _, c := range v.SpecClauses {
+			citedBy[c] = append(citedBy[c], v.Name)
+		}
+	}
+	for _, clause := range ready882Clauses {
+		vectors := citedBy[clause]
+		reason, exempt := clauseExemptions[clause]
+		switch {
+		case len(vectors) > 0 && exempt:
+			t.Errorf("§%s is both cited (%v) and exempt (%q) — drop the exemption", clause, vectors, reason)
+		case len(vectors) > 0:
+			t.Logf("§%s covered by %v", clause, vectors)
+		case exempt:
+			t.Logf("§%s EXEMPT: %s", clause, reason)
+		default:
+			t.Errorf("§%s has no vector and no exemption — the subsystem is unpinned again", clause)
+		}
+	}
+}
+
+// keyringVectors are ready-882's epoch-model vectors: the ones whose whole point
+// is that the key material is DERIVED from the vector's own grants.
+var keyringVectors = []string{
+	"keyring_epoch_zero_grant_yields_no_key_and_no_cutover",
+	"keyring_retains_every_epoch_across_a_rotation",
+	"keyring_cutover_is_the_earliest_owner_grant_whoever_it_names",
+}
+
+// TestKeyringVectorsDeriveRatherThanDeclareTheirKeys is the structural guard for
+// those vectors, and it generalizes the defect that motivated the whole item.
+//
+// A confidential vector can express its key material two ways, and only ONE of
+// them exercises the epoch model:
+//
+//	options.decryptor + options.encrypted_boards -> the keys and the cutover are
+//	    HANDED to the fold as facts. §11.10-§11.14 do not run at all, so an
+//	    expectation about them is vacuous — the same "the gate is inert in the
+//	    option shape every vector uses" failure ready-ce8 found for grant
+//	    authority.
+//	options.keyring -> the client must DERIVE both from the vector's own
+//	    owner-signed grants, which is the only shape under which "epochs are
+//	    retained", "the cutover is the earliest grant" and "the current epoch is
+//	    the highest held" are falsifiable.
+//
+// Rewriting one of these vectors into the declarative shape would leave it
+// GREEN while testing none of what it claims, so the shape is part of the
+// contract rather than a property of whoever authored the fixture.
+func TestKeyringVectorsDeriveRatherThanDeclareTheirKeys(t *testing.T) {
+	f := load(t)
+	byName := map[string]foldvectors.Vector{}
+	for _, v := range f.Vectors {
+		byName[v.Name] = v
+	}
+	for _, name := range keyringVectors {
+		v, ok := byName[name]
+		if !ok {
+			t.Errorf("keyring vector %q is missing", name)
+			continue
+		}
+		if v.Options.Keyring == nil {
+			t.Errorf("%s: options.keyring is null — the key material would be declared, not derived, "+
+				"and §11.10-§11.14 would not run", name)
+			continue
+		}
+		if v.Options.Decryptor != nil || v.Options.EncryptedBoards != nil {
+			t.Errorf("%s: options.keyring is combined with the declarative key shape, so which one the "+
+				"client used is unobservable", name)
+		}
+		if v.Expect.Keyring == nil {
+			t.Errorf("%s: derives a keyring but asserts nothing about it", name)
+		}
+		// The grants the derivation must consume have to be IN the vector.
+		grants := 0
+		for _, e := range v.Events {
+			if e != nil && e.Kind == rdsync.KindRoleGrant {
+				grants++
+			}
+		}
+		if grants == 0 {
+			t.Errorf("%s: no kind-39301 grant in the event log, so the derived keyring is empty by "+
+				"construction and proves nothing", name)
+		}
+	}
+}
+
+// TestGateLifecycleVectorsCoverAllThreeTransitions guards ready-882's other
+// half. The gate clauses split into STANDING STATE (§9.4-§9.7: how a gate
+// renders) and TRANSITIONS (§9.1 open, §9.2 approve, §9.3 reject): the corpus
+// had the first group and none of the second, so a client could render a gate
+// perfectly and still mishandle every event sequence that opens or resolves one.
+// Approve and reject in particular are indistinguishable on the wire except by
+// the status value and the dropped card tags (§22.4), so BOTH must be present —
+// one alone cannot show the difference.
+func TestGateLifecycleVectorsCoverAllThreeTransitions(t *testing.T) {
+	f := load(t)
+	byName := map[string]foldvectors.Vector{}
+	for _, v := range f.Vectors {
+		byName[v.Name] = v
+	}
+	transitions := map[string]string{
+		"gate_open_projects_a_resolvable_gate":                      "9.1",
+		"gate_approve_clears_every_gate_field":                      "9.2",
+		"gate_approve_under_blocking_clears_the_gate_not_the_block": "9.2",
+		"gate_reject_keeps_the_gate_open":                           "9.3",
+	}
+	for name, clause := range transitions {
+		v, ok := byName[name]
+		if !ok {
+			t.Errorf("gate-transition vector %q (§%s) is missing", name, clause)
+			continue
+		}
+		cited := false
+		for _, c := range v.SpecClauses {
+			if c == clause {
+				cited = true
+			}
+		}
+		if !cited {
+			t.Errorf("%s no longer cites §%s", name, clause)
+		}
+		// Every one of these is an event PAIR (a card revision plus its status
+		// event) applied to an item that already existed — a single event cannot
+		// express a transition.
+		if len(v.Events) < 3 {
+			t.Errorf("%s: %d events — a gate transition is a card revision plus a status event on top "+
+				"of a pre-existing item", name, len(v.Events))
+		}
+	}
+	// The approve/reject pair must DISAGREE about the gate. If both projections
+	// kept (or both cleared) the gate fields, neither vector would show that the
+	// two resolutions differ.
+	approve, okA := byName["gate_approve_clears_every_gate_field"]
+	reject, okR := byName["gate_reject_keeps_the_gate_open"]
+	if okA && okR {
+		if gateMsgIDOf(t, approve) != "" {
+			t.Error("gate_approve_clears_every_gate_field: gate_msg_id survived the approval")
+		}
+		if gateMsgIDOf(t, reject) == "" {
+			t.Error("gate_reject_keeps_the_gate_open: the gate was cleared, so the reject reads as a resolution")
+		}
+		if len(approve.Expect.Views["gates"]) != 0 || len(reject.Expect.Views["gates"]) == 0 {
+			t.Error("the approve/reject pair must differ in gates-view membership (§13.10)")
+		}
+	}
+}
+
+// gateMsgIDOf returns the single-item vector's projected gate_msg_id.
+func gateMsgIDOf(t *testing.T, v foldvectors.Vector) string {
+	t.Helper()
+	if len(v.Expect.Items) != 1 {
+		t.Fatalf("%s: expected exactly one item, got %d", v.Name, len(v.Expect.Items))
+	}
+	var item struct {
+		GateMsgID string `json:"gate_msg_id"`
+	}
+	if err := json.Unmarshal(v.Expect.Items[0], &item); err != nil {
+		t.Fatalf("%s: %v", v.Name, err)
+	}
+	return item.GateMsgID
 }
 
 // TestVectorEventsAreWellFormed sanity-checks the fixtures themselves: at least

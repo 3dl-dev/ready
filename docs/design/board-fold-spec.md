@@ -266,6 +266,23 @@ this for a reader who never opens the Go source. `FormatVersion` was bumped
 1 → 2 for this change (a client on version 1 was silently trusting a bare
 number that is only safe by accident).
 
+`FormatVersion` was bumped 2 → 3 by `ready-882`, which added `options.keyring`
+and `expect.keyring` so the epoch model (§11.10–§11.14) is inside the vector
+contract at all. Before it, every confidential vector handed the fold its key
+material as literal data (`options.decryptor`, `options.encrypted_boards`),
+which skips the derivation entirely — which epochs a reader retains, when the
+board went confidential, and which epoch a write seals under were unasserted,
+so a client could derive all three wrongly and still pass every vector. A
+vector carrying `options.keyring` names a reader SECRET and a board
+coordinate instead, and the client must DERIVE both fold inputs from that
+vector's own owner-signed 39301 grants (§11.12), wiring one derived keyring
+into BOTH slots exactly as `cmd/rd/nostr.go:969-976` does. The bump is
+required rather than optional because a client that ignores the new field
+folds with no keys and no cutover — a silent, plausible-looking wrong answer
+rather than a parse failure. See `internal/foldvectors/vectors.go`
+(`KeyringSpec`, `KeyringFacts`) and the vectors in
+`internal/foldvectors/cases_epochmodel.go`.
+
 ---
 
 ## 5. Card → item field projection

@@ -117,6 +117,10 @@ func Build() (*File, error) {
 		b.vGatePromotion,
 		b.vGateUnderBlocking,
 		b.vGateTerminalClears,
+		b.vGateOpen,
+		b.vGateApprove,
+		b.vGateApproveUnderBlocking,
+		b.vGateReject,
 		b.vIssueDoesNotFold,
 		b.vMalformedDropped,
 		b.vForgedSignatureDropped,
@@ -130,12 +134,17 @@ func Build() (*File, error) {
 		b.vGrantCapOwnerIsIrrevocable,
 		b.vGrantCapPeerMaintainerProtected,
 		b.vRevokeBoundaryAtTheInstant,
+		b.vGrantCoordinateBinding,
+		b.vGrantReplayIsSharedByBothConsumers,
 		b.vGrantLevelConfersStatusAuthority,
 		b.vConfidentialGrantedReader,
 		b.vConfidentialWrongCEK,
 		b.vConfidentialNoDecryptor,
 		b.vConfidentialNoTitlePlaceholder,
 		b.vFoldGateQuarantine,
+		b.vKeyringEpochZeroContributesNothing,
+		b.vKeyringRetainsEveryEpoch,
+		b.vKeyringCutoverIgnoresGrantee,
 		b.vViewsLattice,
 		b.vItemTimestampEncoding,
 		b.vItemTimestampAboveFloat64SafeBound,
@@ -159,7 +168,14 @@ func Build() (*File, error) {
 			"ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every " +
 			"regeneration even when no behaviour changed — review a regeneration, do not assume it is a no-op. " +
 			"See `timestamp_encoding` for how expect.items[].created_at / updated_at are represented — they " +
-			"are NOT bare JSON numbers.",
+			"are NOT bare JSON numbers. A vector whose `options.keyring` is non-null does NOT receive its " +
+			"confidential-board key material as data: it names a reader SECRET plus a board coordinate, and " +
+			"the client MUST derive the reader's CEKs and the board cutover from that vector's own " +
+			"owner-signed kind-39301 grants (spec §11.10-§11.14) and wire the one derived keyring into BOTH " +
+			"fold inputs (decryptor and encrypted-board set). Such a vector also carries `expect.keyring`, " +
+			"which asserts the derived cutover and the current write epoch directly — the latter has no " +
+			"item-level consequence on a read. `options.keyring` is never combined with " +
+			"`options.decryptor` / `options.encrypted_boards`.",
 		TimestampEncoding: "expect.items[].created_at and expect.items[].updated_at are unix-nanosecond " +
 			"int64 values encoded as DECIMAL STRINGS (e.g. \"1700000000000000000\"), not bare JSON numbers. " +
 			"Parse them with BigInt(field), never Number(field) or a generic JSON number parser: JavaScript's " +
@@ -274,6 +290,24 @@ func (b *builder) add(v Vector) error {
 		if !sameSet(want, gotLabels[atom]) {
 			return fmt.Errorf("vector %q: label view %q: expected %v, fold produced %v", v.Name, atom, want, gotLabels[atom])
 		}
+	}
+	// The derived-keyring expectation (spec §11.10-§11.14) gets the same
+	// treatment as items and views: hand-authored from the clause, then CHECKED
+	// against the live derivation. The two directions are both errors — an
+	// asserted keyring the vector cannot derive, and a derived keyring the
+	// vector forgot to assert — so a keyring-driven vector can never be added
+	// with its epoch model unpinned.
+	gotKeyring, err := KeyringFactsFor(v)
+	if err != nil {
+		return fmt.Errorf("vector %q: derive keyring: %w", v.Name, err)
+	}
+	switch {
+	case v.Expect.Keyring == nil && gotKeyring != nil:
+		return fmt.Errorf("vector %q: uses options.keyring but asserts no expect.keyring (derived %+v)", v.Name, *gotKeyring)
+	case v.Expect.Keyring != nil && gotKeyring == nil:
+		return fmt.Errorf("vector %q: asserts expect.keyring without options.keyring", v.Name)
+	case v.Expect.Keyring != nil && *v.Expect.Keyring != *gotKeyring:
+		return fmt.Errorf("vector %q: hand-authored keyring %+v disagrees with the live derivation %+v", v.Name, *v.Expect.Keyring, *gotKeyring)
 	}
 	b.vectors = append(b.vectors, v)
 	return nil
