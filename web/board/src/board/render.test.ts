@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeItem } from "./testitem";
-import { mountBoardWorkspace, type BoardWorkspace } from "./render";
+import type { Item } from "./types";
+import { applyGateResolution, mountBoardWorkspace, type BoardWorkspace } from "./render";
 import type { BoardWriter } from "./write";
 import { unimplementedWriter, WriteNotImplementedError } from "./write";
 
@@ -483,6 +484,196 @@ describe("optimistic write, and the revert when it is refused (ready-b2b DC4)", 
     await ws.handleRetitle("t1", "Rewritten");
     ws.selectItem("t1");
     expect(container.querySelector(".detail h2")?.textContent ?? container.textContent).toContain("Original");
+  });
+});
+
+// ready-186. The rail was READ-ONLY: clicking a gate opened the detail pane and
+// the human went back to the terminal to type `rd approve`. These assert the
+// rail itself resolves the gate, that a reason is genuinely REQUIRED (not merely
+// requested), and that the resolution the page shows is the one §22.2/§22.3
+// describe — not a status flip that leaves the gate fields behind.
+describe("the gate rail is ACTIONABLE (ready-186)", () => {
+  const gatedItem = (over: Partial<Item> = {}) =>
+    makeItem({
+      id: "g1",
+      title: "needs a ruling",
+      status: "waiting",
+      waitingType: "gate",
+      waitingOn: "should we ship it",
+      waitingSince: "2026-07-01T00:00:00Z",
+      gateMsgId: "card-event-id",
+      gate: "design",
+      ...over,
+    });
+
+  /** A writer that records every resolveGate call and resolves. */
+  function recordingWriter(): { writer: BoardWriter; calls: [string, boolean, string | undefined][] } {
+    const calls: [string, boolean, string | undefined][] = [];
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      whyReadOnly: () => undefined,
+      resolveGate: async (id, approve, reason) => {
+        calls.push([id, approve, reason]);
+      },
+    };
+    return { writer, calls };
+  }
+
+  it("renders a reason field and both rulings on the RAIL, not only in the detail pane", () => {
+    const { writer } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    const li = container.querySelector('.gate-item[data-id="g1"]')!;
+    expect(li.querySelector(".gate-reason-input")).not.toBeNull();
+    expect(li.querySelector(".gate-approve")?.textContent).toBe("Approve");
+    expect(li.querySelector(".gate-deny")?.textContent).toBe("Reject");
+  });
+
+  it("an EMPTY reason publishes nothing and says why (rd approve --reason)", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    await ws.handleGateResolve("g1", true, "");
+    expect(calls).toEqual([]);
+    expect(container.querySelector(".transient-error")?.textContent).toContain("a reason is required to approve");
+    // …and the gate is still open: nothing optimistic was applied either.
+    expect(container.querySelectorAll('.gate-item[data-id="g1"]')).toHaveLength(1);
+  });
+
+  it("a WHITESPACE-ONLY reason is refused too — trim, not truthiness", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    await ws.handleGateResolve("g1", false, "   \n\t ");
+    expect(calls).toEqual([]);
+    expect(container.querySelector(".transient-error")?.textContent).toContain("a reason is required to reject");
+  });
+
+  it("clicking Approve in the rail sends the typed reason to the writer", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    const input = container.querySelector('.gate-item[data-id="g1"] .gate-reason-input') as HTMLInputElement;
+    input.value = "  ship it  ";
+    (container.querySelector('.gate-item[data-id="g1"] .gate-approve') as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([["g1", true, "ship it"]]);
+  });
+
+  it("clicking Reject in the rail sends approve=false with the reason", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    const input = container.querySelector('.gate-item[data-id="g1"] .gate-reason-input') as HTMLInputElement;
+    input.value = "not yet";
+    (container.querySelector('.gate-item[data-id="g1"] .gate-deny') as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([["g1", false, "not yet"]]);
+  });
+
+  it("approving empties the rail AND moves the card, with no reload (done conditions 3 and 5)", async () => {
+    const { writer } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    expect(container.querySelector(".gate-rail")?.classList.contains("empty")).toBe(false);
+    // A gated item is `waiting`, so PendingFilter puts it in the blocked column:
+    // it cannot move without the human's decision. That is the thing the gate
+    // was blocking.
+    expect(columnOf(container, "g1")).toBe("blocked");
+
+    await ws.handleGateResolve("g1", true, "approved");
+
+    expect(container.querySelector(".gate-rail")?.classList.contains("empty")).toBe(true);
+    expect(container.querySelector(".gate-rail")?.textContent).toBe("Nothing needs you right now");
+    expect(columnOf(container, "g1")).toBe("moving");
+  });
+
+  it("rejecting keeps the gate OPEN — the item stays in the rail (§22.3 changes no field)", async () => {
+    const { writer } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    await ws.handleGateResolve("g1", false, "not convinced");
+    expect(container.querySelector(".gate-rail")?.classList.contains("empty")).toBe(false);
+    expect(container.querySelectorAll('.gate-item[data-id="g1"]')).toHaveLength(1);
+    expect(columnOf(container, "g1")).toBe("blocked");
+  });
+
+  it("a REFUSED approve puts the gate back in the rail and states the refusal", async () => {
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      whyReadOnly: () => undefined,
+      resolveGate: async () => {
+        throw new Error("the relay rejected this change: restricted: pubkey is not admitted");
+      },
+    };
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    await ws.handleGateResolve("g1", true, "approved");
+    expect(container.querySelectorAll('.gate-item[data-id="g1"]')).toHaveLength(1);
+    expect(columnOf(container, "g1")).toBe("blocked");
+    expect(container.querySelector(".transient-error")?.textContent).toContain("restricted");
+  });
+
+  it("§22.2: approve clears all FIVE gate fields, not just the one the rail reads", () => {
+    const item = gatedItem();
+    applyGateResolution(item, true);
+    expect(item.status).toBe("active");
+    expect(item.gate).toBeUndefined();
+    expect(item.waitingType).toBeUndefined();
+    expect(item.waitingOn).toBeUndefined();
+    expect(item.waitingSince).toBeUndefined();
+    expect(item.gateMsgId).toBeUndefined();
+  });
+
+  it("§22.3: reject changes NO field — the gate is still open, byte for byte", () => {
+    const item = gatedItem();
+    const before = { ...item };
+    applyGateResolution(item, false);
+    expect(item).toEqual(before);
+  });
+
+  it("the rail resolves the gate the human CLICKED, not the first one in the list", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(
+      container,
+      [gatedItem(), gatedItem({ id: "g2", title: "the second ruling", waitingOn: "and this one" })],
+      { writer },
+    );
+    expect(container.querySelectorAll(".gate-item")).toHaveLength(2);
+    const second = container.querySelector('.gate-item[data-id="g2"]')!;
+    (second.querySelector(".gate-reason-input") as HTMLInputElement).value = "second only";
+    (second.querySelector(".gate-approve") as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([["g2", true, "second only"]]);
+    // …and g1's gate is untouched: the rail still carries it.
+    expect(container.querySelectorAll('.gate-item[data-id="g1"]')).toHaveLength(1);
+  });
+
+  it("a key with no authority gets NO ruling buttons anywhere, and is told why", () => {
+    const writer: BoardWriter = {
+      ...unimplementedWriter,
+      whyReadOnly: () => "Read-only: this key holds no write grant on board proj.",
+    };
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    ws.selectItem("g1");
+    expect(container.querySelectorAll(".gate-approve")).toHaveLength(0);
+    expect(container.querySelectorAll(".gate-deny")).toHaveLength(0);
+    expect(container.querySelectorAll(".gate-reason-input")).toHaveLength(0);
+    expect(container.querySelector(".gate-resolve .read-only-note")?.textContent).toContain("no write grant");
+  });
+
+  it("the detail pane's banner carries the same control, and the same requirement", async () => {
+    const { writer, calls } = recordingWriter();
+    ws = mountBoardWorkspace(container, [gatedItem()], { writer });
+    ws.selectItem("g1");
+    const banner = container.querySelector(".gate-banner")!;
+    expect(banner.textContent).toContain("Gate: design");
+    const input = banner.querySelector(".gate-reason-input") as HTMLInputElement;
+    // Empty: refused, nothing published.
+    (banner.querySelector(".gate-approve") as HTMLElement).click();
+    await Promise.resolve();
+    expect(calls).toEqual([]);
+    // Filled: published.
+    input.value = "ruled from the detail pane";
+    (banner.querySelector(".gate-approve") as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([["g1", true, "ruled from the detail pane"]]);
   });
 });
 

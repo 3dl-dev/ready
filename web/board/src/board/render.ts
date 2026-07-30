@@ -139,6 +139,37 @@ function nearestEpicAncestor(item: Item, itemsById: Map<string, Item>, epicIds: 
   return undefined;
 }
 
+/**
+ * applyGateResolution is the OPTIMISTIC half of resolving a gate (ready-186):
+ * what the board shows the instant the human rules, before the relay has said
+ * anything. It mirrors board-fold-spec.md §22.2 / §22.3 field for field.
+ *
+ * §22.2 APPROVE clears ALL FIVE gate fields — Gate, WaitingType, WaitingOn,
+ * WaitingSince, GateMsgID — and sets `active`. Clearing only `status` would
+ * empty the rail (its predicate reads `status`) while leaving an item the fold
+ * can never produce: active AND still declaring a gate. The next projection to
+ * arrive would then disagree with the board for reasons no test could name.
+ *
+ * §22.3 REJECT changes NO field: the gate stays open and the ruling survives as
+ * history, so the item stays in the rail exactly as `rd gates` still lists it.
+ * Rejecting is a durable note, not a transition.
+ *
+ * EXPORTED so this field set is asserted DIRECTLY. Through the rendered board
+ * only `status` is observable — the rail and the columns both read it and
+ * nothing else — so a version that cleared `gate` and stopped would look
+ * identical on screen. That is precisely the shape of unwitnessed selection
+ * ready-191 shipped three of, and the export is what makes it measurable.
+ */
+export function applyGateResolution(item: Item, approve: boolean): void {
+  if (!approve) return;
+  item.status = "active";
+  item.gate = undefined;
+  item.waitingType = undefined;
+  item.waitingOn = undefined;
+  item.waitingSince = undefined;
+  item.gateMsgId = undefined;
+}
+
 /** The three status columns, with the swatch colour each column head carries. */
 const COLUMNS = [
   { key: "ready", label: "Ready", swatch: "var(--ready)", target: "inbox" },
@@ -375,16 +406,36 @@ export class BoardWorkspace {
     );
   }
 
-  async handleGateResolve(itemId: string, approve: boolean): Promise<void> {
+  /**
+   * handleGateResolve is the gate rail's ACTIONABLE half (ready-186).
+   *
+   * A REASON IS REQUIRED, AND THE REFUSAL IS LOCAL (done condition 4). rd's own
+   * gate commands carry `--reason`, and a gate ruling with no reason is the one
+   * thing the audit history cannot reconstruct later: §22.4 says approve and
+   * reject are indistinguishable on the wire EXCEPT by that reason, so an empty
+   * one publishes a status event whose Content is "" and leaves a reviewer with
+   * a transition and no ruling. The refusal happens BEFORE the writer is called
+   * — nothing is signed, nothing is published, and the optimistic patch is never
+   * applied — so an empty-reason click cannot leave the board showing a
+   * resolution that never happened.
+   *
+   * What the board shows the instant the human rules is applyGateResolution's
+   * job (§22.2 / §22.3, above); the revert if the publish is refused is
+   * optimistic()'s.
+   */
+  async handleGateResolve(itemId: string, approve: boolean, reason = ""): Promise<void> {
+    const verb = approve ? "approve" : "reject";
+    if (reason.trim() === "") {
+      this.transientError =
+        `a reason is required to ${verb} the gate on ${itemId} — the ruling IS the record ` +
+        `(rd ${verb} --reason "…"). Nothing was published.`;
+      this.render();
+      return;
+    }
     await this.optimistic(
       itemId,
-      (it) => {
-        if (approve) {
-          it.gate = undefined;
-          it.status = "active";
-        }
-      },
-      () => this.writer.resolveGate(itemId, approve),
+      (it) => applyGateResolution(it, approve),
+      () => this.writer.resolveGate(itemId, approve, reason.trim()),
     );
   }
 
@@ -615,11 +666,57 @@ export class BoardWorkspace {
         el("span", { className: "gate-item-age", textContent: ageLabel(item.updatedAt) }),
       ]);
       button.addEventListener("click", () => this.selectItem(item.id));
-      li.append(button);
+      li.append(button, this.buildGateResolve(item));
       list.append(li);
     }
     rail.append(list);
     return rail;
+  }
+
+  /**
+   * buildGateResolve is the control that makes a pending gate RESOLVABLE from
+   * wherever it is shown — the rail itself and the detail pane's banner both
+   * mount this same element (ready-186).
+   *
+   * WHY IN THE RAIL AND NOT ONLY THE DETAIL PANE. Gates are the one thing in rd
+   * that genuinely requires a human, and the rail is the page's signature
+   * element precisely because of that. A rail you can only read sends the human
+   * back to the terminal to type `rd approve`, which is the outcome this exists
+   * to remove; the detail pane keeps its copy because that is where the context
+   * for the ruling (dependencies, history, the gate's own description) is.
+   *
+   * THE REASON FIELD IS PART OF THE CONTROL, NOT A PROMPT. window.prompt() is
+   * blocked in some embeddings and untestable in a headless browser, and a
+   * modal would hide the item the ruling is about. The input carries no default
+   * — an empty one is refused by handleGateResolve, which is the enforcement;
+   * this is only where it is typed.
+   *
+   * A KEY THAT CANNOT WRITE GETS NO BUTTONS AND IS TOLD WHY (done condition 6),
+   * the same shape buildActions uses: a disabled-looking button that fails on
+   * click is a worse answer than saying "read-only, and here is why". This is
+   * the CLIENT-SIDE half only — the read-side authority gate (§3.4 read-trust)
+   * refuses an ungranted key's gate-resolve events independently, and neither
+   * check substitutes for the other.
+   */
+  private buildGateResolve(item: Item): HTMLElement {
+    const wrap = el("div", { className: "gate-resolve" });
+    const readOnly = this.writer.whyReadOnly?.();
+    if (readOnly) {
+      wrap.append(el("p", { className: "read-only-note gate-read-only", textContent: readOnly }));
+      return wrap;
+    }
+    const reason = el("input", {
+      className: "gate-reason-input",
+      type: "text",
+      placeholder: "Reason (required)",
+    });
+    reason.setAttribute("aria-label", `Reason for resolving the gate on ${item.id}`);
+    const approve = el("button", { className: "gate-approve act pri", textContent: "Approve" });
+    approve.addEventListener("click", () => void this.handleGateResolve(item.id, true, reason.value));
+    const deny = el("button", { className: "gate-deny act", textContent: "Reject" });
+    deny.addEventListener("click", () => void this.handleGateResolve(item.id, false, reason.value));
+    wrap.append(reason, approve, deny);
+    return wrap;
   }
 
   // ── left tree ─────────────────────────────────────────────────────────────
@@ -1254,11 +1351,7 @@ export class BoardWorkspace {
       const banner = el("div", { className: "gate-banner" }, [
         el("span", { textContent: `Gate: ${item.gate}` }),
       ]);
-      const approve = el("button", { className: "gate-approve act pri", textContent: "Approve" });
-      approve.addEventListener("click", () => void this.handleGateResolve(item.id, true));
-      const deny = el("button", { className: "gate-deny act", textContent: "Deny" });
-      deny.addEventListener("click", () => void this.handleGateResolve(item.id, false));
-      banner.append(approve, deny);
+      banner.append(this.buildGateResolve(item));
       pane.append(banner);
     }
 
