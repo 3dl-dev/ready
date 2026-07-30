@@ -498,6 +498,16 @@ interface UnestablishedBoard {
  * holds. Collapsing them into one hedged sentence would have understated the
  * second and overstated the first.
  *
+ * ready-f6b ADDS A THIRD SENTENCE, AND KEEPS IT SEPARATE FROM THE SECOND for the
+ * same reason the second exists. Witness C proves the omission from the served
+ * GRANTS — their lowest key epoch is above 1, and every confidential board starts
+ * at epoch 1 — with no card involved at all. Folding those boards into the
+ * card-carried sentence would tell the reader that "a signature-verified sealed
+ * card on the board is older than the earliest grant the relays served", which on
+ * this shape is simply not true of the evidence: the whole point of the case is
+ * that no card contradicts anything. The label must not assert more than the page
+ * can prove, so it says what it actually has — the grant set starts too high.
+ *
  * Returns "" when every confidential board's cutover was established, so the
  * ordinary case adds no paragraph.
  */
@@ -522,6 +532,17 @@ function unestablishedConfidentialityNotice(boards: UnestablishedBoard[]): strin
       `ON ${withheld.join(", ")} THE OMISSION IS PROVEN, not merely possible: a signature-verified sealed card on the board is older than the earliest grant the relays served, or names a key epoch BELOW the lowest epoch any served grant covers. ` +
         `Either one is only possible if grants OLDER than the ones served exist, so the instant those grants imply is too late and cannot be used. ` +
         `No relay can forge this signal — sealing a card needs a board key and signing it needs its author's key — and it cannot hide the signal without also withholding the cards that carry it.`,
+    );
+  }
+  const firstEpoch = boards
+    .filter((b) => b.why === "first-epoch-missing")
+    .map((b) => b.name)
+    .sort();
+  if (firstEpoch.length > 0) {
+    parts.push(
+      `ON ${firstEpoch.join(", ")} THE OMISSION IS PROVEN BY THE GRANTS THEMSELVES: every owner-signed grant that reached this page names a key epoch ABOVE 1, and a board's first key is always key epoch 1. ` +
+        `The grant that minted key epoch 1 is therefore missing from this answer, and it is older than every grant that arrived — so the instant those grants imply is too late and cannot be used. ` +
+        `No card is involved in this one: it is the served grants that do not add up, so no card the board keeps or drops can change it.`,
     );
   }
   return parts.join(" ");
