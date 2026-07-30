@@ -6,47 +6,60 @@
 // the chain). Deleting it — `if (false) {` in place of the status comparison —
 // left 837/837 vitest green on this tree.
 //
-// WHY NOTHING COULD SEE IT, and why the fix is a TABLE HERE rather than another
-// end-to-end case. Every other test drives this branch through a projection, and
-// a projection cannot produce the shapes the clause excludes: the fold PROMOTES
-// any non-terminal, non-blocked item that declares a gate to `waiting`, and
-// CLEARS every gate field on a terminal one. So an active/inbox/scheduled item
-// carrying a live gate does not exist downstream of the fold, and no
-// harness-altitude test can construct one. This is the same conclusion
-// pkg/views reached for the identical clause on the Go side —
-// TestGatesFilter_StatusClauseIsExhaustive says in its own header that "at the
-// CLI altitude the status clause is unfalsifiable" and pins it with a table
-// instead. This file is that table's TypeScript counterpart.
+// THIS FILE IS THE REMAINDER, NOT THE PROOF. The proof lives in
+// testdata/write.vectors.json, the file cmd/rd/writevectors_test.go and
+// web/board/src/board/writeevents.vectors.test.ts BOTH replay, so rd and the
+// browser are held to one artifact instead of two hand-written tables that can
+// drift. Ten of the sixteen (status × verb) rows are expressed there:
 //
-// AND IT IS NOT A DEAD BRANCH. buildWrite takes `items` from the CALLER, and the
-// caller is a second, independently-written fold (lib/fold.ts, the TS mirror of
-// pkg/sync.ProjectItems). "The fold guarantees this cannot happen" is exactly
-// the assumption ready-e0e and ready-186 both falsified — two implementations of
-// one predicate, disagreeing, with nothing comparing them. The guard is the
-// write path's own defence against that, so it gets its own witness.
+//   waiting  + approve/reject → gate_approve, gate_reject_keeps_gate_open
+//   blocked  + approve/reject → gate_approve_on_blocked_and_gated_item_never_authors_blocked
+//                               gate_reject_on_blocked_and_gated_item_never_authors_blocked
+//   done/cancelled/failed × approve/reject
+//                            → gate_{approve,reject}_refuses_a_{done,cancelled,failed}_item_whose_gate_tag_survived
+//
+// The terminal six reach the STATUS clause rather than the no-pending-gate
+// clause above it because §9.5 clears waiting_type/waiting_on/waiting_since/
+// gate_msg_id on a terminal item but NOT `gate` — measured, not assumed: with
+// the TS fold additionally clearing `gate` there, all six fail with "has no
+// pending gate" instead of "is not waiting or blocked". So the vectors referee
+// §9.5 across the two folds as well as the status clause across the two writers.
+//
+// WHAT REMAINS HERE, AND EXACTLY WHY IT CANNOT BE A VECTOR. Three rows —
+// inbox, active, scheduled — times two verbs. A vector's seed is published as a
+// real card and then FOLDED before the write path sees it, on both sides
+// (cmd/rd's runApproveNostr → nostrResolveItem → pkg/sync.ProjectItems; the
+// browser harness's envFor → lib/fold.ts's projectItems). §9.4 promotes any
+// non-terminal, non-blocked item that declares a gate to `waiting`. So a vector
+// seeded at inbox/active/scheduled with a live gate does not arrive at the
+// write path in that status at all — it arrives as `waiting` and is ADMITTED.
+// Measured on rd, not asserted: seeding each status through the real
+// writevectors harness and calling the real runApproveNostr/runRejectNostr
+// returns nil and appends 2 events for inbox, active and scheduled (folded
+// status "waiting" in all three), and refuses for done, cancelled and failed.
+// A vector for these rows would therefore pin §9.4's promotion, which
+// testdata/fold.vectors.json already pins, and would say nothing about the
+// status clause.
+//
+// AND THE CLAUSE IS STILL NOT DEAD FOR THEM. buildWrite takes `items` from the
+// CALLER, and the caller is a second, independently-written fold. "The fold
+// guarantees this cannot happen" is exactly the assumption ready-e0e and
+// ready-186 both falsified — two implementations of one predicate, disagreeing,
+// with nothing comparing them. These six rows are the write path's own defence
+// against a caller whose promotion is wrong or absent.
 import { describe, expect, it } from "vitest";
 import { xOnlyPubkey } from "../lib/schnorrsign";
 import type { Item } from "../lib/state";
-import {
-  StatusActive,
-  StatusBlocked,
-  StatusCancelled,
-  StatusDone,
-  StatusFailed,
-  StatusInbox,
-  StatusScheduled,
-  StatusWaiting,
-} from "../lib/state";
+import { StatusActive, StatusInbox, StatusScheduled, StatusWaiting } from "../lib/state";
 import { buildWrite, WriteRefusedError, type WriteEnv } from "./writeevents";
 
 const SECRET = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef";
 const OWNER = xOnlyPubkey(SECRET);
 const BOARD_D = "proj";
 
-/** An item carrying a LIVE gate in whatever status the row names. The gate
- * fields are held constant across every row, so status is the only variable —
- * the property pkg/views.TestGatesFilter_StatusClauseIsExhaustive relies on to
- * make its table discriminate per clause. */
+/** An item carrying a LIVE gate in whatever status the row names — the shape
+ * §9.4's promotion is supposed to make unreachable, supplied directly because
+ * that is the assumption under test. */
 function gatedItem(status: string): Item {
   return {
     id: "g-1",
@@ -78,32 +91,17 @@ function envWith(item: Item): WriteEnv {
   };
 }
 
-describe("buildWrite's gate ruling refuses every status rd's §9.2 excludes", () => {
-  const cases: { status: string; admitted: boolean; why: string }[] = [
-    { status: StatusWaiting, admitted: true, why: "the plain pending-gate case" },
-    {
-      status: StatusBlocked,
-      admitted: true,
-      why: "ready-e0e: blocked-and-gated is the ordinary design gate, and the ruling is what unblocks the chain",
-    },
-    { status: StatusInbox, admitted: false, why: "an untriaged item has no pending escalation to rule on" },
-    { status: StatusActive, admitted: false, why: "an active item is being worked, not awaiting a ruling" },
-    { status: StatusScheduled, admitted: false, why: "rd gate forces a scheduled item to waiting" },
-    { status: StatusDone, admitted: false, why: "resolving a gate on a closed item is impossible" },
-    { status: StatusCancelled, admitted: false, why: "resolving a gate on a closed item is impossible" },
-    { status: StatusFailed, admitted: false, why: "resolving a gate on a closed item is impossible" },
+describe("buildWrite's gate ruling refuses the un-promoted statuses no vector can express", () => {
+  const cases: { status: string; why: string }[] = [
+    { status: StatusInbox, why: "an untriaged item has no pending escalation to rule on" },
+    { status: StatusActive, why: "an active item is being worked, not awaiting a ruling" },
+    { status: StatusScheduled, why: "rd gate forces a scheduled item to waiting" },
   ];
 
   for (const op of ["gate_approve", "gate_reject"] as const) {
     for (const c of cases) {
-      it(`${op} on a ${c.status} item is ${c.admitted ? "built" : "refused"} — ${c.why}`, () => {
+      it(`${op} on a ${c.status} item is refused — ${c.why}`, () => {
         const env = envWith(gatedItem(c.status));
-        if (c.admitted) {
-          const built = buildWrite(env, { op, itemId: "g-1", reason: "ruled" });
-          // Not trivially empty: an admitted ruling really publishes events.
-          expect(built.length).toBeGreaterThan(0);
-          return;
-        }
         let thrown: unknown;
         try {
           buildWrite(env, { op, itemId: "g-1", reason: "ruled" });
@@ -111,20 +109,19 @@ describe("buildWrite's gate ruling refuses every status rd's §9.2 excludes", ()
           thrown = e;
         }
         expect(thrown, `${op} on ${c.status} must be refused`).toBeInstanceOf(WriteRefusedError);
-        // THE CODE, not merely "it threw": every excluded row must be refused by
-        // the STATUS clause specifically. That matters most for the terminal
-        // rows — the gate branch does NOT call refuseTerminal, so this clause is
-        // the ONLY thing standing between a closed-but-still-gated item and a
-        // signed ruling on it. Delete the clause and `gate_approve` on a done
-        // item builds and signs, which is a state rd itself refuses (§9.2).
+        // THE CODE, not merely "it threw": the refusal has to come from the
+        // STATUS clause specifically, or this row is indistinguishable from the
+        // no-gate refusal below.
         expect((thrown as WriteRefusedError).code).toBe("not_waiting");
       });
     }
   }
 
-  // ANTI-TAUTOLOGY for the whole table: the refusals above are about STATUS, not
-  // about the gate being absent. An item with no gate at all is refused by a
-  // DIFFERENT clause, so "everything is refused" cannot explain the rows.
+  // ANTI-TAUTOLOGY: the refusals above are about STATUS, not about the gate
+  // being absent, so "everything is refused" cannot explain them. The
+  // cross-implementation version of this discriminator is the vector
+  // gate_approve_refuses_with_no_pending_gate; this local copy exists so the
+  // three rows above are self-discriminating without a second file.
   it("an item with no pending gate is refused as no_gate, not as not_waiting", () => {
     const item = gatedItem(StatusWaiting);
     item.gate = undefined;
