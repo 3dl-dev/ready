@@ -68,6 +68,13 @@
 // For keys= that rejection is TOTAL by construction (portfoliokeys.ts): no
 // proper prefix of a valid blob decodes, so a portfolio link cannot arrive
 // half-eaten and render as a portfolio that merely looks small.
+//
+// A LINK CARRYING DECRYPTION KEYS MUST NAME ITS VIEWER (ready-de7). cek= without
+// pk=, and keys= without pk=, are both refused — see parseFragment. The reason is
+// not tidiness: pk= is what makes main.ts mint a read-only session, and read-only
+// is the whole justification for keyring.ts's applyFragmentKeys skipping the four
+// grant checks. A key-bearing fragment with no viewer fell through to the login
+// form, where a NIP-07 login turned it into a SIGNING session holding link keys.
 
 import { hexToBytes } from "./sha256";
 import { decodePortfolioKeys, type PortfolioKeys } from "./portfoliokeys";
@@ -115,7 +122,14 @@ export type ParsedFragment =
       viewer?: string;
       /** Secret key material from `cek=` (and legacy `ltk=`). Absent for a
        * non-confidential board (nothing to decrypt) and for every default/share
-       * link. */
+       * link.
+       *
+       * INVARIANT (ready-de7): if `keys.ceks` is non-empty then `viewer` is
+       * present. parseFragment refuses the other combination, so a CEK can only
+       * ever reach the page inside a fragment that also says which pubkey to
+       * open as — which is what makes the session read-only, which is what
+       * justifies applyFragmentKeys skipping the grant checks. `keys.ltk` alone
+       * is exempt (see the throw in parseFragment): it decrypts nothing. */
       keys?: FragmentKeys;
       /** ready-280: relay=candidates dropped by parseRelays because a browser
        * on THIS page's origin cannot open them (see parseRelays). Present only
@@ -205,7 +219,53 @@ export function parseFragment(hash: string, secure = true): ParsedFragment {
     if (dropped.length > 0) out.droppedRelays = dropped;
     if (pk !== null) out.viewer = decodeHexKeyParam("pk", pk);
     const keys = decodeKeyParams(params.get("cek"), params.get("ltk"));
-    if (keys) out.keys = keys;
+    if (keys) {
+      // ready-de7 — A cek= WITHOUT pk= IS REFUSED, because pk= is what makes the
+      // resulting session read-only, and read-only is the entire justification
+      // for the grant-check bypass those keys are about to take.
+      //
+      // keyring.ts's applyFragmentKeys deliberately skips the four checks
+      // deriveBoardKeyring applies to a relay-served grant (signature, owner
+      // authorship, p-tag, ECDH binding). The argument for that is that the key
+      // did not come from a relay: it came out of the reader's own `rd`, which
+      // already ran those checks locally, AND the session holding it cannot
+      // sign, so the key buys reading and nothing else. main.ts makes the second
+      // half true by minting `method: "readOnly"` — but ONLY for a fragment that
+      // names a viewer in pk=. Without pk= there is no viewer to open as, so
+      // main.ts falls through to the login form, and a visitor who then logs in
+      // with a NIP-07 extension gets a SIGNING session that is nonetheless
+      // handed the link's CEKs. The premise the bypass rests on was simply false
+      // on that path, and nothing anywhere said so.
+      //
+      // Binding the two parameters here is the structural fix: after this,
+      // `keys.ceks` non-empty implies `viewer` present implies the identity
+      // main.ts mints is read-only (main.fragmentkey.test.ts, "the pk= identity
+      // CANNOT SIGN"), which implies no signer reaches NostrBoardWriter
+      // (main.test.ts, ready-1af). The premise is then enforced for every
+      // production path into applyFragmentKeys, rather than assumed by a doc
+      // comment. Rejecting rather than dropping the keys is the same rule the
+      // rest of this file follows: a link that arrived without the half that
+      // says who it is for is DAMAGED, and gets main.ts's "ask for a fresh link"
+      // notice instead of quietly becoming a weaker link.
+      //
+      // THE PORTFOLIO SHAPE ALREADY DID EXACTLY THIS (see the keys=-without-pk=
+      // throw below, ready-4d9). This branch was the asymmetry, not the new
+      // rule.
+      //
+      // SCOPED TO cek= ON PURPOSE. A legacy ltk=-only link carries no decryption
+      // power at all — nothing in this app reads BoardKeyring.ltk() (module
+      // header), an LTK cannot open a card envelope, and applying one adds no
+      // readable plaintext — so refusing it would strand an old link for no
+      // security gain. Its only effect on a page is the strictly TIGHTENING one:
+      // hasLinkKeys pushes the board's confidentiality to "unknown", which
+      // withholds more, never less (confidentiality.ts). `ceks` non-empty is
+      // exactly "cek= was present": decodeKeyParams throws on a cek= that
+      // decodes to no keys.
+      if (keys.ceks.length > 0 && pk === null) {
+        throw new Error("fragment: cek= is present but pk= is missing — the link is incomplete");
+      }
+      out.keys = keys;
+    }
     return out;
   }
 

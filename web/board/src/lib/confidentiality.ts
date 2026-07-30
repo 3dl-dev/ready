@@ -67,15 +67,27 @@ import { verifyEvent, type NostrEvent } from "./nostrevent";
  * WHAT THIS CAN AND CANNOT ESTABLISH, stated because it is easy to over-trust.
  * A browser cannot verify that a relay answered COMPLETELY — there is no proof
  * of non-omission in NIP-01 — so "public" never means "proven public", it means
- * "no evidence of confidentiality reached this page". The residual after round 2
- * is narrower than round 1's, and precise: BOTH witnesses below are testimony
- * carried BY the sealed cards, so a relay defeats them only by withholding every
- * sealed card that carries either signal — every one older than the cutover it
- * wants to manufacture, AND every one naming an epoch below the grants it keeps —
- * on top of the grants themselves, and with no key-bearing link in the reader's
- * hands. That snapshot is a board with no old cards and no old epochs, i.e. one
- * whose visible history begins at the manufactured cutover. It cannot be detected
- * from inside a single relay answer, and saying so is the honest limit.
+ * "no evidence of confidentiality reached this page".
+ *
+ * ROUND 2's RESIDUAL WAS NOT ONLY AN ATTACK, and ready-f6b closed it. Witnesses A
+ * and B are both testimony carried BY the sealed cards, so they fall silent on any
+ * board whose retained card versions all postdate the cutover being asserted — and
+ * a ROTATED board reaches that state with every party behaving correctly, since a
+ * card revised after a rotation legitimately replaces its pre-rotation version at
+ * the newer epoch. Witness C rides on the GRANT SET instead: epoch 1 is where every
+ * confidential board starts, so a served grant set whose lowest epoch is above 1 is
+ * missing the earliest grant, whatever the cards look like. See
+ * firstEpochGrantMissing.
+ *
+ * THE RESIDUAL AFTER C, stated exactly. C sees an absent epoch-1 grant, not a LATE
+ * one. A relay that serves an epoch-1 grant published well after the board really
+ * went confidential — one addressed to a member admitted long afterwards — puts the
+ * floor back at 1 and manufactures a cutover at that grant's instant; witness A
+ * catches it only if some sealed card older than it survives in the answer, so the
+ * relay must also withhold every such card, and hold no key-bearing link back. That
+ * is a deliberately constructed answer, not a shape any conformant party reaches on
+ * its own. It cannot be detected from inside a single relay answer, and saying so
+ * is the honest limit.
  */
 export type Confidentiality = "public" | "confidential" | "unknown";
 
@@ -90,8 +102,14 @@ export type Confidentiality = "public" | "confidential" | "unknown";
  *  - "grants-withheld": a grant DID arrive, and a signature-verified sealed card
  *    on the same board contradicts it. Omission is then PROVEN, not merely
  *    possible: the answer is internally inconsistent.
+ *  - "first-epoch-missing": grants DID arrive, no card contradicts them, but the
+ *    lowest epoch they name is above 1 — so the grant that minted epoch 1, which
+ *    every confidential board has and which is older than every grant served, is
+ *    not in this answer (ready-f6b). Also a proven omission, but proven by the
+ *    GRANT SET rather than by a card, and it must not borrow the card-carried
+ *    wording: on this shape no card contradicts anything.
  */
-export type WhyUnestablished = "no-grant" | "grants-withheld";
+export type WhyUnestablished = "no-grant" | "grants-withheld" | "first-epoch-missing";
 
 /** BoardConfidentiality is confidentialityOf's answer: the state, plus — only on
  * "unknown" — which of the two reasons applies. */
@@ -193,6 +211,69 @@ export function grantsWithheld(cutover: number, keyring: BoardKeyring, coord: st
 }
 
 /**
+ * FIRST_EPOCH is the epoch every confidential board starts at, by spec and not by
+ * convention: §11.10 says epochs are integers >= 1 and bootstrap mints epoch 1,
+ * and deriveBoardKeyring rejects any grant naming less. §11.11 mints a rotation at
+ * OldEpoch + 1, so 1 is the floor of the whole epoch sequence on every board.
+ */
+const FIRST_EPOCH = 1;
+
+/**
+ * firstEpochGrantMissing is WITNESS C (ready-f6b): the served GRANT SET itself
+ * says the earliest grant is not in it.
+ *
+ * WHY A THIRD WITNESS. A and B are both testimony carried BY the sealed cards, so
+ * they are silent on any board whose retained card versions all postdate the
+ * cutover being asserted — and that is not an exotic snapshot a relay has to
+ * construct. A card is addressable at `30302:<pubkey>:<itemID>` (§18.1) and every
+ * write seals under CurrentEpoch (§11.14), so a card revised after a rotation
+ * legitimately REPLACES its pre-rotation version at the newer epoch. A rotated
+ * board whose cards have all been touched since carries nothing older than the
+ * rotation and nothing naming the older epoch, and ready-daf's fixed reader
+ * happily reported "confidential — established" about the rotation instant and
+ * grandfathered every plaintext card written before it.
+ *
+ * THE WITNESS. Epoch 1 is where every confidential board starts (FIRST_EPOCH
+ * above), and epoch N's grants cannot precede the rotation that minted epoch N.
+ * So a served grant set whose LOWEST epoch is above 1 is missing the epoch-1
+ * grant, and that grant is older than every grant that did arrive. The cutover is
+ * a MINIMUM over what arrived, so the instant on offer is provably later than the
+ * truth — the exact fail-open condition — and it must not be used. Unlike A and B
+ * this needs no card at all, so no card retention policy can silence it.
+ *
+ * WHY IT IS NOT THE WIDENING ready-daf REJECTED. That proposal was "a sealed card
+ * at ANY epoch no served grant covers", and it was rejected on conf-004 (a card at
+ * epoch 9 with no epoch-9 grant anywhere): a missing LATER grant cannot move a
+ * MINIMUM, so quarantining costs visibility for no security gain. This is the
+ * opposite comparison. It looks only DOWNWARD, at the one epoch whose grant is by
+ * construction the EARLIEST, and it fires only when that grant is absent. An
+ * internal gap — epochs 1 and 3 served, 2 missing — is deliberately NOT a witness
+ * here, for precisely the reason conf-004 is not: the minimum still stands.
+ *
+ * WHY IT COSTS NOTHING ON A HEALTHY ROTATED BOARD. §16.10 (ready-889) gives a
+ * CEK-bearing grant a PER-EPOCH addressable slot, `<boardD>:<grantee>:e<epoch>`,
+ * exactly so a rotation does not make a relay drop the previous epoch's grant. A
+ * conformant relay therefore keeps serving the epoch-1 grants after any number of
+ * rotations and this returns false. It fires on a board whose epoch-1 grants a
+ * relay chose to omit, or destroyed before that split existed — which is not
+ * hypothetical either: the live `ready` board's first rotation left four grants on
+ * the public relay, all epoch 2, zero epoch 1 (see roleGrantD's note).
+ *
+ * IT SUBSUMES WITNESS B ON WELL-FORMED INPUT, and that is stated rather than acted
+ * on. B needs `lowestEpoch < floor` and epochs are >= 1, so B can only fire when
+ * the floor is already above 1 — where C fires anyway. B is kept because it is not
+ * quite redundant (a malformed card tagged `cek_epoch 0` trips B with the floor at
+ * 1) and because it reports the STRONGER fact, a specific signed card that
+ * contradicts a specific served grant, which is what the notice says out loud; C
+ * can only report that the grant set starts too high. Order below follows that:
+ * the card-carried verdict wins when both apply.
+ */
+export function firstEpochGrantMissing(keyring: BoardKeyring, coord: string): boolean {
+  const floor = keyring.grantEpochFloor(coord);
+  return floor !== null && floor > FIRST_EPOCH;
+}
+
+/**
  * confidentialityOf decides the three-valued state for ONE board, and why.
  *
  * `hasLinkKeys` — this link carries a CEK filed under this coordinate — counts
@@ -219,9 +300,11 @@ export function confidentialityOf(
   const ev = sealedEvidenceOf(events, coord);
   const cutover = keyring.cutover(coord);
   if (cutover !== null) {
-    return grantsWithheld(cutover, keyring, coord, ev)
-      ? { state: "unknown", why: "grants-withheld" }
-      : { state: "confidential", why: null };
+    // The card-carried verdict first: when both apply it is the stronger and more
+    // specific statement, and the notice quotes it.
+    if (grantsWithheld(cutover, keyring, coord, ev)) return { state: "unknown", why: "grants-withheld" };
+    if (firstEpochGrantMissing(keyring, coord)) return { state: "unknown", why: "first-epoch-missing" };
+    return { state: "confidential", why: null };
   }
   if (hasLinkKeys || ev.present) return { state: "unknown", why: "no-grant" };
   return { state: "public", why: null };

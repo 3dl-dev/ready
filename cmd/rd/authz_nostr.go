@@ -60,6 +60,32 @@ const ownerBootstrapLabel = "board author (owner) — bootstrap trust root"
 // error out — but the human-facing line must say so plainly instead of claiming an
 // unqualified "they can read and write" that is not true yet.
 func runNostrGrantRevoke(dir, grantee, role, label string, from int64, claim string) error {
+	// ready-3e1: normalize here too, not just inside publishRoleGrant.
+	//
+	// The forward-secrecy break on a confidential board IS REAL — see
+	// publishRoleGrant's comment (cmd/rd/nostr_grant.go) and
+	// TestConfidentialRevokeUppercaseGrantee_WithholdsNewEpochCEK. What is true
+	// of THIS line specifically is narrower: publishRoleGrant normalizes its
+	// own local copy of grantee first, so by the time rekeyBoardOnRevoke below
+	// reads the log, the revocation is already filed under the canonical
+	// lowercase key and rotationMembership withholds the new CEK on
+	// h.Level == rdSync.LevelRevoked — not on the `exclude` string this
+	// function passes it. So reverting this single line alone does not reopen
+	// the CEK leak (publishRoleGrant's line is what closes it), and no test
+	// asserting the CEK outcome can distinguish the two states.
+	//
+	// This line stands for two smaller, verifiable reasons. (a) `grantee` also
+	// reaches `shortKey(grantee)` in the human-facing summary below, which
+	// would otherwise echo the caller's as-typed case instead of the form the
+	// grant was actually filed under — pinned by
+	// TestRunNostrGrantRevoke_SummaryLine_UsesCanonicalCase. (b) `grantee` is
+	// passed on as rekeyBoardOnRevoke's `exclude`, which rotationMembership
+	// compares by `pk == exclude`: normalizing keeps that redundant check
+	// aligned with the level map it backs up instead of silently never
+	// matching. One canonical string used everywhere in this function, not two
+	// — and do NOT re-narrow the property documented in publishRoleGrant to
+	// match this narrower one.
+	grantee = normalizeHexPubkey(grantee)
 	res, err := publishRoleGrant(grantee, role, label, from, claim)
 	if err != nil {
 		return err
