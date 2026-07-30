@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# reference-transaction — ready-f75 guard.
+#
+# `git stash` (push/pop/apply/drop/clear) all boil down to writing
+# refs/stash, and refs/stash lives in the repository's COMMON .git
+# directory — the one thing every `git worktree` of this repo shares. Two
+# agents dispatched into separate worktrees who both use `git stash` are
+# pushing onto and popping from the SAME stack; entries interleave, and a
+# pop by position can silently apply-then-delete a SIBLING's entry with no
+# error (observed 2026-07-29: 14+ interleaved entries from 10 branches, one
+# agent's pop reverting another's uncommitted files to HEAD).
+#
+# `git alias.stash=...` cannot fix this: git resolves an existing builtin
+# subcommand (stash, status, log, ...) before it ever consults aliases of
+# the same name, so aliasing `stash` to a safe wrapper is silently a no-op
+# (verified empirically — the alias is set, `git config --get alias.stash`
+# proves it, and `git stash` still runs the real builtin). A hook is the
+# only enforcement point that actually fires.
+#
+# The `reference-transaction` hook runs for every ref update in this
+# repository (any worktree — hooks live in the shared .git/hooks/) and CAN
+# abort the transaction by exiting non-zero during the "prepared" state.
+# This hook does exactly one thing: if refs/stash is one of the refs being
+# written, it aborts with a message pointing at the safe replacement
+# (`git wtstash`, backed by scripts/wt-stash.sh, which stores entries under
+# refs/worktree/wtstash/N — a namespace git stores PER WORKTREE at the
+# filesystem level, so it structurally cannot interleave). Every other ref
+# update (branches, refs/worktree/*, etc.) passes through untouched.
+#
+# Installed by scripts/install-git-stash-guard.sh into the common
+# .git/hooks/reference-transaction.
+set -euo pipefail
+
+state="${1:-}"
+[[ "$state" == "prepared" ]] || exit 0
+
+blocked=0
+while read -r _old _new refname; do
+  if [[ "$refname" == "refs/stash" ]]; then
+    blocked=1
+    break
+  fi
+done
+
+if [[ "$blocked" -eq 1 ]]; then
+  cat >&2 <<'EOF'
+git stash is blocked in this repository (ready-f75): refs/stash is shared
+across every git worktree, so stashing here can silently clobber another
+dispatched agent's uncommitted work. Use the worktree-scoped replacement
+instead:
+
+  git wtstash            (push  — same default behavior as `git stash`)
+  git wtstash list
+  git wtstash pop
+  git wtstash apply
+  git wtstash drop
+  git wtstash clear
+
+See scripts/wt-stash.sh for details.
+EOF
+  exit 1
+fi
+
+exit 0
