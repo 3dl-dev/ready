@@ -64,7 +64,12 @@
 //      real in the browser too: main.ts loadBoardItems and nostrwriter.ts
 //      items() both project under the key set of deriveLevels over the board's
 //      owner-signed 39301 grants, the same membership Go's DeriveReadTrust
-//      returns. The two cases below are what hold it there.
+//      returns. FOUR cases hold it there, two per production call site: one pair
+//      that the ungranted key is DROPPED, and one pair — see "THE DISCRIMINATING
+//      CASES" — that the cap-valid grantee is ADMITTED. The second pair is not
+//      redundant: without it an EMPTY set passes everything, because fold.ts's
+//      §3.4 re-derives grants from the folded snapshot and `opts.trusted`'s
+//      CONTENT never gets to decide anything.
 //
 // 3. DOES KEY MATERIAL REACH STORAGE, A URL, OR A LOG? On the write surface, no.
 //    The SealEnvelope {cek, epoch, ltk} lives only in NostrWriterDeps for the
@@ -219,6 +224,18 @@ const GRANT: NostrEvent = sign(OWNER_SEC)({
   ],
   content: "",
 });
+
+/** The SAME contributor key, the SAME grant, but an ordinary BENIGN edit of the
+ * same item — later than GENUINE, so it wins latest-wins wherever it is
+ * admitted. Used by the discriminating cases below, where the grant lives ONLY
+ * in the authority snapshot: a set that fails to carry cap-valid grantees drops
+ * this card, and the failure is a legitimate contributor's work vanishing. */
+const CONTRIB_TITLE = "contributor edit";
+const CONTRIB_CONTEXT = "written by the granted contributor";
+const CONTRIB: NostrEvent[] = buildFullCreate(
+  env(OTHER, 1_790_000_000),
+  item({ title: CONTRIB_TITLE, context: CONTRIB_CONTEXT }),
+).map(sign(OTHER_SEC));
 
 const BOARD_EVENT: NostrEvent = GENUINE.find((e) => e.kind === 30301)!;
 
@@ -400,6 +417,84 @@ describe("ready-c6b — WRITE SURFACE: what a hostile card can make the page sig
       encryptedBoards: null,
     });
     expect(ungated.get(ITEM)!.title).toBe(HOSTILE_TITLE);
+  });
+
+  /**
+   * ── THE DISCRIMINATING CASES, and why the three above are not enough ───────
+   *
+   * MEASURED, not argued: replace BOTH production sites with
+   * `trusted: new Set<string>()` — an EMPTY set — and every case above stays
+   * GREEN. They pin `trusted !== null` and nothing else; the SET'S CONTENT is
+   * invisible to them. The cause is fold.ts's §3.4:
+   *
+   *     if (!trusts(opts, e.pubkey) && !grantTrusts(levels, e.pubkey)) continue;
+   *
+   * `levels` is the fold's OWN deriveLevels over the events IT IS FOLDING, and
+   * every fixture above puts the 39301 grant INSIDE the folded snapshot. So the
+   * fold re-derives the contributor's authority for itself and `opts.trusted`
+   * never decides anything — leaving ready-605's second requirement ("whatever
+   * set is chosen must at minimum admit the board author and every cap-valid
+   * grantee") with no falsifiable test, and main.ts's headline claim that one
+   * derivation feeds both the fold and the writer equally unpinned.
+   *
+   * THESE TWO CASES PUT THE OWNER-SIGNED GRANT IN `authorityEvents` AND NOT IN
+   * THE FETCHED SNAPSHOT. That is not a contrivance: it is the portfolio /
+   * own-boards shape in main(), where authority comes from a kind-only paged REQ
+   * ({ kinds: AUTHORITY_KINDS }) and each board's cards from a per-coordinate one
+   * ({ kinds: BOARD_KINDS, "#a": [coord] }) — genuinely different event sets, and
+   * a grant paged out of the second one is an ordinary outcome. In that shape the
+   * ONLY thing that can admit the contributor is the set main.ts derived from the
+   * authority snapshot, so an empty set (or one that dropped grantees, or one
+   * derived from the wrong snapshot) is now RED. Measured on this branch: shipped
+   * set -> "contributor edit"; empty set -> "Genuine seed".
+   *
+   * One case per CALL SITE, so a regression is attributable: reverting main.ts
+   * alone reds the first, reverting nostrwriter.ts alone reds the second.
+   */
+  it("SECURITY (ready-605): the read-trust set ADMITS a cap-valid grantee whose grant is in the AUTHORITY snapshot only — main.ts's site", async () => {
+    // ANTI-TAUTOLOGY, at the fold: the snapshot alone does NOT carry the
+    // contributor's authority. Folded with an empty set — the fold's own
+    // deriveLevels being all that is left — the edit is dropped. So anything
+    // that admits it below came from `authorityEvents` via opts.trusted, which
+    // is the exact thing under test.
+    const snapshot = [BOARD_EVENT, ...GENUINE, ...CONTRIB];
+    const withoutAuthority = projectItems(snapshot, {
+      trusted: new Set<string>(),
+      maintainers: null,
+      pinnedBoard: COORD,
+      decryptor: null,
+      encryptedBoards: null,
+    });
+    expect(withoutAuthority.get(ITEM)!.title, "the grant is genuinely absent from the folded events").toBe(
+      "Genuine seed",
+    );
+
+    const { items } = await load(snapshot, [BOARD_EVENT, GRANT]);
+    const shown = items.find((i) => i.id === ITEM)!;
+    expect(shown.title, "the granted contributor's edit must survive the gate").toBe(CONTRIB_TITLE);
+    expect(shown.context ?? "").toBe(CONTRIB_CONTEXT);
+  });
+
+  it("SECURITY (ready-605): the WRITER projects under that same set, so the contributor's edit is what a write is rebuilt from — nostrwriter.ts's site", async () => {
+    const { writer } = await load([BOARD_EVENT, ...GENUINE, ...CONTRIB], [BOARD_EVENT, GRANT]);
+
+    // The writer's snapshot is the SAME grant-less event set; its only route to
+    // the contributor's authority is grantLevels, which main.ts filled from the
+    // authority snapshot. A writer projecting under an empty set shows the stale
+    // card here — and would then rebuild every write from it.
+    const projected = writer.items().get(ITEM)!;
+    expect(projected.title, "the writer must see the same board the page does").toBe(CONTRIB_TITLE);
+    expect(projected.context ?? "").toBe(CONTRIB_CONTEXT);
+
+    // And it is what actually reaches the signer: buildCardEvent rebuilds the
+    // whole card from this projection, so a dropped-grantee set would silently
+    // republish the contributor's work as the pre-edit version under the owner's
+    // key. `relays: []` refuses AFTER signing, which is the boundary to observe.
+    await expect(writer.claim(ITEM)).rejects.toBeInstanceOf(RelayRejectedError);
+    const card = signedCard();
+    expect(card, "a card really did reach the extension — otherwise this proves nothing").toBeDefined();
+    expect(tag(card!, "title")).toBe(CONTRIB_TITLE);
+    expect(card!.content).toBe(CONTRIB_CONTEXT);
   });
 
   // ── PROBE: XSS ────────────────────────────────────────────────────────────
