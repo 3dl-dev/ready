@@ -34,7 +34,7 @@
 const BUILD_STAMP: string = import.meta.env.VITE_BUILD_STAMP ?? "dev-local";
 
 import { authTransition, canSign, type AuthTransition } from "./lib/auth";
-import { hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
+import { awaitNip07Extension, hasNip07Extension, loginWithExtension, nip44Provider } from "./lib/nip07";
 import { NostrBoardWriter, NotAuthorizedError } from "./board/nostrwriter";
 import type { BoardWriter } from "./board/write";
 import type { Nip07Signer } from "./lib/publish";
@@ -202,6 +202,16 @@ function renderLogin(
   if (!hasNip07Extension()) {
     extBtn.disabled = true;
     extBtn.title = "No NIP-07 extension detected (window.nostr is not present)";
+    // ready-48f: a real extension injects window.nostr ASYNCHRONOUSLY and loses
+    // this race routinely (see awaitNip07Extension's doc for the measurement),
+    // so the disabled state above is a FIRST GUESS, not a verdict. Without this
+    // re-check the only NIP-07 control on the page stays dead for the life of a
+    // document on which the extension was installed and working.
+    void awaitNip07Extension().then((arrived) => {
+      if (!arrived || !extBtn.isConnected) return;
+      extBtn.disabled = false;
+      extBtn.title = "";
+    });
   }
 
   const npubInput = el("input", { type: "text", placeholder: "npub1..." });
@@ -239,7 +249,7 @@ function renderAwaitingAuthorization(
   identity: Identity,
   board: string,
   npub: string,
-): void {
+): HTMLElement {
   const panel = el("section", { className: "awaiting-authorization" }, [
     el("h2", { textContent: "Awaiting authorization" }),
     el("p", {
@@ -247,6 +257,7 @@ function renderAwaitingAuthorization(
     }),
   ]);
   root.append(panel);
+  return panel;
 }
 
 function renderConnecting(root: HTMLElement): HTMLElement {
@@ -363,45 +374,59 @@ export async function loadBoardItems(
         { kinds: BOARD_KINDS, "#a": [b.coord] },
         { onStatus },
       );
-      const keyring = await deriveBoardKeyring(
-        authorityEvents,
-        identity.pubkey,
-        b.ownerPubkey,
-        b.boardD,
-        unwrap,
-      );
-      // ready-df0/ready-4d9: a key-bearing link supplies the CEK the page could
-      // never unwrap for itself (no secret key here, so no ECDH). Looked up by
-      // THIS board's coordinate, so a key the link carries for another board is
-      // never applied here — with a portfolio link the map genuinely holds other
-      // boards' keys, which is what makes this lookup a control rather than a
-      // formality. Applied AFTER derivation so it adds keys without displacing
-      // anything the signed grants established, cutover above all. See
-      // applyFragmentKeys.
-      const linkKeys = fragmentKeys?.get(b.coord);
-      if (linkKeys) applyFragmentKeys(keyring, b.coord, linkKeys);
-      // ready-daf: three-valued, and computed from the board's OWN snapshot
-      // plus the link — not from the presence of relay-supplied grants alone,
-      // whose absence used to read as "public".
-      const { state, why } = confidentialityOf(keyring, b.coord, events, linkKeys !== undefined);
+      /**
+       * deriveRead is the WHOLE read-side derivation for this board, in ONE
+       * place: keyring, confidentiality decision, quarantine set, read-trust set
+       * and the ItemSource built from them.
+       *
+       * ready-48f made it a function rather than a straight line so the live
+       * subscription can redo it when an OWNER-SIGNED grant arrives, instead of
+       * the page holding its load-time authority snapshot for the life of the
+       * tab. It is deliberately the same code both times: a second, live-only
+       * derivation is exactly how the page and rd would come to disagree.
+       */
+      const deriveRead = async (authority: NostrEvent[], snapshot: NostrEvent[]) => {
+        const keyring = await deriveBoardKeyring(authority, identity.pubkey, b.ownerPubkey, b.boardD, unwrap);
+        // ready-df0/ready-4d9: a key-bearing link supplies the CEK the page could
+        // never unwrap for itself (no secret key here, so no ECDH). Looked up by
+        // THIS board's coordinate, so a key the link carries for another board is
+        // never applied here — with a portfolio link the map genuinely holds other
+        // boards' keys, which is what makes this lookup a control rather than a
+        // formality. Applied AFTER derivation so it adds keys without displacing
+        // anything the signed grants established, cutover above all. See
+        // applyFragmentKeys.
+        const lk = fragmentKeys?.get(b.coord);
+        if (lk) applyFragmentKeys(keyring, b.coord, lk);
+        // ready-daf: three-valued, and computed from the board's OWN snapshot
+        // plus the link — not from the presence of relay-supplied grants alone,
+        // whose absence used to read as "public".
+        const { state, why } = confidentialityOf(keyring, b.coord, snapshot, lk !== undefined);
+        const encryptedBoards = encryptedBoardsOf(keyring, state);
+        // ready-605: the read-trust set for THIS board, derived from the
+        // OWNER-SIGNED authority snapshot and used by BOTH the page's projection
+        // below and the writer's own (via grantLevels). See this function's
+        // header for why it is grant-derived and why self is not in it. Because
+        // this is the only thing that decides trust, re-deriving it from a LATER
+        // snapshot cannot admit anything the owner did not sign — see
+        // LiveBoard.refreshAuthority.
+        const grants = deriveLevels(verifiedEvents(authority), b.ownerPubkey, b.boardD);
+        const src = foldItemSource(
+          {
+            trusted: new Set(grants.levels.keys()),
+            maintainers: null,
+            pinnedBoard: b.coord,
+            decryptor: keyring,
+            encryptedBoards,
+          },
+          b.coord,
+        );
+        return { keyring, state, why, encryptedBoards, grants, src, granted: grants.levels.has(identity.pubkey) };
+      };
+
+      const read = await deriveRead(authorityEvents, events);
+      const { keyring, state, encryptedBoards, grants, src } = read;
       if (state !== "public") confidential = true;
-      if (state === "unknown") unestablished.push({ name: b.title || b.boardD, why: why ?? "no-grant" });
-      const encryptedBoards = encryptedBoardsOf(keyring, state);
-      // ready-605: the read-trust set for THIS board, derived once from the
-      // owner-signed authority snapshot and used by BOTH the page's projection
-      // below and the writer's own (via grantLevels). See this function's
-      // header for why it is grant-derived and why self is not in it.
-      const grants = deriveLevels(verifiedEvents(authorityEvents), b.ownerPubkey, b.boardD);
-      const src = foldItemSource(
-        {
-          trusted: new Set(grants.levels.keys()),
-          maintainers: null,
-          pinnedBoard: b.coord,
-          decryptor: keyring,
-          encryptedBoards,
-        },
-        b.coord,
-      );
+      if (state === "unknown") unestablished.push({ name: b.title || b.boardD, why: read.why ?? "no-grant" });
       const boardItems = src.loadItems(events);
       out.push(...boardItems);
 
@@ -455,7 +480,7 @@ export async function loadBoardItems(
       // produced these items (same options, same keyring: a re-fold under
       // different options would be a second, divergent projection), and the
       // writer whose snapshot must stay in step with it.
-      live.push({
+      const lb: LiveBoard = {
         coord: b.coord,
         events: [...events],
         seen: new Set(events.map(eventIdentity)),
@@ -463,7 +488,19 @@ export async function loadBoardItems(
         items: boardItems,
         src,
         writer,
-      });
+        authority: [...authorityEvents],
+        granted: read.granted,
+        refreshAuthority: async () => {},
+      };
+      // ready-48f: RE-DERIVE THE READ SIDE when the relay pushes an owner-signed
+      // grant. See LiveBoard.refreshAuthority for what this may and may not
+      // change, and why it cannot admit an event the owner did not sign.
+      lb.refreshAuthority = async () => {
+        const next = await deriveRead(lb.authority, lb.events);
+        lb.src = next.src;
+        lb.granted = next.granted;
+      };
+      live.push(lb);
 
       // ready-27b: what this reader can honestly say about THIS board, decided
       // here because this is the only place the board's own keyring, its
@@ -605,11 +642,35 @@ function boardStatusOf(
  * fold that produced the current items, and the writer built from the same
  * snapshot.
  *
- * `src` is CARRIED, not rebuilt. The projection depends on the keyring, the
- * confidentiality gate and the pinned coordinate that were derived from the
- * owner-signed authority snapshot at load; re-deriving any of that from the live
- * stream would let a pushed event change what this session can read or is
- * willing to write. Live events are ITEM state. Authority is not live.
+ * READ AUTHORITY IS LIVE; WRITE AUTHORITY IS NOT (ready-48f, narrowing
+ * ready-4359's "authority is not live").
+ *
+ * The original rule froze `src` — keyring, confidentiality gate, read-trust set
+ * — at load, on the reasoning that "re-deriving any of that from the live stream
+ * would let a pushed event change what this session can read or is willing to
+ * write". Measured against the walk that rule exists to make possible
+ * (scripts/live-stranger-walk.mjs), it also froze the thing the product is FOR:
+ * the owner ran `rd grant --claim`, the kind-39301 landed on the open page — it
+ * is in BOARD_KINDS, so the subscription had it all along — and the titles
+ * stayed "[encrypted]" until a reload, because the keyring that could open them
+ * was never re-derived.
+ *
+ * WHY RE-DERIVING IS SAFE, AND WHAT ACTUALLY GUARDS IT. The guard was never the
+ * frozen snapshot; it is the derivation. deriveBoardKeyring and deriveLevels
+ * schnorr-verify every event and drop any grant not signed by THIS BOARD'S
+ * OWNER (rolegrant.ts's `g.boardOwner !== boardAuthor` and signerMayGrant), so a
+ * hostile or merely noisy relay cannot introduce authority by pushing events —
+ * exactly as it cannot at load, where the same events arrive over the same
+ * socket. What a later snapshot CAN do is what it should: admit a key the owner
+ * has just granted, and drop one the owner has just revoked. That is what rd
+ * projects from the same events, which is the property this whole page is built
+ * to preserve.
+ *
+ * WHAT IS STILL FROZEN: `writer`. Write authority, the write-side CEK and the
+ * confidentiality decision the writer was constructed with are NOT re-derived,
+ * so no pushed event can turn a session that could not write into one that can.
+ * A key granted while the page is open reads live and must reload to write.
+ * That is the conservative half of the original rule, kept deliberately.
  */
 export interface LiveBoard {
   coord: string;
@@ -630,6 +691,20 @@ export interface LiveBoard {
   items: Item[];
   src: ItemSource;
   writer: NostrBoardWriter;
+  /** The owner-signed authority snapshot `src` was derived from — the kind-30301
+   * board definitions and kind-39301 grants the load fetched, plus every grant
+   * the live subscription has appended since. */
+  authority: NostrEvent[];
+  /** Whether THIS viewer's key is in the derived grant levels for this board.
+   * The page's "awaiting authorization" panel is a statement about exactly this,
+   * so it is read from the derivation rather than inferred from whether a title
+   * happened to decrypt. */
+  granted: boolean;
+  /** Re-runs the READ-side derivation over `authority` (see this interface's
+   * doc). Called by startLiveUpdates before a re-fold, and only when a kind-39301
+   * has actually arrived — every other pushed event leaves authority untouched
+   * and skips the NIP-44 round trip to the signer that this costs. */
+  refreshAuthority: () => Promise<void>;
 }
 
 /** Milliseconds of quiet before a burst of pushed events is folded. One rd
@@ -682,8 +757,30 @@ export function startLiveUpdates(args: {
    */
   const dirty = new Set<string>();
 
-  const refold = (): void => {
+  /**
+   * Boards that received an owner-signed-candidate kind-39301 since the last
+   * fold, and therefore need their READ authority re-derived before it (see
+   * LiveBoard's doc for why that is safe and what it deliberately does not
+   * touch). Separate from `dirty` because re-derivation costs a NIP-44 round
+   * trip to the extension per grant, and the overwhelmingly common live event is
+   * a card, not a grant.
+   */
+  const authorityDirty = new Set<string>();
+
+  const refold = async (): Promise<void> => {
     pending = undefined;
+    if (closed) return;
+    for (const b of boards) {
+      if (!authorityDirty.has(b.coord)) continue;
+      try {
+        await b.refreshAuthority();
+      } catch {
+        // Keep the authority this board already had. A grant that cannot be
+        // derived (a signer that refused, a malformed wrap) must not take away
+        // the access the page already has.
+      }
+    }
+    authorityDirty.clear();
     if (closed) return;
     const items: Item[] = [];
     for (const b of boards) {
@@ -725,7 +822,16 @@ export function startLiveUpdates(args: {
             if (typeof e.created_at === "number" && e.created_at > b.newest) b.newest = e.created_at;
             b.writer.absorb([e]);
             dirty.add(b.coord);
-            if (pending === undefined) pending = setTimeout(refold, coalesceMs);
+            // ready-48f: a role grant is AUTHORITY as well as an event to fold.
+            // It is appended to the authority snapshot and the board is marked
+            // for re-derivation; nothing here decides whether it counts —
+            // deriveLevels/deriveBoardKeyring verify the signature and the board
+            // owner, and drop it if it is neither.
+            if (e.kind === KIND_ROLE_GRANT) {
+              b.authority.push(e);
+              authorityDirty.add(b.coord);
+            }
+            if (pending === undefined) pending = setTimeout(() => void refold(), coalesceMs);
           },
         },
       ),
@@ -1033,10 +1139,43 @@ export async function afterLogin(
   activeLive?.close();
   activeLive = undefined;
 
-  if (fragment.kind === "claim") {
-    renderAwaitingAuthorization(root, identity, fragment.payload.board, safeEncodeNpub(identity.pubkey));
-    return;
+  // ready-48f — A CLAIM LINK NOW OPENS THE BOARD IT INVITES YOU TO.
+  //
+  // WHAT IT USED TO DO, AND WHY THAT WAS NOT ENOUGH. This branch rendered the
+  // awaiting-authorization panel and RETURNED, contacting no relay at all, on the
+  // reading that "a claim link is an invitation, not an authorization". The
+  // authorization half of that is right and is UNCHANGED — nothing below grants
+  // this key anything, and the read-trust gate in loadBoardItems still admits
+  // only owner-signed grants. What was wrong is the conclusion drawn from it:
+  // the invitee was shown a BLANK page, so the objective this page exists for —
+  // a stranger with a link reaches a POPULATED board — was false on the very
+  // link `rd board share` mints for a stranger. Measured end to end
+  // (scripts/live-stranger-walk.mjs): 0 cards, then still 0 cards after the
+  // owner ran `rd grant --claim`, because a page that never opened a
+  // subscription cannot pick one up either.
+  //
+  // THE EXPOSURE THIS ADDS IS NONE. Everything fetched below is what the RELAY
+  // already serves to anyone who asks for that coordinate, and the claim token
+  // was minted BY THE OWNER and handed to this recipient with the coordinate
+  // inside it. `rd join <token>` — the CLI half of the very same token,
+  // advertised in `rd board share`'s own help — already syncs exactly these
+  // events for exactly this person. A confidential board's free text stays
+  // sealed: with no grant there is no CEK, so every title renders the
+  // "[encrypted]" placeholder until the owner's kind-39301 arrives.
+  //
+  // The panel stays on screen while this key holds no grant, and is removed the
+  // moment one arrives (below), so the page never says "awaiting authorization"
+  // over a board it has just decrypted.
+  const claim = fragment.kind === "claim" ? fragment.payload : undefined;
+  let awaitingPanel: HTMLElement | undefined;
+  if (claim) {
+    awaitingPanel = renderAwaitingAuthorization(root, identity, claim.board, safeEncodeNpub(identity.pubkey));
   }
+  // The workspace's render() calls replaceChildren() on its container, so on the
+  // claim path it gets a mount of its own and the panel above survives. Every
+  // other path keeps mounting on `root` itself, byte for byte as before.
+  const mount = claim ? el("div", { className: "board-mount" }) : root;
+  if (claim) root.append(mount);
 
   const connecting = renderConnecting(root);
   const onStatus = (e: RelayStatusEvent) => {
@@ -1048,10 +1187,17 @@ export async function afterLogin(
     let boards: DiscoveredBoard[];
     let authorityEvents: NostrEvent[];
 
-    if (fragment.kind === "board") {
-      const parsedCoord = parseBoardCoord(fragment.board);
-      if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(fragment.board)}`);
-      relays = fragment.relays.length > 0 ? fragment.relays : await deps.loadRelays();
+    // A claim link names exactly one board and its relays, so it takes the
+    // single-board path below — the SAME queries, the SAME discovery and the
+    // SAME read-trust gate a `#board=` link takes. It differs in nothing except
+    // that the panel above says the owner has not granted this key yet.
+    const linkedBoard = claim ? claim.board : fragment.kind === "board" ? fragment.board : "";
+    const linkedRelays = claim ? claim.relays : fragment.kind === "board" ? fragment.relays : [];
+
+    if (linkedBoard !== "") {
+      const parsedCoord = parseBoardCoord(linkedBoard);
+      if (!parsedCoord) throw new Error(`main: malformed board coordinate ${JSON.stringify(linkedBoard)}`);
+      relays = linkedRelays.length > 0 ? linkedRelays : await deps.loadRelays();
       // ready-5c5: TWO REQs, because the two authority kinds are addressed by
       // DIFFERENT tags and no single NIP-01 filter can name both. Within one
       // filter every condition ANDs, so a `#a`-scoped AUTHORITY_KINDS REQ asks
@@ -1076,7 +1222,7 @@ export async function afterLogin(
         // "d" is the addressable identifier ON the 30301 event itself.
         deps.fetchEvents(relays, { kinds: [KIND_BOARD], ["#d"]: [parsedCoord.boardD] }, { onStatus }),
         // "a" is the board coordinate ON each 39301 grant.
-        deps.fetchEvents(relays, { kinds: [KIND_ROLE_GRANT], ["#a"]: [fragment.board] }, { onStatus }),
+        deps.fetchEvents(relays, { kinds: [KIND_ROLE_GRANT], ["#a"]: [linkedBoard] }, { onStatus }),
       ]);
       authorityEvents = dedupeSnapshot([...boardDefs, ...boardGrants]);
       boards = discoverOwnerBoards(authorityEvents, [parsedCoord.owner], parsedCoord.boardD);
@@ -1151,7 +1297,10 @@ export async function afterLogin(
     // rendering as an empty board are the two dishonest outcomes, and both are
     // what happens when the outcome is not carried alongside the board.
     const statusOf = new Map(status.map((s) => [s.coord, s]));
-    const workspace = mountBoardWorkspace(root, items, {
+    // ready-48f: `mount` is root unless a claim link is open, in which case the
+    // awaiting-authorization panel owns the top of the page and the board
+    // mounts beneath it.
+    const workspace = mountBoardWorkspace(mount, items, {
       writer: boardScopedWriter(writers, itemBoard),
       viewerId: identity.pubkey,
       boards: boards.map((b) => ({
@@ -1167,6 +1316,19 @@ export async function afterLogin(
       notice: notice !== "" ? notice : undefined,
     });
 
+    // ready-48f: the panel is a statement about THIS key's standing on the
+    // board, so it is driven by the derived grant levels — the same
+    // owner-signed derivation the read-trust gate uses — and not by "did we
+    // manage to decrypt something". A key that is already granted when the link
+    // is opened never sees it at all.
+    const dropAwaitingPanel = (): void => {
+      if (awaitingPanel && live.some((b) => b.granted)) {
+        awaitingPanel.remove();
+        awaitingPanel = undefined;
+      }
+    };
+    dropAwaitingPanel();
+
     // ready-4359 done condition 4. Without this the page folds ONCE and a change
     // made anywhere else is invisible until the human reloads. Any previous
     // subscription was already closed at the top of this function.
@@ -1178,6 +1340,7 @@ export async function afterLogin(
           onItems: (next) => {
             for (const i of next) if (i.boardCoord) itemBoard.set(i.id, i.boardCoord);
             workspace.setItems(next);
+            dropAwaitingPanel();
           },
         })
       : undefined;

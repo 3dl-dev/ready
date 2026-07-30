@@ -58,6 +58,7 @@ import {
   type Nip01RelayHandle,
 } from "./lib/nip01relay.fixtures";
 import type { NostrEvent } from "./lib/nostrevent";
+import type { ParsedFragment } from "./lib/fragment";
 // ready-1af's write-gate block: the real write path (buildWrite -> signWith ->
 // publishEvents) and the real signer, so a refusal can be attributed to one
 // specific control rather than to "something threw".
@@ -651,46 +652,44 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
   });
 
   describe("claim link (fragment.kind === 'claim')", () => {
-    it("shows the awaiting-authorization notice and contacts no relay at all", async () => {
-      // A coordinate DELIBERATELY absent from the fixtures: the awaiting-
-      // authorization copy legitimately names the invited board, so reusing a
-      // fixture coordinate here would make "none of OWNER's genuine boards
-      // were rendered" unassertable.
-      const board = boardCoord(OWNER, "invited");
-      // The deps are wired to a live hostile relay on purpose: if the claim
-      // branch ever stopped returning early, this snapshot is what would get
-      // rendered, and the assertions below would catch it.
-      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+    // ready-48f CHANGED WHAT THIS BRANCH DOES, and these cases are the record of
+    // both halves.
+    //
+    // It used to render the awaiting-authorization panel and RETURN, contacting
+    // no relay at all — asserted here as "contacts no relay at all". The reason
+    // given was "a claim link is an invitation, not an authorization". The
+    // AUTHORIZATION half of that is unchanged and is still asserted below: the
+    // link confers no trust, opens only the ONE board it names, and renders none
+    // of the hostile snapshot's forgeries. What was wrong was the consequence —
+    // the invitee was shown a blank page, so "a stranger with a link reaches a
+    // POPULATED board" was false on the very link `rd board share` mints for a
+    // stranger, and a page that never opened a subscription could not pick the
+    // owner's later grant up either (measured in scripts/live-stranger-walk.mjs:
+    // 0 cards before `rd grant --claim`, 0 cards 45s after it).
+    //
+    // Nothing fetched here is a new exposure: it is what the relay already
+    // serves anyone who asks for that coordinate, and `rd join <token>` — the
+    // CLI half of the SAME token, advertised in `rd board share`'s own help —
+    // already syncs exactly these events for exactly this person.
+    const claimFragment = (board: string): ParsedFragment => ({
+      kind: "claim",
+      payload: {
+        v: 3,
+        board,
+        relays: [LINK_RELAY],
+        claim: "claim-nonce",
+        iat: 1700000000,
+        exp: 1700003600,
+        iss: OWNER,
+      },
+    });
 
-      await afterLogin(
-        root,
-        identity,
-        {
-          kind: "claim",
-          payload: {
-            v: 3,
-            board,
-            relays: [LINK_RELAY],
-            claim: "claim-nonce",
-            iat: 1700000000,
-            exp: 1700003600,
-            iss: OWNER,
-          },
-        },
-        deps,
-      );
-
-      // A claim link is an invitation, not an authorization: nothing may be
-      // fetched or rendered until the owner grants the key.
-      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([]);
-      expect(capture.filters).toEqual([]);
-      expect(renderedBoards(root)).toEqual([]);
-      expectNoneOfOwnersBoardsRendered(root);
-      expectNoForgedContent(root);
-
-      // renderAwaitingAuthorization reads identity.auth.readOnly directly, so
-      // its copy is the second place the signing/read-only distinction shows
-      // up in the DOM. Equality, so neither suffix can appear on the wrong one.
+    /** The awaiting-authorization copy, asserted by equality so neither the
+     * "(read-only)" suffix nor its absence can appear on the wrong session.
+     * renderAwaitingAuthorization reads identity.auth.readOnly directly, so this
+     * is the second place the signing/read-only distinction shows up in the
+     * DOM. */
+    function expectAwaitingPanel(board: string): void {
       expect(root.querySelector("section.awaiting-authorization > h2")?.textContent).toBe(
         "Awaiting authorization",
       );
@@ -698,6 +697,102 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
         `You are logged in as ${encodeNpub(identity.pubkey)}${signing ? "" : " (read-only)"}. ` +
           `Ask the owner of board ${board} to grant this key access.`,
       );
+    }
+
+    it("names the invited board, and opens THAT board and nothing else the relay is serving", async () => {
+      // A coordinate that IS in the fixtures, so "it opened the invited board"
+      // is observable. The hostile snapshot also carries OWNER's two OTHER
+      // genuine boards and four forgeries; none of them is what this link
+      // invites, so none of them may render.
+      const invited = boardCoord(OWNER, "alpha");
+      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+
+      await afterLogin(root, identity, claimFragment(invited), deps);
+
+      // THE NEW BEHAVIOUR: the invited board is open.
+      expect(renderedBoards(root)).toEqual([
+        OWNERS_GENUINE_BOARDS.find((b) => b.coord === invited)!,
+      ]);
+      // …reached over the LINK's relays, which is the only relay set a claim
+      // token carries. Config relays are not consulted.
+      expect([...new Set(FakeRelayWebSocket.urls)]).toEqual([LINK_RELAY]);
+      expect(FakeRelayWebSocket.urls).not.toContain(CONFIG_RELAY);
+      // …and scoped to the invited coordinate, not to "everything you have".
+      // Every filter is either the two authority REQs for THIS board or the
+      // item REQ for it.
+      expect(capture.filters.length).toBeGreaterThan(0);
+      for (const f of capture.filters) {
+        const scoped =
+          (f["#d"] as string[] | undefined)?.includes("alpha") === true ||
+          (f["#a"] as string[] | undefined)?.includes(invited) === true;
+        expect(scoped, `unscoped filter ${JSON.stringify(f)}`).toBe(true);
+      }
+
+      // THE UNCHANGED HALF: a claim link is not an authorization. OWNER's OTHER
+      // genuine boards stay out — the link names one board and admits one board
+      // — and no forgery reaches the DOM.
+      const otherGenuine = OWNERS_GENUINE_BOARDS.filter((b) => b.coord !== invited);
+      expect(otherGenuine).toHaveLength(2);
+      for (const b of otherGenuine) {
+        expect(root.textContent ?? "").not.toContain(b.coord);
+        expect(root.innerHTML).not.toContain(b.coord);
+      }
+      expectNoForgedContent(root);
+
+      // THE PANEL DOES NOT LIE TO A KEY THAT IS ALREADY GRANTED. Both identities
+      // in this describe ARE the board's owner, and deriveLevels seats a board's
+      // author implicitly, so this session is granted the moment the board is
+      // discovered — and the panel is gone. It is driven by the derived grant
+      // levels, not by "the fragment was a claim link", which is the difference
+      // between telling this user something true and telling them to go ask
+      // themselves for access.
+      expect(root.querySelector("section.awaiting-authorization")).toBeNull();
+    });
+
+    it("an UNGRANTED key sees the invited board AND the panel at the same time", async () => {
+      // The stranger case, which is what a claim link is actually for: a key
+      // that owns nothing here and has been granted nothing yet. It is the only
+      // way to observe the two together, because an owner is granted implicitly
+      // (the case above) and would never see the panel over a board.
+      const invited = boardCoord(OWNER, "alpha");
+      const stranger: Identity = {
+        pubkey: STRANGER,
+        auth: authTransition({ type: "login", method: signing ? "extension" : "readOnly" }),
+      };
+      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+
+      await afterLogin(root, stranger, claimFragment(invited), deps);
+
+      // The board the link names is open — discovery follows the COORDINATE's
+      // owner, not the viewer, so an ungranted stranger reaches a populated
+      // board rather than a blank page.
+      expect(renderedBoards(root)).toEqual([
+        OWNERS_GENUINE_BOARDS.find((b) => b.coord === invited)!,
+      ]);
+      // …and the page says, in the same document, that this key is not yet
+      // authorized on it.
+      expect(root.querySelector("section.awaiting-authorization > h2")?.textContent).toBe(
+        "Awaiting authorization",
+      );
+      expect(root.querySelector("section.awaiting-authorization > p")?.textContent).toBe(
+        `You are logged in as ${encodeNpub(STRANGER)}${signing ? "" : " (read-only)"}. ` +
+          `Ask the owner of board ${invited} to grant this key access.`,
+      );
+      expectNoForgedContent(root);
+    });
+
+    it("an invitation to a board the relay does not serve renders the panel and no board at all", async () => {
+      // A coordinate DELIBERATELY absent from the fixtures, so "none of OWNER's
+      // genuine boards were rendered" is assertable in full.
+      const board = boardCoord(OWNER, "invited");
+      const deps = injectedDeps(HOSTILE_SNAPSHOT, capture);
+
+      await afterLogin(root, identity, claimFragment(board), deps);
+
+      expect(renderedBoards(root)).toEqual([]);
+      expectNoneOfOwnersBoardsRendered(root);
+      expectNoForgedContent(root);
+      expectAwaitingPanel(board);
     });
   });
 
