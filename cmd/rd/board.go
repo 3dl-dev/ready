@@ -432,6 +432,24 @@ const boardKeyWarning = "WARNING: this link CARRIES THIS BOARD'S READ KEY in its
 // resolveGranteePubkey accepts either an npub1... (NIP-19 bech32) or a bare
 // 64-hex pubkey — the same two forms `rd grant`/`rd follow` accept — and
 // returns the 64-hex pubkey. decodeNpub is shared with cmd/rd/follow.go.
+//
+// ready-3e1: the bare-hex branch normalizes to lowercase. isHex accepts A-F as
+// well as a-f (case-insensitive format check), but the grantee's REAL identity
+// is nostr.Key.PubKeyHex(), which is always lowercase — that lowercase string
+// is what lands in the grant's signed p/d tags and what DeriveLevels/
+// InviteGrantValid index on. decodeNpub already returns lowercase
+// (hex.EncodeToString), so only the bare-hex branch needs normalizing.
+//
+// This site's normalization is currently REDUNDANT with publishRoleGrant's
+// (cmd/rd/nostr_grant.go), the true funnel every grant-issuing path publishes
+// through: this function's only caller (boardShareCmd) passes its return value
+// into runNostrGrantRevoke, which normalizes again before publishRoleGrant
+// normalizes a third time — so an unnormalized return here does NOT by itself
+// produce a dead grant today (verified: reverting only this line leaves the
+// existing uppercase regression test green). It stays here as defense in
+// depth — a single, direct, unit-testable guarantee at this API's boundary
+// that does not depend on which caller happens to be downstream — not as the
+// sole thing standing between an uppercase grantee and a dead grant.
 func resolveGranteePubkey(who string) (string, error) {
 	if strings.HasPrefix(who, "npub1") {
 		pub, err := decodeNpub(who)
@@ -441,7 +459,7 @@ func resolveGranteePubkey(who string) (string, error) {
 		return pub, nil
 	}
 	if len(who) == 64 && isHex(who) {
-		return who, nil
+		return normalizeHexPubkey(who), nil
 	}
 	return "", fmt.Errorf("rd board share: %q is not an npub1... or a 64-hex pubkey", who)
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/3dl-dev/ready/pkg/state"
+	rdSync "github.com/3dl-dev/ready/pkg/sync"
 )
 
 // TestReady_PipedOutput_BareIDs verifies that when stdout is not a TTY (piped),
@@ -196,5 +197,81 @@ func TestPrintItemTable_FormatHasMultipleColumns(t *testing.T) {
 		if len(fields) < 2 {
 			t.Errorf("printItemTable line %q has fewer than 2 fields -- expected table format with ID, priority, status, eta, title", line)
 		}
+	}
+}
+
+// TestReadyCmd_RunE_UppercaseScopeKey_IsNotDenied is ready-3e1 at
+// cmd/rd/ready.go's --scope entry point — the READ direction of the same defect,
+// and the one that fails closed against a legitimate caller.
+//
+// `--scope` is validated by the case-insensitive isHex and then handed to
+// nostrScopeForKey (cmd/rd/sessions.go), which byte-compares it against the board
+// owner and indexes the DeriveLevels map with it. Both of those come from signed
+// events and are therefore canonical lowercase. Unnormalized, an uppercase
+// --scope for a key holding a LIVE contributor grant misses the map entirely and
+// the gate denies it with "no active grant for ... (not a granted identity)" —
+// rd telling an authorized operator that they were never granted, and zeroing
+// their queue. That is indistinguishable, from the caller's side, from a revoked
+// or never-granted key.
+//
+// Driven through readyCmd.RunE (not nostrScopeForKey directly) because the
+// normalization lives in the command body, and asserted on BOTH streams: the
+// denial note must not appear on stderr, and the item must actually be listed on
+// stdout. Reverting `scopeKey = normalizeHexPubkey(scopeKey)` in ready.go turns
+// this red.
+func TestReadyCmd_RunE_UppercaseScopeKey_IsNotDenied(t *testing.T) {
+	origTTY := isTTYStdout
+	defer func() { isTTYStdout = origTTY }()
+	isTTYStdout = func() bool { return true }
+	origJSON := jsonOutput
+	defer func() { jsonOutput = origJSON }()
+	jsonOutput = false
+
+	dir := setupNostrProjectWithItems(t, "scopecase", nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	ownHex := k.PubKeyHex()
+	item := &state.Item{ID: "scopecase-1", Status: "active", Priority: "p2", Title: "Mine", For: ownHex, By: ownHex}
+	if err := publishItemFullCreateNostr(dir, ownHex, item); err != nil {
+		t.Fatalf("publish own item: %v", err)
+	}
+
+	// A GENUINELY granted contributor: a real owner-signed kind-39301 grant
+	// published through the production primitive, so "authorized" is a fact
+	// about the signed log, not a stub.
+	grantee := freshKeyHex(t)
+	if err := runNostrGrantRevoke(dir, grantee, rdSync.RoleContributor, "agent-scope", 0, ""); err != nil {
+		t.Fatalf("grant contributor: %v", err)
+	}
+	if allowed, note := nostrScopeForKey(grantee); !allowed {
+		t.Fatalf("precondition: the canonical form of this key must be allowed, got denied: %q", note)
+	}
+
+	defer resetReadyRunFlags(t)()
+	defer setForFilter(t, ownHex)()
+	upper := strings.ToUpper(grantee)
+	if err := readyCmd.Flags().Set("scope", upper); err != nil {
+		t.Fatalf("setting --scope=%q: %v", upper, err)
+	}
+	defer func() {
+		if err := readyCmd.Flags().Set("scope", ""); err != nil {
+			t.Fatalf("resetting --scope: %v", err)
+		}
+	}()
+
+	stdout, stderr := runReadyCapturingBoth(t)
+
+	if strings.Contains(stderr, "not a granted identity") {
+		t.Errorf("`rd ready --scope <UPPERCASE-hex>` DENIED a key holding a live contributor grant: %q — "+
+			"the scope gate compared the as-typed uppercase string against the lowercase levels map", stderr)
+	}
+	if strings.Contains(stderr, "no active grant") {
+		t.Errorf("scope gate emitted a denial note for a granted key: %q", stderr)
+	}
+	if !strings.Contains(stdout, "scopecase-1") {
+		t.Errorf("stdout = %q, want the ready item listed — the uppercase --scope zeroed an authorized "+
+			"caller's queue", stdout)
 	}
 }

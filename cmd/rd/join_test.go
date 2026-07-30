@@ -48,6 +48,72 @@ func TestIsHex(t *testing.T) {
 	}
 }
 
+// TestNormalizeHexPubkey verifies normalizeHexPubkey (ready-3e1) lowercases an
+// uppercase or mixed-case hex pubkey to the canonical form nostr.Key.PubKeyHex()
+// produces — the form a grant's p/d tags and DeriveLevels/InviteGrantValid
+// compare against.
+func TestNormalizeHexPubkey(t *testing.T) {
+	const lower = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a724"
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{lower, lower},
+		{strings.ToUpper(lower), lower},
+		{"84DEE6E676E5BB67b4ad4e042cf70cbd8681155db535942fcc6a0533858a724", lower}, // mixed-case
+	}
+	for _, tc := range cases {
+		if got := normalizeHexPubkey(tc.input); got != tc.want {
+			t.Errorf("normalizeHexPubkey(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestNormalizePartyToken_GuardedByPubkeyShape pins the CONTRACT of the group-B
+// helper (ready-3e1): --for/--by/--to are polymorphic party tokens, so
+// normalizePartyToken lowercases ONLY the one shape that can be a pubkey — a
+// 64-char hex string — and returns every other token byte-identical.
+//
+// Both halves are defects if broken. Dropping the lowercase re-opens the signed
+// non-canonical "for"/"p" tag (see party_case_test.go for the pipeline proofs).
+// Dropping the `len==64 && isHex` guard and lowercasing unconditionally silently
+// rewrites an email's or an agent id's case, filing the item under a party the
+// caller never named — the mirror image of the same bug. The pipeline tests can
+// only cover tokens rd will actually store; this table also pins the boundary
+// shapes (63/65 chars, empty) that no CLI test naturally reaches.
+func TestNormalizePartyToken_GuardedByPubkeyShape(t *testing.T) {
+	const lower = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7241" // 64 chars
+	if len(lower) != 64 {
+		t.Fatalf("fixture pubkey is %d chars, want 64", len(lower))
+	}
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"uppercase_pubkey_is_lowercased", strings.ToUpper(lower), lower},
+		{"mixed_case_pubkey_is_lowercased", "84DEE6E676E5BB67" + lower[16:], lower},
+		{"canonical_pubkey_unchanged", lower, lower},
+		{"mixed_case_email_untouched", "Baron@3DL.dev", "Baron@3DL.dev"},
+		{"agent_id_untouched", "atlas/Worker-3", "atlas/Worker-3"},
+		{"cf_uri_untouched", "cf://agents/Implementer", "cf://agents/Implementer"},
+		{"npub_untouched", "npub1SOMETHING", "npub1SOMETHING"},
+		{"empty_untouched", "", ""},
+		// Right length, wrong alphabet: length alone must not trigger folding.
+		{"64_char_non_hex_untouched", strings.Repeat("Z", 64), strings.Repeat("Z", 64)},
+		// Right alphabet, wrong length: not a pubkey, so not a pubkey's rules.
+		{"63_char_hex_untouched", strings.ToUpper(lower[:63]), strings.ToUpper(lower[:63])},
+		{"65_char_hex_untouched", strings.ToUpper(lower) + "A", strings.ToUpper(lower) + "A"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizePartyToken(tc.input); got != tc.want {
+				t.Errorf("normalizePartyToken(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestJoin_NoDotCfNoLock is the HIGH-4 regression guard: a full invite redemption
 // (the join core) must create NO campfire state (.cf/ or identity.json) and NO
 // rd.json.lock ANYWHERE. Before the fix, `rd join`'s --reset-beacon-root path wrote

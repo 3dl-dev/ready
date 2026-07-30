@@ -41,8 +41,15 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		statusFilters, _ := cmd.Flags().GetStringArray("status")
 		resolutionFilter, _ := cmd.Flags().GetString("resolution")
-		forFilter, _ := cmd.Flags().GetString("for")
-		byFilter, _ := cmd.Flags().GetString("by")
+		// ready-3e1: --for/--by are PARTY tokens (pubkey | email | agent id), so
+		// they normalize through the guarded normalizePartyToken. Unnormalized, an
+		// uppercase pubkey misses nostrPartyIdentitySet's map lookup (--for) and
+		// applyListFilters' exact By comparison (--by), and the item the caller is
+		// looking for is reported absent.
+		forFilterRaw, _ := cmd.Flags().GetString("for")
+		byFilterRaw, _ := cmd.Flags().GetString("by")
+		forFilter := normalizePartyToken(forFilterRaw)
+		byFilter := normalizePartyToken(byFilterRaw)
 		projectFilter, _ := cmd.Flags().GetString("project")
 		priorityFilter, _ := cmd.Flags().GetString("priority")
 		typeFilter, _ := cmd.Flags().GetString("type")

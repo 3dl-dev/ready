@@ -14,7 +14,12 @@ var workCmd = &cobra.Command{
 
 Use --for to filter by the party the work is assigned to.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		forFilter, _ := cmd.Flags().GetString("for")
+		// ready-3e1: --for is a PARTY token, normalized through the guarded
+		// normalizePartyToken. Unnormalized, an uppercase pubkey misses
+		// views.MyWorkFilter's idset[item.By] and rd reports "nothing active" for
+		// an identity that is actively working items.
+		forFilterRaw, _ := cmd.Flags().GetString("for")
+		forFilter := normalizePartyToken(forFilterRaw)
 		projectFilter, _ := cmd.Flags().GetString("project")
 
 		items, err := allProjectItems()
