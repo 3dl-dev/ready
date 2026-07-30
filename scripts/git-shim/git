@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# git — ready-f75 stash guard, NON-HOOK half: a wrapper that sits earlier on
+# PATH than the real git and refuses the mutating `git stash` verbs before
+# they ever reach git.
+#
+# WHY A WRAPPER AT ALL. The hook half of this guard (see
+# scripts/git-hooks/reference-transaction) is bounded by what git will let a
+# hook see, and that bound is DEPTH-DEPENDENT:
+#
+#   shared stack depth   raw `git stash pop` / `drop` under the hooks alone
+#   ------------------   -------------------------------------------------
+#   0                    fails at stash@{0} resolution, no damage
+#   1                    entry already consumed; the TRAILING ref deletion is
+#                        refused (exit 128), which is the only reason the
+#                        commit stays reachable via refs/stash
+#   >= 2                 exit 0, entry consumed, sibling's content in your
+#                        tree. `pop` at least prints the post-index-change
+#                        warning; `drop` at n >= 2 prints NOTHING AT ALL.
+#
+# Measured on git 2.43 at n = 1, 2, 3 and 5. The live ready clone sits at
+# n = 27, i.e. squarely in the row where the hooks have no ref-level effect
+# whatsoever. A guard that only holds at n <= 1 does not meet the item's done
+# condition ("agents dispatched into worktrees cannot clobber each other"),
+# so this wrapper exists to hold at ARBITRARY depth.
+#
+# HOW IT HOLDS AT ANY DEPTH: it never invokes git for the dangerous verbs. No
+# ref transaction, no reflog rewrite, no index write — the damage git does
+# before any hook runs simply never starts. Depth is irrelevant because git
+# is never reached.
+#
+# WHAT IT DOES NOT COVER, stated plainly:
+#   * It only intercepts invocations that resolve `git` through PATH. An
+#     absolute path (/usr/bin/git), a shell function, or a program that
+#     execs git by absolute path goes straight past it.
+#   * It only applies where something puts its directory on PATH. That is a
+#     property of the process that SPAWNS an agent, not of this repository,
+#     so this file cannot install itself the way the hooks can. The installer
+#     materialises it and prints the exact export line; wiring it into the
+#     dispatch harness is tracked separately.
+#   * RD_STASH_GUARD_INTERNAL=1 passes straight through (that is how
+#     wt-stash.sh runs its own `git stash create` / `git stash apply <sha>`),
+#     so it is a guard against accident, not against an adversary.
+#
+# ready-f75 stash guard
+set -uo pipefail
+
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# --- find the real git, skipping ourselves ------------------------------
+_real_git() {
+  local dir resolved
+  local IFS=:
+  for dir in $PATH; do
+    [[ -n "$dir" ]] || dir="."
+    resolved="$(cd "$dir" 2>/dev/null && pwd -P)" || continue
+    [[ "$resolved" == "$SHIM_DIR" ]] && continue
+    if [[ -x "$resolved/git" && ! -d "$resolved/git" ]]; then
+      printf '%s' "$resolved/git"
+      return 0
+    fi
+  done
+  return 1
+}
+
+REAL_GIT="$(_real_git)" || {
+  echo "ready-f75 git shim: cannot find the real git on PATH (excluding $SHIM_DIR)." >&2
+  echo "  Refusing to run rather than silently doing nothing." >&2
+  exit 127
+}
+
+# wt-stash.sh sets this; it is the safe, per-worktree path.
+if [[ "${RD_STASH_GUARD_INTERNAL:-}" == "1" ]]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- locate the subcommand, skipping git's global options ---------------
+# Global options that consume the FOLLOWING argument. `git -C dir stash pop`
+# must not be read as subcommand "dir".
+_takes_value() {
+  case "$1" in
+    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env | --exec-path) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+subcmd=""
+stash_verb=""
+seen_subcmd=false
+skip_next=false
+for arg in "$@"; do
+  if [[ "$skip_next" == true ]]; then
+    skip_next=false
+    continue
+  fi
+  if [[ "$seen_subcmd" == false ]]; then
+    if _takes_value "$arg"; then
+      skip_next=true
+      continue
+    fi
+    [[ "$arg" == -* ]] && continue
+    subcmd="$arg"
+    seen_subcmd=true
+    continue
+  fi
+  # First non-option argument after `stash` is the stash verb.
+  if [[ -z "$stash_verb" && "$arg" != -* ]]; then
+    stash_verb="$arg"
+  fi
+done
+
+if [[ "$subcmd" != "stash" ]]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# `git stash` with no verb means `git stash push`.
+[[ -n "$stash_verb" ]] || stash_verb="push"
+
+case "$stash_verb" in
+  # Read-only against the shared stack: no ref write, no index write.
+  list | show)
+    exec "$REAL_GIT" "$@"
+    ;;
+  # `git stash create` writes NO ref — it only produces a stash-shaped
+  # commit. wt-stash.sh is built on it. Harmless, allowed.
+  create)
+    exec "$REAL_GIT" "$@"
+    ;;
+esac
+
+# Everything else mutates the SHARED stack or the working tree from it:
+# push, save, store, apply, pop, drop, clear, branch.
+{
+  echo "ready-f75 stash guard: REFUSED \`git stash $stash_verb\` (PATH shim, nothing was run)."
+  echo
+  echo "refs/stash lives in the COMMON .git directory that every git worktree of"
+  echo "this repo SHARES. Two agents dispatched into separate worktrees push onto"
+  echo "and pop from the same stack, and a pop by position silently applies and"
+  echo "then deletes whichever sibling's entry is on top (observed 2026-07-29)."
+  echo
+  echo "The git hooks alone cannot cover you here: 'git stash apply' opens no ref"
+  echo "transaction, and 'pop'/'drop' rewrite the refs/stash reflog before any"
+  echo "transaction opens. Measured: at a shared-stack depth of 2 or more, raw"
+  echo "'git stash pop' and 'git stash drop' complete at exit 0 under the hooks."
+  echo "This wrapper is what holds at arbitrary depth, by never invoking git."
+  echo
+  echo "Use the worktree-scoped replacement, whose entries live under"
+  echo "refs/worktree/wtstash/N (git stores those per worktree):"
+  echo "  git wtstash [push|list|pop|apply|drop|clear]"
+  echo
+  echo "Or commit the WIP on your own branch — a dispatched agent owns its branch"
+  echo "and can reset or amend it later."
+  echo
+  echo "Deliberate override (you are then responsible for the shared stack):"
+  echo "  RD_STASH_GUARD_INTERNAL=1 git stash $stash_verb"
+} >&2
+
+exit 1

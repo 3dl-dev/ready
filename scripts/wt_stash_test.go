@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -24,29 +26,23 @@ import (
 // entry. Observed 2026-07-29: 14+ interleaved entries from 10 branches, one
 // agent's pop reverting a sibling's uncommitted files to HEAD with no error.
 //
-// WHAT IS AND IS NOT BLOCKABLE — measured on git 2.43 by these tests, not
-// asserted from documentation. The first version of this guard claimed in its
-// own user-facing text that it blocked push/pop/apply/drop/clear; that was
-// false, and TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage exists
-// specifically to keep it from becoming false again:
+// This file deliberately contains NO written-down statement of what the guard
+// covers. Two rounds of review were lost to exactly that: text asserting a
+// control that measurement did not support. The coverage claim lives in one
+// machine-readable table carried by the shipped files, and
+// TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage derives the other
+// side of the comparison by RUNNING each verb against an installed guard. If
+// you want to know what is covered, run the tests and read the t.Logf lines.
 //
-//	git stash push   BLOCKED before any damage (ref transaction aborted;
-//	                 the caller keeps their working-tree changes)
-//	git stash clear  BLOCKED, every entry preserved (pure ref deletion)
-//	git stash apply  NOT BLOCKABLE — opens no ref transaction at all. The
-//	                 only hook git fires is post-index-change, whose exit
-//	                 code git ignores. Covered by a LOUD warning instead.
-//	git stash pop    NOT BLOCKABLE — applies before it drops.
-//	git stash drop   NOT BLOCKABLE — rewrites the refs/stash reflog before
-//	                 any transaction opens. Aborting the trailing ref
-//	                 deletion does keep the last entry REACHABLE via
-//	                 refs/stash instead of letting it become garbage.
+// Two mechanisms are measured, because git hooks alone cannot meet the done
+// condition:
 //
-// The guard therefore makes the shared stack UNGROWABLE, which is what
-// actually severs the observed incident: agent A's work can never reach the
-// shared stack, so agent B's pop can never discard it. On an EMPTY stack all
-// three of pop/apply/drop fail at stash@{0} resolution with zero damage —
-// that is the end state, and it is asserted below.
+//   - the git hooks, which are self-installing and cover every worktree of the
+//     clone, and whose effect on pop/drop is depth-dependent (see
+//     TestStashGuard_HooksHaveNoRefLevelEffectAtRealisticDepth);
+//   - scripts/git-shim/git, a `git` wrapper earlier on PATH, which holds at
+//     arbitrary depth because it never invokes git for those verbs, and which
+//     only applies where something puts it on PATH.
 //
 // (Aliasing `git stash` to the safe implementation does not work at all: git
 // resolves its own builtins before consulting an alias of the same name, so
@@ -288,47 +284,181 @@ func TestStashGuard_RawStashDropLeavesLastEntryRecoverable(t *testing.T) {
 }
 
 // TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage is the regression
-// test for the specific failure that sent this item back: the guard's own
-// user-facing text claimed it blocked "push/pop/apply/drop/clear" while
-// pop/apply/drop were in fact unblocked. Promising a control you do not have
-// is worse than documenting the gap, so the shipped text must state the gap.
+// test for the failure that sent this item back twice. Round 1 shipped text
+// claiming push/pop/apply/drop/clear were all blocked when three of them were
+// not. Round 2's fix was a blacklist of those four exact phrasings, which an
+// adversary defeated in one line by writing the same false claim in different
+// words — a blacklist of yesterday's wording cannot catch tomorrow's
+// overclaim.
+//
+// So this is inverted. Nothing here knows what the guard is supposed to do.
+// The MEASURED side is derived by running every verb against a really
+// installed guard on a realistic shared stack; the DOCUMENTED side is parsed
+// out of the shipped text; the test asserts the two verb lists are equal. A
+// claim not backed by a measurement fails no matter how it is phrased, and a
+// measurement not reflected in the documentation fails too.
 func TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage(t *testing.T) {
 	root := repoRootDir(t)
-	files := []string{
-		filepath.Join(root, "scripts", "git-hooks", "reference-transaction"),
-		filepath.Join(root, "scripts", "git-hooks", "post-index-change"),
-		filepath.Join(root, "scripts", "install-git-stash-guard.sh"),
-		filepath.Join(root, "scripts", "wt-stash.sh"),
+
+	// --- the measured side: run each verb, for real, at realistic depth ---
+	measured := map[string]map[string]bool{
+		mechHooks: measureCoverage(t, root, mechHooks, 3),
+		mechShim:  measureCoverage(t, root, mechShim, 3),
 	}
-	// Any phrasing that presents apply/pop/drop as blocked. These are the
-	// exact shapes the false claim took.
-	overclaims := []string{
-		"push/pop/apply/drop/clear) with",
-		"blocks raw git stash (push/pop/apply/drop/clear)",
-		"blocks git stash push/pop/apply/drop/clear",
-		"(i.e. blocks git stash push/pop/apply/drop/clear outright)",
+	for mech, verdicts := range measured {
+		for _, verb := range stashVerbs {
+			t.Logf("measured %s: git stash %-6s blocked-pre-damage=%v", mech, verb, verdicts[verb])
+		}
 	}
-	for _, f := range files {
+
+	// --- the documented side: parsed, and identical in every file ---
+	var canonical map[string]coverageClaim
+	for _, f := range coverageTableFiles(root) {
+		claims := parseCoverageTable(t, f)
+		if canonical == nil {
+			canonical = claims
+			continue
+		}
+		if !sameCoverage(canonical, claims) {
+			t.Fatalf("%s carries a DIFFERENT coverage table from the first file; there must be exactly one truth\ngot:  %+v\nwant: %+v",
+				filepath.Base(f), claims, canonical)
+		}
+	}
+	if canonical == nil {
+		t.Fatalf("no file carries a ready-f75 coverage table")
+	}
+	if len(canonical) != len(measured) {
+		t.Fatalf("coverage table declares %d mechanisms, %d were measured: %v", len(canonical), len(measured), canonical)
+	}
+
+	// --- documented == measured, per mechanism, per verb ---
+	for mech, verdicts := range measured {
+		claim, ok := canonical[mech]
+		if !ok {
+			t.Fatalf("mechanism %q was measured but is not documented", mech)
+		}
+		var wantBlocked, wantOpen []string
+		for _, verb := range stashVerbs {
+			if verdicts[verb] {
+				wantBlocked = append(wantBlocked, verb)
+			} else {
+				wantOpen = append(wantOpen, verb)
+			}
+		}
+		if got := sortedCopy(claim.blocked); !equalStrings(got, sortedCopy(wantBlocked)) {
+			t.Errorf("%s: documented blocked-pre-damage %v, MEASURED %v", mech, got, sortedCopy(wantBlocked))
+		}
+		if got := sortedCopy(claim.notBlocked); !equalStrings(got, sortedCopy(wantOpen)) {
+			t.Errorf("%s: documented not-blocked %v, MEASURED %v", mech, got, sortedCopy(wantOpen))
+		}
+		if strings.TrimSpace(claim.depthLimit) == "" {
+			t.Errorf("%s: coverage table states no depth-limit; the whole point of round 2's finding is that the verdict is depth-dependent", mech)
+		}
+	}
+
+	// --- the depth limit itself is a claim, so measure it too -------------
+	// The hooks' refusal on pop is ref-effective at depth 1 and has no effect
+	// at all at depth >= 2. If that ever stops being true, the depth-limit
+	// text above is wrong and must be rewritten.
+	if !measureCoverage(t, root, mechHooks, 3)["pop"] {
+		hooksAtOne := rawVerbRun(t, root, mechHooks, 1, "pop")
+		if hooksAtOne.exitOK {
+			t.Errorf("depth-limit claim says the hooks refuse pop's trailing ref deletion at depth 1, but it exited 0: %s", hooksAtOne.output)
+		}
+		hooksAtThree := rawVerbRun(t, root, mechHooks, 3, "pop")
+		if !hooksAtThree.exitOK {
+			t.Errorf("depth-limit claim says the hooks have no ref-level effect on pop at depth >= 2, but it exited non-zero: %s", hooksAtThree.output)
+		}
+		if hooksAtThree.depthAfter != 2 {
+			t.Errorf("pop at depth 3 under the hooks should have consumed an entry (depth 2), got %d", hooksAtThree.depthAfter)
+		}
+	}
+}
+
+// TestStashGuard_NoShippedSentenceOverclaims is the anti-rewording half. It
+// reads every sentence of every shipped user-facing file, keeps the ones that
+// make a blocking claim about `git stash` verbs, and checks each against the
+// MEASURED verdicts — positive claims must name only verbs measured to be
+// blocked, negated claims only verbs measured not to be. It does not know any
+// phrasing in advance, so "this guard blocks git stash push, pop, apply, drop
+// and clear outright" fails on its content, not on its wording.
+func TestStashGuard_NoShippedSentenceOverclaims(t *testing.T) {
+	root := repoRootDir(t)
+	measured := map[string]map[string]bool{
+		mechHooks: measureCoverage(t, root, mechHooks, 3),
+		mechShim:  measureCoverage(t, root, mechShim, 3),
+	}
+
+	checked := 0
+	for _, f := range coverageTextFiles(root) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		text := string(b)
-		for _, bad := range overclaims {
-			if strings.Contains(text, bad) {
-				t.Errorf("%s claims coverage the guard does not have: %q", filepath.Base(f), bad)
+		for _, c := range scanCoverageClaims(string(b)) {
+			checked++
+			verdicts := measured[c.mechanism]
+			for _, verb := range c.verbs {
+				blocked := verdicts[verb]
+				if c.positive && !blocked {
+					t.Errorf("%s claims a control it does not have.\n  sentence: %s\n  mechanism: %s\n  `git stash %s` is MEASURED not blocked",
+						filepath.Base(f), c.sentence, c.mechanism, verb)
+				}
+				if !c.positive && blocked {
+					t.Errorf("%s understates its coverage, which is also a lie about what happened.\n  sentence: %s\n  mechanism: %s\n  `git stash %s` is MEASURED blocked",
+						filepath.Base(f), c.sentence, c.mechanism, verb)
+				}
 			}
 		}
 	}
-
-	// The blocking hook must state the gap explicitly, naming apply.
-	hook, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatalf("read hook: %v", err)
+	if checked == 0 {
+		t.Fatalf("the sentence scanner matched nothing at all — it has stopped testing anything")
 	}
-	for _, want := range []string{"NOT BLOCKABLE BY ANY GIT HOOK", "git stash apply", "post-index-change"} {
-		if !strings.Contains(string(hook), want) {
-			t.Errorf("reference-transaction hook must document the gap; missing %q", want)
+	t.Logf("checked %d verb-bearing blocking claims across %d files", checked, len(coverageTextFiles(root)))
+}
+
+// TestStashGuard_ScannerCatchesARewordedOverclaim proves the scanner above is
+// not vacuous, using the exact defeat the round-2 adversary used: a plainly
+// worded overclaim in wording that appears nowhere in the current text.
+func TestStashGuard_ScannerCatchesARewordedOverclaim(t *testing.T) {
+	root := repoRootDir(t)
+	hooks := measureCoverage(t, root, mechHooks, 3)
+
+	for _, injected := range []string{
+		"# This guard blocks git stash push, pop, apply, drop and clear outright.",
+		"# Raw `git stash pop` is refused before it can touch your tree.",
+		"# Nothing an agent types as `git stash drop` will be allowed to run.",
+		"# The hook prevents git stash apply.",
+	} {
+		claims := scanCoverageClaims(injected)
+		if len(claims) == 0 {
+			t.Errorf("scanner did not even see a claim in: %s", injected)
+			continue
+		}
+		flagged := false
+		for _, c := range claims {
+			for _, verb := range c.verbs {
+				if c.positive != hooks[verb] {
+					flagged = true
+				}
+			}
+		}
+		if !flagged {
+			t.Errorf("scanner accepted a reworded overclaim: %s\n  parsed: %+v", injected, claims)
+		}
+	}
+
+	// ...and it must not flag the honest sentences the guard actually ships.
+	for _, honest := range []string{
+		"# The hooks stop 'git stash push', 'save' and 'clear' before any damage.",
+		"# They cannot stop 'git stash apply', 'pop' or 'drop'.",
+	} {
+		for _, c := range scanCoverageClaims(honest) {
+			for _, verb := range c.verbs {
+				if c.positive != hooks[verb] {
+					t.Errorf("scanner flagged an honest, measured-true sentence: %s\n  parsed: %+v", honest, c)
+				}
+			}
 		}
 	}
 }
@@ -475,9 +605,36 @@ func TestStashGuard_ReportsNonEmptySharedStackLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"SHARED stash stack still holds 1", "CANNOT be", "ready-bef"} {
+	for _, want := range []string{"SHARED stash stack still holds 1", "cannot stop", "ready-bef"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("non-empty shared stack must be reported loudly; missing %q in:\n%s", want, out)
+		}
+	}
+	// At depth 1 the operator sees the exit-128 refusal on pop/drop and can
+	// easily conclude the guard has them covered. It does not say so.
+	if strings.Contains(out, "NO REF-LEVEL EFFECT") {
+		t.Errorf("depth-1 install should not print the depth >= 2 warning:\n%s", out)
+	}
+
+	// At the depth this repo actually runs at, the report must state the
+	// limit found by the round-2 review, and offer the mechanism that closes
+	// it. Two entries is already past the boundary.
+	deep := setupBaseRepo(t)
+	seedPreGuardStashEntry(t, deep, "backlog one\n", "one")
+	seedPreGuardStashEntry(t, deep, "backlog two\n", "two")
+	out, err = installGuard(scriptsDir(t), deep)
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"SHARED stash stack still holds 2",
+		"NO REF-LEVEL EFFECT AT ALL",
+		"exit 0 and consume an entry",
+		"The PATH shim is NOT active",
+		"export PATH=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("at depth >= 2 the report must state the limit and the fix; missing %q in:\n%s", want, out)
 		}
 	}
 
@@ -732,7 +889,611 @@ func TestWtStash_ConcurrentPushPopAcrossWorktreesStaysIsolated(t *testing.T) {
 	}
 }
 
+// TestStashGuard_HooksHaveNoRefLevelEffectAtRealisticDepth pins the limit the
+// round-2 review found, as a measurement rather than a footnote. The guard was
+// only ever demonstrated on a single-entry stack, which is the one depth where
+// the trailing refs/stash deletion opens a transaction a hook can abort. The
+// live repo runs at depth 27. If this test ever starts failing because pop is
+// refused at depth 3, that is good news and the coverage table must be
+// rewritten to match.
+func TestStashGuard_HooksHaveNoRefLevelEffectAtRealisticDepth(t *testing.T) {
+	root := repoRootDir(t)
+
+	atOne := rawVerbRun(t, root, mechHooks, 1, "pop")
+	if atOne.exitOK {
+		t.Errorf("depth 1: expected the trailing refs/stash deletion to be refused, got exit 0:\n%s", atOne.output)
+	}
+	if atOne.depthAfter != 0 {
+		t.Errorf("depth 1: the reflog rewrite happens before any hook, so the entry should already be gone; depth=%d", atOne.depthAfter)
+	}
+
+	for _, depth := range []int{2, 3, 5} {
+		res := rawVerbRun(t, root, mechHooks, depth, "pop")
+		if !res.exitOK {
+			t.Errorf("depth %d: expected raw `git stash pop` to succeed under the hooks (that is the limit being documented), got:\n%s", depth, res.output)
+		}
+		if res.depthAfter != depth-1 {
+			t.Errorf("depth %d: expected the entry to be consumed (depth %d), got %d", depth, depth-1, res.depthAfter)
+		}
+		if res.sharedAfter != siblingContent(depth) {
+			t.Errorf("depth %d: expected the sibling's stashed content in the caller's tree, got %q", depth, res.sharedAfter)
+		}
+		// The warning is the ONLY thing left at this depth, so it had better
+		// be there.
+		if !strings.Contains(res.output, "ready-f75") {
+			t.Errorf("depth %d: pop is unblocked here, so the loud warning is the whole of the coverage — and it did not fire:\n%s", depth, res.output)
+		}
+	}
+
+	// drop at depth >= 2 is the fully silent case. Assert the silence rather
+	// than letting somebody discover it.
+	res := rawVerbRun(t, root, mechHooks, 3, "drop")
+	if !res.exitOK {
+		t.Errorf("depth 3: expected raw `git stash drop` to succeed under the hooks, got:\n%s", res.output)
+	}
+	if strings.Contains(res.output, "ready-f75") {
+		t.Errorf("depth 3 drop unexpectedly produced guard output; the documented claim that it is silent is now wrong:\n%s", res.output)
+	}
+}
+
+// TestStashGuard_PathShimHoldsAtArbitraryDepth is the answer to that limit.
+// The done condition is that dispatched agents cannot clobber each other, and
+// no git hook can deliver it, so the mechanism has to sit outside git: a `git`
+// wrapper earlier on the agent's PATH. It refuses before git runs at all, so
+// stack depth is irrelevant — asserted here at the depth where the hooks have
+// already been measured to do nothing.
+func TestStashGuard_PathShimHoldsAtArbitraryDepth(t *testing.T) {
+	root := repoRootDir(t)
+	for _, depth := range []int{1, 3, 27} {
+		for _, verb := range stashVerbs {
+			res := rawVerbRun(t, root, mechShim, depth, verb)
+			if res.exitOK {
+				t.Errorf("depth %d: `git stash %s` was allowed through the PATH shim:\n%s", depth, verb, res.output)
+			}
+			if res.depthAfter != depth {
+				t.Errorf("depth %d: `git stash %s` changed the shared stack to %d entries", depth, verb, res.depthAfter)
+			}
+			if res.sharedAfter != "shared-base\n" {
+				t.Errorf("depth %d: `git stash %s` let a sibling's content into the tree: %q", depth, verb, res.sharedAfter)
+			}
+			if res.mineAfter != "precious\n" {
+				t.Errorf("depth %d: `git stash %s` lost the caller's own uncommitted work: %q", depth, verb, res.mineAfter)
+			}
+			if !strings.Contains(res.output, "ready-f75") {
+				t.Errorf("depth %d: `git stash %s` refusal must explain itself:\n%s", depth, verb, res.output)
+			}
+			if !strings.Contains(res.output, "git wtstash") {
+				t.Errorf("depth %d: `git stash %s` refusal must name the replacement:\n%s", depth, verb, res.output)
+			}
+		}
+	}
+}
+
+// TestStashGuard_PathShimPassesEverythingElseThrough: a wrapper on PATH that
+// broke ordinary git would be removed within the hour, and a wrapper that
+// blocked read-only inspection would push agents to work around it. Both
+// failure modes are worse than the hazard.
+func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
+	root := repoRootDir(t)
+	repo := setupSharedStackRepo(t, root, 2)
+	env := envWithPath(filepath.Join(root, "scripts", "git-shim"))
+
+	for _, tc := range []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"stash list", "git stash list", "stash@{1}"},
+		{"stash show", "git stash show", "shared.txt"},
+		{"rev-parse", "git rev-parse --abbrev-ref HEAD", "master"},
+		{"status", "git status --short", "mine.txt"},
+		{"log", "git log --oneline -1", "init"},
+	} {
+		out, err := bashOut(repo, env, tc.cmd)
+		if err != nil {
+			t.Errorf("%s: shim broke an ordinary command (%q): %v\n%s", tc.name, tc.cmd, err, out)
+			continue
+		}
+		if tc.want != "" && !strings.Contains(out, tc.want) && !strings.Contains(out, "main") {
+			t.Errorf("%s: %q produced unexpected output:\n%s", tc.name, tc.cmd, out)
+		}
+	}
+
+	// Global options must not be mistaken for the subcommand: `git -C <dir>
+	// stash pop` has to be caught too.
+	out, err := bashOut(t.TempDir(), env, "git -C "+repo+" stash pop")
+	if err == nil {
+		t.Errorf("`git -C <dir> stash pop` slipped past the shim:\n%s", out)
+	}
+	if n := stashDepth(t, repo); n != 2 {
+		t.Errorf("`git -C <dir> stash pop` consumed an entry: depth %d", n)
+	}
+
+	// wt-stash.sh runs `git stash create` / `git stash apply <sha>` against
+	// its OWN per-worktree refs and must keep working with the shim on PATH.
+	mustWriteFile(t, repo, "mine.txt", "wtstash work\n")
+	if out, err := bashOut(repo, env, "git wtstash push -m shim-check"); err != nil {
+		t.Fatalf("git wtstash push broke with the shim on PATH: %v\n%s", err, out)
+	}
+	if out, err := bashOut(repo, env, "git wtstash pop"); err != nil {
+		t.Fatalf("git wtstash pop broke with the shim on PATH: %v\n%s", err, out)
+	}
+	if got := mustReadFile(t, repo, "mine.txt"); got != "wtstash work\n" {
+		t.Fatalf("git wtstash round-trip lost the change under the shim: %q", got)
+	}
+	if n := stashDepth(t, repo); n != 2 {
+		t.Fatalf("git wtstash touched the SHARED stack: depth %d", n)
+	}
+}
+
+// TestStashGuard_InstallerMaterialisesShimAndDoesNotClaimItIsActive: the shim
+// only works if something puts it on PATH, and that something is the process
+// that spawns an agent — not this repo. An installer that printed "guard
+// active" without distinguishing the two mechanisms would recreate exactly the
+// overclaim this item keeps failing on.
+func TestStashGuard_InstallerMaterialisesShimAndDoesNotClaimItIsActive(t *testing.T) {
+	root := repoRootDir(t)
+	base := setupBaseRepo(t)
+	out, err := installGuard(filepath.Join(root, "scripts"), base)
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+
+	common := strings.TrimSpace(mustGit(t, base, "rev-parse", "--git-common-dir"))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(base, common)
+	}
+	shim := filepath.Join(common, "f75-stash-guard", "bin", "git")
+	info, err := os.Stat(shim)
+	if err != nil {
+		t.Fatalf("installer did not materialise the PATH shim at %s: %v", shim, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("materialised shim is not executable: %v", info.Mode())
+	}
+	src, err := os.ReadFile(filepath.Join(root, "scripts", "git-shim", "git"))
+	if err != nil {
+		t.Fatalf("read shim source: %v", err)
+	}
+	got, err := os.ReadFile(shim)
+	if err != nil {
+		t.Fatalf("read installed shim: %v", err)
+	}
+	if string(got) != string(src) {
+		t.Fatalf("installed shim differs from scripts/git-shim/git")
+	}
+
+	// It must say the shim is NOT on PATH, and print the line that fixes it.
+	if !strings.Contains(out, "Currently on PATH: no") {
+		t.Errorf("installer must report that the PATH shim is inactive, got:\n%s", out)
+	}
+	if !strings.Contains(out, "export PATH=\""+filepath.Join(common, "f75-stash-guard", "bin")) {
+		t.Errorf("installer must print the resolved activation line, got:\n%s", out)
+	}
+
+	// And with the shim genuinely on PATH it must say so rather than nagging.
+	env := envWithPath(filepath.Join(common, "f75-stash-guard", "bin"))
+	onPath, err := bashOut(base, env, filepath.Join(root, "scripts", "install-git-stash-guard.sh"))
+	if err != nil {
+		t.Fatalf("install with shim on PATH failed: %v\n%s", err, onPath)
+	}
+	if !strings.Contains(onPath, "Currently on PATH: yes") {
+		t.Errorf("installer did not notice the shim was on PATH:\n%s", onPath)
+	}
+}
+
 // --- helpers -----------------------------------------------------------
+
+const (
+	mechHooks = "git-hooks"
+	mechShim  = "path-shim"
+)
+
+// stashVerbs is every `git stash` verb the shipped text is allowed to make a
+// coverage claim about. Each one is measured; nothing is assumed. `list` and
+// `show` are excluded because they mutate nothing.
+var stashVerbs = []string{"push", "save", "apply", "pop", "drop", "clear"}
+
+type verbRun struct {
+	output      string
+	exitOK      bool
+	depthBefore int
+	depthAfter  int
+	sharedAfter string
+	mineAfter   string
+}
+
+// siblingContent is what the top entry of a depth-n seeded stack holds.
+func siblingContent(depth int) string { return fmt.Sprintf("sibling %d\n", depth) }
+
+// setupSharedStackRepo builds the incident's shape: a repo whose SHARED stash
+// stack already holds `depth` entries from a sibling worktree (all touching
+// shared.txt), with the local agent's own uncommitted work sitting in
+// mine.txt. The guard is installed afterwards, exactly as it would be in a
+// repo that already had a backlog — the live one has 27 entries.
+func setupSharedStackRepo(t *testing.T, root string, depth int) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustGit(t, dir, "init", "-q")
+	mustGit(t, dir, "config", "user.email", "wt-stash-test@example.com")
+	mustGit(t, dir, "config", "user.name", "wt-stash-test")
+	mustWriteFile(t, dir, "shared.txt", "shared-base\n")
+	mustWriteFile(t, dir, "mine.txt", "mine-base\n")
+	mustGit(t, dir, "add", ".")
+	mustGit(t, dir, "commit", "-q", "-m", "init")
+
+	for i := 1; i <= depth; i++ {
+		mustWriteFile(t, dir, "shared.txt", siblingContent(i))
+		// Hooks off for the seeding only: this is how the live backlog got
+		// there, before the guard existed. Everything measured afterwards
+		// runs raw git with the guard fully active.
+		mustGit(t, dir, "-c", "core.hooksPath=/dev/null", "stash", "push", "-q", "-m", fmt.Sprintf("sibling entry %d", i))
+	}
+	mustInstallGuard(t, filepath.Join(root, "scripts"), dir)
+	mustWriteFile(t, dir, "mine.txt", "precious\n")
+	return dir
+}
+
+// rawVerbRun runs ONE raw `git stash <verb>` the way an agent would type it —
+// through bash, resolving git off PATH — against a freshly built shared stack
+// of the given depth, and reports what actually happened.
+func rawVerbRun(t *testing.T, root, mechanism string, depth int, verb string) verbRun {
+	t.Helper()
+	dir := setupSharedStackRepo(t, root, depth)
+
+	var env []string
+	if mechanism == mechShim {
+		env = envWithPath(filepath.Join(root, "scripts", "git-shim"))
+	} else {
+		env = envWithPath("")
+	}
+
+	before := stashDepth(t, dir)
+	out, err := bashOut(dir, env, "git stash "+verb)
+	return verbRun{
+		output:      out,
+		exitOK:      err == nil,
+		depthBefore: before,
+		depthAfter:  stashDepth(t, dir),
+		sharedAfter: mustReadFile(t, dir, "shared.txt"),
+		mineAfter:   mustReadFile(t, dir, "mine.txt"),
+	}
+}
+
+// measureCoverage derives the coverage claim from behaviour: for each verb, is
+// it refused with NOTHING damaged? "Blocked pre-damage" means all four of a
+// non-zero exit, an unchanged shared stack, an uncontaminated working tree,
+// and the caller's own work still present. Anything less is not blocked.
+func measureCoverage(t *testing.T, root, mechanism string, depth int) map[string]bool {
+	t.Helper()
+	verdicts := make(map[string]bool, len(stashVerbs))
+	for _, verb := range stashVerbs {
+		res := rawVerbRun(t, root, mechanism, depth, verb)
+		verdicts[verb] = !res.exitOK &&
+			res.depthAfter == res.depthBefore &&
+			res.sharedAfter == "shared-base\n" &&
+			res.mineAfter == "precious\n"
+	}
+	return verdicts
+}
+
+// envWithPath returns the current environment with `prepend` (if non-empty)
+// placed ahead of the real PATH, and any pre-existing PATH entry removed so
+// there is exactly one.
+func envWithPath(prepend string) []string {
+	path := os.Getenv("PATH")
+	if prepend != "" {
+		path = prepend + string(os.PathListSeparator) + path
+	}
+	out := []string{"PATH=" + path}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PATH=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// bashOut runs a command line through bash so that `git` is resolved off PATH
+// exactly as it would be for an agent typing it.
+func bashOut(dir string, env []string, line string) (string, error) {
+	cmd := exec.Command("bash", "-c", line)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func mustWriteFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s in %s: %v", name, dir, err)
+	}
+}
+
+func mustReadFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("read %s in %s: %v", name, dir, err)
+	}
+	return string(b)
+}
+
+// --- the documented side -------------------------------------------------
+
+type coverageClaim struct {
+	blocked    []string
+	notBlocked []string
+	depthLimit string
+}
+
+// coverageTableFiles are the files that must carry the canonical, machine
+// readable coverage table, byte-identical once comment markers are stripped.
+func coverageTableFiles(root string) []string {
+	return []string{
+		filepath.Join(root, "scripts", "git-hooks", "reference-transaction"),
+		filepath.Join(root, "scripts", "install-git-stash-guard.sh"),
+		filepath.Join(root, "docs", "ops", "shared-git-state-audit.md"),
+	}
+}
+
+// coverageTextFiles is every shipped file whose prose an agent or operator
+// might read as a promise about `git stash`.
+func coverageTextFiles(root string) []string {
+	return []string{
+		filepath.Join(root, "scripts", "git-hooks", "reference-transaction"),
+		filepath.Join(root, "scripts", "git-hooks", "post-index-change"),
+		filepath.Join(root, "scripts", "git-hooks", "post-checkout"),
+		filepath.Join(root, "scripts", "install-git-stash-guard.sh"),
+		filepath.Join(root, "scripts", "wt-stash.sh"),
+		filepath.Join(root, "scripts", "git-shim", "git"),
+		filepath.Join(root, "docs", "ops", "shared-git-state-audit.md"),
+	}
+}
+
+var (
+	tableBeginRe = regexp.MustCompile(`ready-f75 coverage table BEGIN`)
+	tableEndRe   = regexp.MustCompile(`ready-f75 coverage table END`)
+)
+
+// parseCoverageTable pulls the machine-readable claim out of a shipped file.
+// The point of the format is that the claim cannot be reworded: it is a verb
+// list, and a verb list is comparable to a measurement.
+func parseCoverageTable(t *testing.T, file string) map[string]coverageClaim {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	lines := strings.Split(string(b), "\n")
+	claims := map[string]coverageClaim{}
+	var mech string
+	inside := false
+	for _, raw := range lines {
+		line := strings.TrimLeft(raw, " \t")
+		line = strings.TrimPrefix(line, "#")
+		if tableBeginRe.MatchString(line) {
+			inside = true
+			continue
+		}
+		if !inside {
+			continue
+		}
+		if tableEndRe.MatchString(line) {
+			inside = false
+			continue
+		}
+		f := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(f, "mechanism:"):
+			mech = strings.TrimSpace(strings.TrimPrefix(f, "mechanism:"))
+			claims[mech] = coverageClaim{}
+		case strings.HasPrefix(f, "blocked-pre-damage:"):
+			c := claims[mech]
+			c.blocked = parseVerbList(strings.TrimPrefix(f, "blocked-pre-damage:"))
+			claims[mech] = c
+		case strings.HasPrefix(f, "not-blocked:"):
+			c := claims[mech]
+			c.notBlocked = parseVerbList(strings.TrimPrefix(f, "not-blocked:"))
+			claims[mech] = c
+		case strings.HasPrefix(f, "depth-limit:"):
+			c := claims[mech]
+			c.depthLimit = strings.TrimSpace(strings.TrimPrefix(f, "depth-limit:"))
+			claims[mech] = c
+		default:
+			// continuation of depth-limit prose
+			if mech != "" && f != "" {
+				c := claims[mech]
+				if c.depthLimit != "" {
+					c.depthLimit += " " + f
+					claims[mech] = c
+				}
+			}
+		}
+	}
+	if inside {
+		t.Fatalf("%s: coverage table has a BEGIN with no END", filepath.Base(file))
+	}
+	if len(claims) == 0 {
+		t.Fatalf("%s: no ready-f75 coverage table found; every file in coverageTableFiles must carry it", filepath.Base(file))
+	}
+	return claims
+}
+
+func parseVerbList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "(none)" {
+		return nil
+	}
+	return strings.Fields(s)
+}
+
+func sameCoverage(a, b map[string]coverageClaim) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok {
+			return false
+		}
+		if !equalStrings(sortedCopy(va.blocked), sortedCopy(vb.blocked)) ||
+			!equalStrings(sortedCopy(va.notBlocked), sortedCopy(vb.notBlocked)) ||
+			normaliseSpace(va.depthLimit) != normaliseSpace(vb.depthLimit) {
+			return false
+		}
+	}
+	return true
+}
+
+func normaliseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// --- the prose scanner ---------------------------------------------------
+
+type coverageSentence struct {
+	sentence  string
+	positive  bool
+	mechanism string
+	verbs     []string
+}
+
+var (
+	gitStashRe = regexp.MustCompile(`(?i)git\s+stash\b`)
+	// Two families, because their polarity is opposite: "not blocked" means
+	// open, "not allowed" means blocked. Reading only one family is how a
+	// scanner gets talked past.
+	restrictiveRe = regexp.MustCompile(`(?i)\b(block|blocks|blocked|blocking|blockable|refuse|refuses|refused|refusal|prevent|prevents|prevented|stop|stops|stopped|reject|rejects|rejected|deny|denies|denied|forbid|forbids|forbidden)\b`)
+	permissiveRe  = regexp.MustCompile(`(?i)\b(allow|allows|allowed|permit|permits|permitted)\b`)
+	negationRe    = regexp.MustCompile(`(?i)\b(no|not|never|cannot|can't|nothing|neither|nor|without|unable)\b`)
+	shimWordRe    = regexp.MustCompile(`(?i)\b(shim|wrapper)\b`)
+	stashVerbRe   = regexp.MustCompile(`(?i)\b(push|save|apply|pop|drop|clear)\b`)
+)
+
+// scanCoverageClaims finds every sentence that makes a blocking claim about
+// named `git stash` verbs. It knows no phrasings: it looks for the co-presence
+// of "git stash", a claim word, and at least one verb, then reads the polarity
+// off a negation. Everything it returns is checked against a measurement, so
+// the only way to pass is to say something true.
+func scanCoverageClaims(text string) []coverageSentence {
+	var out []coverageSentence
+	for _, s := range splitClaimSentences(text) {
+		if !gitStashRe.MatchString(s) {
+			continue
+		}
+		restrictive := restrictiveRe.MatchString(s)
+		permissive := permissiveRe.MatchString(s)
+		if !restrictive && !permissive {
+			continue
+		}
+		verbs := uniqueLower(stashVerbRe.FindAllString(s, -1))
+		if len(verbs) == 0 {
+			continue
+		}
+		negated := negationRe.MatchString(s)
+		// "blocks X" and "does not allow X" both claim X is blocked;
+		// "does not block X" and "allows X" both claim it is open.
+		claimsBlocked := negated == permissive
+		if restrictive && permissive {
+			claimsBlocked = !negated // restrictive reading wins when mixed
+		}
+		mech := mechHooks
+		if shimWordRe.MatchString(s) {
+			mech = mechShim
+		}
+		out = append(out, coverageSentence{
+			sentence:  normaliseSpace(s),
+			positive:  claimsBlocked,
+			mechanism: mech,
+			verbs:     verbs,
+		})
+	}
+	return out
+}
+
+// splitClaimSentences turns a shell script, a hook or a markdown document into
+// claim-sized units: comment markers stripped, a break at every blank line and
+// at every bullet / table row / heading (so a markdown table is a claim per
+// cell rather than one giant run-on), then split on sentence punctuation and
+// on the markdown cell separator.
+func splitClaimSentences(text string) []string {
+	var joined strings.Builder
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimLeft(raw, " \t")
+		line = strings.TrimPrefix(line, "//")
+		line = strings.TrimPrefix(line, "#")
+		line = strings.TrimLeft(line, " \t")
+		if line == "" {
+			joined.WriteString(" . ")
+			continue
+		}
+		switch line[0] {
+		case '*', '-', '|', '#', '>', '+':
+			joined.WriteString(" . ")
+		}
+		joined.WriteString(line)
+		joined.WriteString(" ")
+	}
+
+	runes := []rune(joined.String())
+	var out []string
+	var cur strings.Builder
+	for i, r := range runes {
+		if r == '.' || r == ';' || r == '!' || r == '?' || r == '|' {
+			// Do not split inside a version number such as "git 2.43".
+			if r == '.' && i > 0 && i+1 < len(runes) && isASCIIDigit(runes[i-1]) && isASCIIDigit(runes[i+1]) {
+				cur.WriteRune(r)
+				continue
+			}
+			if s := strings.TrimSpace(cur.String()); s != "" {
+				out = append(out, s)
+			}
+			cur.Reset()
+			continue
+		}
+		cur.WriteRune(r)
+	}
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+func isASCIIDigit(r rune) bool { return r >= '0' && r <= '9' }
+
+func uniqueLower(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.ToLower(s)
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func scriptsDir(t *testing.T) string {
 	t.Helper()

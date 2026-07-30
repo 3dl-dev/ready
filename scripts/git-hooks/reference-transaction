@@ -3,57 +3,66 @@
 #
 # WHY: refs/stash lives in the repository's COMMON .git directory — the one
 # piece of state every `git worktree` of a repo SHARES. Two agents dispatched
-# into separate worktrees who both run `git stash` push onto the SAME stack;
-# a pop by position can apply-then-delete the OTHER agent's entry with no
-# error at all. Observed 2026-07-29: 14+ interleaved entries from 10
-# branches, one agent's `git stash pop` reverting a sibling's uncommitted
-# files to HEAD, caught only because that agent volunteered it.
+# into separate worktrees who both stash are pushing onto the SAME stack; a
+# pop by position can apply-then-delete the OTHER agent's entry with no error
+# at all. Observed 2026-07-29: 14+ interleaved entries from 10 branches, one
+# agent's pop reverting a sibling's uncommitted files to HEAD, caught only
+# because that agent volunteered it.
 #
-# WHAT THIS HOOK ACTUALLY COVERS — measured on git 2.43, not assumed. Do not
-# widen this claim without re-measuring; an earlier version of this file
-# claimed it blocked push/pop/apply/drop/clear and that was false:
+# EXACT COVERAGE. The table below is not prose: every row is re-derived on
+# every test run by TestStashGuard_DocumentedCoverageMatchesMeasuredCoverage,
+# which runs each verb against a really-installed guard on a realistic shared
+# stack and fails if the table and the measurement disagree. An earlier
+# version of this file asserted coverage it did not have, which is why the
+# claim is machine-checked rather than written down.
 #
-#   BLOCKED HERE, BEFORE ANY DAMAGE
-#     * `git stash` / `git stash push`  — the operation that creates the
-#       cross-worktree hazard in the first place. The transaction is aborted
-#       before the working tree is reset, so the caller keeps their changes
-#       and nothing lands on the shared stack.
-#     * `git stash clear`  — a single refs/stash deletion with no preceding
-#       reflog rewrite, so aborting it preserves every entry. Measured: with
-#       entries on the stack, `git stash clear` exits 128 and `git stash
-#       list` is unchanged.
+# ready-f75 coverage table BEGIN
+#   mechanism: git-hooks
+#     blocked-pre-damage: push save clear
+#     not-blocked: apply pop drop
+#     depth-limit: REF-EFFECTIVE ONLY AT DEPTH <= 1. At a shared-stack depth
+#       of 1 the trailing refs/stash deletion is refused, but the entry has
+#       already left `git stash list` by then; the refusal only keeps the
+#       commit reachable via refs/stash. At depth 2 or more there is no
+#       ref-level effect whatsoever — exit 0, entry consumed, sibling content
+#       in the caller's tree. Measured at depth 1, 2, 3 and 5. The live ready
+#       clone sits at depth 27, i.e. in the row with no ref-level effect, so
+#       at realistic depth the post-index-change warning is the whole of the
+#       hooks' coverage — and for drop at depth >= 2 there is not even that.
+#   mechanism: path-shim
+#     blocked-pre-damage: push save apply pop drop clear
+#     not-blocked: (none)
+#     depth-limit: none — scripts/git-shim/git never invokes git for these
+#       verbs, so shared-stack depth is irrelevant. It applies only where its
+#       directory is earlier on PATH than the real git, which is a property
+#       of the process that spawns an agent and cannot be installed from
+#       inside this repository the way the hooks can.
+# ready-f75 coverage table END
 #
-#   NOT BLOCKABLE BY ANY GIT HOOK — do not pretend otherwise
-#     * `git stash apply` performs NO ref transaction whatsoever, so this
-#       hook never runs for it. The only hook git fires is
-#       post-index-change, whose exit code git ignores (measured: a
-#       post-index-change returning 1 leaves `git stash apply` at exit 0
-#       with the working tree already rewritten). See the sibling
-#       post-index-change hook, which turns that unblockable case into a
-#       LOUD warning instead of a silent one.
-#     * `git stash drop`, and the drop half of `git stash pop`, rewrite the
-#       refs/stash REFLOG first, via `git reflog delete --rewrite
-#       --updateref`, which does not open a ref transaction. By the time this
-#       hook sees anything the entry is already off `git stash list`. What
-#       aborting the trailing ref deletion DOES buy: when the dropped entry
-#       was the last one, refs/stash keeps pointing at it instead of being
-#       deleted, so the commit stays reachable and recoverable
-#       (`git stash apply refs/stash`) rather than becoming garbage.
-#     * `git stash pop` applies BEFORE it drops, so even in the case where
-#       this hook does fire, the working tree has already changed.
+# WHY THE HOOKS CANNOT DO BETTER, verb by verb, on git 2.43.
+#   * `git stash apply` performs NO ref transaction, so this hook never runs
+#     for it. The only hook git fires is post-index-change, whose exit code
+#     git ignores — a post-index-change returning 1 still leaves apply at
+#     exit 0 with the working tree already rewritten. The sibling
+#     post-index-change hook turns that unstoppable case into a LOUD warning
+#     instead of a silent one.
+#   * `git stash drop`, and the drop half of `git stash pop`, rewrite the
+#     refs/stash REFLOG first, via `git reflog delete --rewrite --updateref`,
+#     which opens no ref transaction. By the time this hook sees anything the
+#     entry is already off `git stash list`.
+#   * `git stash pop` applies BEFORE it drops, so even where this hook does
+#     fire, the working tree has already changed.
 #
-# The upshot: this hook makes the shared stack UNGROWABLE (no new entry can
-# land on it) and UNCLEARABLE (no bulk deletion). Once the stack is also
-# EMPTY, raw `git stash pop`/`apply`/`drop` all fail at stash@{0} resolution
-# with "No stash entries found." and zero working-tree damage — measured.
-# That is the end state in which every verb is safe.
-#
-# Ungrowable is what actually closes the observed incident: agent A's work can
-# no longer reach the shared stack, so agent B's pop can no longer discard it.
-# What remains is an agent popping a PRE-EXISTING entry into its own tree.
-# Emptying that backlog is data deletion and is owner-reserved (ready-bef);
-# until then the post-index-change hook is what makes it visible instead of
-# silent.
+# So what the hooks buy is that the shared stack becomes UNGROWABLE and
+# UNCLEARABLE. Ungrowable is what severs the observed incident: agent A's
+# work can no longer reach the shared stack, so agent B's pop can no longer
+# discard it. What remains is an agent consuming a PRE-EXISTING entry, and at
+# the depths this repo actually runs at, only the PATH shim and an empty
+# stack close that. Emptying the backlog is data deletion and is
+# owner-reserved (ready-bef). Once the stack is EMPTY, raw pop/apply/drop all
+# fail at stash@{0} resolution with "No stash entries found." and zero
+# working-tree damage — measured. That is the end state in which every verb
+# is safe with no guard at all.
 #
 # Full per-hazard analysis of the rest of the shared .git directory:
 # docs/ops/shared-git-state-audit.md
@@ -131,19 +140,25 @@ verb="$(_invoking_git_cmd)"
     case "$verb" in
       *"stash pop"* | *"stash drop"*)
         echo
-        echo "NOTE: this refusal did NOT undo anything. drop (and the drop half of"
-        echo "pop) rewrites the refs/stash reflog before any transaction opens, so"
-        echo "the entry is already off 'git stash list'; pop also applies before it"
-        echo "drops, so your working tree may already have changed. Refusing the"
+        echo "NOTE: this refusal did NOT undo anything, and you only saw it because"
+        echo "the shared stack was down to its LAST entry. The reflog rewrite already"
+        echo "happened, so the entry is off 'git stash list'; pop also applies before"
+        echo "it drops, so your working tree may already have changed. Aborting the"
         echo "trailing ref deletion only keeps the entry REACHABLE — recover it with"
         echo "  git stash apply refs/stash"
         echo "Check 'git status' and 'git diff' before doing anything else."
+        echo
+        echo "AT A SHARED-STACK DEPTH OF 2 OR MORE YOU WOULD NOT HAVE SEEN THIS AT"
+        echo "ALL: the same command exits 0, consumes the entry, and for drop prints"
+        echo "nothing. Do not read this refusal as protection at depth."
         ;;
     esac
     echo
-    echo "This hook cannot block 'git stash apply', or the reflog-rewrite half of"
-    echo "drop/pop: neither opens a ref transaction, so no hook runs. See"
-    echo "docs/ops/shared-git-state-audit.md for the measurements."
+    echo "The hooks stop 'git stash push', 'save' and 'clear' before any damage."
+    echo "They cannot stop 'git stash apply', 'pop' or 'drop': neither the apply"
+    echo "nor the reflog-rewrite half opens a ref transaction, so no hook runs."
+    echo "Only the PATH shim (scripts/git-shim) stops those, at any stack depth."
+    echo "Measurements: docs/ops/shared-git-state-audit.md"
   else
     echo
     echo "(That was the guard's own self-check canary. If you see this from"

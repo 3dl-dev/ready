@@ -17,7 +17,7 @@
 # verified empirically, not just from docs, before writing this). This
 # script reimplements push/list/pop/apply/drop/clear on top of that
 # namespace (refs/worktree/wtstash/N) instead of refs/stash, using the
-# officially-documented low-level building blocks `git stash create`
+# officially-documented low-level plumbing `git stash create`
 # (produces a stash-shaped commit without touching any ref) and
 # `git stash apply <commit>` (accepts any commit that looks like a stash
 # entry, not just one from refs/stash). Two worktrees can now push and pop
