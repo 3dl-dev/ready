@@ -70,11 +70,19 @@ import {
   BOARD_D as CONF_BOARD_D,
   OWNER_PUB as CONF_OWNER,
   OWNER_SEC as CONF_OWNER_SEC,
+  CEK_EPOCH1,
+  CEK_EPOCH2,
+  CUTOVER as CONF_CUTOVER,
   boardEvent as confBoardEvent,
   cards as confCards,
   expectedPlaintext as confExpected,
   grants as confGrants,
 } from "./lib/confidential.fixtures";
+// ready-191 rework: reading the browser's own sealed write back through the real
+// fold, as an independent key-holder would. Same seam main.ts projects through.
+import { foldItemSource } from "./lib/itemsource";
+import { PLACEHOLDER, type BoardDecryptor, type EncryptedBoardSet } from "./lib/envelope";
+import { hexToBytes } from "./lib/sha256";
 import {
   OWNER,
   OTHER,
@@ -1332,6 +1340,116 @@ describe("ready-1af: the control that actually refuses a browser write", () => {
     expect(card.kind).toBe(30302);
     expect(card.tags.some((t) => t[0] === "title")).toBe(false);
     expect(card.tags).toContainEqual(["enc", "1"]);
+    // …and sealed under the epoch main.ts SELECTED, not merely under some epoch.
+    // This session holds 1 and 2; the board's current epoch is 2. See the case
+    // below for why the marker's presence alone is not enough.
+    expect(card.tags).toContainEqual(["cek_epoch", "2"]);
     expect(JSON.stringify(card)).not.toContain(conf1.title);
+  });
+
+  // ── ready-191 rework: WHICH epoch the seal used ───────────────────────────
+  //
+  // The case above asserts the enc marker is PRESENT. That is not enough, and it
+  // was measured: mutating main.ts's selection to
+  //   const epoch = keyring.currentEpoch(b.coord) === null ? null : 1
+  // published ["cek_epoch","1"] on a board whose current epoch is 2, and the
+  // ENTIRE vitest suite plus the Go conformance test stayed green. Every other
+  // confidential case fixes the epoch at 1 with a keyring holding only epoch 1,
+  // so `currentEpoch()` was the one line in the write path nothing exercised.
+  //
+  // WHAT A STALE-EPOCH SEAL COSTS, and why no read-side assertion can catch it:
+  // the card is sealed under a key the WRITER still holds, so it renders
+  // perfectly for the writer and for anyone else who predates the rotation.
+  // The people it is broken for are the ones who joined after — including rd on
+  // another machine, holding only the current epoch — and they see "[encrypted]"
+  // forever, with nothing anywhere reporting a fault. That is this item's own
+  // done condition ("an independent rd decrypts to exactly the intended state")
+  // failing silently, so it is asserted the way the independent reader would
+  // find out: by FOLDING the published event with a decryptor that holds only
+  // the post-rotation key.
+  it("ready-191: the browser seals under the CURRENT epoch — a reader holding ONLY the post-rotation key opens what it wrote", async () => {
+    const board: DiscoveredBoard = {
+      coord: CONF_COORD,
+      ownerPubkey: CONF_OWNER,
+      boardD: CONF_BOARD_D,
+      title: "Confidential Board",
+    };
+    const identity = extension(CONF_OWNER);
+    const confSign = vi.fn(async (e: { created_at: number; kind: number; tags: string[][]; content: string }) =>
+      signNostrEvent({ created_at: e.created_at, kind: e.kind, tags: e.tags, content: e.content }, CONF_OWNER_SEC),
+    );
+    window.nostr = { getPublicKey: async () => CONF_OWNER, signEvent: confSign } as unknown as Window["nostr"];
+
+    const deps: BoardDeps = {
+      loadRelays: async () => [],
+      fetchEvents: async () => CONF_SNAPSHOT,
+      keyUnwrapper: () => nip07KeyUnwrapper(fakeNip44Signer(CONF_OWNER_SEC)),
+    };
+    const { writers } = await loadBoardItems([board], [], confGrants, identity, deps, () => {});
+    const writer = writers.get(board.coord)!;
+
+    // ANTI-TAUTOLOGY, and the whole reason this fixture can pin a SELECTION:
+    // this session holds BOTH epochs. conf-001 was sealed under epoch 1 and
+    // conf-003 under epoch 2, and both open here — so epoch 1 is genuinely
+    // available to seal under, and picking 2 is a choice rather than the only
+    // thing that could have happened.
+    const conf1 = confExpected.find((e) => e.id === "conf-001")!;
+    const conf3 = confExpected.find((e) => e.id === "conf-003")!;
+    expect(conf1.epoch).toBe(1);
+    expect(conf3.epoch).toBe(2);
+    expect(writer.items().get("conf-001")!.title).toBe(conf1.title);
+    expect(writer.items().get("conf-003")!.title).toBe(conf3.title);
+
+    await expect(writer.setPriority("conf-001", "p0")).rejects.toBeInstanceOf(RelayRejectedError);
+    const card = (await confSign.mock.results[0].value) as NostrEvent;
+    expect(card.kind).toBe(30302);
+    expect(card.tags).toContainEqual(["cek_epoch", "2"]);
+
+    // THE INDEPENDENT READER: someone granted at the rotation, holding the
+    // post-rotation key and nothing else — rd on another machine, or any member
+    // minted after the revoke. Real key bytes and the real fold, so "opens" is an
+    // AEAD outcome and not a flag the test set.
+    const postRotationOnly: BoardDecryptor = {
+      cek: (coord, epoch) => (coord === CONF_COORD && epoch === 2 ? hexToBytes(CEK_EPOCH2) : null),
+    };
+    const preRotationOnly: BoardDecryptor = {
+      cek: (coord, epoch) => (coord === CONF_COORD && epoch === 1 ? hexToBytes(CEK_EPOCH1) : null),
+    };
+    const confidentialBoard: EncryptedBoardSet = {
+      cutover: (coord) =>
+        coord === CONF_COORD ? { cutover: CONF_CUTOVER, ok: true } : { cutover: 0, ok: false },
+    };
+    const readBack = (dec: BoardDecryptor) =>
+      foldItemSource(
+        {
+          trusted: null,
+          maintainers: null,
+          pinnedBoard: CONF_COORD,
+          decryptor: dec,
+          encryptedBoards: confidentialBoard,
+        },
+        CONF_COORD,
+      )
+        // The board event and the ONE event the browser just published — nothing
+        // else, so what is read back can only have come out of the write path.
+        .loadItems([confBoardEvent, card])
+        .find((i) => i.id === "conf-001")!;
+
+    const opened = readBack(postRotationOnly);
+    expect(opened.redacted).toBeFalsy();
+    expect(opened.title).toBe(conf1.title);
+    expect(opened.context).toBe(conf1.context);
+    // …decrypted to EXACTLY the intended state, which is the mutation the write
+    // was for.
+    expect(opened.priority).toBe("p0");
+
+    // ANTI-TAUTOLOGY for the line above: the pre-rotation key does NOT open the
+    // same bytes, so `opened` is a real decrypt and not "any key works". This is
+    // also the assertion a stale-epoch seal inverts — under the epoch-1 mutation
+    // this reader is the one that opens it and the post-rotation member above is
+    // the one that gets [encrypted].
+    const stale = readBack(preRotationOnly);
+    expect(stale.redacted).toBe(true);
+    expect(stale.title).toBe(PLACEHOLDER);
   });
 });
