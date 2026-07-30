@@ -177,6 +177,19 @@ func cekFor(e *nostr.Event, dec BoardDecryptor) (cek [32]byte, ok bool) {
 
 // decryptCardPayload returns the decrypted free-text blob for a confidential
 // card, or ok=false when it cannot be decrypted (fail-closed to placeholder).
+//
+// Mirrors envelope.ts's decryptCardPayload (spec §3.1): the opened plaintext
+// must be a JSON object whose "title" key is present as a JSON string — the
+// shape gate cardPayloadWellFormed applies here, matching decodeCardPayload's
+// gate on the TS side. This check is NOT redundant with the json.Unmarshal
+// below: unmarshaling JSON into the typed cardPayload struct treats a MISSING
+// "title" key identically to an explicit "" title — both leave the zero
+// value — so {"context":"..."} alone would otherwise unmarshal successfully
+// with Title=="" and ok=true. The caller (ProjectItems) treats ok=true as
+// decryption SUCCESS and sets item.Redacted=false, so a payload that carries
+// no title would render a blank card title with none of the fail-closed
+// [encrypted] signal. Fail closed here instead, exactly like decodeCardPayload
+// already does on the TS side.
 func decryptCardPayload(e *nostr.Event, dec BoardDecryptor) (cardPayload, bool) {
 	var pl cardPayload
 	cek, ok := cekFor(e, dec)
@@ -187,10 +200,32 @@ func decryptCardPayload(e *nostr.Event, dec BoardDecryptor) (cardPayload, bool) 
 	if err != nil {
 		return pl, false
 	}
+	if !cardPayloadWellFormed(raw) {
+		return pl, false
+	}
 	if err := json.Unmarshal(raw, &pl); err != nil {
 		return pl, false
 	}
 	return pl, true
+}
+
+// cardPayloadWellFormed reports whether raw decodes to a JSON object (not an
+// array, not a scalar) carrying a "title" key whose value is a JSON string.
+// It is the Go-side counterpart of envelope.ts's decodeCardPayload shape
+// gate, needed because Go's json.Unmarshal into a typed struct cannot itself
+// distinguish "the key is absent" from "the key is present and empty" — see
+// decryptCardPayload's doc comment.
+func cardPayloadWellFormed(raw []byte) bool {
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return false // not a JSON object: array, scalar, or invalid JSON
+	}
+	titleRaw, present := generic["title"]
+	if !present {
+		return false
+	}
+	var title string
+	return json.Unmarshal(titleRaw, &title) == nil
 }
 
 // decryptStatusReason returns the decrypted close/change reason for a

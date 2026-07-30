@@ -251,17 +251,41 @@ interface StatusPayload {
   reason: string;
 }
 
-/** decryptCardPayload mirrors envelope.go's decryptCardPayload. */
+/**
+ * decryptCardPayload mirrors envelope.go's decryptCardPayload.
+ *
+ * Returns null unless the opened plaintext is a JSON object whose `title` is
+ * a string — the same shape gate decodeCardPayload applies. A payload that
+ * opens (AEAD succeeds) but does not parse to that shape is NOT a decryption
+ * success: nothing downstream can tell "opened to garbage" from "opened to a
+ * real card" once a non-null value comes back, and the fold (fold.ts's
+ * itemFromCard) treats non-null as success, assigning item.title = pl.title
+ * directly. An undefined title there renders a blank card title AND skips the
+ * .sealed CSS class (board/render.ts gates both title and PLACEHOLDER
+ * equality) — the reader loses the [encrypted] signal entirely. So this must
+ * fail closed here, before the fold ever sees the value, exactly like
+ * decodeCardPayload already does.
+ */
 export function decryptCardPayload(e: NostrEvent, dec: BoardDecryptor | null): CardPayload | null {
   const cek = cekFor(e, dec);
   if (cek === null) return null;
   const raw = openContent(cek, e.content);
   if (raw === null) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(new TextDecoder().decode(raw)) as CardPayload;
+    parsed = JSON.parse(new TextDecoder().decode(raw));
   } catch {
     return null;
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const o = parsed as Record<string, unknown>;
+  if (typeof o.title !== "string") return null;
+  return {
+    title: o.title,
+    context: typeof o.context === "string" ? o.context : undefined,
+    waiting_on: typeof o.waiting_on === "string" ? o.waiting_on : undefined,
+    labels: Array.isArray(o.labels) ? o.labels.filter((l): l is string => typeof l === "string") : undefined,
+  };
 }
 
 /** decryptStatusReason mirrors envelope.go's decryptStatusReason. */

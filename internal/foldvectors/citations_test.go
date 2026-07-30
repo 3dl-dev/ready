@@ -727,10 +727,12 @@ var citationExceptions = map[string]string{
 		"confidential-boards-envelope.md's now-stale citation for BuildStatusEvent " +
 		"(claimed :319-344 when frozen); BuildStatusEvent's CURRENT declaration is " +
 		":370 (moved from :362, ready-a9b) — this entry records drift, not a live citation of :319",
-	"sealStatusPayload|pkg/sync/envelope.go|253@decl331": "§18.5-area: names " +
-		"sealStatusPayload but cites the `statusPayload` struct (:230-234) that " +
+	"sealStatusPayload|pkg/sync/envelope.go|288@decl366": "§18.5-area: names " +
+		"sealStatusPayload but cites the `statusPayload` struct (:288-292) that " +
 		"documents the JSON shape it marshals, not the func's own body; " +
-		"sealStatusPayload itself is declared at :308",
+		"sealStatusPayload itself is declared at :366 (moved from :331 by " +
+		"ready-02e round 2's decryptCardPayload title-shape gate, which inserted " +
+		"lines earlier in envelope.go)",
 	"boardConfidentialEnvelope|cmd/rd/confidential.go|83@decl85": "§27.1-area: cites " +
 		"boardConfidentialEnvelope's OWN 6-line doc comment (:79-84, cited range :83-84), " +
 		"not its body; the func itself is declared at :85",
