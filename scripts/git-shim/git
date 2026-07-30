@@ -47,6 +47,10 @@ set -uo pipefail
 SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # --- find the real git, skipping ourselves ------------------------------
+# Skipping our own directory is not enough: the installer materialises a
+# SECOND copy of this file under .git/f75-stash-guard/bin, and if both copies
+# end up on PATH each would find the other and exec it forever. So skip any
+# candidate that is itself a copy of this guard, identified by its marker.
 _real_git() {
   local dir resolved
   local IFS=:
@@ -54,10 +58,12 @@ _real_git() {
     [[ -n "$dir" ]] || dir="."
     resolved="$(cd "$dir" 2>/dev/null && pwd -P)" || continue
     [[ "$resolved" == "$SHIM_DIR" ]] && continue
-    if [[ -x "$resolved/git" && ! -d "$resolved/git" ]]; then
-      printf '%s' "$resolved/git"
-      return 0
+    [[ -x "$resolved/git" && ! -d "$resolved/git" ]] || continue
+    if head -c 8192 "$resolved/git" 2>/dev/null | grep -q 'ready-f75 stash guard'; then
+      continue
     fi
+    printf '%s' "$resolved/git"
+    return 0
   done
   return 1
 }

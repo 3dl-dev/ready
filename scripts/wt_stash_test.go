@@ -978,6 +978,10 @@ func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
 	repo := setupSharedStackRepo(t, root, 2)
 	env := envWithPath(filepath.Join(root, "scripts", "git-shim"))
 
+	// The branch name is whatever `git init` chose, so take it from git
+	// itself rather than guessing master vs main.
+	branch := strings.TrimSpace(mustGit(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+
 	for _, tc := range []struct {
 		name string
 		cmd  string
@@ -985,7 +989,7 @@ func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
 	}{
 		{"stash list", "git stash list", "stash@{1}"},
 		{"stash show", "git stash show", "shared.txt"},
-		{"rev-parse", "git rev-parse --abbrev-ref HEAD", "master"},
+		{"rev-parse", "git rev-parse --abbrev-ref HEAD", branch},
 		{"status", "git status --short", "mine.txt"},
 		{"log", "git log --oneline -1", "init"},
 	} {
@@ -994,8 +998,8 @@ func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
 			t.Errorf("%s: shim broke an ordinary command (%q): %v\n%s", tc.name, tc.cmd, err, out)
 			continue
 		}
-		if tc.want != "" && !strings.Contains(out, tc.want) && !strings.Contains(out, "main") {
-			t.Errorf("%s: %q produced unexpected output:\n%s", tc.name, tc.cmd, out)
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%s: %q produced unexpected output, wanted %q in:\n%s", tc.name, tc.cmd, tc.want, out)
 		}
 	}
 
@@ -1023,6 +1027,43 @@ func TestStashGuard_PathShimPassesEverythingElseThrough(t *testing.T) {
 	}
 	if n := stashDepth(t, repo); n != 2 {
 		t.Fatalf("git wtstash touched the SHARED stack: depth %d", n)
+	}
+}
+
+// TestStashGuard_TwoShimCopiesOnPathDoNotRecurse: the installer materialises a
+// SECOND copy of the shim inside .git, so an operator who puts both that
+// directory and scripts/git-shim on PATH has two wrappers that would each
+// resolve to the other. A shim that fork-bombs the moment somebody is
+// thorough is worse than no shim, so each copy skips any candidate carrying
+// the guard's marker.
+func TestStashGuard_TwoShimCopiesOnPathDoNotRecurse(t *testing.T) {
+	root := repoRootDir(t)
+	repo := setupSharedStackRepo(t, root, 2)
+	common := strings.TrimSpace(mustGit(t, repo, "rev-parse", "--git-common-dir"))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(repo, common)
+	}
+	installed := filepath.Join(common, "f75-stash-guard", "bin")
+
+	env := envWithPath(filepath.Join(root, "scripts", "git-shim") + string(os.PathListSeparator) + installed)
+
+	// A refused verb must still refuse, in bounded time, from either copy.
+	out, err := bashOut(repo, env, "timeout 20 git stash pop")
+	if err == nil {
+		t.Fatalf("two shims on PATH: `git stash pop` was allowed through:\n%s", out)
+	}
+	if !strings.Contains(out, "ready-f75") {
+		t.Fatalf("two shims on PATH: refusal did not come from the guard:\n%s", out)
+	}
+
+	// And an ordinary command must reach the real git rather than bouncing
+	// between the copies until the timeout kills it.
+	out, err = bashOut(repo, env, "timeout 20 git rev-parse --git-dir")
+	if err != nil {
+		t.Fatalf("two shims on PATH: ordinary git never reached the real binary (%v):\n%s", err, out)
+	}
+	if strings.Contains(out, "ready-f75") {
+		t.Fatalf("two shims on PATH: ordinary git was intercepted:\n%s", out)
 	}
 }
 
