@@ -781,3 +781,49 @@ func WinningBoardEvent(events []*nostr.Event, coord string) (*nostr.Event, bool)
 	}
 	return winner, true
 }
+
+// WinningCardEvent returns the kind-30302 card event that wins the latest-wins
+// (§4.5) contest for itemID among the cards tagged to board boardCoord: greatest
+// created_at, then lowest event id — the same `newerThan` rule ProjectItems applies
+// to pick winningCard, and the same one strfry applies to replaceable events
+// (ready-a43).
+//
+// It exists so a caller that must SUPERSEDE a card can find the exact event it has
+// to beat, without re-running ProjectItems' whole §3 gate sequence. It deliberately
+// applies NO read-trust filter and NO confidential quarantine, because a quarantined
+// event is still an event a relay serves: a post-cutover plaintext card never folds
+// (its cleartext is suppressed) yet anyone querying the relay reads it in full. A
+// re-seal that targeted only what the fold likes would leave exactly those copies
+// readable. Signatures ARE verified, for the reason WinningBoardEvent verifies them:
+// events may arrive from an untrusted relay and a forged one must not be able to
+// mask, or fake, the real occupant.
+//
+// AUTHORSHIP IS NOT FILTERED, AND THAT IS THE POINT. boardCoord names the BOARD the
+// card is tagged to ("a"); the card's own addressable coordinate is (kind, EVENT
+// AUTHOR, d). So two writers publishing the same item id on one board occupy two
+// SEPARATE relay slots, and this returns whichever of them currently wins the fold —
+// which is the honest answer, because a signer that replaces only its OWN slot has
+// changed nothing about the copy that is actually being served and read. A caller
+// intending to replace what a relay serves must therefore compare the returned
+// event's PubKey with the key it is about to sign with, and stop if they differ.
+func WinningCardEvent(events []*nostr.Event, boardCoord, itemID string) (*nostr.Event, bool) {
+	var winner *nostr.Event
+	for _, e := range events {
+		if e == nil || e.Kind != KindCard {
+			continue
+		}
+		if tagValue(e, "d") != itemID || tagValue(e, "a") != boardCoord {
+			continue
+		}
+		if e.Verify() != nil {
+			continue
+		}
+		if winner == nil || newerThan(e, winner) {
+			winner = e
+		}
+	}
+	if winner == nil {
+		return nil, false
+	}
+	return winner, true
+}
