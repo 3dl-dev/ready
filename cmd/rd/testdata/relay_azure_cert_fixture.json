@@ -1,0 +1,66 @@
+{
+  "deploy_md_headings": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8"
+  ],
+  "bicep_citations": {
+    "305-311": "// (docs/prod/deploy.md §4, `az containerapp env certificate create`) on\n// this same managedEnvironment, both provisioningState Succeeded. Referenced\n// here (not (re)created) so the container app's ingress.customDomains below\n// can bind to them without ever re-issuing a cert. relay.dontguess.ai is\n// deliberately NOT included — its zone isn't in Azure DNS (deploy.md §5),\n// so there's no managed cert for it and no binding to declare.\n// ---------------------------------------------------------------------------",
+    "313-325": "resource relayMootPubCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' existing = {\n  parent: managedEnvironment\n  name: 'mc-cae-nostr-rela-relay-moot-pub-5606'\n}\n\nresource relay3dlNetworkCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' existing = {\n  parent: managedEnvironment\n  name: 'mc-cae-nostr-rela-relay-3dl-networ-6699'\n}\n\n// ---------------------------------------------------------------------------\n// Container app — nostr-relay-prod. Single-replica scope: min 0, max 1\n// (nostrrelay-c96 item spec; cross-replica bus is nostrrelay-8f8)."
+  },
+  "az_subcommand_flags": {
+    "containerapp env certificate list": [
+      "--certificate",
+      "--debug",
+      "--defaults",
+      "--help",
+      "--location",
+      "--managed-",
+      "--managed-certificates-only",
+      "--name",
+      "--only-show-errors",
+      "--output",
+      "--private-key-",
+      "--private-key-certificates-only",
+      "--query",
+      "--resource-group",
+      "--subscription",
+      "--thumbprint",
+      "--verbose",
+      "-c",
+      "-g",
+      "-h",
+      "-l",
+      "-m",
+      "-n",
+      "-o",
+      "-p",
+      "-s",
+      "-t"
+    ],
+    "containerapp show": [
+      "--debug",
+      "--defaults",
+      "--help",
+      "--ids",
+      "--name",
+      "--only-show-errors",
+      "--output",
+      "--query",
+      "--resource-group",
+      "--show-secrets",
+      "--subscription",
+      "--verbose",
+      "-g",
+      "-h",
+      "-n",
+      "-o",
+      "-s"
+    ]
+  }
+}
