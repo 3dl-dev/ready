@@ -360,9 +360,16 @@ func TestResolveGranteePubkey_BareHexNormalizesToLowercase(t *testing.T) {
 // unbound claim-nonce riding along in the URL would be a bearer credential
 // anyone who later saw the link could bind to THEIR OWN key via
 // `rd grant --claim`, obtaining the authority the owner intended for the
-// specific person just granted. This test FAILS if that mint is
-// reintroduced — proven by reverting the ready-5c1 fix locally and observing
-// this test fail with both assertions below before restoring the fix.
+// specific person just granted. The two assertions below have independent
+// teeth against distinct regressions, not two checks on one bug: reverting
+// the fix to re-mint a full rd1_ token trips ONLY the "#rd1_" assertion — the
+// nonce rides inside the token's base64url payload, where the JSON field
+// `"claim":"..."` encodes to "Y2xhaW0i" and the literal substring "claim"
+// never appears in the URL. A narrower regression — the nonce leaking into
+// the plain fragment instead (e.g. appended as `&claim=<nonce>`) — carries no
+// rd1_ token at all and trips ONLY the case-insensitive "claim" assertion.
+// Both mint shapes were reintroduced locally to confirm exactly one Errorf
+// fires per case.
 func TestBoardShareCmd_WithPubkey_NoClaimNonce(t *testing.T) {
 	boardTestEnv(t)
 	granteeKey, err := nostr.GenerateKey()
