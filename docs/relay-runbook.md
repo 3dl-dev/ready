@@ -110,7 +110,7 @@ cat .ready/config.json 2>/dev/null   # machine-local override for this project o
   directory:** the project inherits the home default — edit `~/.config/rd/rd.json`
   below.
 - **`.ready/board.json` declares `relay_endpoints`:** edit and commit that file
-  instead (`rd init` or `rd link` is what wrote it) — the change is shared, not
+  instead (`rd init`, `rd link`, or `rd follow` is what wrote it) — the change is shared, not
   per-machine, so every clone (not just this one) needs the new entry.
 - **`.ready/config.json` declares `relay_endpoints`** (or `relays_local_only:
   true`): edit that file — it is a machine-local override for this project
