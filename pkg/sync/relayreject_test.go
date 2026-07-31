@@ -453,7 +453,7 @@ func TestFlushNostrPending_DeadLettersPermanentKeepsTransient(t *testing.T) {
 	}
 
 	relay := contentRelay(t)
-	if _, err := FlushNostrPending(context.Background(), pending, []string{relay}, 3*time.Second, false); err != nil {
+	if _, err := FlushNostrPending(context.Background(), pending, []string{relay}, false); err != nil {
 		t.Fatalf("FlushNostrPending: %v", err)
 	}
 

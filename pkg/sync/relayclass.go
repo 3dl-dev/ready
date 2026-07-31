@@ -301,14 +301,104 @@ func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, 
 	return attempts, reduceEventOutcome(outcomes), permReason
 }
 
+// publishManyResilient is GuardedPublishMany's HEAD-OF-LINE-SAFE counterpart
+// (ready-046 rework). A veracity adversary measured that calling
+// GuardedPublishMany once per relay and living with whatever it returns
+// regresses the exact case ready-046 was filed from: a relay that hangs up
+// partway through a burst (or GuardedPublishMany's OWN all-or-nothing reserved-
+// board guard refusing one poisoned event) leaves EVERY event sharing that
+// connection with a transport-level error, and — because a plain retry of the
+// identical batch hits the identical poison at the identical position — the
+// buffer wedges at flushed=0 forever instead of draining everything queued
+// behind the one bad event, which is exactly what the per-event path this
+// batching replaced used to do (each event got its OWN connection, so one
+// poisoned event could never block another).
+//
+// The common, well-behaved-relay case still costs exactly ONE connection
+// (ready-046's whole point): the first attempt always tries the WHOLE slice.
+// Only events that attempt leaves UNRESOLVED (Err != nil — the connection
+// died, or the guard refused the batch, before a verdict arrived) are retried:
+//   - if EVERY event in the failed group is still unresolved (zero progress
+//     on that connection), the group is bisected and each half gets its OWN
+//     fresh connection — this is what isolates a poisoned event down to a
+//     connection of size 1 instead of one of size n;
+//   - if only SOME are unresolved (the connection made partial progress
+//     before it died), only that already-smaller subset is retried.
+//
+// Recursion strictly shrinks the unresolved set on every step (or hits the
+// size-1 base case, which is always terminal), so it always terminates. Its
+// output is index-identical to a single GuardedPublishMany call in the
+// well-behaved case — only the CONNECTION COUNT, and, for events genuinely
+// queued behind a poisoned one, whether they get a verdict in THIS round at
+// all, differ.
+func publishManyResilient(ctx context.Context, relayURL string, events []*nostr.Event, production bool) []nostr.PublishAck {
+	acks := make([]nostr.PublishAck, len(events))
+	for i, e := range events {
+		if e != nil {
+			acks[i].EventID = e.ID
+		}
+	}
+	if len(events) == 0 {
+		return acks
+	}
+	idxs := make([]int, len(events))
+	for i := range idxs {
+		idxs[i] = i
+	}
+	resolveBatch(ctx, relayURL, events, production, acks, idxs)
+	return acks
+}
+
+// resolveBatch fills acks[idxs[k]], for every k, by publishing
+// events[idxs[k]] as one sub-batch over one fresh connection, then recovering
+// whatever that connection could not resolve. See publishManyResilient's doc
+// comment for the recursion's shape and termination argument.
+func resolveBatch(ctx context.Context, relayURL string, events []*nostr.Event, production bool, acks []nostr.PublishAck, idxs []int) {
+	sub := make([]*nostr.Event, len(idxs))
+	for i, gi := range idxs {
+		sub[i] = events[gi]
+	}
+	subAcks, err := GuardedPublishMany(ctx, relayURL, sub, production)
+	var unresolved []int
+	for i, gi := range idxs {
+		if i < len(subAcks) {
+			acks[gi] = subAcks[i]
+		} else {
+			// PublishMany always returns len(sub) acks; belt-and-braces so a
+			// future contract change cannot turn into an index panic.
+			acks[gi] = nostr.PublishAck{EventID: events[gi].ID, Err: err}
+		}
+		if acks[gi].Err != nil {
+			unresolved = append(unresolved, gi)
+		}
+	}
+	switch {
+	case len(unresolved) == 0:
+		return // every event on this connection got a definitive verdict
+	case len(idxs) == 1:
+		return // an isolated single event's own verdict is terminal for this round
+	case len(unresolved) == len(idxs):
+		// Zero progress on this connection — bisect so the failure cannot keep
+		// blocking the WHOLE group; each half gets its own fresh connection.
+		mid := len(idxs) / 2
+		resolveBatch(ctx, relayURL, events, production, acks, idxs[:mid])
+		resolveBatch(ctx, relayURL, events, production, acks, idxs[mid:])
+	default:
+		// Partial progress: retry exactly the still-unresolved subset.
+		resolveBatch(ctx, relayURL, events, production, acks, unresolved)
+	}
+}
+
 // publishEventsToRelaysBatch is publishEventToRelays' BATCHED counterpart
 // (ready-046): it publishes every event in events to every relay in relays
-// over ONE websocket connection PER RELAY (GuardedPublishMany) instead of one
-// dial per event per relay, then applies the identical classify+reduce
-// contract per event. Returns, for each input index, the same three values
-// publishEventToRelays returns for one event — so a caller iterating events
-// can switch from calling publishEventToRelays per event to reading these
-// slices index-for-index with no other change to its dead-letter/buffer logic.
+// over ONE websocket connection PER RELAY in the common case (publishManyResilient
+// falls back to a bounded number of extra connections, never one per event,
+// when a relay hangs up mid-batch or refuses part of it — see that function's
+// doc comment), then applies the identical classify+reduce contract per event.
+// Returns, for each input index, the same three values publishEventToRelays
+// returns for one event — so a caller iterating events can switch from calling
+// publishEventToRelays per event to reading these slices index-for-index with
+// no other change to its dead-letter/buffer logic.
 //
 // EXTRACTED (ready-046) so the batched board-publish path (relayPublishBatch)
 // and the offline-buffer batched drain (FlushNostrPending) share ONE
@@ -325,17 +415,17 @@ func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, 
 func publishEventsToRelaysBatch(ctx context.Context, relays []string, events []*nostr.Event, production bool) (attempts [][]relayAttempt, outcomes []relayOutcome, permReasons []string) {
 	attempts = make([][]relayAttempt, len(events))
 	for _, relay := range relays {
-		acks, err := GuardedPublishMany(ctx, relay, events, production)
+		acks := publishManyResilient(ctx, relay, events, production)
 		for i := range events {
 			var a relayAttempt
 			if i < len(acks) {
 				ak := acks[i]
 				a = relayAttempt{Relay: relay, Accepted: ak.Accepted, Message: ak.Message, Err: ak.Err}
 			} else {
-				// PublishMany always returns len(events) acks; this is a
-				// belt-and-braces fallback so a future contract change cannot
+				// publishManyResilient always returns len(events) acks; this is
+				// a belt-and-braces fallback so a future contract change cannot
 				// turn into an index panic mid-backfill/mid-flush.
-				a = relayAttempt{Relay: relay, Err: err}
+				a = relayAttempt{Relay: relay, Err: fmt.Errorf("sync: missing ack for event index %d from %s", i, relay)}
 			}
 			a.Outcome = classifyRelayResult(a.Accepted, a.Message, a.Err)
 			attempts[i] = append(attempts[i], a)

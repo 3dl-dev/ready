@@ -669,7 +669,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	// so it costs nothing on the common path; never fails the operation (the events
 	// are already durable in the local log). Re-publish is idempotent by event id.
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, p.Production)
 	}
 }
 
@@ -781,12 +781,8 @@ func (p *Publisher) relayPublishBatch(ctx context.Context, res *PublishResult, e
 		}
 	}
 
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = nostr.DefaultTimeout
-	}
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, p.Production)
 	}
 }
 

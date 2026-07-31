@@ -899,7 +899,7 @@ var nostrFlushCmd = &cobra.Command{
 		}
 		// production=true: sanctioned `rd nostr flush` CLI path (ready-6d0 finding (3)
 		// chokepoint guard) — mirrors nostrPublisher()'s Publisher.Production.
-		res, err := rdSync.FlushNostrPending(context.Background(), nostrPendingPath(dir), nostrWriteRelays(), nostr.DefaultTimeout, true)
+		res, err := rdSync.FlushNostrPending(context.Background(), nostrPendingPath(dir), nostrWriteRelays(), true)
 		if err != nil {
 			return err
 		}

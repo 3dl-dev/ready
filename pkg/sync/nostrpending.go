@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/3dl-dev/ready/pkg/jsonl"
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -91,16 +90,19 @@ type FlushResult struct {
 // Publisher.relayPublish's auto-drain, which passes p.Production through); every
 // other caller (tests) passes false explicitly.
 //
-// timeout is kept for signature stability with every existing caller but is no
-// longer consulted (ready-046): the per-event dial this replaced used it as a
-// per-relay-per-event deadline, but the batched drain below dials ONCE per
-// relay for the WHOLE buffer, and PublishMany/GuardedPublishMany already re-arm
-// their own idle read/write deadline before every frame (armDeadlines). Wrapping
-// ctx in a single fixed `timeout` for that one call would turn a per-operation
-// deadline into a per-BATCH one — the production call site passes
-// nostr.DefaultTimeout (10s), which would cap an entire multi-thousand-event
-// drain at 10 seconds total instead of bounding each frame's own round trip.
-func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, timeout time.Duration, production bool) (FlushResult, error) {
+// There is no `timeout` parameter here (ready-046 rework: an earlier version
+// kept one in the signature for stability with the per-event path it replaced,
+// but never consulted it — a dead parameter every caller still passed as if it
+// applied, a trap a veracity adversary called out directly). The batched drain
+// dials ONCE per relay for the WHOLE buffer, and PublishMany/GuardedPublishMany
+// (through publishManyResilient) already re-arm their own idle read/write
+// deadline before every frame (armDeadlines); wrapping ctx in a single fixed
+// timeout for the whole call would turn a per-operation deadline into a
+// per-BATCH one — the old production call site passed nostr.DefaultTimeout
+// (10s), which would have capped an entire multi-thousand-event drain at 10
+// seconds total instead of bounding each frame's own round trip. Callers that
+// want an overall wall-clock bound should set one on ctx directly.
+func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, production bool) (FlushResult, error) {
 	var res FlushResult
 
 	// Serialize the read+publish+rewrite against concurrent appends so a buffered
