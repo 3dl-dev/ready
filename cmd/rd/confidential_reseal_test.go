@@ -118,8 +118,15 @@ func enableConfidential(t *testing.T, dir, owner, boardD string) {
 }
 
 // resealOne runs the entry point for one item, resolving the item through the REAL
-// projection first (as any caller must).
+// projection first (as any caller must), with no relay observation — the
+// single-machine case.
 func resealOne(t *testing.T, dir, owner, boardD, itemID string) (*resealOutcome, error) {
+	t.Helper()
+	return resealOneWith(t, dir, owner, boardD, itemID, resealOptions{})
+}
+
+// resealOneWith is resealOne with the caller's relay observation supplied.
+func resealOneWith(t *testing.T, dir, owner, boardD, itemID string, opts resealOptions) (*resealOutcome, error) {
 	t.Helper()
 	pub, ok, err := nostrPublisher()
 	if err != nil || !ok {
@@ -133,7 +140,7 @@ func resealOne(t *testing.T, dir, owner, boardD, itemID string) (*resealOutcome,
 	if item == nil {
 		t.Fatalf("item %s not in the projection", itemID)
 	}
-	return resealCard(dir, pub, owner, boardD, item)
+	return resealCard(dir, pub, owner, boardD, item, opts)
 }
 
 // TestResealSupersedesThePlaintextCardAtItsCoordinate is done-condition (a) and (b).
@@ -291,6 +298,188 @@ func TestResealSupersedesThePlaintextCardAtItsCoordinate(t *testing.T) {
 	}
 }
 
+// TestResealPreservesEveryClearRoutingTag guards the half of the claim that is easy
+// to assert loosely and hard to assert honestly: "the owner loses nothing".
+//
+// A re-seal rebuilds the card from the PROJECTED item (CardSpecFromItem), so any tag
+// the original carried that does not survive the card -> item -> card round trip is
+// silently dropped at the moment the plaintext copy stops being reachable. Checking a
+// handful of named fields cannot catch that; it only catches the fields someone
+// thought of. So this compares the FULL clear tag multiset of the original against the
+// replacement's, and allows a difference ONLY where sealing is defined to make one
+// (BuildCardEvent, pkg/sync/nostrwire.go): `title`, `waiting_on` and `l` are the free
+// text that moves into the sealed blob, and `enc`/`cek_epoch` are the markers that
+// arrive. A label may come back as a clear `l` HMAC TOKEN when the board has an LTK —
+// so this also asserts no `l` tag ever carries the readable label value, which is the
+// leak the tokenization exists to avoid.
+func TestResealPreservesEveryClearRoutingTag(t *testing.T) {
+	dir, owner, boardD := setupMixedConfidentialProject(t)
+	parent, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "parent", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	blocker, err := runCreateNostr(mustDir(t), nostrCreateSpec{title: "blocker", itemType: "task", priority: "p1"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	// A card carrying as much routing surface as the shape supports: parent, deps,
+	// labels, eta, level, assignee, priority, type.
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{
+		title: "richly tagged", context: "body", itemType: "review", priority: "p0",
+		labels: []string{"deal", "security"}, parentID: parent,
+		level: "subtask", eta: "2026-09-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create rich item: %v", err)
+	}
+	if err := runDepAddNostr(id, blocker); err != nil {
+		t.Fatalf("dep add: %v", err)
+	}
+	enableConfidential(t, dir, owner, boardD)
+
+	original := coordinateWinner(t, dir, owner, id)
+	out, err := resealOne(t, dir, owner, boardD, id)
+	if err != nil {
+		t.Fatalf("resealCard: %v", err)
+	}
+	sealed := coordinateWinner(t, dir, owner, id)
+	if sealed.ID != out.SealedEventID {
+		t.Fatalf("winner %s is not the sealed card %s", shortID(sealed.ID), shortID(out.SealedEventID))
+	}
+
+	count := func(e *nostr.Event) map[string]int {
+		m := map[string]int{}
+		for _, tg := range e.Tags {
+			if len(tg) < 2 {
+				continue
+			}
+			m[tg[0]+"="+tg[1]]++
+		}
+		return m
+	}
+	// The free text sealing is DEFINED to move out of the clear. Everything else must
+	// survive byte-identically.
+	sealedAway := func(k string) bool {
+		return strings.HasPrefix(k, "title=") || strings.HasPrefix(k, "waiting_on=") || strings.HasPrefix(k, "l=")
+	}
+	was, now := count(original), count(sealed)
+	for k, n := range was {
+		if sealedAway(k) {
+			if now[k] > 0 {
+				t.Fatalf("the sealed card still carries the clear free-text tag %q — that value is exactly what must stop being world-readable", k)
+			}
+			continue
+		}
+		if now[k] != n {
+			t.Fatalf("re-seal dropped or changed clear tag %q: %d on the original, %d on the replacement — the plaintext copy stops being served, so anything lost here is lost", k, n, now[k])
+		}
+	}
+	for k, n := range now {
+		if strings.HasPrefix(k, "enc=") || strings.HasPrefix(k, "cek_epoch=") {
+			continue
+		}
+		// A clear `l` on a sealed card is only legal as an opaque token.
+		if strings.HasPrefix(k, "l=") {
+			for _, label := range []string{"deal", "security"} {
+				if k == "l="+label {
+					t.Fatalf("the sealed card leaks the readable label in a clear tag %q", k)
+				}
+			}
+			continue
+		}
+		if was[k] != n {
+			t.Fatalf("re-seal INVENTED clear tag %q (%d on the replacement, %d on the original)", k, n, was[k])
+		}
+	}
+	// The owner still reads both labels back, so nothing was lost — only moved.
+	_, byID, err := nostrProjectAllItems()
+	if err != nil {
+		t.Fatalf("project after: %v", err)
+	}
+	if got := byID[id]; got == nil || len(got.Labels) != 2 {
+		t.Fatalf("the owner lost the labels the re-seal moved into the sealed blob: %+v", got)
+	}
+}
+
+// TestResealOutranksTheCardTheRelayServes is the ready-500 trap in the form that can
+// actually still fire, and the reason resealOptions exists.
+//
+// The ordering decision is made against the LOCAL log, but the operation is defined by
+// what a RELAY serves. Those disagree whenever another machine wrote a newer card at
+// this coordinate and this one has not synced: the local floor is satisfied, the
+// publish succeeds, every local signal says sealed — and the relay keeps serving a
+// card that outranks the replacement. Nothing in the local log can detect it, so the
+// caller passes in what it observed.
+//
+// Flooring against the local original alone is UNREACHABLE code (a card's DriftScope
+// is "item:"+d, so nostrNextCreatedAt has already floored above it): delete that floor
+// and every other test here still passes. This one goes red, which is what makes the
+// guard real rather than decorative.
+func TestResealOutranksTheCardTheRelayServes(t *testing.T) {
+	dir, owner, boardD := setupMixedConfidentialProject(t)
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{
+		title: "plaintext, and newer somewhere else", context: "written on another machine since", itemType: "task", priority: "p1",
+	})
+	if err != nil {
+		t.Fatalf("create plaintext item: %v", err)
+	}
+	enableConfidential(t, dir, owner, boardD)
+
+	local := coordinateWinner(t, dir, owner, id)
+	// What the relay serves: a copy stamped well AHEAD of anything in this log and of
+	// this machine's clock. An hour is far outside any tie-break window.
+	relayCreatedAt := time.Now().Unix() + 3600
+	if relayCreatedAt <= local.CreatedAt {
+		t.Fatalf("fixture is wrong: relay copy %d must be ahead of the local winner %d", relayCreatedAt, local.CreatedAt)
+	}
+
+	out, err := resealOneWith(t, dir, owner, boardD, id, resealOptions{RelayCardCreatedAt: relayCreatedAt})
+	if err != nil {
+		t.Fatalf("resealCard: %v", err)
+	}
+	if out.SealedCreatedAt <= relayCreatedAt {
+		t.Fatalf("sealed replacement stamped %d, which does NOT outrank the card the relay serves at %d — the publish succeeds and the plaintext keeps being served (ready-500)",
+			out.SealedCreatedAt, relayCreatedAt)
+	}
+	if !out.RelayFloorObserved || out.SupersededRelayCreatedAt != relayCreatedAt {
+		t.Fatalf("outcome records observed=%v at %d, want true at %d — a sweep cannot tell a verified coordinate from an unverified one",
+			out.RelayFloorObserved, out.SupersededRelayCreatedAt, relayCreatedAt)
+	}
+	// The local winner must still be the sealed card: outranking the relay copy must
+	// not come at the cost of losing at home.
+	if w := coordinateWinner(t, dir, owner, id); w.ID != out.SealedEventID {
+		t.Fatalf("local coordinate winner is %s, want the sealed card %s", shortID(w.ID), shortID(out.SealedEventID))
+	}
+}
+
+// TestResealWithoutARelayObservationSaysSo is the other half: not looking is allowed
+// (a single-machine re-seal is the common case) but must never be indistinguishable
+// from having looked. A board-wide pass that reported "sealed" for a coordinate it
+// never read back off the relay is exactly the false-completion this epic cannot
+// afford — ready-336's data-plane pass has to verify off the relay, not off the log.
+func TestResealWithoutARelayObservationSaysSo(t *testing.T) {
+	dir, owner, boardD := setupMixedConfidentialProject(t)
+	id, err := runCreateNostr(mustDir(t), nostrCreateSpec{
+		title: "plaintext, single machine", context: "nothing else wrote this", itemType: "task", priority: "p2",
+	})
+	if err != nil {
+		t.Fatalf("create plaintext item: %v", err)
+	}
+	enableConfidential(t, dir, owner, boardD)
+
+	out, err := resealOne(t, dir, owner, boardD, id)
+	if err != nil {
+		t.Fatalf("resealCard: %v", err)
+	}
+	if out.RelayFloorObserved || out.SupersededRelayCreatedAt != 0 {
+		t.Fatalf("outcome claims a relay observation (observed=%v at %d) the caller never made",
+			out.RelayFloorObserved, out.SupersededRelayCreatedAt)
+	}
+	if w := coordinateWinner(t, dir, owner, id); w.ID != out.SealedEventID {
+		t.Fatalf("local coordinate winner is %s, want the sealed card %s", shortID(w.ID), shortID(out.SealedEventID))
+	}
+}
+
 // TestResealRefusesAnAlreadySealedCard keeps a board-wide pass CONVERGENT.
 //
 // Re-sealing mints a new event id every time it runs. If "already sealed" were
@@ -424,7 +613,7 @@ func TestResealRefusesAnUnreadableItem(t *testing.T) {
 	item.Title, item.Context, item.Description = "[encrypted]", "[encrypted]", "[encrypted]"
 
 	before := logSnapshot(t, dir)
-	if _, err := resealCard(dir, pub, owner, boardD, item); err == nil {
+	if _, err := resealCard(dir, pub, owner, boardD, item, resealOptions{}); err == nil {
 		t.Fatal("re-sealing an item rd could not decrypt SUCCEEDED — it would have sealed the [encrypted] placeholder as the card's content, at a created_at that wins latest-wins")
 	} else if !strings.Contains(err.Error(), "refusing to modify") {
 		t.Fatalf("wrong refusal for a redacted item: %v", err)

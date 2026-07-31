@@ -104,6 +104,33 @@ type resealOutcome struct {
 	// RELAY still serves the plaintext original — so for the purpose this command
 	// exists for, the coordinate is NOT sealed and the caller must act on it.
 	RelayRejected bool
+	// SupersededRelayCreatedAt is the created_at of the card the caller OBSERVED the
+	// relay serving at this coordinate, and 0 when the caller observed nothing. The
+	// replacement is floored strictly above it as well as above the local original.
+	SupersededRelayCreatedAt int64
+	// RelayFloorObserved distinguishes "this replacement is known to outrank what the
+	// relay serves" from "it outranks the newest copy THIS MACHINE happens to hold".
+	// A sweep must not count the second as sealed without a read-back: see resealOptions.
+	RelayFloorObserved bool
+}
+
+// resealOptions carries what resealCard cannot learn from the local log.
+//
+// WHY THIS EXISTS AT ALL. The whole operation is defined by what a RELAY serves, but
+// the ordering decision is made against the local log — and the two disagree whenever
+// another machine (or this one, before a `rd sync`) wrote a newer card at the same
+// coordinate. A replacement stamped only above the LOCAL winner then loses latest-wins
+// on the relay, the publish "succeeds", and the plaintext keeps being served: the
+// ready-500 silent no-op, sourced from the relay instead of the log. The local floor
+// alone cannot see that, because nostrNextCreatedAt already returns
+// max(now, newest-in-this-item's-chain + 1) over local events only.
+type resealOptions struct {
+	// RelayCardCreatedAt is the created_at of the card the caller observed the RELAY
+	// serving at this coordinate. Zero means the caller did not look — which is
+	// permitted (a single-machine re-seal is the common case) but is RECORDED on the
+	// outcome rather than assumed away, so a board-wide pass can require a read-back
+	// before it reports a coordinate sealed.
+	RelayCardCreatedAt int64
 }
 
 // resealCard seals the already-published plaintext card for item in place, by
@@ -124,7 +151,11 @@ type resealOutcome struct {
 // public, the coordinate is already sealed (errCardAlreadySealed), the plaintext card
 // belongs to another author (errCardForeignAuthor), the item is redacted, or no
 // sealing key is available.
-func resealCard(dir string, pub *rdSync.Publisher, boardAuthor, boardD string, item *state.Item) (*resealOutcome, error) {
+//
+// opts.RelayCardCreatedAt is how a caller tells this function what the RELAY serves;
+// without it the ordering is decided against the local log alone, which is not the
+// same question. See resealOptions.
+func resealCard(dir string, pub *rdSync.Publisher, boardAuthor, boardD string, item *state.Item, opts resealOptions) (*resealOutcome, error) {
 	if item == nil {
 		return nil, fmt.Errorf("reseal: no item")
 	}
@@ -175,14 +206,28 @@ func resealCard(dir string, pub *rdSync.Publisher, boardAuthor, boardD string, i
 	card.Status = rdSync.NonDerivedStatus(item)
 	card.Enc = env
 
-	// STRICTLY AFTER the event being superseded. nostrNextCreatedAt already returns
-	// max(now, newest-in-this-item's-chain + 1) and the original card is in that
-	// chain, so this normally just takes it; the explicit floor is kept because the
-	// invariant belongs to THIS operation, not to the drift scoping, and a tie here
-	// is a silent no-op rather than an error (ready-500).
+	// STRICTLY AFTER EVERY COPY THIS REPLACEMENT HAS TO BEAT — the local one AND the
+	// one the caller saw on the relay.
+	//
+	// The local half is already guaranteed: a card's DriftScope is "item:"+d, which is
+	// exactly the scope passed here, so nostrNextCreatedAt returns
+	// max(now, original.CreatedAt+1) whenever the original is in this log — and it is,
+	// because WinningCardEvent just read it from there. Flooring against the local
+	// original alone is therefore unreachable code, which is why it is NOT what this
+	// floor does.
+	//
+	// The relay half is the one that bites (ready-500, restated): another machine's
+	// newer card at this coordinate is invisible to the local log, so a replacement
+	// stamped from it can sort BEHIND what the relay serves. That copy is what the
+	// caller observes and passes in; zero means it looked at nothing, and the outcome
+	// says so.
+	floor := original.CreatedAt
+	if opts.RelayCardCreatedAt > floor {
+		floor = opts.RelayCardCreatedAt
+	}
 	createdAt := nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(item.ID))
-	if createdAt <= original.CreatedAt {
-		createdAt = original.CreatedAt + 1
+	if createdAt <= floor {
+		createdAt = floor + 1
 	}
 
 	// Built here rather than via PublishCardEdit (identical bytes — that helper is
@@ -197,13 +242,15 @@ func resealCard(dir string, pub *rdSync.Publisher, boardAuthor, boardD string, i
 		return nil, fmt.Errorf("publishing sealed replacement for %s: %w", item.ID, err)
 	}
 	return &resealOutcome{
-		ItemID:            item.ID,
-		OriginalEventID:   original.ID,
-		OriginalCreatedAt: original.CreatedAt,
-		SealedEventID:     sealed.ID,
-		SealedCreatedAt:   sealed.CreatedAt,
-		Epoch:             env.Epoch,
-		RelayRejected:     res.Rejected,
+		ItemID:                   item.ID,
+		OriginalEventID:          original.ID,
+		OriginalCreatedAt:        original.CreatedAt,
+		SealedEventID:            sealed.ID,
+		SealedCreatedAt:          sealed.CreatedAt,
+		Epoch:                    env.Epoch,
+		RelayRejected:            res.Rejected,
+		SupersededRelayCreatedAt: opts.RelayCardCreatedAt,
+		RelayFloorObserved:       opts.RelayCardCreatedAt > 0,
 	}, nil
 }
 
