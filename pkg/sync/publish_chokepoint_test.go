@@ -27,6 +27,13 @@
 // raw file bytes — so a comment can never match, and an alias/dot-import/
 // function-value reference is resolved via the same binding a compiler would
 // use, not via source text.
+//
+// ready-fcf ROUTE 2: import-binding resolution has a blind spot of its own — a
+// file living INSIDE pkg/nostr IS package nostr, so it can never import
+// nostrImportPath (a self-import) and localNames/dotImport are always empty
+// for it, regardless of what it calls. Such a file references Publish as a
+// bare in-package identifier instead, and the scan now walks for exactly that
+// shape when rel is under pkg/nostr (see fileReferencesNostrPublish).
 package sync
 
 import (
@@ -44,6 +51,15 @@ import (
 // bindings for. Matched against ast.ImportSpec.Path.Value (which still
 // includes the surrounding quotes from source, hence the trim below).
 const nostrImportPath = "github.com/3dl-dev/ready/pkg/nostr"
+
+// nostrPackageDir is pkg/nostr's own repo-relative directory. A file living
+// there IS package nostr, so it can never import nostrImportPath (that would
+// be a self-import) and therefore can never show up in localNames/dotImport
+// below — it references Publish/PublishMany as a bare in-package identifier
+// instead. This is ready-fcf ROUTE 2, and the reason fileReferencesNostrPublish
+// takes rel as well as path: the import-binding resolution above tells us
+// nothing about a file that never imports pkg/nostr in the first place.
+const nostrPackageDir = "pkg/nostr"
 
 // guardedPublishNames is the set of pkg/nostr identifiers that reach the
 // network write and must therefore only ever be referenced through this
@@ -74,6 +90,49 @@ var chokepointAllowlist = map[string]bool{
 	// reserved-coordinate event even when GuardedPublish's own explicit check
 	// is skipped entirely (ready-69e class fix) — see its own doc comment.
 	"pkg/sync/publish_guard_hook_test.go": true,
+	// ready-fcf ROUTE 2 allowlist: files INSIDE pkg/nostr that legitimately
+	// reference Publish/PublishMany as bare in-package identifiers. Each entry
+	// below is either the sanctioned definition itself, or a caller with a
+	// proven reason it must reference Publish directly and cannot route
+	// through sync.GuardedPublish (that would be pkg/nostr importing pkg/sync,
+	// an import cycle).
+	//
+	// client.go DEFINES Publish; publishmany.go DEFINES PublishMany. Neither
+	// is a "caller" in the sense this scan polices — flagging a function's own
+	// declaration would be nonsensical — but the in-package bare-identifier
+	// scan (fileReferencesNostrPublish) cannot tell "func Publish(...) {...}"
+	// apart from a same-named local var/decl without doing so, so they're
+	// allowlisted explicitly rather than taught a declaration-vs-use
+	// distinction the rest of this file doesn't need.
+	"pkg/nostr/client.go":      true,
+	"pkg/nostr/publishmany.go": true,
+	// live_relay_test.go and negentropy_live_relay_test.go call bare Publish
+	// against a LIVE relay under RD_NOSTR_LIVE_RELAY=1 (kind 1 / kind 30078,
+	// no board coordinate — no exposure today). They cannot route through
+	// sync.GuardedPublish (pkg/nostr cannot import pkg/sync). Unlike a random
+	// new file in pkg/nostr, they are now covered by pkg/nostr's OWN default
+	// guard (publishguard.go, ready-fcf): PublishGuard is armed the instant
+	// this package loads, in this package's own test binary, with no
+	// production opt-in — so a reserved-coordinate event added to either file
+	// would be refused pre-dial regardless of this static scan. Allowlisted
+	// rather than migrated: routing a live-relay proof through sync would add
+	// a pkg/sync -> pkg/nostr test-only dependency for no additional safety.
+	"pkg/nostr/live_relay_test.go":            true,
+	"pkg/nostr/negentropy_live_relay_test.go": true,
+	// publishmany_test.go is PublishMany's OWN test suite (ready-260): it
+	// necessarily calls PublishMany directly, in-package, against a local fake
+	// relay (batchRelay, an httptest server) to test the primitive itself —
+	// never a real network path, never a board coordinate. Same rationale as
+	// this file allowlisting itself above: it is the primitive's test
+	// harness, not a production caller trying to bypass GuardedPublishMany.
+	"pkg/nostr/publishmany_test.go": true,
+	// publishguard_test.go is the ready-fcf default-guard's OWN test harness:
+	// it calls bare Publish in-package, deliberately, to prove
+	// defaultReservedBoardGuard refuses a reserved coordinate pre-dial (and
+	// passes a non-reserved one through) with no other package's init
+	// involved. Same rationale as publish_guard_hook_test.go allowlisting
+	// itself in pkg/sync above.
+	"pkg/nostr/publishguard_test.go": true,
 }
 
 // findModuleRootForChokepointTest walks up from the current working directory
@@ -99,17 +158,32 @@ func findModuleRootForChokepointTest() (string, error) {
 
 // fileReferencesNostrPublish parses one Go source file and reports whether it
 // contains a REAL syntactic reference to pkg/nostr's Publish — a call, a
-// function value, or any other expression use — resolved through that file's
-// own import of github.com/3dl-dev/ready/pkg/nostr, under whatever local
-// binding that file gave it (its alias, the default "nostr", or "." for a
-// dot-import). A file that does not import pkg/nostr at all cannot reference
-// Publish through it and is skipped without further inspection.
-func fileReferencesNostrPublish(path string) (bool, error) {
+// function value, or any other expression use. rel is path's repo-relative
+// slash-form location (as computed by the caller's filepath.Rel), needed
+// because a file INSIDE pkg/nostr itself (ready-fcf ROUTE 2) is reached
+// differently than everywhere else — see below.
+//
+// EVERYWHERE ELSE, the reference is resolved through that file's own import
+// of github.com/3dl-dev/ready/pkg/nostr, under whatever local binding that
+// file gave it (its alias, the default "nostr", or "." for a dot-import). A
+// file that does not import pkg/nostr at all cannot reference Publish through
+// it and would ordinarily be skipped without further inspection.
+//
+// INSIDE pkg/nostr, that import resolution can never fire — a file there IS
+// package nostr and cannot import itself — yet it can still reference Publish
+// as a bare in-package identifier (ready-fcf: this was the actual gap; such a
+// file used to sail through this scan with localNames/dotImport both empty
+// and return false without being inspected at all). So for rel under
+// nostrPackageDir, this function ALSO walks for a bare identifier named
+// Publish/PublishMany used as a value, regardless of imports.
+func fileReferencesNostrPublish(path, rel string) (bool, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
 		return false, fmt.Errorf("parse %s: %w", path, err)
 	}
+
+	inNostrPackage := filepath.ToSlash(filepath.Dir(rel)) == nostrPackageDir
 
 	// Resolve this file's local binding(s) for the nostr import. A file may in
 	// principle import it more than once only via distinct aliases (Go allows
@@ -137,8 +211,19 @@ func fileReferencesNostrPublish(path string) (bool, error) {
 			localNames = append(localNames, imp.Name.Name)
 		}
 	}
-	if len(localNames) == 0 && !dotImport {
+	if len(localNames) == 0 && !dotImport && !inNostrPackage {
 		return false, nil
+	}
+
+	// The in-package shape needs its own walk (below): it has no import
+	// binding to key off, and — unlike the dot-import case — it must skip
+	// Publish/PublishMany's OWN func-declaration identifiers (this package
+	// defines them; declaring them is not a USE of them) rather than every
+	// bare Ident named Publish.
+	if inNostrPackage {
+		v := &inPackageIdentUseVisitor{names: guardedPublishNames}
+		ast.Walk(v, f)
+		return v.found, nil
 	}
 
 	found := false
@@ -176,6 +261,47 @@ func fileReferencesNostrPublish(path string) (bool, error) {
 	return found, nil
 }
 
+// inPackageIdentUseVisitor walks a file KNOWN to be inside pkg/nostr looking
+// for a bare identifier in names (Publish/PublishMany) used as a value —
+// exactly the shape a file inside the package itself would use to call its
+// own Publish/PublishMany without any import at all (ready-fcf ROUTE 2).
+//
+// A plain ast.Inspect over *ast.Ident would also match the func declarations
+// THEMSELVES (client.go's "func Publish(...)", publishmany.go's "func
+// PublishMany(...)") — those are handled by allowlisting the two defining
+// files instead of teaching this visitor to tell "declaration" from "use" in
+// general, since those are the only in-package declarations the guarded names
+// have today. This visitor still exists (rather than reusing the dot-import
+// branch above) because it also needs to skip a SelectorExpr's Sel field —
+// e.g. some unrelated type's own "Publish" method or field — which the
+// dot-import branch never had to worry about (a dot-imported name can't also
+// be a package-level declaration in the same file; that would be a
+// compile-time redeclaration).
+type inPackageIdentUseVisitor struct {
+	names map[string]bool
+	found bool
+}
+
+func (v *inPackageIdentUseVisitor) Visit(n ast.Node) ast.Visitor {
+	if v.found || n == nil {
+		return nil
+	}
+	switch node := n.(type) {
+	case *ast.SelectorExpr:
+		// Walk only the receiver expression; node.Sel is a field/method NAME,
+		// not a reference to the package-level Publish/PublishMany, and
+		// counting it would false-positive on any unrelated x.Publish.
+		ast.Walk(v, node.X)
+		return nil
+	case *ast.Ident:
+		if v.names[node.Name] {
+			v.found = true
+		}
+		return nil
+	}
+	return v
+}
+
 // findDirectNostrPublishCallers walks every .go file under root and returns
 // the repo-relative paths of every file that is NOT in chokepointAllowlist and
 // syntactically references pkg/nostr's Publish through its own import of that
@@ -206,7 +332,7 @@ func findDirectNostrPublishCallers(root string) ([]string, error) {
 		if chokepointAllowlist[rel] {
 			return nil
 		}
-		hit, ferr := fileReferencesNostrPublish(path)
+		hit, ferr := fileReferencesNostrPublish(path, rel)
 		if ferr != nil {
 			return ferr
 		}
@@ -239,12 +365,13 @@ func TestPublishChokepoint_OnlySanctionedWrapperCallsNostrPublishDirectly(t *tes
 	}
 }
 
-// writeChokepointFixture writes a mutation-test fixture file under
-// pkg/sync/, registers its cleanup, and returns its repo-relative path (for
-// asserting it shows up in the scan's violations).
-func writeChokepointFixture(t *testing.T, root, filename, src string) string {
+// writeChokepointFixtureInDir writes a mutation-test fixture file under
+// dir (repo-relative, slash form, e.g. "pkg/sync" or "pkg/nostr"), registers
+// its cleanup, and returns its repo-relative path (for asserting it shows up
+// in the scan's violations).
+func writeChokepointFixtureInDir(t *testing.T, root, dir, filename, src string) string {
 	t.Helper()
-	fullPath := filepath.Join(root, "pkg", "sync", filename)
+	fullPath := filepath.Join(root, filepath.FromSlash(dir), filename)
 	if err := os.WriteFile(fullPath, []byte(src), 0o600); err != nil {
 		t.Fatalf("write fixture %s: %v", filename, err)
 	}
@@ -253,7 +380,14 @@ func writeChokepointFixture(t *testing.T, root, filename, src string) string {
 			t.Errorf("cleanup: failed to remove fixture %s: %v — REMOVE IT MANUALLY", fullPath, rerr)
 		}
 	})
-	return "pkg/sync/" + filename
+	return dir + "/" + filename
+}
+
+// writeChokepointFixture writes a mutation-test fixture file under pkg/sync/
+// — the shape every ready-6d0/ready-69e fixture in this file uses. See
+// writeChokepointFixtureInDir for the ready-fcf pkg/nostr shape.
+func writeChokepointFixture(t *testing.T, root, filename, src string) string {
+	return writeChokepointFixtureInDir(t, root, "pkg/sync", filename, src)
 }
 
 // assertFlagged runs the real scan and fails unless wantRel is among the
@@ -401,6 +535,34 @@ import (
 
 func adversaryDirectPublishMany(ctx context.Context, relayURL string, evs []*nostr.Event) {
 	_, _ = nostr.PublishMany(ctx, relayURL, evs)
+}
+`)
+	assertFlagged(t, root, wantRel)
+}
+
+// TestPublishChokepoint_CatchesFileInsidePkgNostr is the ready-fcf ROUTE 2
+// mutation proof: a brand-new file living INSIDE pkg/nostr itself, calling
+// Publish as a bare in-package identifier (no import at all — it can't import
+// its own package), must be caught. Before this fix,
+// fileReferencesNostrPublish only resolved bindings for files that IMPORT
+// pkg/nostr, so localNames/dotImport were both empty here and the scan
+// returned false WITHOUT INSPECTING ANYTHING — this exact fixture shape
+// reached the live transport in the ready-fcf finding while go build/vet/test
+// ./... stayed green.
+func TestPublishChokepoint_CatchesFileInsidePkgNostr(t *testing.T) {
+	root, err := findModuleRootForChokepointTest()
+	if err != nil {
+		t.Fatalf("locate module root: %v", err)
+	}
+	wantRel := writeChokepointFixtureInDir(t, root, "pkg/nostr", "zzz_readyfcf_route2_adversary_probe.go", `package nostr
+
+// MUTATION-TEST FIXTURE (TestPublishChokepoint_CatchesFileInsidePkgNostr).
+// Must never survive a test run. Calls Publish as a bare in-package
+// identifier — no import of pkg/nostr, because this file IS pkg/nostr.
+import "context"
+
+func adversaryRoute2Publish(ctx context.Context, relayURL string, e *Event) {
+	_, _, _ = Publish(ctx, relayURL, e)
 }
 `)
 	assertFlagged(t, root, wantRel)

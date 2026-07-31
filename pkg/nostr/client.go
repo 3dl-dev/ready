@@ -68,7 +68,19 @@ func readNIP01Frame(conn *websocket.Conn) (typ string, frame []json.RawMessage, 
 // A textual scan for the literal "nostr.Publish(" (the previous control,
 // publish_chokepoint_test.go) can miss all four; this cannot, because it does
 // not look at source text at all.
-var PublishGuard func(ctx context.Context, e *Event) error
+//
+// DEFAULTS TO ARMED, NOT NIL (ready-fcf): this variable used to ship nil and
+// rely entirely on pkg/sync's init() (relayclass.go) to install real
+// semantics — which meant arming it was a LINK-TIME SIDE EFFECT of importing
+// pkg/sync. A binary that imports pkg/nostr without pkg/sync, or a file
+// living INSIDE pkg/nostr itself (which cannot import pkg/sync at all — that
+// would be an import cycle), ran with this nil and wide open; PROVEN by a
+// pkg/nostr file that reached the network with a reserved-coordinate event
+// while go build/vet/test ./... stayed green. See publishguard.go for the
+// default value: this package now carries the minimum board knowledge needed
+// to fail closed on its own, and pkg/sync's init still upgrades it to the
+// production-opt-in-aware closure for any binary that links pkg/sync.
+var PublishGuard func(ctx context.Context, e *Event) error = defaultReservedBoardGuard
 
 // Publish opens a websocket connection to a single relay, sends the event as a
 // NIP-01 ["EVENT", <event>] message, and waits for the relay's
