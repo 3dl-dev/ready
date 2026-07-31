@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -532,5 +533,221 @@ func TestFlushNostrPending_TotallyDownRelay_BoundedRecursion_NoDataLoss(t *testi
 		if fileHasID(t, rejected, id) {
 			t.Errorf("event %s dead-lettered against a totally down relay — a dial failure is transient, never permanent", id)
 		}
+	}
+}
+
+// hangsAfterUpgradeRelay is a fake relay that completes the WebSocket upgrade
+// — so a dial from PublishMany SUCCEEDS, unlike ws://127.0.0.1:1's instant
+// connection-refused — and then closes immediately without reading or acking
+// a single frame, so EVERY event sent over this connection fails. Counts
+// connections like the other fixtures in this file. The immediate close
+// (rather than accepting and going silent) is deliberate: PublishMany's idle
+// read deadline is 60s, and a fixture that just went silent would make a
+// worst-case bisection test (which opens MANY connections) unusably slow;
+// closing immediately fails fast and deterministically instead.
+func hangsAfterUpgradeRelay(t *testing.T) (url string, conns func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	count := 0
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		count++
+		mu.Unlock()
+		conn.Close() // hang up immediately — no read, no ack, ever
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return count
+	}
+}
+
+// TestFlushNostrPending_HangsAfterUpgrade_DialCountBounded is the SAME
+// worst-case shape as TestFlushNostrPending_TotallyDownRelay_BoundedRecursion_
+// NoDataLoss above, but against a relay that actually completes a TCP/WS
+// handshake before hanging up on every event, instead of refusing the dial
+// outright. ws://127.0.0.1:1's connection-refused is the CHEAPEST possible
+// transport failure — instant, no handshake, nothing to count — which is
+// exactly why that test cannot see the amplification publishManyResilient's
+// no-progress bisection branch pays: a veracity adversary measured 127 dials
+// recovering a 64-event totally-down batch (vs 1 pre-rework, and 64 on the
+// original one-dial-per-event path), and nothing in the suite asserted a dial
+// count, so that cost was invisible. This fixture makes each bisection
+// attempt a REAL, countable connection, and this test asserts the exact bound
+// publishManyResilient/resolveBatch's own doc comment claims: the recursion
+// tree for n events has at most 2n-1 nodes (T(n) = 1 + 2*T(n/2), T(1) = 1;
+// for n=64 that is exactly 127 — matching the adversary's own measurement).
+func TestFlushNostrPending_HangsAfterUpgrade_DialCountBounded(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, rejected := readyPaths(dir)
+
+	const n = 64
+	var ids []string
+	for i := 0; i < n; i++ {
+		ev := signedEvent(t, k, fmt.Sprintf("blackhole-%d", i))
+		ids = append(ids, ev.ID)
+		if err := appendPendingEvent(pending, ev); err != nil {
+			t.Fatalf("seed pending %d: %v", i, err)
+		}
+	}
+
+	url, conns := hangsAfterUpgradeRelay(t)
+	res, err := FlushNostrPending(context.Background(), pending, []string{url}, false)
+	if err != nil {
+		t.Fatalf("FlushNostrPending: %v", err)
+	}
+	if res.Flushed != 0 {
+		t.Fatalf("Flushed=%d, want 0 — a relay that hangs up on every event accepts nothing", res.Flushed)
+	}
+	if res.Remaining != n {
+		t.Fatalf("Remaining=%d, want %d", res.Remaining, n)
+	}
+	for _, id := range ids {
+		if !fileHasID(t, pending, id) {
+			t.Errorf("event %s lost from pending.jsonl against a relay that hangs up on every event", id)
+		}
+		if fileHasID(t, rejected, id) {
+			t.Errorf("event %s dead-lettered against a hung-up relay — a transport failure is transient, never permanent", id)
+		}
+	}
+	if got, want := conns(), 2*n-1; got != want {
+		t.Fatalf("connections opened=%d, want exactly %d (2n-1, the documented worst-case bisection-tree size for n=%d totally-failing events) — this is the dial amplification a veracity adversary measured (127 dials for n=64) that ws://127.0.0.1:1's instant connection-refused hides entirely", got, want, n)
+	}
+}
+
+// rstMidBatchRelay is hangupBatchRelay's UNCOVERED sibling case, named
+// explicitly in hangupBatchRelay's own doc comment: it acks every non-poison
+// EVENT frame identically, but the instant it reads a frame whose Content
+// contains "hangup" it forces a hard OS-level RST — SetLinger(0) then Close,
+// no drain — instead of hangupBatchRelay's deliberate clean-FIN drain. An RST
+// can silently discard bytes the server already wrote (the OK replies for
+// good events preceding the poison) if they have not yet reached the
+// client's kernel receive buffer, so the client may fail to observe an OK it
+// was, in fact, sent. Deterministic (not a timing-dependent race) BECAUSE
+// SetLinger(0) forces the OS to send RST unconditionally on close regardless
+// of buffer state — no reliance on beating a drain-vs-close race, which is
+// what made an EARLIER, undrained version of hangupBatchRelay itself flaky
+// (see that function's doc comment: Flushed swinging 0..20 for identical
+// input).
+func rstMidBatchRelay(t *testing.T) (url string, conns func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	count := 0
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		mu.Lock()
+		count++
+		mu.Unlock()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var frame []json.RawMessage
+			if err := json.Unmarshal(data, &frame); err != nil || len(frame) < 2 {
+				continue
+			}
+			var typ string
+			_ = json.Unmarshal(frame[0], &typ)
+			if typ != "EVENT" {
+				continue
+			}
+			var ev struct {
+				ID      string `json:"id"`
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal(frame[1], &ev)
+			if strings.Contains(ev.Content, "hangup") {
+				// Force a hard RST on close: no drain, no clean FIN, even
+				// though OK replies for earlier good events may still be
+				// sitting unread in the client's kernel receive buffer.
+				if tcp, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+					_ = tcp.SetLinger(0)
+				}
+				return // deferred conn.Close() now delivers a hard RST
+			}
+			resp, _ := json.Marshal([]any{"OK", ev.ID, true, ""})
+			if werr := conn.WriteMessage(websocket.TextMessage, resp); werr != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return count
+	}
+}
+
+// TestFlushNostrPending_RSTMidBatch_MakesForwardProgress covers the RST path
+// hangupBatchRelay's own doc comment names as uncovered (item 3 of a veracity
+// adversary's ready-046 rework-3 finding): an abrupt RST — not the clean FIN
+// every OTHER fixture in this file uses — can erase already-written OK
+// replies for good events preceding the poison, so the client may see FEWER
+// resolved events after the FIRST sub-batch connection than the relay
+// actually accepted. That does not, by itself, lose anything: resolveBatch's
+// recursion treats any event left unresolved (Err != nil, whatever the cause)
+// as needing another connection, and keeps bisecting — WITHIN this ONE
+// FlushNostrPending call — until every event that CAN succeed does, so the
+// final result is identical to the clean-FIN case
+// (TestFlushNostrPending_HangupPartwayThroughBatch_MakesForwardProgress),
+// just at the cost of however many extra connections the RST forced. This
+// test asserts exactly that final convergence, proving an RST cannot turn
+// into permanent data loss even though it CAN erase in-flight acks.
+func TestFlushNostrPending_RSTMidBatch_MakesForwardProgress(t *testing.T) {
+	k := testKey(t)
+	dir := t.TempDir()
+	pending, rejected := readyPaths(dir)
+
+	poison := signedEvent(t, k, "hangup-me")
+	if err := appendPendingEvent(pending, poison); err != nil {
+		t.Fatalf("seed poison: %v", err)
+	}
+	var good []*nostr.Event
+	for i := 0; i < 20; i++ {
+		ev := signedEvent(t, k, fmt.Sprintf("rst-ok-%d", i))
+		good = append(good, ev)
+		if err := appendPendingEvent(pending, ev); err != nil {
+			t.Fatalf("seed good %d: %v", i, err)
+		}
+	}
+
+	url, _ := rstMidBatchRelay(t)
+	res, err := FlushNostrPending(context.Background(), pending, []string{url}, false)
+	if err != nil {
+		t.Fatalf("FlushNostrPending: %v", err)
+	}
+	if res.Flushed != len(good) {
+		t.Fatalf("Flushed=%d, want %d — an RST erasing already-written OKs must still converge to full forward progress WITHIN one flush call (the bisection recursion keeps retrying whatever is left unresolved, however many extra connections that costs)", res.Flushed, len(good))
+	}
+	if res.Remaining != 1 {
+		t.Fatalf("Remaining=%d, want 1 (only the poison, which RSTs even in isolation)", res.Remaining)
+	}
+	for _, ev := range good {
+		if fileHasID(t, pending, ev.ID) {
+			t.Errorf("good event %s still buffered after an RST mid-batch — must fully drain within one flush call", ev.ID)
+		}
+		if fileHasID(t, rejected, ev.ID) {
+			t.Errorf("good event %s dead-lettered under RST — a transport reset is transient, never permanent", ev.ID)
+		}
+	}
+	if !fileHasID(t, pending, poison.ID) {
+		t.Fatalf("poison vanished from pending.jsonl — it must stay buffered (transient), never lost")
+	}
+	if fileHasID(t, rejected, poison.ID) {
+		t.Errorf("poison was dead-lettered — an RST is a transport failure, never permanent")
 	}
 }

@@ -768,10 +768,14 @@ func (p *Publisher) relayPublishBatch(ctx context.Context, res *PublishResult, e
 	if len(events) == 0 {
 		return
 	}
-	// publishEventsToRelaysBatch (ready-046) is the SINGLE definition of "dial
-	// each relay once for the whole batch, then classify+reduce per event" —
-	// shared with FlushNostrPending's batched drain so the two paths cannot
-	// diverge on how a batched publish's per-event outcome is computed.
+	// publishEventsToRelaysBatch (ready-046) dials each relay once for the
+	// whole batch via the plain, all-or-nothing GuardedPublishMany, then
+	// classifies+reduces per event via reduceBatchAcks — the SAME reduction
+	// FlushNostrPending's batched drain uses, so the two paths cannot diverge
+	// on how a batched publish's per-event outcome is computed once the acks
+	// exist. They deliberately do NOT share how the acks are OBTAINED: this
+	// caller stays on the strict variant (see that function's doc comment for
+	// why relayPublishBatch must not get publishManyResilient's bisection).
 	attempts, outcomes, permReasons := publishEventsToRelaysBatch(ctx, p.WriteRelays, events, p.Production)
 
 	reachedRelay := false

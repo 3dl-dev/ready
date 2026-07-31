@@ -19,6 +19,7 @@ package sync
 // any relay dial or log append regardless of relay reachability.
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -183,6 +184,75 @@ func TestGuard_AllowsIsolatedBoard(t *testing.T) {
 	}
 	if events, _ := log.ReadAll(); len(events) == 0 {
 		t.Fatal("isolated write produced no durable events")
+	}
+}
+
+// TestPublisher_RelayPublishBatch_GuardRefusalStaysAllOrNothing is the
+// board-path counterpart TestGuardedPublishMany_RefusesReservedBoardBatch
+// (boardbackfill_test.go) does NOT cover: that test calls GuardedPublishMany
+// DIRECTLY, bypassing relayPublishBatch/publishEventsToRelaysBatch entirely, so
+// it stayed green throughout ready-046's rework even while the REAL board-path
+// caller was silently converted from all-or-nothing to send-the-permitted-
+// subset (a veracity adversary's finding). This test exercises
+// Publisher.relayPublishBatch DIRECTLY — the exact function at
+// nostroutbound.go:775 the adversary named, deliberately bypassing PublishBoard's
+// OWN upstream guardReservedBoard check (which would refuse this batch even
+// earlier and never let it reach relayPublishBatch at all) — because the
+// property under test is THIS choke point's own defense-in-depth behaviour,
+// independent of what any upstream caller does or might fail to do.
+//
+// A batch of 5 ordinary (non-reserved-board) events plus ONE reserved-board
+// event must refuse EVERY event — not just the poisoned one — with zero writes
+// reaching the relay. Mutation-proven: swapping relayPublishBatch's call from
+// publishEventsToRelaysBatch to publishEventsToRelaysBatchResilient (the
+// bisection-based variant FlushNostrPending uses) turns this RED — the 5
+// ordinary events get individually accepted and stored.
+func TestPublisher_RelayPublishBatch_GuardRefusalStaysAllOrNothing(t *testing.T) {
+	pub, _, k := newGuardTestPublisher(t)
+	sr := newStoreRelay(t)
+	pub.WriteRelays = []string{sr.url}
+
+	var ordinary []*nostr.Event
+	for i := 0; i < 5; i++ {
+		card := CardSpec{
+			ItemID: fmt.Sprintf("ready-batch-guard-%d", i), Title: "ordinary", Status: state.StatusActive,
+			Priority: "p3", Type: "task", BoardD: "some-other-board",
+		}
+		ev, err := BuildCardEvent(k, card, 1_700_000_000+int64(i))
+		if err != nil {
+			t.Fatalf("build ordinary %d: %v", i, err)
+		}
+		ordinary = append(ordinary, ev)
+	}
+	poison, err := BuildCardEvent(k, CardSpec{
+		ItemID: "ready-batch-guard-poison", Title: "poison", Status: state.StatusActive,
+		Priority: "p3", Type: "task", BoardD: reservedProductionBoardD,
+	}, 1_700_000_099)
+	if err != nil {
+		t.Fatalf("build poison: %v", err)
+	}
+	batch := append(append([]*nostr.Event{}, ordinary...), poison)
+
+	var res PublishResult
+	pub.relayPublishBatch(context.Background(), &res, batch)
+
+	if got := sr.writeCount(); got != 0 {
+		t.Fatalf("relay saw %d EVENT frame(s) from a batch containing a reserved-board event — the guard must run before ANY dial, refusing the WHOLE batch, not just the poison", got)
+	}
+	for i, e := range ordinary {
+		var found bool
+		for _, ack := range res.Events {
+			if ack.EventID != e.ID {
+				continue
+			}
+			found = true
+			if ack.AnyRelay {
+				t.Fatalf("ordinary event %d (%s) was reported ACCEPTED — a reserved-board batch must refuse EVERY event, converting all-or-nothing into send-the-permitted-subset", i, e.ID)
+			}
+		}
+		if !found {
+			t.Fatalf("ordinary event %d (%s) missing from PublishResult.Events", i, e.ID)
+		}
 	}
 }
 

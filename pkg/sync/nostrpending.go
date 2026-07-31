@@ -81,7 +81,7 @@ type FlushResult struct {
 // A missing/empty buffer is a no-op. The authoritative log is never touched here —
 // the buffer is purely a relay-delivery retry queue.
 //
-// production is threaded straight through to publishEventsToRelaysBatch/
+// production is threaded straight through to publishEventsToRelaysBatchResilient/
 // GuardedPublishMany (ready-6d0 finding (3)): a buffered event can only address
 // the reserved production board coordinate if it was already durable via a
 // Production Publisher (appendPendingEvent is only ever called from
@@ -149,15 +149,20 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 	}
 
 	// BATCHED drain (ready-046): one websocket connection per relay for the
-	// WHOLE buffer, not the per-event publishEventToRelays loop this replaced.
-	// That loop dialed a fresh websocket per event per relay — fine for the
-	// handful of events a live mutation buffers, but it turns a large offline
-	// backlog's drain into a redial loop (observed: 3,551 queued events, one
-	// dial per event per round). publishEventsToRelaysBatch computes the exact
-	// same classify+reduce contract per event, just over GuardedPublishMany —
-	// the events, the outcome computation and everything below this call are
-	// unchanged.
-	attempts, outcomes, permReasons := publishEventsToRelaysBatch(ctx, relays, events, production)
+	// WHOLE buffer in the common case, not the per-event publishEventToRelays
+	// loop this replaced. That loop dialed a fresh websocket per event per
+	// relay — fine for the handful of events a live mutation buffers, but it
+	// turns a large offline backlog's drain into a redial loop (observed:
+	// 3,551 queued events, one dial per event per round).
+	// publishEventsToRelaysBatchResilient (ready-046 rework) computes the exact
+	// same classify+reduce contract per event, over publishManyResilient —
+	// which additionally bisects around a mid-batch transport hangup or guard
+	// refusal so a poisoned queued event (transiently down relay, or a
+	// reserved-board event that slipped into the queue) never wedges the
+	// unrelated events sharing its connection. THIS drain caller ONLY — see
+	// publishEventsToRelaysBatch's doc comment for why relayPublishBatch (the
+	// board-publish path) must NOT share this resilience.
+	attempts, outcomes, permReasons := publishEventsToRelaysBatchResilient(ctx, relays, events, production)
 
 	var remaining []*nostr.Event
 	var rejected []RejectedRecord
