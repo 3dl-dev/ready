@@ -45,6 +45,29 @@ const (
 	defaultBoardEventKind = 30301
 )
 
+// DefaultReservedBoardD and DefaultBoardEventKind expose the two constants
+// above, EXPORTED FOR EXACTLY ONE REASON: so pkg/sync can drift-test them
+// against its own reservedProductionBoardD/KindBoard (pkg/sync's
+// default_guard_drift_test.go). Production code has no reason to call either
+// — the whole point of this package's default guard is that pkg/nostr does
+// not expose or consume "what a board is" as a public concept.
+//
+// WHY A DRIFT TEST, NOT JUST THE EXISTING publishguard_test.go COVERAGE:
+// TestPublishGuard_DefaultRefusesReservedBoardCoordinate builds its own test
+// event FROM these same constants and asserts the guard refuses it — that
+// proves the guard's LOGIC (kind+d-tag matching) is correct, but is
+// tautological with respect to the constants' VALUE: change
+// defaultReservedBoardD to any other string and that test still passes,
+// because the test event and the guard being tested both read the same
+// (now-wrong) value. Nothing anywhere previously asserted that this value
+// equals pkg/sync's own reservedProductionBoardD/KindBoard — the actual
+// production board coordinate — so the two copies could silently drift apart
+// (this package's default guard would then stop protecting the REAL board)
+// with every existing test still green. The drift test closes that: it reads
+// BOTH copies and fails the instant they disagree.
+func DefaultReservedBoardD() string { return defaultReservedBoardD }
+func DefaultBoardEventKind() int    { return defaultBoardEventKind }
+
 // defaultReservedBoardGuard is PublishGuard's out-of-the-box value (see
 // package doc comment above). It has NO production opt-in — pkg/nostr does
 // not know what "production" means, only pkg/sync does — so it refuses every

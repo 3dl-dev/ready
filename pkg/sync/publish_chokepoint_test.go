@@ -69,9 +69,26 @@ const nostrPackageDir = "pkg/nostr"
 // new network-write primitive added to pkg/nostr MUST be added here too,
 // otherwise the chokepoint is silently narrower than its own doc claims — the
 // scan matches on identifier NAME, so an unlisted name is invisible to it.
+//
+// "dialRelay" (ready-fcf ROUTE 2 continued): unlike Publish/PublishMany, this
+// name can ONLY ever appear via the in-package bare-identifier walk below
+// (fileReferencesNostrPublish's inNostrPackage branch) — dialRelay is
+// unexported, so no file outside pkg/nostr can spell a reference to it at all,
+// and the "outside" resolution branch (import-binding SelectorExpr/dot-import)
+// is never reached for files under pkg/nostr in the first place (see
+// fileReferencesNostrPublish). Adding it here is therefore safe: it only ever
+// tightens the in-package walk, never the outside-package one. The adversary's
+// ready-fcf finding dialed a relay directly and hand-wrote a raw
+// conn.WriteJSON(["EVENT", e]) frame, reaching the transport without ever
+// calling Publish/PublishMany (and so without ever running PublishGuard from
+// their entry points) — routing the actual wire write through the shared
+// writeEvent chokepoint (client.go) closes that at runtime; restricting WHO
+// may call dialRelay in-package at all closes the same hole at build/test
+// time, for a new file this scan has never seen before.
 var guardedPublishNames = map[string]bool{
 	"Publish":     true,
 	"PublishMany": true,
+	"dialRelay":   true,
 }
 
 // chokepointAllowlist is the CLOSED set of files permitted to reference
@@ -97,13 +114,20 @@ var chokepointAllowlist = map[string]bool{
 	// through sync.GuardedPublish (that would be pkg/nostr importing pkg/sync,
 	// an import cycle).
 	//
-	// client.go DEFINES Publish; publishmany.go DEFINES PublishMany. Neither
-	// is a "caller" in the sense this scan polices — flagging a function's own
-	// declaration would be nonsensical — but the in-package bare-identifier
-	// scan (fileReferencesNostrPublish) cannot tell "func Publish(...) {...}"
-	// apart from a same-named local var/decl without doing so, so they're
+	// client.go DEFINES Publish AND dialRelay AND writeEvent; publishmany.go
+	// DEFINES PublishMany and legitimately CALLS dialRelay/writeEvent to open
+	// its own connection and write each event on it (ready-fcf ROUTE 3 —
+	// funneling the actual wire write through the shared writeEvent
+	// chokepoint). Neither is a "caller" in the sense this scan polices for
+	// Publish/PublishMany's own names — flagging a function's own declaration
+	// would be nonsensical — but the in-package bare-identifier scan
+	// (fileReferencesNostrPublish) cannot tell "func Publish(...) {...}" apart
+	// from a same-named local var/decl without doing so, so they're
 	// allowlisted explicitly rather than taught a declaration-vs-use
-	// distinction the rest of this file doesn't need.
+	// distinction the rest of this file doesn't need. This is also the CLOSED
+	// set of files permitted to reference dialRelay in-package at all: any
+	// OTHER new file inside pkg/nostr that references dialRelay is flagged by
+	// this same scan (see TestPublishChokepoint_CatchesDialRelayUseInsidePkgNostr).
 	"pkg/nostr/client.go":      true,
 	"pkg/nostr/publishmany.go": true,
 	// live_relay_test.go and negentropy_live_relay_test.go call bare Publish
@@ -563,6 +587,42 @@ import "context"
 
 func adversaryRoute2Publish(ctx context.Context, relayURL string, e *Event) {
 	_, _, _ = Publish(ctx, relayURL, e)
+}
+`)
+	assertFlagged(t, root, wantRel)
+}
+
+// TestPublishChokepoint_CatchesDialRelayUseInsidePkgNostr is the ready-fcf
+// round-2 mutation proof: a brand-new file living INSIDE pkg/nostr, calling
+// the unexported dialRelay directly and hand-writing a raw
+// conn.WriteJSON([]any{"EVENT", e}) frame — never going through
+// Publish/PublishMany at all, and so never running PublishGuard from either of
+// their entry points — must be caught by the static scan. This is the EXACT
+// shape of the finding: it reached "nostr: dial ws://127.0.0.1:1: connection
+// refused" (a real transport attempt) with go build/vet/test ./... all green
+// and PublishGuard never invoked, because ROUTE 2's fix (in-package bare-Ident
+// walk for Publish/PublishMany) never looked at the identifier "dialRelay" at
+// all — this file called neither guarded name.
+func TestPublishChokepoint_CatchesDialRelayUseInsidePkgNostr(t *testing.T) {
+	root, err := findModuleRootForChokepointTest()
+	if err != nil {
+		t.Fatalf("locate module root: %v", err)
+	}
+	wantRel := writeChokepointFixtureInDir(t, root, "pkg/nostr", "zzz_readyfcf_dialrelay_adversary_probe.go", `package nostr
+
+// MUTATION-TEST FIXTURE (TestPublishChokepoint_CatchesDialRelayUseInsidePkgNostr).
+// Must never survive a test run. Reproduces the ready-fcf finding exactly:
+// dials via the unexported dialRelay and hand-writes a raw EVENT frame,
+// bypassing Publish/PublishMany (and therefore PublishGuard) entirely.
+import "context"
+
+func adversaryDialRelayProbe(ctx context.Context, relayURL string, e *Event) error {
+	conn, err := dialRelay(ctx, relayURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.WriteJSON([]any{"EVENT", e})
 }
 `)
 	assertFlagged(t, root, wantRel)

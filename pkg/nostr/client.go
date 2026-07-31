@@ -47,6 +47,49 @@ func readNIP01Frame(conn *websocket.Conn) (typ string, frame []json.RawMessage, 
 	return typ, frame, nil
 }
 
+// writeEvent is the ONE place an "EVENT" frame is ever put on an already-dialed
+// relay connection (ready-fcf ROUTE 3). Publish and PublishMany both route their
+// actual wire write through this function instead of calling conn.WriteJSON
+// themselves.
+//
+// WHY THIS EXISTS, GIVEN Publish/PublishMany ALREADY CHECK PublishGuard: those
+// checks run at the TOP of each exported function, which only protects callers
+// that go THROUGH Publish/PublishMany. ready-fcf ROUTE 2 proved a file living
+// inside pkg/nostr does not have to: it can call the unexported dialRelay
+// directly and hand-roll conn.WriteJSON([]any{"EVENT", e}) itself, reaching the
+// wire without ever executing Publish/PublishMany's bodies (and therefore
+// without ever consulting PublishGuard) — proven by a probe that got a real
+// "connection refused" from the transport with go build/vet/test ./... all
+// green, PublishGuard never invoked. Putting the guard check HERE — the actual
+// point an EVENT frame leaves the process on a conn, not the entry point of one
+// particular caller — means any code that reaches this function, by whatever
+// path, cannot skip it. (The static scan in
+// pkg/sync/publish_chokepoint_test.go separately restricts WHICH in-package
+// files may call dialRelay at all, closing the companion hole of a new file
+// dialing its own connection in the first place.)
+//
+// Publish/PublishMany's own top-of-function PublishGuard checks are NOT
+// removed: they preserve the "zero bytes leave the process, no dial is even
+// attempted" property those functions document and their own tests assert on
+// (a refused event must never produce a transport-dial error). This function's
+// check is the second, unconditional layer that fires regardless of whether a
+// caller reaching THIS function remembered its own.
+func writeEvent(ctx context.Context, conn *websocket.Conn, e *Event) error {
+	if PublishGuard != nil {
+		if gerr := PublishGuard(ctx, e); gerr != nil {
+			return gerr
+		}
+	}
+	var id string
+	if e != nil {
+		id = e.ID
+	}
+	if err := conn.WriteJSON([]any{"EVENT", e}); err != nil {
+		return fmt.Errorf("nostr: write EVENT %s: %w", id, err)
+	}
+	return nil
+}
+
 // PublishGuard, when non-nil, is consulted at the very top of Publish, before
 // any dial or network I/O. It receives the same ctx and event Publish was
 // called with; a non-nil return refuses the publish attempt outright (Publish
@@ -100,9 +143,8 @@ func Publish(ctx context.Context, relayURL string, e *Event) (accepted bool, mes
 	}
 	defer conn.Close()
 
-	envelope := []any{"EVENT", e}
-	if err := conn.WriteJSON(envelope); err != nil {
-		return false, "", fmt.Errorf("nostr: write EVENT: %w", err)
+	if err := writeEvent(ctx, conn, e); err != nil {
+		return false, "", err
 	}
 
 	// Read frames until we see the OK for our id (relays may interleave NOTICE
