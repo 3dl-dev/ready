@@ -563,41 +563,62 @@ invisible from this side of the fence and an operator working from `rd`/this
 repo needs to know what to check without first finding the other repo.
 
 Both hostnames bind to Azure Container Apps **managed certificates**
-(`prod.bicep:330-370`, `existing` references — the certs themselves are
-created out-of-band by `az containerapp hostname bind --validation-method
-CNAME`, see `nostr-relay/docs/prod/deploy.md` §4–§5). Azure auto-renews a
-managed certificate **only while its domain-validation DNS records keep
-resolving**: the `CNAME <hostname> -> <app>.<region>.azurecontainerapps.io`
-record and the `TXT asuid.<hostname> -> <customDomainVerificationId>` record
-(the same two records from the original `hostname bind`, listed in
-`deploy.md` §3/§5). If either record is changed, deleted, or repointed by an
-unrelated DNS edit, Azure cannot re-validate ownership at renewal time and
-the renewal silently fails — the old certificate simply expires on schedule
-with no error raised anywhere in this repo, `rd`, or the relay's own logs.
+(`prod.bicep:313-325`, `existing` references to `relayMootPubCert` /
+`relay3dlNetworkCert` — the certs themselves are created out-of-band by `az
+containerapp hostname bind --validation-method CNAME`, see
+`nostr-relay/docs/prod/deploy.md` §4). Azure auto-renews a managed
+certificate **only while its domain-validation DNS records keep resolving**:
+the `CNAME <hostname> -> <app-fqdn>` record and the `TXT
+asuid.<hostname> -> <customDomainVerificationId>` record (the same two
+records the original `hostname bind` validated). If either record is
+changed, deleted, or repointed by an unrelated DNS edit, Azure cannot
+re-validate ownership at renewal time and the renewal silently fails — the
+old certificate simply expires on schedule with no error raised anywhere in
+this repo, `rd`, or the relay's own logs.
 
 **Why this is dangerous specifically for this project:** the browser board
-reaches the relay over exactly this certificate (mixed-content rules block
-`ws://` from an `https://` origin, which is why the public wss relay exists
-at all — see ready-906). The `rd` CLI itself keeps working the whole time,
-because it talks to the two LAN relays over plain `ws://` and has no
-dependency on this certificate. **A lapsed cert breaks every browser client
-while every signal an operator would check from their own machine (`rd
-ready`, `rd sync`, LAN relay reachability) stays green.**
+reaches the relay over exactly `relay.3dl.network`'s certificate today —
+`web/board/public/relays.json`'s `ownBoardsRelays` (the runtime relay config
+for the no-token own-boards path, `src/lib/relayconfig.ts`) lists only
+`wss://relay.3dl.network`. `relay.moot.pub` is bound and certificated at the
+infra layer but does not appear anywhere in this repo's own-boards relay
+config, so a lapsed `relay.moot.pub` cert has no observable browser-board
+blast radius unless that config changes. (A shared-link/token board can in
+principle carry its own relay set per-token — see `relayconfig.ts`'s note on
+the token path — but no such link exists in this repo referencing
+`relay.moot.pub` either.) Mixed-content rules block `ws://` from an
+`https://` origin, which is why the public wss relay exists at all — see
+ready-906. The `rd` CLI itself keeps working the whole time, because it
+talks to the two LAN relays over plain `ws://` and has no dependency on
+either certificate. **A lapsed `relay.3dl.network` cert breaks every browser
+client while every signal an operator would check from their own machine
+(`rd ready`, `rd sync`, LAN relay reachability) stays green.**
 
 What to check, periodically or when a board stops loading in a browser but
 `rd` itself looks healthy:
 
 ```bash
-# Certificate state + expiry, per hostname:
+# Certificate state, per hostname. Note: this command has NO --environment
+# flag — the environment is -n/--name (same as every other `az containerapp
+# env ...` subcommand); -g is the resource group.
 az containerapp env certificate list -g nostr-relay-prod \
-  --environment cae-nostr-relay-prod -o table
+  -n cae-nostr-relay-prod -m -o table
 
-# Confirm the validation records this cert's renewal depends on still
-# resolve to what Azure expects (compare against deploy.md §3/§5):
-dig CNAME relay.3dl.network
-dig TXT   asuid.relay.3dl.network
-dig CNAME relay.moot.pub
-dig TXT   asuid.relay.moot.pub
+# The expected validation-record targets are the app's own FQDN and
+# customDomainVerificationId — identical for every custom domain bound to
+# it, so read them live from the app rather than a point-in-time doc
+# snapshot (deploy.md §3/§5 do not carry literal values for these two
+# hostnames — only for relay.dontguess.ai, which is a different domain):
+az containerapp show -g nostr-relay-prod -n nostr-relay-prod \
+  --query "properties.configuration.ingress.fqdn" -o tsv
+az containerapp show -g nostr-relay-prod -n nostr-relay-prod \
+  --query "properties.customDomainVerificationId" -o tsv
+
+# Confirm both records still resolve to those two values:
+dig +short CNAME relay.3dl.network
+dig +short TXT   asuid.relay.3dl.network
+dig +short CNAME relay.moot.pub
+dig +short TXT   asuid.relay.moot.pub
 
 # Direct TLS handshake check against the live endpoint:
 openssl s_client -connect relay.3dl.network:443 -servername relay.3dl.network \
@@ -605,8 +626,13 @@ openssl s_client -connect relay.3dl.network:443 -servername relay.3dl.network \
 ```
 
 If a validation record has drifted, restoring it does **not** retroactively
-fix an already-failed renewal — re-run the `hostname bind` command from
-`nostr-relay/docs/prod/deploy.md` §5 to force re-validation and re-issuance.
+fix an already-failed renewal — re-run the `hostname bind` command for the
+affected hostname from `nostr-relay/docs/prod/deploy.md` §4 (deploy.md:73-80),
+substituting `relay.3dl.network` or `relay.moot.pub` for the `relay.<zone>`
+placeholder there, to force re-validation and re-issuance. **Do not** follow
+§5's bind command for this — §5 is `relay.dontguess.ai` only, a domain
+deliberately excluded from managed certs (prod.bicep:305-311, its zone isn't
+in Azure DNS) and its bind command hardcodes `--hostname relay.dontguess.ai`.
 
 This doc records the failure mode and the check because that's what an
 operator working from this repo needs; the renewal mechanics themselves are
