@@ -319,6 +319,13 @@ rd relay sync-allowlist --apply
 This is a standalone operator command, separate from `rd grant` — nothing
 in the onboarding flow depends on it.
 
+Adding, removing, or rolling out a relay change (`relay_endpoints`) can be a
+**local, un-synced** per-machine edit (`rd.json`) OR a committed, shared edit
+(a project's `.ready/board.json`) depending on which file governs that
+project — see [docs/relay-runbook.md](relay-runbook.md), "Updating
+relay_endpoints on an existing machine", which explains how to tell which one
+applies.
+
 ---
 
 ## Part 4: Multi-agent (per-worktree `$RD_HOME`)
