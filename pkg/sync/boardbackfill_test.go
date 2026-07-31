@@ -53,8 +53,23 @@ type storeRelay struct {
 	// live relay under-returns, it does not error, so a fixture that errored on
 	// "authors" would not model the actual failure a client must tolerate.
 	underReturnAuthors bool
-	writeSeq           int
-	url                string
+	// ignoreTagFilters makes the relay answer a REQ WITHOUT applying its "#a"/"#d"
+	// tag filters — it over-returns instead of under-returning. A public relay is
+	// untrusted infrastructure and a filter is a request, not a guarantee: a client
+	// that treats every returned event as in-scope because it asked for a scope has
+	// delegated its own correctness to a stranger's server. The inventory's
+	// client-side EventBelongsToBoard check exists for exactly this, and cannot be
+	// proven against a fixture that always honours the filter (ready-207 audit).
+	ignoreTagFilters bool
+	// serveOldestFirst reverses the order events are written to a subscription.
+	// Relays conventionally answer newest-first and the audit's pagination assumes
+	// it, but ORDER IS NOT A GUARANTEE a client may lean on for correctness: a
+	// latest-wins dedup that only picks the right event because the newer one
+	// happened to arrive first has not implemented latest-wins at all. Flipping this
+	// is what makes that difference observable (ready-207 veracity audit).
+	serveOldestFirst bool
+	writeSeq         int
+	url              string
 }
 
 func newStoreRelay(t *testing.T) *storeRelay {
@@ -159,6 +174,26 @@ func (s *storeRelay) putRaw(e *nostr.Event) {
 	s.byID[e.ID] = e
 }
 
+// putDup seeds an ADDITIONAL version of an addressable coordinate, so the wire
+// carries TWO events for one (kind, pubkey, d) at the same time.
+//
+// putRaw cannot express this: it keys addressable events by coordinate, so seeding a
+// stale version and then the current one leaves exactly ONE event in the fixture, and
+// any "latest-wins picked the newer event" assertion downstream is really asserting
+// against the only event that could have been returned. That is how the dedup rule
+// this inventory's method makes load-bearing came to be reported as proven while no
+// test covered it (ready-207 veracity audit).
+//
+// A conformant relay does not serve two versions of one coordinate, and the live relay
+// measurably does not today (0 of 2,316 coordinates probed). That is exactly why the
+// fixture must be able to: the inventory reads an UNTRUSTED public relay, and a client
+// whose dedup only works because the server behaved has not implemented dedup.
+func (s *storeRelay) putDup(e *nostr.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[e.ID] = e
+}
+
 // refuseOverLimit models the production relay's no-silent-truncation policy: a
 // filter whose limit exceeds the relay's maximum is REFUSED, not quietly cut
 // down. The audit's termination rule depends on this, so the fake must enforce
@@ -228,6 +263,9 @@ func (s *storeRelay) match(filter map[string]any) []*nostr.Event {
 	}
 	wantA := tagFilter("a")
 	wantD := tagFilter("d")
+	if s.ignoreTagFilters {
+		wantA, wantD = nil, nil
+	}
 
 	var all []*nostr.Event
 	for _, e := range s.byID {
@@ -242,6 +280,11 @@ func (s *storeRelay) match(filter map[string]any) []*nostr.Event {
 			if newerThan(all[j], all[i]) {
 				all[i], all[j] = all[j], all[i]
 			}
+		}
+	}
+	if s.serveOldestFirst {
+		for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+			all[i], all[j] = all[j], all[i]
 		}
 	}
 	var out []*nostr.Event
