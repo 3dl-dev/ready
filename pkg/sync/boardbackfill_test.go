@@ -34,6 +34,12 @@ type storeRelay struct {
 	// message and store nothing — the "silently rejects everything while other
 	// relays accept" case.
 	rejectAll string
+	// writes counts EVENT frames this relay has been sent, whatever it did with
+	// them. It is how a read-only claim gets PROVEN rather than asserted: a caller
+	// that must never write can be run against this fixture and the count checked.
+	// Counted at frame arrival, before any accept/reject decision, so a rejected
+	// write is still a write.
+	writes int
 	// maxPage models the relay's own per-REQ maximum. It mirrors the production
 	// relay's behaviour exactly: a filter asking for MORE than this is REFUSED
 	// with a NIP-01 CLOSED frame rather than silently truncated, which is what
@@ -140,6 +146,7 @@ func newStoreRelay(t *testing.T) *storeRelay {
 func (s *storeRelay) store(e *nostr.Event) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.writes++
 	if s.rejectAll != "" {
 		return false, s.rejectAll
 	}
@@ -1042,4 +1049,12 @@ func TestGuardedPublishMany_RefusesReservedBoardBatch(t *testing.T) {
 	if stored != 0 {
 		t.Fatalf("relay stored %d events from a refused batch — the guard must run before any dial", stored)
 	}
+}
+
+// writeCount returns how many EVENT frames this relay has received. A caller that
+// claims to be read-only can be run against the fixture and held to zero.
+func (s *storeRelay) writeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writes
 }
