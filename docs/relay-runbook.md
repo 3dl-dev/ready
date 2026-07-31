@@ -550,3 +550,66 @@ Wiring rd's actual read/write event mapping onto these relays is **out of scope
 here** — that is downstream item **ready-a13**. This item only stands up the
 relays, proves reachability/read-back/failover/sync, documents reproduction, and
 surfaces the endpoint config.
+
+## Public relay TLS certificate renewal (ready-199)
+
+The LAN relays above are plain `ws://` and carry no certificate — this section
+is about the **separate** public relay the browser board actually talks to,
+`wss://relay.3dl.network` / `wss://relay.moot.pub`. That relay's provisioning
+lives in a **different repo** (`nostr-relay/infra/prod.bicep`,
+`nostr-relay/docs/prod/deploy.md` §3–§5) and this file does not duplicate the
+deploy procedure. This section exists because the renewal *failure mode* is
+invisible from this side of the fence and an operator working from `rd`/this
+repo needs to know what to check without first finding the other repo.
+
+Both hostnames bind to Azure Container Apps **managed certificates**
+(`prod.bicep:330-370`, `existing` references — the certs themselves are
+created out-of-band by `az containerapp hostname bind --validation-method
+CNAME`, see `nostr-relay/docs/prod/deploy.md` §4–§5). Azure auto-renews a
+managed certificate **only while its domain-validation DNS records keep
+resolving**: the `CNAME <hostname> -> <app>.<region>.azurecontainerapps.io`
+record and the `TXT asuid.<hostname> -> <customDomainVerificationId>` record
+(the same two records from the original `hostname bind`, listed in
+`deploy.md` §3/§5). If either record is changed, deleted, or repointed by an
+unrelated DNS edit, Azure cannot re-validate ownership at renewal time and
+the renewal silently fails — the old certificate simply expires on schedule
+with no error raised anywhere in this repo, `rd`, or the relay's own logs.
+
+**Why this is dangerous specifically for this project:** the browser board
+reaches the relay over exactly this certificate (mixed-content rules block
+`ws://` from an `https://` origin, which is why the public wss relay exists
+at all — see ready-906). The `rd` CLI itself keeps working the whole time,
+because it talks to the two LAN relays over plain `ws://` and has no
+dependency on this certificate. **A lapsed cert breaks every browser client
+while every signal an operator would check from their own machine (`rd
+ready`, `rd sync`, LAN relay reachability) stays green.**
+
+What to check, periodically or when a board stops loading in a browser but
+`rd` itself looks healthy:
+
+```bash
+# Certificate state + expiry, per hostname:
+az containerapp env certificate list -g nostr-relay-prod \
+  --environment cae-nostr-relay-prod -o table
+
+# Confirm the validation records this cert's renewal depends on still
+# resolve to what Azure expects (compare against deploy.md §3/§5):
+dig CNAME relay.3dl.network
+dig TXT   asuid.relay.3dl.network
+dig CNAME relay.moot.pub
+dig TXT   asuid.relay.moot.pub
+
+# Direct TLS handshake check against the live endpoint:
+openssl s_client -connect relay.3dl.network:443 -servername relay.3dl.network \
+  </dev/null 2>/dev/null | openssl x509 -noout -dates
+```
+
+If a validation record has drifted, restoring it does **not** retroactively
+fix an already-failed renewal — re-run the `hostname bind` command from
+`nostr-relay/docs/prod/deploy.md` §5 to force re-validation and re-issuance.
+
+This doc records the failure mode and the check because that's what an
+operator working from this repo needs; the renewal mechanics themselves are
+Azure/ACA platform behavior, not something this codebase implements or
+controls. The step-by-step provisioning/rebind procedure and its owner
+belong in `nostr-relay`, not here — see the scope note in ready-199.
