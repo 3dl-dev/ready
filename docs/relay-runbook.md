@@ -1,7 +1,9 @@
 # Self-Hosted strfry Relay Runbook (ready-efe)
 
-Reproducible-from-scratch runbook for the two-relay strfry (nostr) topology that
-backs the rd→nostr migration.
+Reproducible-from-scratch runbook for the two LAN strfry (nostr) relays that
+back the rd→nostr migration, plus (ready-1ab) the one PUBLIC relay dual-published
+alongside them so a browser can reach the board. See "The public relay
+(wss://relay.3dl.network)" below for why there are three endpoints, not two.
 
 > **Invariant:** The relays are a **CACHE / always-available copy, NEVER the
 > source of truth.** The source of truth is each project's local authoritative
@@ -12,26 +14,110 @@ backs the rd→nostr migration.
 
 ## Topology
 
-| Role    | VMID | Host                | LAN IP        | ws:// endpoint          |
-|---------|------|---------------------|---------------|-------------------------|
-| relay-a | 210  | mainframe (Proxmox) | relay-a.internal  | `ws://relay-a.internal:7777` |
-| relay-b | 211  | mainframe (Proxmox) | relay-b.internal  | `ws://relay-b.internal:7777` |
+| Role       | VMID | Host                | Endpoint                        | Reachable from | Why it exists |
+|------------|------|----------------------|----------------------------------|-----------------|----------------|
+| relay-a    | 210  | mainframe (Proxmox)  | `ws://relay-a.internal:7777`     | LAN only        | fast local CLI sync — a dumb pipe, no TLS to operate |
+| relay-b    | 211  | mainframe (Proxmox)  | `ws://relay-b.internal:7777`     | LAN only        | same as relay-a; second copy for availability |
+| public     | —    | Azure Container Apps | `wss://relay.3dl.network`        | anywhere (browser-openable) | the ONLY endpoint a browser board page can open — see below |
 
-Both VMs: Ubuntu 24.04 (Proxmox template 9000), 2 cores / 4 GB / 20 GB disk,
+Both LAN VMs: Ubuntu 24.04 (Proxmox template 9000), 2 cores / 4 GB / 20 GB disk,
 `--onboot 1` (survive host reboots). strfry built from source (`v1-b80cda3`),
 run as a systemd service `strfry.service` under user `baron`, listening on
 `0.0.0.0:7777`.
 
-The relays live on the **mainframe Proxmox hypervisor**, not on any workshop /
+The LAN relays live on the **mainframe Proxmox hypervisor**, not on any workshop /
 migration VM, so they persist across the whole migration.
 
-## Why two relays
+## Why two LAN relays
 
 Multi-relay topology gives availability: if either relay is offline, the other
 still serves the full event set. They are kept reconciled with relay-to-relay
 Negentropy (`strfry sync`, NIP-77). This is proven live by `scripts/relay-demo.sh`
 (step 3 takes each relay offline in turn and reads back from the survivor;
 step 5 reconciles an event A→B via Negentropy).
+
+## The public relay (wss://relay.3dl.network) and dual-publish (ready-1ab)
+
+**Why it exists:** a browser tab serving the board over `https://` refuses to
+open an insecure `ws://` socket at all (mixed content, no click-through), and
+the two LAN relays above are also RFC1918 addresses unreachable from outside
+baron's network regardless of scheme. Neither problem is fixable by adding TLS
+to the LAN boxes alone — an https page still can't dial an address it can't
+route to. `ready-1ab` ruled against retrofitting TLS onto the LAN strfry
+processes (options considered: DNS-01 ACME for the LAN IPs, a reverse proxy, an
+internal CA — see that item's history) and instead reused an **already-running**
+production relay:
+
+- **What it is:** the same nostr relay software as the LAN boxes' underlying
+  protocol, but a different implementation (`github.com/3dl-dev/nostr-relay`),
+  deployed as an Azure Container App with a browser-trusted managed TLS
+  certificate. `relay.moot.pub` is the SAME container app under a second custom
+  domain — not a second relay, don't count it as one.
+- **Scale-to-zero is deliberate:** `minReplicas=0`, `maxReplicas=1`
+  (`nostr-relay/infra/prod.bicep`) — an idle relay costs nothing, at the price
+  of a cold-start delay (~12s observed) on the first request after idle. The
+  board client must tolerate a connecting/retry state on cold start; this is
+  not a bug to "fix" by raising `minReplicas`.
+- **It enforces its own tenant write-allowlist** (`ready-e95`) — unlike the LAN
+  relays (`ready-5fd`, dumb pipe, no relay-side gate), the public relay rejects
+  writes from pubkeys its operator hasn't admitted, because rd is a TENANT on
+  infrastructure it does not own, not the owner of it. Reads are unrestricted.
+  This is orthogonal to rd's own app-side trust gate (`ready-d53`) — both must
+  admit a pubkey for that pubkey's writes to reach the board over this relay.
+
+**Dual-publish, not cutover:** `relay_endpoints` carries all three entries with
+`read`+`write` true (see current shape below); `relayPublish`
+(`pkg/sync/nostroutbound.go`) writes every event to every write relay,
+best-effort, independently. Nothing about the LAN relays changed — they are
+not a migration-era stand-in being phased out. **The two are permanent by
+design, not a temporary dual state**: the LAN relays stay plain `ws://` because
+that is what makes them fast and local for the CLI's own sync path (`rd`
+itself dials `ws://` fine — it isn't a browser), and the public relay stays the
+one browser-reachable endpoint. There is no retirement trigger for the plain-ws
+LAN listeners because retiring them would remove the CLI's fast local sync path
+with no replacement, not complete a migration. What IS finished migrating: `rd
+board`'s emitted link now filters to only the browser-openable relay
+(`ready-634`, `browserOpenableRelays()` in `cmd/rd/board.go`) — the CLI still
+dials all three from `rd.json`.
+
+## Updating relay_endpoints on an existing machine
+
+`relay_endpoints` lives in **local, un-synced config** — `~/.config/rd/rd.json`
+(machine-wide default, `$RD_HOME`) and/or a project's own `.ready/config.json`
+(set at `rd init` time, overrides the home default for that project only). It
+is a plain file on disk, not a nostr event — no machine picks up this change by
+reading the board. A machine that was configured before the public relay
+existed keeps dialing LAN-only until someone edits its file:
+
+```bash
+# Back up first — there is no automated rollback for this edit (ready-199).
+cp ~/.config/rd/rd.json ~/.config/rd/rd.json.bak-"$(date +%s)"
+
+# Add the public relay alongside whatever LAN/other entries are already there.
+# Do not remove the existing entries — see "Dual-publish, not cutover" above.
+```
+
+```json
+{
+  "relay_endpoints": [
+    { "url": "ws://relay-a.internal:7777", "read": true, "write": true },
+    { "url": "ws://relay-b.internal:7777", "read": true, "write": true },
+    { "url": "wss://relay.3dl.network",    "read": true, "write": true }
+  ]
+}
+```
+
+Verify with a real round-trip, not just that the file parses:
+
+```bash
+rd status                 # read/write reachability for the linked board
+rd relay audit --relay wss://relay.3dl.network   # independent read-back from that relay alone
+```
+
+A machine with no `rd.json` relay policy at all is **local-only by default**
+(`rdconfig.DefaultRelays()` returns none — see "Endpoint config for rd" below):
+it never had LAN relays either, so this same edit is also how a brand-new
+machine opts in to the shared board rather than staying standalone.
 
 ## Provisioning (from scratch)
 
@@ -416,8 +502,17 @@ Captured output: `docs/relay-demo-output.txt`.
 
 Relay endpoints are surfaced to rd in `pkg/rdconfig` (`relay.go`):
 
-- `rdconfig.DefaultRelays()` — the two relays above (both read+write).
-- `Config.RelayEndpoints` (`relay_endpoints` in `rd.json`) — optional override.
+- `rdconfig.DefaultRelays()` returns **none** — the ship default is
+  **local-only** (no baked-in relay of any kind; `.ready/nostr-log.jsonl` alone
+  is authoritative). This is NOT the three-relay topology described above —
+  that set is this operator's own choice, recorded in `~/.config/rd/rd.json`,
+  same as any other operator's would be. A fresh clone with no relay policy set
+  anywhere in its ancestor chain talks to nothing until `rd init --relay <url>`,
+  an interactive prompt at `rd init`, or a later edit to `rd.json` sets one —
+  see "Updating relay_endpoints on an existing machine" above for that edit.
+- `Config.RelayEndpoints` (`relay_endpoints` in `rd.json` or a project's
+  `.ready/config.json`) — the actual configured set; resolution walks
+  project config → committed board binding → home `rd.json` (`cmd/rd/nostr.go`).
 - `Config.Relays()`, `Config.ReadRelayURLs()`, `Config.WriteRelayURLs()` —
   accessors downstream code (ready-a13) uses to discover where to read/write.
 
