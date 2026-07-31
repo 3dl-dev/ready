@@ -50,23 +50,36 @@ func TestDiscoverLiveBoards_OwnerNarrowedAndArchivedDropped(t *testing.T) {
 		t.Fatalf("foreign board: %v", err)
 	}
 
-	relay := newStoreRelay(t)
-	relay.underReturnAuthors = true // the deployed relay's measured defect
-	for _, e := range []*nostr.Event{live, archivedV1, archivedV2, foreign} {
-		relay.putRaw(e)
-	}
+	// Both serve orders, for the reason given on runInventoryDedupCase: under
+	// newest-first the archived V2 arrives first and a first-wins dedup looks
+	// identical to latest-wins. Under oldest-first, a first-wins dedup resurrects
+	// the un-archived V1 and reports a dead board as live — which is the failure
+	// this assertion is for.
+	for _, oldestFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oldestFirst=%v", oldestFirst), func(t *testing.T) {
+			relay := newStoreRelay(t)
+			relay.underReturnAuthors = true // the deployed relay's measured defect
+			relay.serveOldestFirst = oldestFirst
+			for _, e := range []*nostr.Event{live, archivedV2, foreign} {
+				relay.putRaw(e)
+			}
+			// The superseded, NOT-archived version stays on the wire alongside V2
+			// (putRaw would have replaced it, leaving nothing to choose between).
+			relay.putDup(archivedV1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	got, err := DiscoverLiveBoards(ctx, relay.url, owner.PubKeyHex())
-	if err != nil {
-		t.Fatalf("DiscoverLiveBoards: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d live boards, want exactly 1 (archived + foreign must be excluded): %+v", len(got), got)
-	}
-	if got[0].D != "live1" || got[0].Coord != BoardCoord(owner.PubKeyHex(), "live1") {
-		t.Fatalf("got board %+v, want the owner's live1", got[0])
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			got, err := DiscoverLiveBoards(ctx, relay.url, owner.PubKeyHex())
+			if err != nil {
+				t.Fatalf("DiscoverLiveBoards: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d live boards, want exactly 1 (archived + foreign must be excluded): %+v", len(got), got)
+			}
+			if got[0].D != "live1" || got[0].Coord != BoardCoord(owner.PubKeyHex(), "live1") {
+				t.Fatalf("got board %+v, want the owner's live1", got[0])
+			}
+		})
 	}
 }
 
@@ -152,7 +165,26 @@ func TestInventoryBoardCards_CountsPlaintextAndSealedAndMeasuresWireSize(t *test
 		t.Fatalf("stale dup: %v", err)
 	}
 
+	// BOTH SERVE ORDERS, and the answer must be identical.
+	//
+	// Newest-first is the relay convention, and under it a first-wins dedup and a
+	// latest-wins dedup are INDISTINGUISHABLE — the newer event arrives first either
+	// way. That is not a property of the client, it is a favour from the server, and
+	// this inventory reads an untrusted public relay. Oldest-first is what separates
+	// "we dedup by created_at" from "we take whatever came first".
+	for _, oldestFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oldestFirst=%v", oldestFirst), func(t *testing.T) {
+			runInventoryDedupCase(t, oldestFirst, be, plain, sealed, staleDup, boardD, boardCoord)
+		})
+	}
+}
+
+// runInventoryDedupCase is the body of the counting/dedup assertion, run once per
+// relay serve order.
+func runInventoryDedupCase(t *testing.T, oldestFirst bool, be *nostr.Event, plain, sealed []*nostr.Event, staleDup *nostr.Event, boardD, boardCoord string) {
+	t.Helper()
 	relay := newStoreRelay(t)
+	relay.serveOldestFirst = oldestFirst
 	relay.putRaw(be)
 	for _, e := range plain {
 		relay.putRaw(e)
@@ -160,13 +192,11 @@ func TestInventoryBoardCards_CountsPlaintextAndSealedAndMeasuresWireSize(t *test
 	for _, e := range sealed {
 		relay.putRaw(e)
 	}
-	// putRaw on an addressable coord overwrites; publish the stale one FIRST via
-	// a synthetic older event under a distinct byCoord write to prove
-	// latest-wins, not last-write: since storeRelay.putRaw replaces
-	// unconditionally, seed the stale one, then the real one, matching
-	// production order (older observed first is the common case).
-	relay.putRaw(staleDup)
-	relay.putRaw(plain[0])
+	// BOTH versions of plain-0's coordinate are on the wire at once (putDup, not
+	// putRaw — putRaw would replace one with the other and leave nothing to
+	// choose between). The inventory must return the NEWER of the two and count
+	// the coordinate ONCE.
+	relay.putDup(staleDup)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -243,18 +273,29 @@ func TestInventoryBoardCards_ScopedToOneBoardEvenWithAnotherBoardOnTheSameRelay(
 		t.Fatalf("b card: %v", err)
 	}
 
-	relay := newStoreRelay(t)
-	relay.putRaw(aCard)
-	relay.putRaw(bCard)
+	// Once against a relay that honours "#a", once against one that ignores it and
+	// over-returns. A filter is a REQUEST to an untrusted server, not a guarantee:
+	// only the second case can distinguish the inventory's own scope check from the
+	// relay having done the work for it.
+	for _, honoursFilter := range []bool{true, false} {
+		t.Run(fmt.Sprintf("relayHonoursTagFilter=%v", honoursFilter), func(t *testing.T) {
+			relay := newStoreRelay(t)
+			relay.ignoreTagFilters = !honoursFilter
+			relay.putRaw(aCard)
+			relay.putRaw(bCard)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	rows, totals, err := InventoryBoardCards(ctx, relay.url, aD, aCoord)
-	if err != nil {
-		t.Fatalf("InventoryBoardCards: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			rows, totals, err := InventoryBoardCards(ctx, relay.url, aD, aCoord)
+			if err != nil {
+				t.Fatalf("InventoryBoardCards: %v", err)
+			}
+			if totals.Cards != 1 || len(rows) != 1 || rows[0].ItemID != "a-1" {
+				t.Fatalf("board a inventory = totals %+v rows %+v, want exactly a-1 (board b's card must not leak in, whatever the relay chooses to return)", totals, rows)
+			}
+			if rows[0].BoardCoord != aCoord || rows[0].BoardCoord == bCoord {
+				t.Fatalf("row bound to %q, want board a's coordinate %q", rows[0].BoardCoord, aCoord)
+			}
+		})
 	}
-	if totals.Cards != 1 || len(rows) != 1 || rows[0].ItemID != "a-1" {
-		t.Fatalf("board a inventory = totals %+v rows %+v, want exactly a-1 (board b's card must not leak in)", totals, rows)
-	}
-	_ = bCoord
 }
