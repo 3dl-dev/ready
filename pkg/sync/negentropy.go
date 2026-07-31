@@ -10,6 +10,11 @@
 // Convergence flow for one relay:
 //  1. Read the local log; select events matching the sync filter.
 //  2. Negentropy-reconcile that id-set against the relay -> {need, have}.
+//     A relay reconciles at most a CAPPED number of records per query and never
+//     says so, so this step repeats over `until`-scoped windows walking backwards
+//     in time until a window can no longer move that cursor (ready-bec). A single
+//     unpaged exchange silently truncated every board bigger than that cap, and
+//     never converged.
 //  3. Download `need` (REQ by ids), Verify, AppendUnique into the local log.
 //  4. Upload `have` (EVENT) to the relay (idempotent — relay dedupes by id).
 //
@@ -23,6 +28,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -34,7 +40,12 @@ type SyncResult struct {
 	Relay string
 	// LocalBefore is how many filter-matching events the local log held pre-sync.
 	LocalBefore int
-	// Need / Have are the diff sizes negentropy computed.
+	// Need / Have are the diff sizes negentropy computed, summed over the walk's
+	// windows and de-duplicated (ready-bec). Need is every distinct id the relay
+	// held that the local log lacked. Have is every distinct local id a window
+	// could establish the relay lacks — an id below a CAPPED window's floor is
+	// simply out of that window's view, not missing, so it is left to the window
+	// that can actually see it rather than counted (and re-uploaded) here.
 	Need int
 	Have int
 	// Downloaded is how many NEW events were merged into the local log (<= Need;
@@ -50,7 +61,103 @@ type SyncResult struct {
 	// EventBytesDownloaded / EventBytesUploaded measure the actual event transfer.
 	EventBytesDownloaded int
 	EventBytesUploaded   int
+	// Pages is how many `until`-scoped windows the walk needed (ready-bec). It is
+	// always >= 1, and >= 2 whenever the relay held anything at all: the walk only
+	// stops once a window fails to move its cursor strictly older, which takes one
+	// window beyond the last one carrying events. It is the reader's only view of
+	// how far past a relay's silent per-query cap a sync had to reach.
+	Pages int
 }
+
+// SyncPageLimit is the number of records rd asks a relay to reconcile per
+// negentropy window (ready-bec).
+//
+// A relay caps how many records it will serve for ONE query, and NIP-01/NIP-77
+// give the client no way to read that cap back. Measured against
+// wss://relay.3dl.network on 2026-07-30, with rd's board filter and an EMPTY
+// local log:
+//
+//	NEG-OPEN {kinds,#a}              -> need=500   (the relay's cap, silently)
+//	NEG-OPEN {kinds,#a,limit:500}    -> need=500
+//	NEG-OPEN {kinds,#a,limit:5000}   -> no reply at all; the read deadline fires
+//	the same filter walked with `until` -> 1802 events over 4 windows
+//
+// So an unpaged sync downloaded 500 of 1802 events, reported success, and NEVER
+// converged: every later sync saw need=0 because the relay's capped window was
+// already fully local. A fresh clone of the board projected 207 items instead of
+// its real ~540 and was told nothing. This is the Go-side twin of the browser
+// defect fixed in web/board/src/lib/relay.ts (ready-5c5).
+//
+// THE CAP IS PER-RELAY CONFIGURATION AND CANNOT BE READ BACK. Re-measured
+// 2026-07-30 against the LAN strfry ws://192.168.2.40:7777 over a purpose-built
+// 560-event board (TestLiveRelay_OneQueryIsBoundedAndTheWalkPagesPastIt):
+//
+//	NEG-OPEN {kinds,#a}              -> need=560   (no default cap at this size)
+//	NEG-OPEN {kinds,#a,limit:100}    -> need=100   (honours the asked limit)
+//	NEG-OPEN {kinds,#a,limit:500}    -> need=500   (the newest 500)
+//	NEG-OPEN {kinds,#a,limit:5000}   -> need=560   (answered, NOT refused)
+//
+// Two relays, two different answers to the same query: 3dl volunteers 500 and
+// stops, this one volunteers everything. Nothing in NIP-01 or NIP-77 tells a
+// client which it is talking to, so the walk must not depend on the relay's own
+// bound — it names its own.
+//
+// THE CAP LIVES ON THE DOWNLOAD HALF, NOT THE RECONCILE HALF. This was settled by
+// experiment on 2026-07-30 rather than argued: a throwaway strfry was stood up on
+// loopback with its own `maxFilterLimit` set to 400 — a relay whose cap is
+// STRICTLY BELOW the limit rd asks for, which neither reachable relay could be
+// told to be — and a 600-event board published to it. Reproduce with
+//
+//	docker run -d -p 127.0.0.1:17777:7777 \
+//	  -v $PWD/strfry.conf:/etc/strfry.conf dockurr/strfry:latest
+//	# strfry.conf: maxFilterLimit = 400, writePolicy.plugin = ""
+//
+// Measured (TestLiveRelay_ASubLimitCappedRelayClampsTheDownloadSilently):
+//
+//	NEG-OPEN {…,limit:399/400/401/500} -> need=399/400/401/500   limit HONOURED
+//	NEG-OPEN {…,limit:1000/5000}       -> need=600 (whole board) limit HONOURED
+//	NEG-OPEN {…} (no limit)            -> need=600 (whole board)
+//	REQ      {…,limit:401/500/5000}    -> served=400             CLAMPED, SILENTLY
+//	REQ      {…} (no limit)            -> served=400             CLAMPED, SILENTLY
+//
+// So `maxFilterLimit` is NOT applied to the NIP-77 path at all: negentropy
+// answers exactly what the client asked for. It IS applied to every NIP-01 REQ,
+// where it clamps with no error, no NOTICE and no CLOSED — just EOSE with fewer
+// events than were asked for. That REQ is rd's download half (FetchByIDs), so the
+// silent sub-limit truncation this walk must survive is real, measured, and
+// arrives when the ids fetched come back SHORT of the ids negentropy said to
+// fetch.
+//
+// A RELAY DOES REFUSE AN OVER-LIMIT REQ, LOUDLY. Also measured 2026-07-30, read
+// only, against wss://relay.3dl.network:
+//
+//	REQ      {…,limit:600/1000}  -> CLOSED "invalid: requested limit 600 exceeds
+//	                                this relay's max of 500 — no silent truncation
+//	                                (nostrrelay-828); narrow with since/until or
+//	                                resubmit with a smaller limit"
+//	NEG-OPEN {…,limit:600/1000}  -> no reply at all; the read deadline fires
+//
+// An earlier revision of this file asserted the opposite ("no measured relay
+// refuses a limit above its cap") on the strength of the NEG-OPEN timeout alone,
+// having never asked the REQ path. Both statements were wrong in the same way —
+// asserted from the relays that happened to be reachable. What is true is
+// narrower and is all the walk may lean on: a relay may answer a REQ short and
+// silently (strfry), or refuse it loudly (3dl), and the client cannot tell which
+// in advance. rd therefore never names a REQ limit above SyncPageLimit, and
+// MaxREQIDs is held at 500 for exactly that reason.
+//
+// Naming the limit explicitly still earns its place: it makes the window size
+// OURS rather than whatever default the relay happens to volunteer, which is what
+// bounds the walk's per-window cost and gives the same-second jam check in
+// NegentropySync a number it can speak about. 500 is strfry's default
+// maxFilterLimit and is what MaxREQIDs already uses for the download side.
+const SyncPageLimit = 500
+
+// MaxSyncPages hard-stops the `until` walk. It is a backstop against a relay that
+// answers every window identically, NOT a tuning knob: the walk normally ends on
+// its own the first time a window cannot move the cursor. At 500 records per
+// window this admits a 100k-event board.
+const MaxSyncPages = 200
 
 // NegentropySync reconciles the local log against one relay via NIP-77 and
 // performs the resulting download+upload so the two converge. filter is a NIP-01
@@ -80,6 +187,48 @@ type SyncResult struct {
 // coordinate is refused before any relay dial unless production is true. Pass
 // true only from the sanctioned CLI's own sync command (cmd/rd/nostr.go); every
 // other caller (tests) passes false explicitly.
+//
+// PAGING (ready-bec). One negentropy exchange does NOT reconcile "every matching
+// event": it reconciles at most as many records as the relay's per-query CAP
+// allows, and nothing in the protocol says which of those two happened. Measured
+// on the live relay, a single unpaged exchange reconciled 500 of 1802 events,
+// merged them, reported success — and every subsequent sync then computed need=0,
+// because the capped window it could see was by then fully local. The board never
+// converged and nothing said so. See SyncPageLimit for the measurements.
+//
+// So the exchange is repeated over `until`-scoped WINDOWS walking backwards in
+// time, each asking for at most SyncPageLimit records. Both sides are scoped to
+// the same window (matchesFilter honours `until`), so each exchange still costs
+// only its window's diff and a converged re-sync still moves zero event bytes.
+//
+// TERMINATION IS THE CURSOR, NOT THE WINDOW SIZE, and this is the difference
+// between a whole board and a silently short one. `relayWindow` is derived from
+// the NEG-OPEN diff, but the events that actually land come from the REQ that
+// follows it — and a relay whose maxFilterLimit sits below SyncPageLimit clamps
+// that REQ silently (see SyncPageLimit for the measurement). So negentropy can
+// name 450 ids while the download returns only the newest 400 of them, with no
+// error anywhere. A walk that stopped on "this window was smaller than the limit
+// we asked for" stops right there, having merged 400 of 450 and reported success:
+//
+//	MEASURED 2026-07-30, real strfry with maxFilterLimit=400, 450-event board
+//	  termination on window size -> downloaded=400 of 450, pages=1, no error
+//	  termination on the cursor  -> downloaded=450,        pages=3
+//
+// The walk therefore ends only when a window cannot move the cursor STRICTLY
+// older — either the relay held nothing at or below the cursor, or everything it
+// held sits on the cursor's own second. That test is answered entirely by
+// `oldest`, which is read off the events the relay ACTUALLY SERVED rather than
+// the ids it promised, so a clamped download shortens the step instead of
+// skipping the records it could not deliver. It is independent of every relay's
+// unreadable cap. The cost is one extra exchange per sync (the final window,
+// which comes back holding only the boundary second).
+//
+// RESIDUAL, stated rather than hidden: if a relay clamps BELOW SyncPageLimit and
+// more than its clamp's worth of events share one identical created_at second,
+// `until` cannot step past that second and no signal distinguishes it from the end
+// of the board. At or above SyncPageLimit that case IS detected and returned as an
+// error. Keeping SyncPageLimit at or above every measured
+// relay cap is what keeps the undetectable band empty.
 func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter map[string]any, trusted map[string]bool, timeout time.Duration, production bool) (SyncResult, error) {
 	res := SyncResult{Relay: relayURL}
 	if timeout <= 0 {
@@ -91,7 +240,7 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 		return res, err
 	}
 	byID := make(map[string]*nostr.Event, len(events))
-	var localItems []nostr.NegItem
+	var local []*nostr.Event
 	for _, e := range events {
 		if e == nil || !matchesFilter(e, filter) {
 			continue
@@ -100,51 +249,180 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 			continue
 		}
 		byID[e.ID] = e
-		it, err := nostr.NegItemFromEvent(e)
-		if err != nil {
-			return res, err
-		}
-		localItems = append(localItems, it)
+		local = append(local, e)
 	}
-	res.LocalBefore = len(localItems)
+	res.LocalBefore = len(local)
 
-	// 2. Negentropy reconcile against the relay.
-	rctx, cancel := context.WithTimeout(ctx, timeout)
-	neg, err := nostr.NegentropyReconcile(rctx, relayURL, filter, localItems)
-	cancel()
-	if err != nil {
-		return res, fmt.Errorf("sync: negentropy reconcile %s: %w", relayURL, err)
-	}
-	res.Need = len(neg.Need)
-	res.Have = len(neg.Have)
-	res.BytesSent = neg.BytesSent
-	res.BytesReceived = neg.BytesReceived
-	res.RoundTrips = neg.RoundTrips
+	needSeen := map[string]bool{}
+	uploadSeen := map[string]bool{}
+	var uploadIDs []string
 
-	// 3. Download the ids the relay has and we lack; Verify; merge into the log.
-	if len(neg.Need) > 0 {
-		fctx, fcancel := context.WithTimeout(ctx, timeout)
-		// Chunk the id set: a single REQ for the whole `need` (which on a fresh
-		// machine is the relay's entire board — ~9k ids) overflows strfry's per-REQ
-		// filter limit and returns NO frames at all, so the read blocks until the
-		// deadline and fails as a bare "i/o timeout" (ready-8de). FetchByIDs pages the
-		// download into MaxREQIDs-sized REQs sharing this one deadline.
-		fetched, err := nostr.FetchByIDs(fctx, relayURL, neg.Need)
-		fcancel()
-		if err != nil {
-			return res, fmt.Errorf("sync: download need from %s: %w", relayURL, err)
+	// until is the walk's cursor: the INCLUSIVE upper bound on created_at for the
+	// window being reconciled. The first window is unbounded (the relay answers
+	// with its newest cap-many records); every later one is bounded by the oldest
+	// record of the window before it.
+	var until int64
+	bounded := false
+
+	for res.Pages = 1; ; res.Pages++ {
+		if res.Pages > MaxSyncPages {
+			return res, fmt.Errorf("sync: %s: gave up after %d windows with the cursor still moving — the board is either larger than %d events or the relay is re-serving the same window",
+				relayURL, MaxSyncPages, MaxSyncPages*SyncPageLimit)
 		}
-		merge, wireBytes := admitDownloaded(fetched, trusted)
-		res.EventBytesDownloaded += wireBytes
-		added, err := log.AppendUnique(merge)
-		if err != nil {
-			return res, fmt.Errorf("sync: merge downloaded events: %w", err)
+		windowFilter := syncWindowFilter(filter, until, bounded)
+
+		// Reduce the LOCAL set to the same window, or the diff is skewed: a local
+		// event outside the relay's window would be reported as one the relay lacks
+		// and re-uploaded on every sync forever.
+		var localItems []nostr.NegItem
+		localWindow := 0
+		for _, e := range local {
+			if bounded && e.CreatedAt > until {
+				continue
+			}
+			it, err := nostr.NegItemFromEvent(e)
+			if err != nil {
+				return res, err
+			}
+			localItems = append(localItems, it)
+			localWindow++
 		}
-		res.Downloaded = added
+
+		rctx, cancel := context.WithTimeout(ctx, timeout)
+		neg, err := nostr.NegentropyReconcile(rctx, relayURL, windowFilter, localItems)
+		cancel()
+		if err != nil {
+			return res, fmt.Errorf("sync: negentropy reconcile %s: %w", relayURL, err)
+		}
+		res.BytesSent += neg.BytesSent
+		res.BytesReceived += neg.BytesReceived
+		res.RoundTrips += neg.RoundTrips
+		for _, id := range neg.Need {
+			needSeen[id] = true
+		}
+		res.Need = len(needSeen)
+
+		// How many records the relay actually reconciled in this window. Negentropy
+		// never states it, but it is exactly recoverable: the relay's window is the
+		// local window, minus what only we hold, plus what only it holds.
+		relayWindow := localWindow - len(neg.Have) + len(neg.Need)
+
+		// Download the ids the relay has and we lack; Verify; merge into the log.
+		// oldest tracks the lower edge of the relay's window, which is the next
+		// cursor: the min created_at over the records the relay reconciled here,
+		// i.e. what it served for `need` plus the local records it also held.
+		oldest := int64(math.MaxInt64)
+		if len(neg.Need) > 0 {
+			fctx, fcancel := context.WithTimeout(ctx, timeout)
+			// Chunk the id set: a single REQ for the whole `need` (which on a fresh
+			// machine is the relay's entire board — ~9k ids) overflows strfry's per-REQ
+			// filter limit and returns NO frames at all, so the read blocks until the
+			// deadline and fails as a bare "i/o timeout" (ready-8de). FetchByIDs pages the
+			// download into MaxREQIDs-sized REQs sharing this one deadline.
+			fetched, err := nostr.FetchByIDs(fctx, relayURL, neg.Need)
+			fcancel()
+			if err != nil {
+				return res, fmt.Errorf("sync: download need from %s: %w", relayURL, err)
+			}
+			// The cursor is a claim about the RELAY's set, so it is read off everything
+			// the relay served — including events the trust gate is about to drop. Using
+			// only admitted events would let one untrusted event at the window's edge
+			// stall the walk. A relay lying about created_at can only shorten its own
+			// walk, which it can already do by serving nothing; admission is unaffected.
+			for _, e := range fetched {
+				if e != nil && e.CreatedAt < oldest {
+					oldest = e.CreatedAt
+				}
+			}
+			merge, wireBytes := admitDownloaded(fetched, trusted)
+			res.EventBytesDownloaded += wireBytes
+			added, err := log.AppendUnique(merge)
+			if err != nil {
+				return res, fmt.Errorf("sync: merge downloaded events: %w", err)
+			}
+			res.Downloaded += added
+			// Newly-merged events are local from here on, so the next window does not
+			// re-request them.
+			for _, e := range merge {
+				if _, seen := byID[e.ID]; seen {
+					continue
+				}
+				byID[e.ID] = e
+				local = append(local, e)
+			}
+		}
+
+		// The rest of the relay's window is the local records it did NOT report as
+		// missing. Those bound the cursor too, and they decide which local events
+		// this window can speak for at all.
+		relayHas := make(map[string]bool, len(neg.Have))
+		for _, id := range neg.Have {
+			relayHas[id] = true
+		}
+		for _, e := range local {
+			if bounded && e.CreatedAt > until {
+				continue
+			}
+			if relayHas[e.ID] {
+				continue
+			}
+			if e.CreatedAt < oldest {
+				oldest = e.CreatedAt
+			}
+		}
+
+		// THE TERMINATION TEST. `oldest == MaxInt64` means the relay reconciled no
+		// record at all at or below the cursor; otherwise the walk continues exactly
+		// when the cursor can step STRICTLY older. Deliberately NOT `relayWindow >=
+		// SyncPageLimit`: relayWindow counts the ids negentropy NAMED, while a relay
+		// whose maxFilterLimit is below SyncPageLimit clamps the REQ that fetches
+		// them and says nothing, so a window can be short of the limit and still
+		// have left records behind. Measured against a real strfry capped at 400:
+		// window size stops at 400 of 450 with no error; the cursor gets all 450.
+		// See SyncPageLimit.
+		advances := oldest != math.MaxInt64 && (!bounded || oldest < until)
+
+		// A window the walk will MOVE PAST only reconciled [oldest, until], so a
+		// local event older than `oldest` is not "missing from the relay" — it is
+		// merely below what this window could see, and a later window decides.
+		// Uploading it here is how a converged machine would end up re-publishing its
+		// whole backlog on every sync. The window the walk STOPS on is unbounded
+		// below, so it is the last chance to speak for those events and applies no
+		// such floor.
+		for _, id := range neg.Have {
+			e := byID[id]
+			if e == nil {
+				continue
+			}
+			if advances && e.CreatedAt < oldest {
+				continue
+			}
+			if uploadSeen[id] {
+				continue
+			}
+			uploadSeen[id] = true
+			uploadIDs = append(uploadIDs, id)
+		}
+
+		if !advances {
+			// A stuck cursor on a window that is FULL at the limit rd itself named
+			// means more than SyncPageLimit events share a single created_at second:
+			// `until` cannot move without skipping some of them. Say so — staying
+			// quiet about a truncation is the whole defect this walk exists to end.
+			if bounded && oldest != math.MaxInt64 && relayWindow >= SyncPageLimit {
+				return res, fmt.Errorf("sync: %s: the relay's %d-record window at until=%d is full and every record shares that timestamp — cannot page further without dropping events",
+					relayURL, SyncPageLimit, until)
+			}
+			break
+		}
+		until = oldest
+		bounded = true
 	}
 
-	// 4. Upload the ids we have and the relay lacks (idempotent — relay dedupes).
-	for _, id := range neg.Have {
+	res.Have = len(uploadIDs)
+
+	// Upload the ids we have and the relay lacks (idempotent — relay dedupes).
+	for _, id := range uploadIDs {
 		e := byID[id]
 		if e == nil {
 			continue
@@ -162,6 +440,27 @@ func NegentropySync(ctx context.Context, relayURL string, log *NostrLog, filter 
 	}
 
 	return res, nil
+}
+
+// syncWindowFilter copies filter and stamps it with this window's cursor. `limit`
+// is always set, and set to SyncPageLimit rather than to something larger: naming
+// it makes the per-window cost rd's own instead of whatever the relay volunteers,
+// and staying at 500 keeps rd below the ceiling relay.3dl.network refuses outright
+// (see SyncPageLimit for both measurements). Any `until` / `limit` already on the
+// caller's filter is REPLACED — they are the walk's own controls, and no rd caller
+// sets them.
+func syncWindowFilter(filter map[string]any, until int64, bounded bool) map[string]any {
+	out := make(map[string]any, len(filter)+2)
+	for k, v := range filter {
+		out[k] = v
+	}
+	out["limit"] = SyncPageLimit
+	if bounded {
+		out["until"] = until
+	} else {
+		delete(out, "until")
+	}
+	return out
 }
 
 // NegentropySyncMany runs NegentropySync against each relay in turn, accumulating
