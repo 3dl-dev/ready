@@ -28,7 +28,7 @@
 
 import type { NostrEvent } from "./nostrevent";
 import { tagValue, verifyEvent } from "./nostrevent";
-import { parseBoardCoord, boardCoord } from "./boarddiscovery";
+import { parseBoardCoord, boardCoord, KIND_BOARD } from "./boarddiscovery";
 import type { KeyUnwrapper } from "./keyunwrap";
 import type { FragmentKeys } from "./fragment";
 
@@ -108,6 +108,7 @@ export class BoardKeyring {
   private readonly cutovers = new Map<string, number>();
   private readonly grantEpochFloors = new Map<string, number>();
   private readonly granteeCEKGrants = new Map<string, number>();
+  private readonly assertedSince = new Map<string, number>();
 
   /** cek returns the content key for (coord, epoch), or null when this reader
    * holds none. Null is the fail-closed answer and every caller renders the
@@ -166,6 +167,30 @@ export class BoardKeyring {
    */
   grantEpochFloor(coord: string): number | null {
     return this.grantEpochFloors.get(coord) ?? null;
+  }
+
+  /**
+   * confidentialSince returns the OWNER-SIGNED cutover assertion this board's
+   * own kind-30301 definition carries (`confidential_since`, §11.13a,
+   * ready-475), or null when no verified definition for this coordinate asserted
+   * one. Port of pkg/sync's AssertedConfidentialSince — read that file's header
+   * for why an assertion is an extension of §11.13a rather than a weakening of
+   * it.
+   *
+   * It is a DIFFERENT KIND OF FACT from `cutover` above, which is why it is a
+   * separate question rather than folded invisibly into that one: `cutover` is
+   * DERIVED (a minimum over the grants that arrived, so only ever a lower bound
+   * on the truth, which is the entire reason §11.13a's witnesses exist), while
+   * this is the owner — the same key that mints every CEK — STATING the instant.
+   * confidentialityOf consults it to decide whether the witnesses have anything
+   * left to establish; nothing else may use it to widen what is shown.
+   *
+   * The value has already been folded into `cutover` as a MINIMUM, so an
+   * assertion can only move the effective instant EARLIER and never grandfathers
+   * a card the served grants alone would have quarantined.
+   */
+  confidentialSince(coord: string): number | null {
+    return this.assertedSince.get(coord) ?? null;
   }
 
   /**
@@ -253,6 +278,67 @@ export class BoardKeyring {
     const cur = this.grantEpochFloors.get(coord);
     if (cur === undefined || epoch < cur) this.grantEpochFloors.set(coord, epoch);
   }
+
+  /** @internal — records an owner-signed `confidential_since` assertion and
+   * folds it into the cutover as a MINIMUM (never later than what the grants
+   * already established). Both halves happen here so a caller cannot record one
+   * without the other. */
+  noteConfidentialSince(coord: string, at: number): void {
+    const cur = this.assertedSince.get(coord);
+    if (cur === undefined || at < cur) this.assertedSince.set(coord, at);
+    this.noteCutover(coord, at);
+  }
+}
+
+/**
+ * boardConfidentialSince reads the `confidential_since` assertion off ONE
+ * kind-30301 event, or null when the tag is absent, unparseable, or not a
+ * positive instant. Port of pkg/sync.BoardConfidentialSince.
+ *
+ * A non-positive value is NOT an assertion. Rejecting it here keeps a malformed
+ * tag on the ordinary §11.13a path instead of pinning the cutover to 0, which
+ * would quarantine the board's whole plaintext history.
+ */
+export function boardConfidentialSince(e: NostrEvent): number | null {
+  const raw = tagValue(e, "confidential_since");
+  if (raw === "" || !/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n <= 0) return null;
+  return n;
+}
+
+/**
+ * assertedConfidentialSince returns the owner-signed cutover assertion for coord
+ * among events, or null when none carries one. Port of
+ * pkg/sync.AssertedConfidentialSince, and the two must agree event-for-event:
+ * the conformance vectors fold the same committed board definitions through
+ * both.
+ *
+ * THE AUTHOR CHECK IS THE COORDINATE CHECK. A kind-30301's coordinate is
+ * `30301:<its own pubkey>:<its own d tag>`, so an event only matches coord when
+ * its author IS coord's owner — a definition signed by anybody else lands on a
+ * different coordinate and is invisible here. verifyEvent then rejects a forged
+ * or tampered one, because the relay serving these events is untrusted.
+ *
+ * THE MINIMUM, not latest-wins: a relay may serve an OLDER definition it still
+ * holds, and under latest-wins that replay would decide which assertion a reader
+ * believes. Under the minimum it cannot — the only direction a replayed
+ * definition can move the effective cutover is EARLIER, which quarantines MORE.
+ */
+export function assertedConfidentialSince(events: NostrEvent[], coord: string): number | null {
+  let best: number | null = null;
+  for (const e of events) {
+    if (!e || e.kind !== KIND_BOARD) continue;
+    // The coordinate embeds the author: this IS the owner check.
+    if (boardCoord(e.pubkey, tagValue(e, "d")) !== coord) continue;
+    const since = boardConfidentialSince(e);
+    if (since === null) continue;
+    // Last, because it is the expensive one and every event above it is
+    // eliminated by a tag comparison first.
+    if (!verifyEvent(e)) continue;
+    if (best === null || since < best) best = since;
+  }
+  return best;
 }
 
 /**
@@ -322,6 +408,16 @@ export async function deriveBoardKeyring(
       if (ltk && ltk.length === 32) kr.addLTK(coord, ltk);
     }
   }
+
+  // §11.13a's OWNER-SIGNED ASSERTION (ready-475): the board's own kind-30301
+  // definition may STATE the cutover the grants above can only bound. Folded in
+  // as a MINIMUM, so it can only ever move the instant EARLIER — see
+  // noteConfidentialSince and confidentialSince. confidentialityOf is what acts
+  // on its presence; recording it here keeps the derivation in one place and
+  // mirrors pkg/sync's DeriveBoardKeyring exactly.
+  const since = assertedConfidentialSince(events, coord);
+  if (since !== null) kr.noteConfidentialSince(coord, since);
+
   return kr;
 }
 

@@ -155,8 +155,8 @@ func (kr *BoardKeyring) LTK(coord string) ([32]byte, bool) {
 	return l, ok
 }
 
-// Cutover implements EncryptedBoardSet: the board-global created_at of the first
-// CEK epoch, ok=true iff the board is confidential (has any CEK-bearing grant).
+// Cutover implements EncryptedBoardSet: the board-global instant the board went
+// confidential, ok=true iff it is (a CEK-bearing grant, or §11.13a's assertion).
 //
 // A DERIVED CUTOVER IS A LOWER BOUND, NOT A FACT (§11.13a, ready-9a6 — the Go
 // port of the browser hardening ready-daf landed in
@@ -181,10 +181,10 @@ func (kr *BoardKeyring) LTK(coord string) ([32]byte, bool) {
 // rotation only each grantee's NEWEST grant is retained and the epoch-1 grants
 // are legitimately gone.
 //
-// The "no grant reached me at all" case keeps §11.13's answer (ok=false, gate
-// inert); adopting the browser's third state for it would change what the shared
-// conformance vectors mean and is deliberately out of scope here (§4's
-// divergence-zone rule).
+// The "no grant AND no assertion reached me at all" case keeps §11.13's answer
+// (ok=false, gate inert) — WITH an assertion the gate is ON at the asserted
+// instant and this reader agrees with the browser (ready-475); adopting the
+// browser's third state for the grantless, unasserted board stays out of scope.
 func (kr *BoardKeyring) Cutover(coord string) (int64, bool) {
 	if kr == nil {
 		return 0, false
@@ -294,6 +294,25 @@ func DeriveBoardKeyring(events []*nostr.Event, reader *nostr.Key, boardAuthor, b
 				kr.ltks[coord] = ltk
 			}
 		}
+	}
+	// §11.13a's OWNER-SIGNED ASSERTION (ready-475) outranks the derivation, and
+	// it is the ONLY thing that does. `confidential_since` on the board's own
+	// kind-30301 definition is the owner — the same key that mints every CEK —
+	// stating the instant the witnesses below can otherwise only bound, so when it
+	// is present the question the witnesses ask is answered directly and they are
+	// not consulted. See boardconfidential.go for why that is an extension rather
+	// than a weakening (a relay can suppress the assertion, which lands on the
+	// derivation path below; it cannot forge, edit, or re-author one).
+	//
+	// EFFECTIVE CUTOVER = min(asserted, derived): the assertion may only ever move
+	// the instant EARLIER. So it can never grandfather a plaintext card the served
+	// grants alone would have quarantined, and an assertion later than the board's
+	// own earliest grant simply does not apply.
+	if since, asserted := AssertedConfidentialSince(events, coord); asserted {
+		if at, derived := kr.cutover[coord]; !derived || since < at {
+			kr.cutover[coord] = since
+		}
+		return kr
 	}
 	// §11.13a: the derived cutover is believed only when nothing in this same
 	// snapshot contradicts it. Runs once, here, so Cutover stays a map lookup.

@@ -869,6 +869,98 @@ non-omission, so that constructed answer is undetectable from inside one relay
 answer and MUST NOT be claimed otherwise — in particular, "full and partial omission
 are both detected" is FALSE as an unqualified statement and must not be repeated.
 
+**THE OWNER MAY STATE THE CUTOVER OUTRIGHT, and that statement outranks every
+witness above** (`ready-475`). A board's own kind-30301 definition MAY carry a
+clear `confidential_since` tag whose value is the decimal unix-second instant its
+owner says the board went confidential. Every witness above exists to detect that
+the DERIVED instant is later than the truth; none of them can say what the truth
+IS. So when a verified assertion is present, a reader MUST use it and MUST NOT
+consult the witnesses — there is nothing left for testimony to establish.
+
+WHY THIS IS NEEDED AND NOT MERELY CONVENIENT. TIME fires on any verified sealed
+event older than the derived instant, and a sealed event is not necessarily
+evidence about THIS board's cutover. Measured on the live `ready` board,
+2026-07-30: three kind-1630 status events (`e9d00f5f`, `383d967f`, `effda256`)
+carry `enc=1`, `cek_epoch=1` and this board's `a` tag, but were sealed under a
+TEST-LOCAL CEK that was never a ready-board CEK — the `ready-enc-live-*` fixtures
+`pkg/sync/envelope_live_relay_test.go` wrote to the PRODUCTION board before
+`ready-fce`'s guard existed. Kind 1630 is a REGULAR event, so unlike an
+addressable card they can never be superseded: they are permanent. Of the 36
+board events strictly between them and the derived cutover, 36 are plaintext and
+0 sealed — the board was demonstrably PUBLIC through that window, so the derived
+instant is CORRECT and TIME is firing on foreign pollution. Both readers withheld
+167 of the board's 536 cards from its own owner, permanently, with no relay
+misbehaving and no defect in the witness itself.
+
+THE RULES, and each is a security property with a test that goes red when its own
+guard is removed (`pkg/sync/keydist_confidentialsince_test.go`,
+`web/board/src/lib/confidentiality.test.ts`, and four shared vectors named
+`keyring_confidential_since_*`):
+
+- **OWNER-SIGNED ONLY.** A kind-30301's coordinate is `30301:<its own
+  pubkey>:<its own d tag>`, so an assertion is inseparable from its author's
+  signature: a definition matching this board's coordinate AND verifying is the
+  only thing that may assert. One signed by anybody else is a different board's
+  definition whatever its `d` tag says, and is IGNORED.
+- **ABSENT MEANS TODAY.** No assertion — or a malformed / non-positive value —
+  leaves the derivation and all three witnesses exactly as they are. This is what
+  makes the mechanism an extension rather than a weakening, and it is also the
+  whole of a relay's power over it: a relay can DROP the definition (landing the
+  reader here, which withholds MORE) but cannot forge one (no owner key) or edit
+  one (the tag is inside the signed id). Omission therefore gains an attacker
+  nothing.
+- **THE EFFECTIVE CUTOVER IS `min(asserted, derived)`.** An assertion may only
+  ever move the instant EARLIER. It can never grandfather a plaintext card that
+  the served grants alone would have quarantined, so an owner asserting an
+  instant later than their own earliest served grant simply does not move it.
+- **MINIMUM OVER ASSERTIONS, not latest-wins.** A kind-30301 is addressable and a
+  relay may serve an older revision it still holds; taking the lowest asserted
+  value over the verified definitions makes that replay useless, because the only
+  direction it can move the cutover is earlier.
+
+- **AN ASSERTION ESTABLISHES THE INSTANT, NEVER READ ACCESS**, and it does so
+  with ZERO grants served. `Cutover(coord)` may now report `ok=true` from the
+  assertion alone; that is the fold gate's "this board is confidential, apply
+  §11.3/§11.4 at this instant" and is not a claim to hold anything. The reader's
+  key material is unchanged — no CEK, no LTK, no current epoch (§11.14) — so
+  every sealed card still renders §11.7's placeholder and a board this reader
+  cannot read stays a board it cannot read. Against the Go reader's own
+  no-grant answer (`ok=false`, gate inert) this is strictly TIGHTENING. It IS
+  wider than the browser's `no-grant` arm, which grandfathers nothing: on a
+  grantless board an assertion makes the board's genuinely pre-cutover plaintext
+  visible again. That widening is authorised by construction — the only input
+  that produces it is the board owner's signature over their own coordinate, and
+  the owner is already the authz root for every CEK on the board (§11.12) — and
+  it is the one shape where the two readers, which otherwise diverge on "a sealed
+  card plus no derived cutover" (§4), CONVERGE. Pinned by the shared vector
+  `keyring_confidential_since_with_no_grants_establishes_the_instant_not_read_access`.
+
+An asserted board is ESTABLISHED: state `confidential`, gate ON at the effective
+instant. Reference implementations: `pkg/sync`'s `AssertedConfidentialSince` /
+`BoardConfidentialSince` (`pkg/sync/boardconfidential.go`), consumed by
+`DeriveBoardKeyring`; and `assertedConfidentialSince` in
+`web/board/src/lib/keyring.ts`, consumed by `confidentialityOf`.
+
+**EVERY PATH THAT REBUILDS A KIND-30301 MUST CARRY THE ASSERTION FORWARD.** A
+board definition is addressable, so a republished definition REPLACES the
+asserted one on every conformant relay: a writer that rebuilds the definition
+without the tag silently un-asserts the cutover and puts the board back to
+withholding its plaintext history, with no relay misbehaving. This is a WRITE-side
+conformance requirement, not an rd implementation detail — an independent client
+that republishes board definitions inherits it. rd's paths:
+`BuildBoardEventWithConfidentialSince` plus `rd board confidential-since` and
+`rd board archive` / `unarchive`, which read-modify-write the board's CURRENT
+definition so title, maintainers, archived marker AND assertion are all carried
+forward (§16.3); and the ITEM write path, where the definition is rebuilt from a
+`BoardSpec` synthesized from the project directory rather than read from the
+current event — `rd create`, `rd nostr publish` and `rd nostr put` all republish
+the owner's board beside the card (§16.6, §18.8). Those three share one choke
+point, `Publisher.buildBoardDefinition` (`pkg/sync/boardconfidential.go`), which
+resolves the current assertion from the local authoritative log (§16.1) and
+FAILS CLOSED — refusing the write — when it cannot read it, because publishing an
+unasserted definition on top of an asserted one is exactly the regression it
+exists to prevent.
+
 **The Go reader applies §11.13a's TIME and EPOCH witnesses too** (`ready-9a6`).
 `BoardKeyring` tracks the board-global lowest served owner-grant epoch beside the
 cutover, `grantsWithheld` runs BOTH witnesses over the verified sealed events once

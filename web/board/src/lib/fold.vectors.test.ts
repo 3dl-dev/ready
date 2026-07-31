@@ -378,6 +378,23 @@ describe("fold.vectors.json negative-vector sanity", () => {
     "keyring_epoch_zero_grant_yields_no_cutover",
     "keyring_retains_every_epoch_across_a_rotation",
     "keyring_cutover_is_the_earliest_owner_grant_whoever_it_names",
+    // ready-475's owner-signed cutover assertion (`confidential_since` on the
+    // board's own kind-30301). Listed here for the same reason as the four
+    // above: THIS implementation has its own copy of the rule (keyring.ts's
+    // assertedConfidentialSince + confidentiality.ts), so a vector dropped from
+    // the committed file would silently stop exercising it — and the divergence
+    // check below is what keeps the assertion OUT of the zone where the two
+    // readers legitimately disagree.
+    "keyring_confidential_since_establishes_the_cutover",
+    "keyring_confidential_since_never_moves_the_cutover_later",
+    "keyring_confidential_since_foreign_signer_is_ignored",
+    "keyring_confidential_since_absent_is_todays_behaviour",
+    // The zero-grant case, and the only one of the five whose PRESENCE in this
+    // list is itself the statement: "a sealed card plus no derived cutover" is
+    // the shape the divergence check below was written about, and an
+    // owner-signed assertion is what pulls it out of the zone. Drop the
+    // assertion from that vector and this same check goes red.
+    "keyring_confidential_since_with_no_grants_establishes_the_instant_not_read_access",
   ];
   // The epoch-model counterpart of the "gates ENABLED" check above, and the same
   // failure it guards against: rewrite one of these vectors into the declarative
@@ -462,7 +479,22 @@ describe("fold.vectors.json negative-vector sanity", () => {
     expect(v!.options.decryptor).toBeNull();
     expect(v!.options.encrypted_boards).toBeNull();
     expect(v!.expect.keyring).toBeTruthy();
-    // The grants the derivation consumes have to be in the vector's own log.
-    expect(v!.events.some((e) => e !== null && e.kind === 39301)).toBe(true);
+    // The events the derivation CONSUMES have to be in the vector's own log —
+    // the point being that the keyring is built from signed events, never
+    // declared. Two kinds qualify and both are checked, rather than 39301 alone:
+    // a keyring is derived from owner CEK grants (kind 39301) and, since
+    // ready-475, ALSO from an owner-signed `confidential_since` on the board's
+    // own kind-30301 definition. The zero-grant assertion vector carries only the
+    // second — an assertion standing on its own with no grant anywhere IS its
+    // subject — so demanding a 39301 outright would make the one case that pins
+    // that unexpressible, which is a fixture limitation and not a contract.
+    const derives = v!.events.filter(
+      (e) =>
+        e !== null &&
+        (e.kind === 39301 ||
+          (e.kind === 30301 &&
+            (e.tags ?? []).some((t) => t[0] === "confidential_since" && t[1] !== ""))),
+    );
+    expect(derives.length).toBeGreaterThan(0);
   });
 });
