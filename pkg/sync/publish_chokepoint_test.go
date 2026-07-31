@@ -34,6 +34,23 @@
 // for it, regardless of what it calls. Such a file references Publish as a
 // bare in-package identifier instead, and the scan now walks for exactly that
 // shape when rel is under pkg/nostr (see fileReferencesNostrPublish).
+//
+// ready-fcf ROUND 3 (the sixth instance of this same shape): policing
+// IDENTIFIERS — Publish, PublishMany, dialRelay — loses inside pkg/nostr,
+// because any file there can reach the wire without spelling any of those
+// names at all: github.com/gorilla/websocket's DefaultDialer.DialContext plus
+// a raw conn.WriteJSON is the SAME capability dialRelay wraps, called
+// directly. The round-6 adversary probe did exactly this (kind 30302, a
+// reserved board coordinate) and the identifier scan never flagged it — it
+// only ever looked for guardedPublishNames, and this probe called none of
+// them; go test ./... stayed green while a real httptest relay received the
+// frame. So this control no longer polices identifiers for this capability:
+// it polices the CAPABILITY itself. Inside pkg/nostr, importing
+// gorilla/websocket AT ALL is now the guarded act, gated by
+// websocketImportAllowlist below — a closed list of the files that hold that
+// import today. A new file cannot obtain a websocket connection in this
+// package without appearing there, regardless of what it names anything it
+// calls once it has one.
 package sync
 
 import (
@@ -60,6 +77,52 @@ const nostrImportPath = "github.com/3dl-dev/ready/pkg/nostr"
 // takes rel as well as path: the import-binding resolution above tells us
 // nothing about a file that never imports pkg/nostr in the first place.
 const nostrPackageDir = "pkg/nostr"
+
+// websocketImportPath is gorilla/websocket's import path — the transport
+// dialRelay itself wraps. ready-fcf ROUND 3: this is now the thing the
+// in-package scan actually guards. A file inside pkg/nostr never needs to
+// spell Publish, PublishMany, or dialRelay to reach the wire; it only needs
+// this import and its own call to DefaultDialer.DialContext + WriteJSON. See
+// websocketImportAllowlist.
+const websocketImportPath = "github.com/gorilla/websocket"
+
+// websocketImportAllowlist is the CLOSED set of files inside pkg/nostr
+// permitted to import gorilla/websocket at all. This is deliberately a
+// CAPABILITY allowlist, not an identifier one: unlike guardedPublishNames
+// (which a new file can trivially route around by calling the transport
+// package directly, as the round-6 probe proved), nothing can dial a relay
+// from inside this package without this import, so closing the import closes
+// every spelling of "dial and hand-write a frame" at once — Publish,
+// PublishMany, dialRelay, or a brand-new direct DefaultDialer.DialContext
+// call the scan has never seen before.
+//
+// The six files here are every file in pkg/nostr that holds this import
+// today (verified: grep -l gorilla/websocket pkg/nostr/*.go):
+//   - client.go: dialRelay's own definition (Publish's per-event dial).
+//   - publishmany.go: PublishMany's own batched-connection dial.
+//   - negsync.go: NIP-77 negentropy reconciliation (ready-797) — a DIFFERENT
+//     wire protocol (NEG-OPEN/NEG-MSG/NEG-CLOSE), never an EVENT frame, and
+//     it dials directly rather than through dialRelay because it needs its
+//     own read/write deadlines wired to ctx; it cannot route through
+//     sync.GuardedPublish either (pkg/nostr cannot import pkg/sync).
+//   - negsync_ctx_test.go, publishmany_test.go, fetch_batch_test.go: each
+//     file's own test harness, standing up a local httptest websocket server
+//     (the OTHER side of the connection, not a client dial) to test the
+//     primitive above without a live relay.
+//
+// A new file needing to dial a relay must either route through
+// Publish/PublishMany/GuardedPublish or be added here with the same
+// justification chokepointAllowlist requires — it cannot silently acquire
+// the capability by importing the transport package under a name this scan
+// doesn't recognize, because the scan doesn't key off names for this check.
+var websocketImportAllowlist = map[string]bool{
+	"pkg/nostr/client.go":           true,
+	"pkg/nostr/negsync.go":          true,
+	"pkg/nostr/publishmany.go":      true,
+	"pkg/nostr/negsync_ctx_test.go": true,
+	"pkg/nostr/publishmany_test.go": true,
+	"pkg/nostr/fetch_batch_test.go": true,
+}
 
 // guardedPublishNames is the set of pkg/nostr identifiers that reach the
 // network write and must therefore only ever be referenced through this
@@ -245,6 +308,21 @@ func fileReferencesNostrPublish(path, rel string) (bool, error) {
 	// defines them; declaring them is not a USE of them) rather than every
 	// bare Ident named Publish.
 	if inNostrPackage {
+		// ready-fcf ROUND 3: check the CAPABILITY before the identifier walk.
+		// A file that imports gorilla/websocket at all, and is not in the
+		// closed websocketImportAllowlist, can dial a relay and hand-write any
+		// frame it likes without ever spelling Publish/PublishMany/dialRelay —
+		// exactly the round-6 probe shape. This is checked independently of
+		// (and in addition to) the identifier walk below: an allowlisted file
+		// (e.g. negsync.go) still gets the identifier walk run on it, since
+		// holding the import legitimately says nothing about whether it also
+		// happens to reference a guarded name.
+		for _, imp := range f.Imports {
+			importPath := strings.Trim(imp.Path.Value, `"`)
+			if importPath == websocketImportPath && !websocketImportAllowlist[rel] {
+				return true, nil
+			}
+		}
 		v := &inPackageIdentUseVisitor{names: guardedPublishNames}
 		ast.Walk(v, f)
 		return v.found, nil
@@ -626,6 +704,76 @@ func adversaryDialRelayProbe(ctx context.Context, relayURL string, e *Event) err
 }
 `)
 	assertFlagged(t, root, wantRel)
+}
+
+// TestPublishChokepoint_CatchesRawWebsocketImportInsidePkgNostr is the
+// ready-fcf ROUND 3 mutation proof: a brand-new file living INSIDE pkg/nostr
+// that imports gorilla/websocket directly and dials + hand-writes a raw EVENT
+// frame via websocket.DefaultDialer.DialContext + conn.WriteJSON — calling
+// NEITHER Publish, PublishMany, NOR dialRelay by name — must be caught. This
+// is the round-6 adversary's exact probe shape (zzz_adv6_probe.go): kind
+// 30302, a reserved board coordinate, assembled and sent with go build/vet/
+// test ./... all green under the identifier-only scan, and received by a
+// real listening relay in the adversary's own test. The identifier walk
+// (inPackageIdentUseVisitor over guardedPublishNames) cannot see this shape
+// by construction — it has no guarded name to find — which is exactly why
+// the capability check (the websocket import itself) runs first.
+func TestPublishChokepoint_CatchesRawWebsocketImportInsidePkgNostr(t *testing.T) {
+	root, err := findModuleRootForChokepointTest()
+	if err != nil {
+		t.Fatalf("locate module root: %v", err)
+	}
+	wantRel := writeChokepointFixtureInDir(t, root, "pkg/nostr", "zzz_readyfcf_round3_rawwebsocket_adversary_probe.go", `package nostr
+
+// MUTATION-TEST FIXTURE
+// (TestPublishChokepoint_CatchesRawWebsocketImportInsidePkgNostr). Must never
+// survive a test run. Reproduces the round-6 adversary finding exactly:
+// dials via a raw gorilla/websocket import (never dialRelay, never
+// Publish/PublishMany) and hand-writes an EVENT frame directly.
+import (
+	"context"
+
+	"github.com/gorilla/websocket"
+)
+
+func adversaryRawWebsocketProbe(ctx context.Context, relayURL string, e *Event) error {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, relayURL, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.WriteJSON([]any{"EVENT", e})
+}
+`)
+	assertFlagged(t, root, wantRel)
+}
+
+// TestPublishChokepoint_AllowlistedWebsocketImportersAreNotFlaggedByImportAlone
+// proves websocketImportAllowlist doesn't just move the false-positive: each
+// of the six files legitimately holding a gorilla/websocket import today must
+// NOT be flagged by the import-capability check merely for holding it (they
+// may still be skipped entirely via chokepointAllowlist, or pass the
+// identifier walk cleanly — either way, the scan's real verdict on today's
+// tree must stay green, proven directly rather than only inferred from
+// TestPublishChokepoint_OnlySanctionedWrapperCallsNostrPublishDirectly).
+func TestPublishChokepoint_AllowlistedWebsocketImportersAreNotFlaggedByImportAlone(t *testing.T) {
+	root, err := findModuleRootForChokepointTest()
+	if err != nil {
+		t.Fatalf("locate module root: %v", err)
+	}
+	for rel := range websocketImportAllowlist {
+		if chokepointAllowlist[rel] {
+			continue // never reaches fileReferencesNostrPublish at all
+		}
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		hit, ferr := fileReferencesNostrPublish(full, rel)
+		if ferr != nil {
+			t.Fatalf("scan %s: %v", rel, ferr)
+		}
+		if hit {
+			t.Fatalf("legitimate websocket importer %q was flagged — websocketImportAllowlist did not take effect", rel)
+		}
+	}
 }
 
 // TestPublishChokepoint_CommentOnlyMentionIsNotFlagged proves the ready-69e
