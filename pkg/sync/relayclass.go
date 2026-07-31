@@ -301,6 +301,64 @@ func publishEventToRelays(ctx context.Context, relays []string, e *nostr.Event, 
 	return attempts, reduceEventOutcome(outcomes), permReason
 }
 
+// publishEventsToRelaysBatch is publishEventToRelays' BATCHED counterpart
+// (ready-046): it publishes every event in events to every relay in relays
+// over ONE websocket connection PER RELAY (GuardedPublishMany) instead of one
+// dial per event per relay, then applies the identical classify+reduce
+// contract per event. Returns, for each input index, the same three values
+// publishEventToRelays returns for one event — so a caller iterating events
+// can switch from calling publishEventToRelays per event to reading these
+// slices index-for-index with no other change to its dead-letter/buffer logic.
+//
+// EXTRACTED (ready-046) so the batched board-publish path (relayPublishBatch)
+// and the offline-buffer batched drain (FlushNostrPending) share ONE
+// definition of "what attempts + outcome does event i get from a batched
+// publish" — duplicating this loop was the obvious alternative and the wrong
+// one, for the same reason applyRelayOutcome already unifies what happens
+// AFTER an outcome is known (see relayPublishBatch's doc comment).
+//
+// No per-call ctx timeout is applied here, matching relayPublishBatch's prior
+// behaviour: PublishMany/GuardedPublishMany re-arm their own read/write
+// deadline before every frame (armDeadlines), which already bounds a stalled
+// relay without capping a large batch's total wall-clock the way wrapping ctx
+// in a single fixed timeout would.
+func publishEventsToRelaysBatch(ctx context.Context, relays []string, events []*nostr.Event, production bool) (attempts [][]relayAttempt, outcomes []relayOutcome, permReasons []string) {
+	attempts = make([][]relayAttempt, len(events))
+	for _, relay := range relays {
+		acks, err := GuardedPublishMany(ctx, relay, events, production)
+		for i := range events {
+			var a relayAttempt
+			if i < len(acks) {
+				ak := acks[i]
+				a = relayAttempt{Relay: relay, Accepted: ak.Accepted, Message: ak.Message, Err: ak.Err}
+			} else {
+				// PublishMany always returns len(events) acks; this is a
+				// belt-and-braces fallback so a future contract change cannot
+				// turn into an index panic mid-backfill/mid-flush.
+				a = relayAttempt{Relay: relay, Err: err}
+			}
+			a.Outcome = classifyRelayResult(a.Accepted, a.Message, a.Err)
+			attempts[i] = append(attempts[i], a)
+		}
+	}
+
+	outcomes = make([]relayOutcome, len(events))
+	permReasons = make([]string, len(events))
+	for i := range events {
+		perEvent := make([]relayOutcome, 0, len(attempts[i]))
+		permReason := ""
+		for _, a := range attempts[i] {
+			if a.Outcome == outcomePermanent && permReason == "" {
+				permReason = relayLabel(a.Relay, a.Message)
+			}
+			perEvent = append(perEvent, a.Outcome)
+		}
+		outcomes[i] = reduceEventOutcome(perEvent)
+		permReasons[i] = permReason
+	}
+	return attempts, outcomes, permReasons
+}
+
 // RejectedRecord is one dead-lettered event: a signed event a relay PERMANENTLY
 // refused (malformed / proof-of-work demanded). It is written to
 // .ready/nostr-rejected.jsonl for operator diagnosis and is NEVER retried. The

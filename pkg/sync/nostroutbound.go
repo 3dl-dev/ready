@@ -768,37 +768,15 @@ func (p *Publisher) relayPublishBatch(ctx context.Context, res *PublishResult, e
 	if len(events) == 0 {
 		return
 	}
-	// attempts[i] accumulates one relayAttempt per write relay for events[i].
-	attempts := make([][]relayAttempt, len(events))
-	for _, relay := range p.WriteRelays {
-		acks, err := GuardedPublishMany(ctx, relay, events, p.Production)
-		for i := range events {
-			var a relayAttempt
-			if i < len(acks) {
-				ak := acks[i]
-				a = relayAttempt{Relay: relay, Accepted: ak.Accepted, Message: ak.Message, Err: ak.Err}
-			} else {
-				// PublishMany always returns len(events) acks; this is a
-				// belt-and-braces fallback so a future contract change cannot
-				// turn into an index panic mid-backfill.
-				a = relayAttempt{Relay: relay, Err: err}
-			}
-			a.Outcome = classifyRelayResult(a.Accepted, a.Message, a.Err)
-			attempts[i] = append(attempts[i], a)
-		}
-	}
+	// publishEventsToRelaysBatch (ready-046) is the SINGLE definition of "dial
+	// each relay once for the whole batch, then classify+reduce per event" —
+	// shared with FlushNostrPending's batched drain so the two paths cannot
+	// diverge on how a batched publish's per-event outcome is computed.
+	attempts, outcomes, permReasons := publishEventsToRelaysBatch(ctx, p.WriteRelays, events, p.Production)
 
 	reachedRelay := false
 	for i, e := range events {
-		outcomes := make([]relayOutcome, 0, len(attempts[i]))
-		permReason := ""
-		for _, a := range attempts[i] {
-			if a.Outcome == outcomePermanent && permReason == "" {
-				permReason = relayLabel(a.Relay, a.Message)
-			}
-			outcomes = append(outcomes, a.Outcome)
-		}
-		if p.applyRelayOutcome(res, e, attempts[i], reduceEventOutcome(outcomes), permReason) {
+		if p.applyRelayOutcome(res, e, attempts[i], outcomes[i], permReasons[i]) {
 			reachedRelay = true
 		}
 	}
