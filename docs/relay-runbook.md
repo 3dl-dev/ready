@@ -83,11 +83,41 @@ dials all three from `rd.json`.
 ## Updating relay_endpoints on an existing machine
 
 `relay_endpoints` lives in **local, un-synced config** — `~/.config/rd/rd.json`
-(machine-wide default, `$RD_HOME`) and/or a project's own `.ready/config.json`
-(set at `rd init` time, overrides the home default for that project only). It
-is a plain file on disk, not a nostr event — no machine picks up this change by
-reading the board. A machine that was configured before the public relay
-existed keeps dialing LAN-only until someone edits its file:
+(machine-wide default, `$RD_HOME`). But `resolveRelayConfig` (`cmd/rd/nostr.go`)
+walks UP from cwd first, and **either of two project-level files can shadow the
+home default entirely, stopping the walk before it ever reaches `rd.json`**:
+
+- a project's own `.ready/config.json` (machine-local, set at `rd init` time or
+  later — never committed), or
+- the project's **COMMITTED** `.ready/board.json` (ready-f12 — the one `.ready/*`
+  file tracked by git, so a fresh clone carries whatever relay policy was
+  committed there with no `rd init` step at all).
+
+At a given directory, a declaring `.ready/config.json` wins over that level's
+`.ready/board.json`; either one wins over the home file. **This means editing
+`~/.config/rd/rd.json` on a project that already carries `relay_endpoints` in
+`.ready/board.json` or `.ready/config.json` changes nothing for that project** —
+check which file actually governs before editing:
+
+```bash
+cat .ready/board.json 2>/dev/null    # committed & shared — if relay_endpoints is set
+                                       # here, THIS is what to edit (and commit), not rd.json
+cat .ready/config.json 2>/dev/null   # machine-local override for this project only —
+                                       # if set (or relays_local_only:true), edit this instead
+```
+
+- **Neither file declares a policy (or neither exists) at any ancestor
+  directory:** the project inherits the home default — edit `~/.config/rd/rd.json`
+  below.
+- **`.ready/board.json` declares `relay_endpoints`:** edit and commit that file
+  instead (`rd init` or `rd link` is what wrote it) — the change is shared, not
+  per-machine, so every clone (not just this one) needs the new entry.
+- **`.ready/config.json` declares `relay_endpoints`** (or `relays_local_only:
+  true`): edit that file — it is a machine-local override for this project
+  alone; the home `rd.json` edit below will not reach this project until that
+  override is removed or updated too.
+
+For the plain "no project-level override, just the home default" case:
 
 ```bash
 # Back up first — there is no automated rollback for this edit (ready-199).
