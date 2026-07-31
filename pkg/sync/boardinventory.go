@@ -94,6 +94,20 @@ type CardCoordRow struct {
 	WireBytes  int    `json:"wire_bytes"`
 	Sealed     bool   `json:"sealed"`
 	CreatedAt  int64  `json:"created_at"`
+	// Author is the key that SIGNED the winning card. It is not decoration: a
+	// kind-30302 is addressable on (kind, AUTHOR, d), so a card signed by a
+	// contributor sits at that contributor's coordinate and the board owner
+	// cannot replace it — an owner-signed seal would land at a DIFFERENT
+	// coordinate while the relay kept serving the contributor's plaintext one
+	// (ready-a43's errCardForeignAuthor, ready-e7a). Re-seal planning has to
+	// separate those coordinates out, so the inventory has to carry the key.
+	Author string `json:"author"`
+	// SealedBytes is what this card would weigh once re-sealed, and OverLimit is
+	// true when that exceeds the relay ceiling — the coordinate would HALT a
+	// board-wide pass. Both are zero/false on a card that is already sealed,
+	// where there is nothing to project. See ProjectSealedWireSize.
+	SealedBytes int  `json:"sealed_bytes"`
+	OverLimit   bool `json:"over_limit"`
 }
 
 // BoardCardTotals is the plaintext/sealed roll-up ready-336's table reports,
@@ -145,7 +159,7 @@ func InventoryBoardCards(ctx context.Context, relayURL, boardD, boardCoord strin
 			return nil, totals, fmt.Errorf("sync: measure wire size of %s: %w", e.ID, serr)
 		}
 		sealed := tagValue(e, tagEnc) != ""
-		rows = append(rows, CardCoordRow{
+		row := CardCoordRow{
 			Board:      boardD,
 			BoardCoord: boardCoord,
 			ItemID:     tagValue(e, "d"),
@@ -155,7 +169,20 @@ func InventoryBoardCards(ctx context.Context, relayURL, boardD, boardCoord strin
 			WireBytes:  n,
 			Sealed:     sealed,
 			CreatedAt:  e.CreatedAt,
-		})
+			Author:     e.PubKey,
+		}
+		// Only a plaintext card has a re-seal ahead of it to project. A failed
+		// projection is reported, never silently zeroed: a missing row in a
+		// halt-the-pass list reads identically to a safe one.
+		if !sealed {
+			proj, perr := ProjectSealedWireSize(e)
+			if perr != nil {
+				return nil, totals, fmt.Errorf("sync: project sealed size of %s (%s): %w", tagValue(e, "d"), e.ID, perr)
+			}
+			row.SealedBytes = proj.SealedBytes
+			row.OverLimit = proj.OverLimit
+		}
+		rows = append(rows, row)
 		totals.Cards++
 		if sealed {
 			totals.Sealed++

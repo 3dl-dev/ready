@@ -159,7 +159,11 @@ func writeCSV(path string, rows []rdsync.CardCoordRow) error {
 	// kind, wire size in bytes, enc flag, created_at), plus board_coord/coord/
 	// event_id — needed by ready-c53 (per-coordinate sealed-size projection)
 	// and ready-c9d (every place an event id is cited must be enumerated).
-	if err := w.Write([]string{"board", "item_id", "kind", "wire_bytes", "enc", "created_at", "board_coord", "coord", "event_id"}); err != nil {
+	// author/sealed_bytes/over_limit are appended (never inserted) so an existing
+	// reader of this file keeps working: author is the key that can actually
+	// replace the coordinate (ready-e7a), and the two projection columns are the
+	// halt-the-pass signal ready-c53 plans against.
+	if err := w.Write([]string{"board", "item_id", "kind", "wire_bytes", "enc", "created_at", "board_coord", "coord", "event_id", "author", "sealed_bytes", "over_limit"}); err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -173,6 +177,9 @@ func writeCSV(path string, rows []rdsync.CardCoordRow) error {
 			r.BoardCoord,
 			r.Coord,
 			r.EventID,
+			r.Author,
+			strconv.Itoa(r.SealedBytes),
+			strconv.FormatBool(r.OverLimit),
 		}); err != nil {
 			return err
 		}
