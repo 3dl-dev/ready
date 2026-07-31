@@ -669,7 +669,7 @@ func (p *Publisher) relayPublish(ctx context.Context, res *PublishResult, events
 	// so it costs nothing on the common path; never fails the operation (the events
 	// are already durable in the local log). Re-publish is idempotent by event id.
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, p.Production)
 	}
 }
 
@@ -768,47 +768,25 @@ func (p *Publisher) relayPublishBatch(ctx context.Context, res *PublishResult, e
 	if len(events) == 0 {
 		return
 	}
-	// attempts[i] accumulates one relayAttempt per write relay for events[i].
-	attempts := make([][]relayAttempt, len(events))
-	for _, relay := range p.WriteRelays {
-		acks, err := GuardedPublishMany(ctx, relay, events, p.Production)
-		for i := range events {
-			var a relayAttempt
-			if i < len(acks) {
-				ak := acks[i]
-				a = relayAttempt{Relay: relay, Accepted: ak.Accepted, Message: ak.Message, Err: ak.Err}
-			} else {
-				// PublishMany always returns len(events) acks; this is a
-				// belt-and-braces fallback so a future contract change cannot
-				// turn into an index panic mid-backfill.
-				a = relayAttempt{Relay: relay, Err: err}
-			}
-			a.Outcome = classifyRelayResult(a.Accepted, a.Message, a.Err)
-			attempts[i] = append(attempts[i], a)
-		}
-	}
+	// publishEventsToRelaysBatch (ready-046) dials each relay once for the
+	// whole batch via the plain, all-or-nothing GuardedPublishMany, then
+	// classifies+reduces per event via reduceBatchAcks — the SAME reduction
+	// FlushNostrPending's batched drain uses, so the two paths cannot diverge
+	// on how a batched publish's per-event outcome is computed once the acks
+	// exist. They deliberately do NOT share how the acks are OBTAINED: this
+	// caller stays on the strict variant (see that function's doc comment for
+	// why relayPublishBatch must not get publishManyResilient's bisection).
+	attempts, outcomes, permReasons := publishEventsToRelaysBatch(ctx, p.WriteRelays, events, p.Production)
 
 	reachedRelay := false
 	for i, e := range events {
-		outcomes := make([]relayOutcome, 0, len(attempts[i]))
-		permReason := ""
-		for _, a := range attempts[i] {
-			if a.Outcome == outcomePermanent && permReason == "" {
-				permReason = relayLabel(a.Relay, a.Message)
-			}
-			outcomes = append(outcomes, a.Outcome)
-		}
-		if p.applyRelayOutcome(res, e, attempts[i], reduceEventOutcome(outcomes), permReason) {
+		if p.applyRelayOutcome(res, e, attempts[i], outcomes[i], permReasons[i]) {
 			reachedRelay = true
 		}
 	}
 
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = nostr.DefaultTimeout
-	}
 	if reachedRelay && p.PendingPath != "" && fileHasContent(p.PendingPath) {
-		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, timeout, p.Production)
+		_, _ = FlushNostrPending(ctx, p.PendingPath, p.WriteRelays, p.Production)
 	}
 }
 

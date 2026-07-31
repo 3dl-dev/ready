@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/3dl-dev/ready/pkg/jsonl"
 	"github.com/3dl-dev/ready/pkg/nostr"
@@ -82,19 +81,29 @@ type FlushResult struct {
 // A missing/empty buffer is a no-op. The authoritative log is never touched here —
 // the buffer is purely a relay-delivery retry queue.
 //
-// production is threaded straight through to publishEventToRelays/GuardedPublish
-// (ready-6d0 finding (3)): a buffered event can only address the reserved
-// production board coordinate if it was already durable via a Production
-// Publisher (appendPendingEvent is only ever called from Publisher.relayPublish,
-// itself gated by guardReservedBoard), so the sanctioned CLI's own flush passes
-// production=true (cmd/rd/nostr.go's `rd nostr flush` and Publisher.relayPublish's
-// auto-drain, which passes p.Production through); every other caller (tests)
-// passes false explicitly.
-func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, timeout time.Duration, production bool) (FlushResult, error) {
+// production is threaded straight through to publishEventsToRelaysBatchResilient/
+// GuardedPublishMany (ready-6d0 finding (3)): a buffered event can only address
+// the reserved production board coordinate if it was already durable via a
+// Production Publisher (appendPendingEvent is only ever called from
+// Publisher.relayPublish, itself gated by guardReservedBoard), so the sanctioned
+// CLI's own flush passes production=true (cmd/rd/nostr.go's `rd nostr flush` and
+// Publisher.relayPublish's auto-drain, which passes p.Production through); every
+// other caller (tests) passes false explicitly.
+//
+// There is no `timeout` parameter here (ready-046 rework: an earlier version
+// kept one in the signature for stability with the per-event path it replaced,
+// but never consulted it — a dead parameter every caller still passed as if it
+// applied, a trap a veracity adversary called out directly). The batched drain
+// dials ONCE per relay for the WHOLE buffer, and PublishMany/GuardedPublishMany
+// (through publishManyResilient) already re-arm their own idle read/write
+// deadline before every frame (armDeadlines); wrapping ctx in a single fixed
+// timeout for the whole call would turn a per-operation deadline into a
+// per-BATCH one — the old production call site passed nostr.DefaultTimeout
+// (10s), which would have capped an entire multi-thousand-event drain at 10
+// seconds total instead of bounding each frame's own round trip. Callers that
+// want an overall wall-clock bound should set one on ctx directly.
+func FlushNostrPending(ctx context.Context, pendingPath string, relays []string, production bool) (FlushResult, error) {
 	var res FlushResult
-	if timeout <= 0 {
-		timeout = nostr.DefaultTimeout
-	}
 
 	// Serialize the read+publish+rewrite against concurrent appends so a buffered
 	// event added mid-flush is never clobbered by the rewrite (ready review [6]).
@@ -139,22 +148,37 @@ func FlushNostrPending(ctx context.Context, pendingPath string, relays []string,
 		return res, nil
 	}
 
+	// BATCHED drain (ready-046): one websocket connection per relay for the
+	// WHOLE buffer in the common case, not the per-event publishEventToRelays
+	// loop this replaced. That loop dialed a fresh websocket per event per
+	// relay — fine for the handful of events a live mutation buffers, but it
+	// turns a large offline backlog's drain into a redial loop (observed:
+	// 3,551 queued events, one dial per event per round).
+	// publishEventsToRelaysBatchResilient (ready-046 rework) computes the exact
+	// same classify+reduce contract per event, over publishManyResilient —
+	// which additionally bisects around a mid-batch transport hangup or guard
+	// refusal so a poisoned queued event (transiently down relay, or a
+	// reserved-board event that slipped into the queue) never wedges the
+	// unrelated events sharing its connection. THIS drain caller ONLY — see
+	// publishEventsToRelaysBatch's doc comment for why relayPublishBatch (the
+	// board-publish path) must NOT share this resilience.
+	attempts, outcomes, permReasons := publishEventsToRelaysBatchResilient(ctx, relays, events, production)
+
 	var remaining []*nostr.Event
 	var rejected []RejectedRecord
-	for _, e := range events {
-		attempts, outcome, permReason := publishEventToRelays(ctx, relays, e, timeout, production)
-		for _, a := range attempts {
+	for i, e := range events {
+		for _, a := range attempts[i] {
 			if a.Err != nil {
 				res.RelayErrors = append(res.RelayErrors, fmt.Sprintf("%s: %v", a.Relay, a.Err))
 			}
 		}
-		switch outcome {
+		switch outcomes[i] {
 		case outcomeAccepted:
 			res.Flushed++
 		case outcomePermanent:
 			// Permanently refused — dead-letter it so it stops clogging the retry
 			// queue forever (ready-1c2). Never blocks the records behind it.
-			rejected = append(rejected, RejectedRecord{Event: e, Reason: permReason})
+			rejected = append(rejected, RejectedRecord{Event: e, Reason: permReasons[i]})
 		default: // outcomeTransient
 			remaining = append(remaining, e)
 		}

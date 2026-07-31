@@ -78,8 +78,14 @@ func TestReduceEventOutcome(t *testing.T) {
 //   - Content contains "drop" -> closes the socket without replying          (TRANSIENT)
 //   - otherwise               -> replies ["OK", id, true, ""]                (ACCEPTED)
 //
-// nostr.Publish opens a fresh websocket per call, so each event is one
-// Upgrade/one frame/one reply — the handler reads a single EVENT and returns.
+// Reads EVENT frames in a LOOP on one connection rather than handling exactly
+// one and returning (ready-046): nostr.Publish's one-dial-per-event shape still
+// works against a looping handler (the client closes its socket right after its
+// single OK, so the handler's next Read just errors out and returns), but
+// FlushNostrPending's batched drain (GuardedPublishMany/PublishMany) pipelines
+// MANY events over the SAME connection, and a handler that only ever answered
+// the first frame would silently starve every event queued behind it of a
+// reply — this fixture is shared by both call shapes, so it must serve both.
 func contentRelay(t *testing.T) string {
 	t.Helper()
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -89,34 +95,40 @@ func contentRelay(t *testing.T) string {
 			return
 		}
 		defer conn.Close()
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		var frame []json.RawMessage
-		if err := json.Unmarshal(data, &frame); err != nil || len(frame) < 2 {
-			return
-		}
-		var typ string
-		_ = json.Unmarshal(frame[0], &typ)
-		if typ != "EVENT" {
-			return
-		}
-		var ev struct {
-			ID      string `json:"id"`
-			Content string `json:"content"`
-		}
-		_ = json.Unmarshal(frame[1], &ev)
-		switch {
-		case strings.Contains(ev.Content, "drop"):
-			// Transient: hang up without an OK so the client sees a read error.
-			return
-		case strings.Contains(ev.Content, "bad"):
-			resp, _ := json.Marshal([]any{"OK", ev.ID, false, "invalid: malformed event"})
-			_ = conn.WriteMessage(websocket.TextMessage, resp)
-		default:
-			resp, _ := json.Marshal([]any{"OK", ev.ID, true, ""})
-			_ = conn.WriteMessage(websocket.TextMessage, resp)
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var frame []json.RawMessage
+			if err := json.Unmarshal(data, &frame); err != nil || len(frame) < 2 {
+				continue
+			}
+			var typ string
+			_ = json.Unmarshal(frame[0], &typ)
+			if typ != "EVENT" {
+				continue
+			}
+			var ev struct {
+				ID      string `json:"id"`
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal(frame[1], &ev)
+			switch {
+			case strings.Contains(ev.Content, "drop"):
+				// Transient: hang up without an OK so the client sees a read error.
+				return
+			case strings.Contains(ev.Content, "bad"):
+				resp, _ := json.Marshal([]any{"OK", ev.ID, false, "invalid: malformed event"})
+				if werr := conn.WriteMessage(websocket.TextMessage, resp); werr != nil {
+					return
+				}
+			default:
+				resp, _ := json.Marshal([]any{"OK", ev.ID, true, ""})
+				if werr := conn.WriteMessage(websocket.TextMessage, resp); werr != nil {
+					return
+				}
+			}
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -441,7 +453,7 @@ func TestFlushNostrPending_DeadLettersPermanentKeepsTransient(t *testing.T) {
 	}
 
 	relay := contentRelay(t)
-	if _, err := FlushNostrPending(context.Background(), pending, []string{relay}, 3*time.Second, false); err != nil {
+	if _, err := FlushNostrPending(context.Background(), pending, []string{relay}, false); err != nil {
 		t.Fatalf("FlushNostrPending: %v", err)
 	}
 

@@ -162,7 +162,7 @@ func TestLiveRelay_OfflineFlushIdempotent(t *testing.T) {
 	t.Logf("offline: %d events buffered, all durable in the local log", len(buffered))
 
 	// Reconnect: flush to the LIVE relay.
-	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, 30*time.Second, false)
+	fr, err := FlushNostrPending(context.Background(), pendingPath, []string{relay}, false)
 	if err != nil {
 		t.Fatalf("flush: %v", err)
 	}
