@@ -138,8 +138,12 @@ func PublishMany(ctx context.Context, relayURL string, events []*Event) ([]Publi
 		if err := armDeadlines(ctx, conn); err != nil {
 			return err
 		}
-		if err := conn.WriteJSON([]any{"EVENT", e}); err != nil {
-			return fmt.Errorf("nostr: write EVENT %s: %w", e.ID, err)
+		// Routes through the shared chokepoint (client.go) rather than calling
+		// conn.WriteJSON directly — see writeEvent's doc comment (ready-fcf
+		// ROUTE 3). The pre-dial loop above already refused the whole batch if
+		// any event hit PublishGuard; this is the second, unconditional layer.
+		if err := writeEvent(ctx, conn, e); err != nil {
+			return err
 		}
 		pendingByID[e.ID] = append(pendingByID[e.ID], next)
 		unacked++

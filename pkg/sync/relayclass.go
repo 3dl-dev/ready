@@ -222,9 +222,12 @@ func isPublishProductionCtx(ctx context.Context) bool {
 }
 
 // init installs the board semantics (hitsReservedBoard + the production
-// opt-in) into pkg/nostr's nil-able PublishGuard hook (ready-69e class fix).
-// pkg/nostr itself gains no board knowledge — it only ever sees this closure
-// as an opaque func(ctx, *Event) error.
+// opt-in) into pkg/nostr's PublishGuard hook (ready-69e class fix), REPLACING
+// whatever pkg/nostr armed it with by default. pkg/nostr itself gains no
+// PRODUCTION knowledge from this — it only ever sees this closure as an
+// opaque func(ctx, *Event) error — but it does now ship its own default guard
+// (pkg/nostr/publishguard.go) so this init upgrades an already-armed check
+// rather than arming a nil one.
 //
 // SCOPE, stated precisely — an earlier version of this comment claimed EVERY
 // call to nostr.Publish in the module is checked here "regardless of how the
@@ -239,20 +242,28 @@ func isPublishProductionCtx(ctx context.Context) bool {
 //	the reserved coordinate, before any dial. Only GuardedPublish can stamp the
 //	opt-in, and only from a sanctioned CLI path.
 //
-//	ARMING IS A LINK-TIME SIDE EFFECT of this init(), which is the residual gap
-//	(ready-fcf, open). pkg/nostr ships with PublishGuard == nil, so two routes
-//	are NOT covered: (1) a file inside pkg/nostr itself, which calls Publish as
-//	a bare in-package identifier and cannot be reached by this hook because
-//	pkg/nostr cannot import pkg/sync without an import cycle; and (2) any
-//	binary that imports pkg/nostr without pkg/sync, which never runs this
-//	init(). pkg/nostr/live_relay_test.go and negentropy_live_relay_test.go are
-//	existing files of shape (1) — they publish kind 1 / kind 30078 with no
-//	board coordinate, so there is no exposure today, but a production-board
-//	test added there would NOT be guarded.
+//	ARMING USED TO BE A LINK-TIME SIDE EFFECT of this init() alone (ready-fcf,
+//	now closed): pkg/nostr shipped with PublishGuard == nil, so a file inside
+//	pkg/nostr itself (which cannot import pkg/sync without an import cycle) or
+//	any binary that imports pkg/nostr without pkg/sync never ran this init and
+//	found the guard wide open — PROVEN by a pkg/nostr file that reached the
+//	network with a reserved-coordinate event while go build/vet/test ./...
+//	stayed green. pkg/nostr/publishguard.go now arms PublishGuard with its own
+//	default (no production opt-in, fails closed unconditionally on the
+//	reserved coordinate) at package load, so BOTH routes are covered even in a
+//	binary that never reaches this init — which then only ever RAISES the
+//	permission from "refuse always" to "refuse unless production=true", never
+//	lowers it. pkg/nostr/live_relay_test.go and negentropy_live_relay_test.go
+//	are exactly the files of the first shape (in-package bare Publish, under
+//	RD_NOSTR_LIVE_RELAY=1) — they publish kind 1 / kind 30078 with no board
+//	coordinate today, so there was no active exposure, but they now inherit
+//	pkg/nostr's own default guard regardless.
 //
-// The static counterpart (pkg/sync/publish_chokepoint_test.go) has the same
-// blind spot for shape (1): it only resolves bindings for files that IMPORT
-// pkg/nostr, so a file inside that package is never inspected.
+// The static counterpart (pkg/sync/publish_chokepoint_test.go) used to share
+// the same blind spot for the in-package shape: it only resolved bindings for
+// files that IMPORT pkg/nostr, so a file inside that package was never
+// inspected. It now also walks pkg/nostr's own files for a bare in-package
+// reference to Publish/PublishMany (ready-fcf).
 func init() {
 	nostr.PublishGuard = func(ctx context.Context, e *nostr.Event) error {
 		if isPublishProductionCtx(ctx) {
