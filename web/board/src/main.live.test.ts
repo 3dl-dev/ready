@@ -187,7 +187,22 @@ describe("ready-4359: the OPEN board reflects a change made elsewhere, with no r
     expect(handle.openSubscriptions()).toBeGreaterThan(0);
   });
 
-  it("does not double-apply the events the initial load already folded", async () => {
+  // NAMED FOR WHAT IT ACTUALLY WITNESSES (ready-b5b). This case used to be called
+  // "does not double-apply the events the initial load already folded", which read
+  // as coverage of startLiveUpdates' `if (b.seen.has(key)) return;` guard. It is
+  // not: disabling that guard leaves this case GREEN. It asserts on the RENDERED
+  // projection, and the fold dedups by event id itself (board-fold-spec §3.2), so
+  // the projection is identical with or without the guard. On a log of replaceable
+  // cards plus id-deduped status events, double-application is unobservable in the
+  // projection BY CONSTRUCTION — so no assertion made on the DOM can ever falsify
+  // it, and a case that cannot fail is not coverage.
+  //
+  // What this case does witness is still worth having: re-serving the whole
+  // snapshot, as an inclusive `since` boundary or a reconnect does, leaves the
+  // board rendering exactly what it rendered at load. The guard itself is
+  // witnessed by the ready-e51 case below, which observes the EVENT LIST the fold
+  // is handed rather than the DOM.
+  it("re-serving the loaded snapshot leaves the rendered projection unchanged", async () => {
     const { deps, handle } = liveDeps([...SNAPSHOT]);
     await afterLogin(root, identity, { kind: "board", board: COORD, relays: [RELAY] }, deps);
     // Re-serve the whole snapshot, as an inclusive `since` boundary or a
@@ -283,8 +298,8 @@ describe("ready-e51: an item the rd CLI created after load is WRITABLE, not mere
 describe("ready-e51: an event the initial load already folded is not folded a second time", () => {
   // The per-board `if (b.seen.has(key)) return;` guard in startLiveUpdates was
   // unwitnessed — disabling it left the whole suite green, INCLUDING the case
-  // above named "does not double-apply the events the initial load already
-  // folded". That case asserts on rendered card ids, and the fold dedups by
+  // above (since renamed, ready-b5b, because its old name claimed exactly this
+  // property). That case asserts on rendered card ids, and the fold dedups by
   // event id (§3.2), so the PROJECTION is identical either way. What the guard
   // actually buys is a bounded LiveBoard.events: the live REQ's `since` is the
   // newest instant already folded and NIP-01 `since` is INCLUSIVE, so the
