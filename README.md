@@ -186,5 +186,6 @@ no manual sync step.
 
 - [docs/getting-started.md](docs/getting-started.md) — full walkthrough
 - [docs/relay-runbook.md](docs/relay-runbook.md) — operating a relay
+- [docs/releasing.md](docs/releasing.md) — building the browser board, cutting a release, and the hazards a fresh checkout hits
 
 MIT License
