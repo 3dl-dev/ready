@@ -173,6 +173,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "vite";
+import { writeReceipt } from "./receipt.mjs";
 
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
@@ -646,6 +647,32 @@ async function openBoard(cdp, origin, coord, esbuild, secretHex, opts = {}) {
       90000,
     );
   }
+  // ready-c7b: ".card" alone is no longer proof this board's own load is real.
+  // ready-fe4 paints from a CACHE the instant this identity has opened `coord`
+  // before in this session (line ~1076 of this file does exactly that, ahead
+  // of the ready-fd2 steps below), so ".card" can be satisfied by a stale,
+  // unverified snapshot before this call's own relay round-trip ever lands —
+  // main.ts correctly refuses to write against that snapshot. The left-tree
+  // node's `data-board-state` attribute exists FOR EXACTLY THIS (render.ts:
+  // "it is how a live run can check, per board, that what the page says about
+  // a board is what the load found") and flips off "stale" the instant this
+  // board's REAL fold — and with it, its writer — lands (main.ts's
+  // reconcileOne, flushed immediately for a single-board open). Waiting for it
+  // here is not a retry or a longer timeout on the ORIGINAL condition; it is
+  // the condition ready-fd2's steps actually need and ".card" stopped
+  // guaranteeing once caching shipped.
+  await waitFor(
+    cdp,
+    // ".node" specifically: buildBoardStatus's degraded-board row ALSO carries
+    // data-board-coord (render.ts:757, "for the same reason the tree node
+    // does") but never data-board-state, and it renders before the tree node
+    // in DOM order — an unscoped selector matches IT first and reads
+    // undefined, which is trivially !== "stale" and defeats this wait
+    // entirely. Verified via a scratch jsdom probe before trusting this live.
+    `document.querySelector('.node[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
+    `${coord}'s own (non-cached) load`,
+    90000,
+  );
   return { cards: await cdp.evaluate("return document.querySelectorAll('.card').length;") };
 }
 
@@ -1946,6 +1973,18 @@ async function main() {
     log(`\nboard: ${coord}  (${CONFIDENTIAL ? "CONFIDENTIAL — plain `rd init`" : "PUBLIC — `rd init --public`"})`);
     log(`relay: ${RELAY}`);
     log(`${results.filter((r) => r.ok).length}/${results.length} operations converged`);
+    // ready-cc2: leave a committed, checkable record that this run happened, so the
+    // only evidence is not prose in a commit message. See scripts/receipt.mjs.
+    const receiptPath = writeReceipt({
+      script: "live-write-roundtrip.mjs",
+      repoRoot: REPO_ROOT,
+      boardDir: BOARD_DIR,
+      relay: RELAY,
+      boardCoord: coord,
+      mode: CONFIDENTIAL ? "confidential" : "public",
+      checks: results.map((r) => ({ name: `${r.n}. ${r.name}`, ok: r.ok })),
+    });
+    log(`receipt: ${receiptPath}`);
   } finally {
     for (const c of cleanup.reverse()) {
       try {

@@ -83,6 +83,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "vite";
+import { writeReceipt } from "./receipt.mjs";
 
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
@@ -319,6 +320,21 @@ async function openBoard(cdp, origin, coord, esbuild, secretHex) {
     return true;
   `);
   await waitFor(cdp, `document.querySelectorAll(".card").length > 0`, "the board's cards", 90000);
+  // ready-c7b: ".card" alone is not proof this board's own load is real —
+  // ready-fe4 can paint it from a cache before this call's own relay
+  // round-trip lands. The left-tree node's `data-board-state` attribute flips
+  // off "stale" the instant this board's REAL fold (and its writer) arrives;
+  // see the matching comment in live-write-roundtrip.mjs's openBoard.
+  await waitFor(
+    cdp,
+    // ".node" specifically — see the matching comment in
+    // live-write-roundtrip.mjs's openBoard: an unscoped selector can match
+    // buildBoardStatus's degraded-board row instead, which carries
+    // data-board-coord but never data-board-state.
+    `document.querySelector('.node[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
+    `${coord}'s own (non-cached) load`,
+    90000,
+  );
   return { cards: await cdp.evaluate("return document.querySelectorAll('.card').length;") };
 }
 
@@ -721,6 +737,18 @@ async function main() {
     log(`\nboard: ${coord}  (${CONFIDENTIAL ? "CONFIDENTIAL — plain `rd init`" : "PUBLIC — `rd init --public`"})`);
     log(`relay: ${RELAY}`);
     log(`${results.filter((r) => r.ok).length}/${results.length} assertions held`);
+    // ready-cc2: leave a committed, checkable record that this run happened, so the
+    // only evidence is not prose in a commit message. See scripts/receipt.mjs.
+    const receiptPath = writeReceipt({
+      script: "live-roundtrip-both-ways.mjs",
+      repoRoot: REPO_ROOT,
+      boardDir: BOARD_DIR,
+      relay: RELAY,
+      boardCoord: coord,
+      mode: CONFIDENTIAL ? "confidential" : "public",
+      checks: results.map((r) => ({ name: r.name, ok: r.ok })),
+    });
+    log(`receipt: ${receiptPath}`);
   } finally {
     for (const c of cleanup.reverse()) {
       try {
