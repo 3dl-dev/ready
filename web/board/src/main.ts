@@ -412,6 +412,20 @@ export interface LoadBoardOptions {
      * recorded with the cache entry, and the same number the live subscription
      * reconnects on (LiveBoard.newest). */
     newest: number;
+    /**
+     * ready-c7b: THIS board's writer, built from the SAME fold, handed over the
+     * moment this board is done rather than withheld until every board in the
+     * portfolio finishes (that wait is what settle() is for, and it used to be
+     * the ONLY way a writer reached the page). Waiting for the whole load left a
+     * window — the width of every OTHER board's fetch-and-fold — where a
+     * freshly-painted board's gate rail had real items but no writer to resolve
+     * them with, and boardScopedWriter's fallback ("Read-only: no board finished
+     * loading.") was truthfully describing an empty writers Map, not a stale
+     * snapshot. Undefined when the board failed to load — there is no writer to
+     * hand over, and reconcileOne must not let a stale one linger for a board
+     * whose current fold produced nothing.
+     */
+    writer: NostrBoardWriter | undefined;
   }) => void;
   /** Overrides BOARD_FETCH_CONCURRENCY. Nothing in production sets it. */
   concurrency?: number;
@@ -621,7 +635,14 @@ export async function loadBoardItems(
       // The callback is invoked with the board's OWN admitted items, never with
       // the accumulator, so a consumer cannot mistake a partial view for a
       // complete one.
-      options.onBoard?.({ coord: b.coord, items: boardItems, status: boardStatus, confidentiality: state, newest });
+      options.onBoard?.({
+        coord: b.coord,
+        items: boardItems,
+        status: boardStatus,
+        confidentiality: state,
+        newest,
+        writer,
+      });
     } catch (err) {
       inflight.delete(index);
       // ready-27b: a board that will not load is REPORTED, not dropped. The
@@ -647,7 +668,14 @@ export async function loadBoardItems(
       // previous session read off it under a node that now says the load failed.
       // A board that did not load has no verdict; "unknown" is the fail-closed
       // stand-in, and `save` refuses to cache a failed board at all.
-      options.onBoard?.({ coord: b.coord, items: [], status: failed, confidentiality: "unknown", newest: 0 });
+      options.onBoard?.({
+        coord: b.coord,
+        items: [],
+        status: failed,
+        confidentiality: "unknown",
+        newest: 0,
+        writer: undefined,
+      });
     }
   }
   return { items: out, confidential, unestablished, writers, live, status };
@@ -1251,6 +1279,10 @@ interface BoardView {
     status: BoardStatus;
     confidentiality: Confidentiality;
     newest: number;
+    /** ready-c7b: this board's writer, attached the moment this board's own
+     * fold is done — see LoadBoardOptions.onBoard. Undefined on a failed load,
+     * which must evict any writer a previous fold left behind for this coord. */
+    writer: NostrBoardWriter | undefined;
   }): void;
   /** Replace every item (the live-subscription path) and keep routing correct. */
   replaceAll(items: Item[]): void;
@@ -1295,6 +1327,19 @@ function boardView(
   // is refused ("Read-only: no board finished loading.") and a cached card
   // cannot be dragged into a publish against authority this session has not
   // re-established.
+  //
+  // ready-c7b: the mutation happens TWICE, and the first one is the fix. Before
+  // this, `writers` was only ever populated in settle() — once per LOAD, after
+  // EVERY board in the portfolio finished. reconcileOne() painted each board's
+  // real items as soon as that board's own fold landed, so a freshly-opened
+  // single board could be fully on screen, gate rail included, while `writers`
+  // was still the empty Map from mount() — a script or a fast user acting on
+  // that rail saw "Read-only: no board finished loading.", truthfully, because
+  // the board's own writer sat unused in loadBoardItems's local map for the
+  // width of every OTHER board's fetch-and-fold. reconcileOne() now attaches
+  // (or evicts) THIS board's writer the moment its own fold is done; settle()'s
+  // bulk assignment still runs afterwards and is now merely idempotent for any
+  // board reconcileOne already delivered.
   const writers = new Map<string, NostrBoardWriter>();
   const itemBoard = new Map<string, string>();
 
@@ -1420,6 +1465,14 @@ function boardView(
       painted.set(r.coord, r.items);
       states.set(r.coord, r.confidentiality);
       high.set(r.coord, r.newest);
+      // ready-c7b: attach (or evict) THIS board's writer now, at the moment its
+      // own fold lands, instead of waiting for settle() to hand over the whole
+      // portfolio's writers at once. `writers` is the same Map boardScopedWriter
+      // closed over at mount() — mutating it here is what a script or user
+      // acting on THIS board's freshly-painted gate rail sees immediately,
+      // without waiting on every other board in the load.
+      if (r.writer) writers.set(r.coord, r.writer);
+      else writers.delete(r.coord);
       refs.set(r.coord, {
         coord: r.coord,
         title: refs.get(r.coord)?.title ?? r.status.name,

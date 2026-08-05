@@ -173,6 +173,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "vite";
+import { writeReceipt } from "./receipt.mjs";
 
 const BOARD_DIR = path.resolve(import.meta.dirname, "..");
 const REPO_ROOT = path.resolve(BOARD_DIR, "../..");
@@ -1946,6 +1947,18 @@ async function main() {
     log(`\nboard: ${coord}  (${CONFIDENTIAL ? "CONFIDENTIAL — plain `rd init`" : "PUBLIC — `rd init --public`"})`);
     log(`relay: ${RELAY}`);
     log(`${results.filter((r) => r.ok).length}/${results.length} operations converged`);
+    // ready-cc2: leave a committed, checkable record that this run happened, so the
+    // only evidence is not prose in a commit message. See scripts/receipt.mjs.
+    const receiptPath = writeReceipt({
+      script: "live-write-roundtrip.mjs",
+      repoRoot: REPO_ROOT,
+      boardDir: BOARD_DIR,
+      relay: RELAY,
+      boardCoord: coord,
+      mode: CONFIDENTIAL ? "confidential" : "public",
+      checks: results.map((r) => ({ name: `${r.n}. ${r.name}`, ok: r.ok })),
+    });
+    log(`receipt: ${receiptPath}`);
   } finally {
     for (const c of cleanup.reverse()) {
       try {
