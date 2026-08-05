@@ -22,7 +22,13 @@ func matchesSearch(item *state.Item, query string) bool {
 	if strings.Contains(strings.ToLower(item.Title), lowerQuery) {
 		return true
 	}
-	if strings.Contains(strings.ToLower(item.Context), lowerQuery) {
+	// THE WHOLE TRAIL, NOT JUST THE DESCRIPTION (ready-ed4). Progress notes moved
+	// out of item.Context into their own events, so searching Context alone would
+	// have silently stopped matching every `rd progress` note ever written — and a
+	// note is usually the most searchable text an item has ("what did we try for
+	// the OOM?"). AssembleTrail renders description + notes into the one string
+	// this has always effectively searched.
+	if strings.Contains(strings.ToLower(state.AssembleTrail(item)), lowerQuery) {
 		return true
 	}
 	for _, h := range item.History {

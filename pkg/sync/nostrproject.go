@@ -165,6 +165,9 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	// Winning card per item, and the ordered list of authoritative status events.
 	winningCard := map[string]*nostr.Event{}
 	statusEvents := map[string][]*nostr.Event{}
+	// noteEvents holds the kind-1111 progress notes per item (ready-ed4). Append-only
+	// like statusEvents — a note is never latest-wins, the whole set IS the trail.
+	noteEvents := map[string][]*nostr.Event{}
 	// NOTE (ready-4ec rework): an earlier version of this function tracked
 	// firstSeen — the MINIMUM created_at across every admitted card/status event
 	// for an item id — and used it as Item.CreatedAt. That was SUBSET-sensitive: a
@@ -298,7 +301,7 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 		// EncryptedBoards is nil or the board is plaintext. Sibling to the board-pin
 		// skip above; strfry can't validate payload shape, so this local fold is the
 		// single enforcement point.
-		if (e.Kind == KindCard || isStatusKind(e.Kind)) && shouldQuarantine(e, opts.EncryptedBoards) {
+		if (e.Kind == KindCard || isStatusKind(e.Kind) || isNoteKind(e.Kind)) && shouldQuarantine(e, opts.EncryptedBoards) {
 			continue
 		}
 		seen[e.ID] = true
@@ -310,6 +313,17 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 			}
 		case isStatusKind(e.Kind):
 			statusEvents[itemID] = append(statusEvents[itemID], e)
+		case isNoteKind(e.Kind):
+			// NO author-or-maintainer narrowing here, unlike status events (ready-ed4).
+			// A kind-1111 note cannot change one field of the item — not its status,
+			// not its priority, nothing; it only appends a line to the trail. The
+			// read-trust gate above (a grant on this board) is therefore the whole
+			// authority rule for a note, and it is the RIGHT one: a granted contributor
+			// recording what they did is the normal workflow, and requiring item
+			// authorship or board-maintainer rank to leave a progress note would have
+			// silently dropped every note an agent key writes on an owner-authored item
+			// (spec §5.10).
+			noteEvents[itemID] = append(noteEvents[itemID], e)
 		}
 	}
 
@@ -343,6 +357,22 @@ func ProjectItems(events []*nostr.Event, opts ProjectOptions) map[string]*state.
 	for itemID, card := range winningCard {
 		author := card.PubKey
 		item := itemFromCard(card, opts.Decryptor)
+		// PROGRESS TRAIL (ready-ed4). itemFromCard already reduced item.Context to the
+		// card's BASE description, moving any notes a legacy card still carries inline
+		// into item.Notes; merge the item's own kind-1111 note events in on top, in the
+		// normative order (§5.9). Doing the merge here — not in itemFromCard — keeps
+		// itemFromCard a pure function of ONE event, which every card-shaped test and
+		// the confidential read path already depend on.
+		//
+		// A note whose text this reader cannot decrypt is dropped by noteFromEvent
+		// rather than folded as a placeholder; see its doc.
+		var folded []foldedNote
+		for _, ne := range noteEvents[itemID] {
+			if fn, ok := noteFromEvent(ne, opts.Decryptor); ok {
+				folded = append(folded, fn)
+			}
+		}
+		item.Notes = assembleTrail(item.Notes, folded)
 		// TRUE CREATION TIME (ready-4ec rework): itemFromCard already set
 		// item.CreatedAt from the winning card's CARRIED "created" tag (falling back
 		// to the card's own created_at only when that tag is absent) — no override
@@ -722,6 +752,28 @@ func itemFromCard(e *nostr.Event, dec BoardDecryptor) *state.Item {
 			// carried in the clear l tags (present but not readable).
 			item.WaitingOn = ""
 		}
+	}
+	// LEGACY TRAIL RECOVERY (ready-ed4). Before this change `rd progress` appended
+	// its note straight onto the card's Content, so a card written by any earlier rd
+	// carries the item's whole trail inline — that is exactly the growth that made
+	// vms-760 unpublishable. Split it back apart HERE, at the one point every reader
+	// funnels through: Context keeps only the base description (so the very next card
+	// republish is small, which is the recovery for an already-over-limit item), and
+	// the recovered notes head the trail with no MsgID — the marker that says "this
+	// note has no event of its own yet", which is what makes the next write mint one
+	// before the compacted card drops it (PendingNotes → CardSpec.PendingNotes).
+	//
+	// Runs AFTER the confidential substitution so a sealed card's DECRYPTED context
+	// is what gets split; splitting the ciphertext would be a no-op and the trail
+	// would stay welded into the card forever on exactly the boards that need this
+	// most. Deliberately skipped for a Redacted item: its Context is the
+	// "[encrypted]" placeholder, not content, and RefuseRedactedRepublish already
+	// blocks the write path there.
+	if !item.Redacted {
+		base, cardNotes := state.SplitCardTrail(item.Context)
+		item.Context = base
+		item.Description = base
+		item.Notes = cardNotes
 	}
 	return item
 }

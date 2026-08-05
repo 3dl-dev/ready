@@ -297,6 +297,31 @@ export function decryptCardPayload(e: NostrEvent, dec: BoardDecryptor | null): C
   };
 }
 
+/** notePayload mirrors envelope.go's notePayload: the plaintext JSON blob sealed
+ * into a confidential kind-1111 progress note's content (ready-ed4).
+ * Structurally identical to StatusPayload — one free-text string — but named for
+ * its own event so the wire field is "reason" nowhere a note is concerned. */
+interface NotePayload {
+  text: string;
+}
+
+/** decryptNoteText mirrors envelope.go's decryptNoteText: the decrypted body of
+ * a confidential progress note, null when this reader cannot open it. Fail
+ * closed — the caller DROPS the note rather than folding ciphertext, or a
+ * placeholder, into the item's trail. */
+export function decryptNoteText(e: NostrEvent, dec: BoardDecryptor | null): string | null {
+  const cek = cekFor(e, dec);
+  if (cek === null) return null;
+  const raw = openContent(cek, e.content);
+  if (raw === null) return null;
+  try {
+    const pl = JSON.parse(new TextDecoder().decode(raw)) as NotePayload;
+    return typeof pl.text === "string" ? pl.text : null;
+  } catch {
+    return null;
+  }
+}
+
 /** decryptStatusReason mirrors envelope.go's decryptStatusReason. */
 export function decryptStatusReason(e: NostrEvent, dec: BoardDecryptor | null): string | null {
   const cek = cekFor(e, dec);
@@ -456,6 +481,15 @@ export function sealCardPayload(env: SealEnvelope, pl: CardPlaintext, nonce?: Ui
  * always present (no omitempty on the Go struct). */
 export function sealStatusPayload(env: SealEnvelope, reason: string, nonce?: Uint8Array): string {
   return sealContent(env.cek, new TextEncoder().encode(JSON.stringify({ reason })), nonce);
+}
+
+/** sealNotePayload marshals + seals a kind-1111 progress note's text. Mirrors
+ * envelope.go's sealNotePayload: `{"text":...}`, with `text` always present (no
+ * omitempty on the Go struct). Deliberately a DIFFERENT field name from a status
+ * event's `reason` — the two payloads are structurally identical but a note is
+ * not a close reason, and the fold reads them with separate decoders. */
+export function sealNotePayload(env: SealEnvelope, text: string, nonce?: Uint8Array): string {
+  return sealContent(env.cek, new TextEncoder().encode(JSON.stringify({ text })), nonce);
 }
 
 /** encMarkerTags returns the two — and only two — always-clear marker tags a

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/3dl-dev/ready/pkg/state"
 	"github.com/spf13/cobra"
 )
 
@@ -87,8 +88,15 @@ Example:
 		if len(item.Labels) > 0 {
 			fmt.Printf("Labels:   %s\n", strings.Join(item.Labels, ", "))
 		}
-		if item.Context != "" {
-			fmt.Printf("\nContext:\n%s\n", item.Context)
+		// THE TRAIL, NOT JUST THE DESCRIPTION (ready-ed4). item.Context is now only
+		// the card's base description; the progress notes live in item.Notes,
+		// assembled from their own kind-1111 events. AssembleTrail renders the two
+		// back into the exact string this used to print, so an agent reading `rd
+		// show <id>` to resume work sees the identical trail it always did — which
+		// is the whole point: the trail an agent reads to resume is precisely what
+		// got orphaned when an item grew too large to publish.
+		if trail := state.AssembleTrail(item); trail != "" {
+			fmt.Printf("\nContext:\n%s\n", trail)
 		}
 		if len(item.History) > 0 {
 			// --audit: annotate each history entry with the cf-authority scope the

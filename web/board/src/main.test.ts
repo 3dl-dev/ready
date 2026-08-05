@@ -573,7 +573,10 @@ describe.each(IDENTITIES)("afterLogin as $name", ({ signing, identity }) => {
       expect(capture.filters).toEqual([
         { kinds: [30301], "#d": ["alpha"] },
         { kinds: [39301], "#a": [boardCoord(OWNER, "alpha")] },
-        { kinds: [30302, 1630, 1631, 1632, 1633, 39301], "#a": [boardCoord(OWNER, "alpha")] },
+        // ready-ed4 added 1111: progress notes are their own events now, and a
+        // board REQ that omits the kind renders every item with an empty trail
+        // while looking perfectly healthy.
+        { kinds: [30302, 1630, 1631, 1632, 1633, 39301, 1111], "#a": [boardCoord(OWNER, "alpha")] },
       ]);
       expectItemFetchesScopedToRenderedBoards(capture, root);
       expectSnapshotCarriedTheForgedEvents(capture);

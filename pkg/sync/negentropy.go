@@ -494,7 +494,7 @@ func BoardSyncFilter(boardCoord string, authors []string) map[string]any {
 		// granted contributor unless the grant reaches its local log. Grants carry the
 		// board "a" coordinate, so the #a board scope below matches them; in the
 		// author-scoped (unpinned) path the owner's grants match the authors filter.
-		"kinds": []int{KindBoard, KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant},
+		"kinds": []int{KindBoard, KindCard, KindStatusOpen, KindStatusResolved, KindStatusClosed, KindStatusDraft, KindRoleGrant, KindNote},
 	}
 	if boardCoord != "" {
 		f["#a"] = []string{boardCoord}

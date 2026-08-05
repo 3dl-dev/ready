@@ -19,6 +19,7 @@
 // track that reclaims width when nothing is selected, and Escape-to-close. See
 // ready-61c for the attribution review.
 import { applyFilters, labelFrequency, NO_PRIORITY, priorityBuckets, type FilterState } from "./filters";
+import { assembleTrail } from "../lib/trail";
 import { buildEpicTree, buildFreesIndex, deriveEpics, freesCount, type EpicRollup, type EpicTreeNode } from "./graph";
 import { columnize, gatesFilter } from "./views";
 import { sortCards } from "./sort";
@@ -1590,8 +1591,15 @@ export class BoardWorkspace {
 
     pane.append(this.buildActions(item));
 
-    if (item.context) {
-      pane.append(el("p", { className: "detail-context", textContent: item.context }));
+    // THE TRAIL, NOT JUST THE DESCRIPTION (ready-ed4). item.context is now only
+    // the card's base description; the progress notes live in item.notes,
+    // assembled by the fold from their own kind-1111 events. assembleTrail
+    // renders the two back into the exact string this used to show, and is the
+    // SAME function pkg/state.AssembleTrail implements — the browser and rd must
+    // not disagree about what an item's trail says.
+    const trail = assembleTrail(item);
+    if (trail) {
+      pane.append(el("p", { className: "detail-context", textContent: trail }));
     }
 
     const idIndex = byId(this.items);

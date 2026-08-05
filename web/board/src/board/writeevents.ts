@@ -58,6 +58,7 @@ import {
   encMarkerTags,
   labelToken,
   sealCardPayload,
+  sealNotePayload,
   sealStatusPayload,
   type SealEnvelope,
 } from "../lib/envelope";
@@ -65,6 +66,7 @@ import {
   KindBoard,
   KindCard,
   KindIssue,
+  KindNote,
   KindStatusClosed,
   KindStatusOpen,
   KindStatusResolved,
@@ -308,6 +310,57 @@ export function buildCardEvent(env: WriteEnv, item: Item): BuiltEvent {
   });
 }
 
+/** buildNoteEvent mirrors BuildNoteEvent (pkg/sync/nostrnotes.go): one kind-1111
+ * progress note. Card-coordinate "a" FIRST (rd's projection reads only the first
+ * match), then the "d" item-id lookup tag, the "ts" display timestamp, and
+ * finally the board-membership "a" coordinate — WITHOUT which a board-scoped REQ
+ * never fetches the note and the trail silently loses it on every machine but
+ * the one that wrote it. */
+export function buildNoteEvent(
+  env: WriteEnv,
+  args: { itemId: string; at: string; text: string },
+  createdAtOffset = 0,
+): BuiltEvent {
+  if (args.itemId === "") throw new WriteRefusedError("empty_item_id", "note event: empty item id");
+  const tags: string[][] = [
+    ["a", cardCoord(env.signer, args.itemId)],
+    ["d", args.itemId],
+  ];
+  if (args.at !== "") tags.push(["ts", args.at]);
+  if (env.boardD !== "") tags.push(["a", boardCoord(env.boardAuthor || env.signer, env.boardD)]);
+  let content = args.text;
+  if (env.enc) {
+    content = sealNotePayload(env.enc, args.text);
+    tags.push(...encMarkerTags(env.enc));
+  }
+  return withId({
+    pubkey: env.signer,
+    created_at: env.createdAt + createdAtOffset,
+    kind: KindNote,
+    tags,
+    content,
+  });
+}
+
+/** pendingNoteEvents mirrors Publisher.appendPendingNotes: one note event per
+ * trail entry that has NO event of its own yet — the notes the fold recovered
+ * from a LEGACY card's inline content.
+ *
+ * THE BROWSER MUST DO THIS TOO. buildCardEvent writes item.context, which the
+ * fold has already reduced to the base description, so a browser card edit on a
+ * legacy item COMPACTS that item's card. Without minting these events first, the
+ * compaction would delete the item's whole trail from every relay's copy — the
+ * same continuity loss ready-ed4 exists to prevent, just arriving from the
+ * browser instead of the CLI. Each gets its own created_at offset so two
+ * textually identical notes bearing the same "ts" cannot hash to the same event
+ * id and silently collapse into one.
+ *
+ * Empty for every item whose card was written after ready-ed4. */
+export function pendingNoteEvents(env: WriteEnv, item: Item): BuiltEvent[] {
+  const pending = (item.notes ?? []).filter((n) => n.msg_id === undefined || n.msg_id === "");
+  return pending.map((n, i) => buildNoteEvent(env, { itemId: item.id, at: n.at, text: n.text }, i));
+}
+
 /** buildIssueEvent mirrors BuildIssueEvent (NIP-34 kind:1621 issue root, minted
  * once per item).
  *
@@ -380,14 +433,16 @@ export function buildStatusEvent(
  * invariant that editing the addressable card never adds to, or erases,
  * history. */
 function publishCardEdit(env: WriteEnv, item: Item): BuiltEvent[] {
-  return [buildCardEvent(env, item)];
+  // Pending notes FIRST: at no instant does a relay hold the compacted card
+  // without also holding the events carrying what was compacted out of it.
+  return [...pendingNoteEvents(env, item), buildCardEvent(env, item)];
 }
 
 /** publishStatusChange: refreshed card + (issue root, once per item) + status
  * event, in exactly Publisher.PublishStatusChange's order. */
 function publishStatusChange(env: WriteEnv, item: Item, reason: string): BuiltEvent[] {
   const card = buildCardEvent(env, item);
-  const events: BuiltEvent[] = [card];
+  const events: BuiltEvent[] = [...pendingNoteEvents(env, item), card];
   // CONFIDENTIAL: no issue event, and no issue anchor — ensureIssueEvent returns
   // ("", nil, nil) for card.Enc != nil WITHOUT even looking one up, so a board
   // that carries issue events from a plaintext era does not get its status

@@ -107,7 +107,13 @@ func buildTimeline(item *state.Item) []logEntry {
 			at:        at,
 		})
 	}
-	entries = append(entries, parseProgressNotes(item.Context)...)
+	// THE TRAIL COMES FROM Notes NOW (ready-ed4), not from scraping item.Context:
+	// a progress note is its own kind-1111 event and the fold has already parsed
+	// the legacy in-card ones out of the card content into the same slice. Reading
+	// the assembled trail (rather than item.Context, which is now just the base
+	// description) is what keeps `rd log` showing the SAME lines before and after
+	// the change, for both a freshly noted item and a legacy one.
+	entries = append(entries, parseProgressNotes(state.AssembleTrail(item))...)
 
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].at.Before(entries[j].at)
