@@ -447,11 +447,11 @@ MUST carry the same envelope the item's card carries** — the `enc`/`cek_epoch`
 clear markers and a Content sealed under that board's current CEK.
 
 A note is minted on FOUR paths, and each one is an independent chance to forget:
-the live note (`PublishNote`, `pkg/sync/nostroutbound.go:921`, whose envelope
+the live note (`PublishNote`, `pkg/sync/nostroutbound.go:899`, whose envelope
 comes from the CLI hook `publishItemNoteNostr`, `cmd/rd/nostrnote.go:34`), and
 the recovery mint that every card republish performs for the trail it is
 compacting out of a legacy card (`appendPendingNotes`,
-`pkg/sync/nostroutbound.go:887`, reached from `PublishNote`,
+`pkg/sync/nostroutbound.go:865`, reached from `PublishNote`,
 `PublishStatusChange` at `pkg/sync/nostroutbound.go:225`, and `PublishCardEdit`
 at `pkg/sync/nostroutbound.go:295`). The browser writer carries the same
 obligation (`web/board/src/board/writeevents.ts`).
