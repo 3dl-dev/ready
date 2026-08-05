@@ -7,87 +7,103 @@ current CEK epoch. Options that would have kept plaintext readable
 "confidentiality is the default and privacy is mandatory."
 
 This document says which boards, what a reader loses, what they need, and
-when — with the affected-reader list derived from real `kind-39301` grant
-history read directly off `wss://relay.3dl.network`, not assumed.
+when.
+
+## Where these numbers come from — and how to re-derive them
+
+Every figure below is the output of **ready-43d's dry run**, run against the
+public relay:
+
+```
+go run ./scripts/resealplan            # add --json-out plan.json for per-coordinate detail
+```
+
+It reads only, proves it wrote nothing (it hashes the local append-only log
+before and after and refuses to exit 0 if the digest moved), and reports per
+board what a re-seal *would* do. **Run it again immediately before the pass
+executes.** The portfolio is live and eight projects write to it
+concurrently; the numbers drift daily, and an earlier revision of this
+document carried a hand-rolled query that was wrong about both the board
+count and the affected-reader count within five days.
+
+Snapshot below: **2026-08-05T15:52:53Z**.
 
 ## Which boards
 
-11 boards carry grandfathered plaintext (confidential mode is enabled, but at
-least one card predates that and was never re-sealed). Measured fresh
-**2026-07-30T03:55Z**, `#a`-coordinate-filtered, paged, no `authors` filter,
-latest-event-per-coordinate (what an outsider bootstrapping from the relay
-actually sees today):
+**21 boards are confidential** (they carry a CEK-bearing grant). Across them,
+5,104 cards; **3,045 would be re-sealed**.
 
-| board | total cards | plaintext (readable by anyone) | sealed |
-|---|---:|---:|---:|
-| 3dl | 555 | 535 | 20 |
-| analyst0 | 43 | 16 | 27 |
-| dontguess | 647 | 547 | 100 |
-| forge | 201 | 183 | 18 |
-| galtrader | 754 | 646 | 108 |
-| mainframe | 172 | 60 | 112 |
-| mallcoppro | 1029 | 647 | 382 |
-| nostrrelay | 52 | 10 | 42 |
-| ready | 515 | 167 | 348 |
-| resonant | 101 | 100 | 1 |
-| vat | 242 | 20 | 222 |
-| **total** | **4311** | **2931** | **1380** |
+| board | epoch | cards | would re-seal | already sealed |
+|---|---:|---:|---:|---:|
+| 3dl | 1 | 555 | 535 | 20 |
+| analyst0 | 1 | 43 | 16 | 27 |
+| augur | 1 | 45 | 0 | 45 |
+| dap | 1 | 6 | 0 | 6 |
+| dontguess | 1 | 649 | 547 | 102 |
+| enterpriseaiframework | 1 | 201 | 0 | 201 |
+| forge | 1 | 202 | 183 | 19 |
+| galtrader | 1 | 757 | 648 | 109 |
+| mainframe | 1 | 173 | 60 | 113 |
+| mallcoppro | 1 | 1091 | 657 | 434 |
+| nostrrelay | 1 | 52 | 10 | 42 |
+| olmo3dl | 1 | 17 | 0 | 17 |
+| os | 1 | 4 | 3 | 1 |
+| pcjsvax | 1 | 154 | 0 | 154 |
+| producer | 1 | 40 | 38 | 2 |
+| proj | 1 | 72 | 68 | 4 |
+| ready | 2 | 560 | 168 | 392 |
+| resonant | 1 | 115 | 100 | 15 |
+| vat | 1 | 292 | 12 | 280 |
+| vat2 | 1 | 74 | 0 | 74 |
+| wfa71fdb4e6242 | 1 | 2 | 0 | 2 |
+| **total** | | **5104** | **3045** | **2059** |
 
-(Board selection: every LIVE board owned by `a9f766ae56...` with
-plaintext > 0 AND sealed > 0 in ready-336's full 24-board portfolio table —
-i.e. confidential-with-a-plaintext-tail. Boards that are fully plaintext
-(confidential mode never enabled) are out of scope: there is no epoch to
-re-seal under. Boards that are already fully sealed have nothing left to do.
-This table supersedes ready-336's 2026-07-29T04:19Z snapshot for these 11
-boards — the portfolio is live and numbers drift; re-measure again
-immediately before the pass executes, per ready-207.)
+**261 boards / 1,667 cards are OUT OF SCOPE.** They carry no CEK-bearing
+grant — they were never confidential, their plaintext is intended, and
+sealing them would make them unreadable to their own audience. The re-seal
+does not touch them. Their plaintext stays world-readable, deliberately.
+
+`proj` is a throwaway board created for this item's own rollback dry-walk,
+not a project board. It is in scope because it is genuinely confidential, and
+it is where both of the pass's only irregularities live (see below).
 
 ## What a reader loses
 
 Today, **anyone** — a grantee, a passerby who found the relay, an archive, a
-scraper — can read these 2,931 plaintext cards with no key and no grant. That
-is the defect ready-336 exists to fix, and it is the whole point of this
-operation: **that universal readability ends.** Once a card is re-sealed,
-only someone holding the board's *current* CEK epoch can read it. This is a
-real capability being removed, not a formality — do not read the rest of
-this document as "nobody loses anything."
+scraper — can read those 3,045 plaintext cards with no key and no grant. That
+is the defect ready-336 exists to fix, and ending that universal readability
+is the whole point of the operation. Once a card is re-sealed, only someone
+holding the board's *current* CEK epoch can read it. This is a real
+capability being removed, not a formality.
 
 Two categories of reader are affected, and they are not the same:
 
 **1. The general public / unaffiliated readers — the deliberate target.**
-Anyone reading these boards today without a grant loses read access
-entirely, permanently, by design. There is no one to notify individually
-here; cutting this off is the fix ready-336 was raised for.
+Anyone reading these boards today without a grant loses read access entirely,
+permanently, by design. There is no one to notify individually here; cutting
+this off is the fix ready-336 was raised for.
 
 **2. Named grant-holders who do not hold the board's current CEK epoch.**
-This is the category the item asked to derive from real data rather than
-assume. Method: for each of the 11 boards, every `kind-39301` grant was
-pulled off `wss://relay.3dl.network` by `#a` coordinate filter (paged,
-`until`-walked, limit 500 — never an `authors` filter), giving, per grantee,
-their latest role and the highest CEK epoch ever wrapped to them (per-epoch
-grant slots, ready-889, mean every epoch a member ever received survives
-independently on the relay, so "highest epoch held" is a straight max, not
-an inference).
+This is the category the item asked to derive from real grant data rather
+than assume. The dry run derives it from `kind-39301` grants read off
+`wss://relay.3dl.network` and reports it as `readers`.
 
-**Result, measured 2026-07-30T03:55Z: zero.** Every current, non-revoked
-grantee on all 11 boards already holds the board's current CEK epoch:
+**Result at 2026-08-05T15:52:53Z: ONE.**
 
-| board | current epoch | grantees checked | below current epoch |
-|---|---:|---:|---:|
-| 3dl, analyst0, dontguess, forge, galtrader, mainframe, mallcoppro, nostrrelay, resonant, vat | 1 | owner + 1 contributor, each | 0 |
-| ready | 2 | owner + 3 contributors (+ 1 revoked, excluded — already has no read access) | 0 |
+| pubkey | board | consequence |
+|---|---|---|
+| `3032a516d23509f20e47147e2fc546e53bb1c3ec0fb59780a65f11fd4b0a4ca5` | `proj` | holds an older CEK epoch than `proj`'s current epoch; can read that board's plaintext tail today and **will not be able to read it after the pass** |
 
-This is not a promise that no one will ever be affected — it is what the
-grant log says **right now**. It holds because of how membership on this
-project actually works: every grantee here was granted (or re-granted) after
-their board's most recent `confidential enable`/`rotate`, so nobody is
-carrying a stale key forward. **Re-verify this table immediately before
-executing the pass on each board** (`cmd/measure402tmp`-style query, or its
-successor in ready-207/ready-43d) — an active session between now and
-execution could add a grantee who received a role but no CEK wrap, or a
-revoked member could be reinstated without a fresh grant. Either would land
-in the "below current epoch" column and needs a grant before that board is
-re-sealed, not after.
+That reader must be told before `proj` is re-sealed, and needs a fresh
+current-epoch grant if they are to keep access. **This is a loss, not a
+formality** — after the pass, without a new grant, history they can read
+today is closed to them and there is no path back (see the rollback runbook:
+re-publishing the plaintext to restore access is never on the table).
+
+An earlier revision of this document claimed this number was **zero** across
+every board. It was not; it was derived from a one-off query rather than from
+the dry run, and it was wrong. Do not carry any figure here forward without
+re-running `scripts/resealplan`.
 
 ## What an affected reader needs
 
@@ -105,22 +121,26 @@ including the freshly re-sealed history. There is no separate "give me back
 the old plaintext" step, and there should not be one — see the rollback
 runbook for why.
 
-If you are already a grantee and this table shows you below the current
-epoch by the time the pass runs on your board, ask the owner for a fresh
-`rd grant` before that board's pass starts, not after.
+If you are already a grantee and the dry run shows you under `readers` by the
+time the pass runs on your board, ask the owner for a fresh `rd grant`
+**before that board's pass starts**, not after.
 
 ## When
 
 Not yet executed. The pass is ready-5e7, blocked on:
-- **ready-43d** — a dry run that proves, per board, exactly what would change
-  and writes nothing, approved per board before any write touches it.
+
+- **ready-43d** — the dry run above. Done; it must be re-run and approved per
+  board before any write touches that board.
 - **ready-fcd** — `rd relay audit` learning to report a re-sealed coordinate
   as superseded, not missing, so the first post-pass audit does not cry wolf.
+- **ready-e7a** — contributor-authored coordinates, which the owner cannot
+  re-seal (the addressable coordinate includes the event author). The dry run
+  reports `foreign = 0` on every confidential board: that class is currently
+  empty, so it blocks nothing today.
 - **ready-402** (this item) — this announcement + the rollback runbook.
 
 Execution is **per board**, not one sweeping operation, so a problem on one
-board does not touch the other ten. Watch `rd gates` / this document's
-follow-up notice for the actual go date once ready-43d's dry run is approved.
+board does not touch the other twenty.
 
 ## What does NOT change
 
@@ -128,9 +148,17 @@ follow-up notice for the actual go date once ready-43d's dry run is approved.
   (`.ready/nostr-log.jsonl`). The original plaintext event stays there,
   forever, on the machine(s) that already hold it. What changes is what a
   relay serves to a fresh reader who was not already holding a copy.
-- Already-sealed cards are untouched. This pass only touches the 2,931
-  grandfathered-plaintext coordinates.
-- The 3 cards already known to be stranded past the relay's 64 KiB limit
-  (ready-c3e) are not silently dropped — they are refused up front by the
-  now-shipped client-side size guard and stay in their current (plaintext)
-  state, flagged for separate disposition, not lost.
+- Already-sealed cards are untouched (2,059 of them). This pass only touches
+  the grandfathered-plaintext coordinates.
+- The 261 non-confidential boards are untouched.
+
+## Two things the dry run currently reports, stated rather than buried
+
+- **Nothing would halt the pass on size.** ready-c3e's 64 KiB relay limit was
+  the stranding risk when the ruling was made; at this snapshot the largest
+  projected sealed card is well under it and the dry run reports
+  `WOULD HALT THE PASS: none`. This is a live figure — re-check it, do not
+  inherit it.
+- **26 references on `proj` would break.** They are inert per ready-c9d, and
+  they are all on the throwaway dry-walk board. Every other board reports
+  zero.

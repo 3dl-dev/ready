@@ -51,9 +51,19 @@ below apply to "we chose to stop" and "it fell over" alike).
 
 ## Step 2 — Establish what was already re-sealed
 
-Re-run the per-board coordinate inventory (ready-207's script, or its
-successor) against the board **right now**, and classify every coordinate by
-what the relay currently serves for it:
+Re-run the per-board coordinate inventory against the board **right now**,
+and classify every coordinate by what the relay currently serves for it. The
+dry run is the tool — it is read-only by construction and reports the
+plaintext/sealed split per coordinate:
+
+```
+go run ./scripts/resealplan --board <boardD> --json-out stop-point.json
+```
+
+Every coordinate it still lists under `reseal: true` is one the pass had not
+reached; every coordinate it now reports as `already-sealed` that was
+plaintext in the pre-pass plan is one the pass completed. Then confirm the
+relay and the local log agree on the winning event per coordinate:
 
 ```
 rd relay audit --relay wss://relay.3dl.network --board 30301:<owner>:<boardD>
@@ -148,7 +158,9 @@ State this without softening:
 - **A coordinate stranded by the 64 KiB relay limit (ready-c3e) is not lost
   either way** — the client-side size guard refuses the oversized publish
   before it happens, so that coordinate simply stays plaintext, flagged, not
-  silently dropped and not a rollback case.
+  silently dropped and not a rollback case. (At the 2026-08-05 dry run there
+  are none: `go run ./scripts/resealplan` reports `WOULD HALT THE PASS: none`.
+  Re-derive that before each board's pass rather than inheriting it.)
 
 ## Dry-walk record
 
