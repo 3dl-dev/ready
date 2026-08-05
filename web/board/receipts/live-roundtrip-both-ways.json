@@ -1,0 +1,50 @@
+{
+  "script": "live-roundtrip-both-ways.mjs",
+  "ran_at": "2026-08-05T01:58:54.546Z",
+  "commit": "f881330b59649d0ec1a04c01af0dbeac03c32352",
+  "dirty": true,
+  "host": "workshop",
+  "relay": "wss://relay.3dl.network",
+  "board_coord": "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:b4359msfftpuo",
+  "mode": "public",
+  "checks": [
+    {
+      "name": "1/3 the browser's column move is in the independent projection",
+      "ok": true
+    },
+    {
+      "name": "2/3 the browser's title edit is in the independent projection",
+      "ok": true
+    },
+    {
+      "name": "3/3 the browser's gate approval is in the independent projection, with actor and reason",
+      "ok": true
+    },
+    {
+      "name": "the approved gate left 'rd gates' on the independent reader",
+      "ok": true
+    },
+    {
+      "name": "before the CLI ran, the open board showed neither change",
+      "ok": true
+    },
+    {
+      "name": "the CLI's rename reached the open board with no reload",
+      "ok": true
+    },
+    {
+      "name": "an item CREATED by the CLI appeared on the open board with no reload",
+      "ok": true
+    },
+    {
+      "name": "the page was NEVER reloaded — same document, same JS context",
+      "ok": true
+    },
+    {
+      "name": "an independent rd sees the CLI's title AND the browser's claim on the same item",
+      "ok": true
+    }
+  ],
+  "passed": 9,
+  "total": 9
+}

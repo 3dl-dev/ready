@@ -1,0 +1,86 @@
+{
+  "script": "live-write-roundtrip.mjs",
+  "ran_at": "2026-08-05T02:03:24.430Z",
+  "commit": "f881330b59649d0ec1a04c01af0dbeac03c32352",
+  "dirty": true,
+  "host": "workshop",
+  "relay": "wss://relay.3dl.network",
+  "board_coord": "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:b2blivemsffw2jc",
+  "mode": "public",
+  "checks": [
+    {
+      "name": "1. status move (drag a card between columns)",
+      "ok": true
+    },
+    {
+      "name": "2. claim",
+      "ok": true
+    },
+    {
+      "name": "3. close",
+      "ok": true
+    },
+    {
+      "name": "4. retitle",
+      "ok": true
+    },
+    {
+      "name": "5. re-prioritise",
+      "ok": true
+    },
+    {
+      "name": "6. label add",
+      "ok": true
+    },
+    {
+      "name": "7. gate approve, from the rail, with a reason",
+      "ok": true
+    },
+    {
+      "name": "7. approve leaves rd gates, clears Gate/GateMsgID, unblocks the item live",
+      "ok": true
+    },
+    {
+      "name": "7. a BLOCKED-and-gated item is rulable from the rail and stays blocked afterwards",
+      "ok": true
+    },
+    {
+      "name": "L. THE WHOLE LOOP: rd gate on machine A -> browser rail approve -> relay -> machine B -> the agent resumes",
+      "ok": true
+    },
+    {
+      "name": "7. an empty reason is refused locally and publishes nothing",
+      "ok": true
+    },
+    {
+      "name": "7. gate reject, from the detail pane's banner",
+      "ok": true
+    },
+    {
+      "name": "7. reject preserves the ruling and leaves the gate pending",
+      "ok": true
+    },
+    {
+      "name": "6. an ungranted key cannot resolve a gate: client-side AND read-side",
+      "ok": true
+    },
+    {
+      "name": "7. the last gate resolved empties BOTH the rail and rd gates",
+      "ok": true
+    },
+    {
+      "name": "5. two rapid writes — later wins, created_at strictly increasing",
+      "ok": true
+    },
+    {
+      "name": "4. relay rejection reverts the card and states the relay's reason",
+      "ok": true
+    },
+    {
+      "name": "6. ungranted key refused client-side AND by the relay",
+      "ok": true
+    }
+  ],
+  "passed": 18,
+  "total": 18
+}
