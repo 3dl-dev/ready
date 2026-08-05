@@ -16,21 +16,42 @@
 // approve/reject controls. Traced and root-caused in ready-c7b; this file is
 // the regression pin ready-c7b calls for.
 //
-// WHY TWO BOARDS. A single freshly-opened board closes this window in the same
-// synchronous turn that mounts it (loadBoardItems has nothing left to await
-// once its one board is folded), which makes the race real in a browser
-// (relay round-trips, real rendering cost) but nearly un-observable from
-// inside one jsdom microtask queue. Two boards make the window OBSERVABLE
-// without timing tricks: RACE_BOARD's items fetch resolves immediately and
-// SLOW_BOARD's is held open by a promise this test controls, so
-// loadBoardItems — and therefore afterLogin — cannot reach settle() until the
-// test says so. Everything asserted below happens strictly BETWEEN
-// RACE_BOARD's own paint and settle().
+// WHY TWO BOARDS. A single freshly-opened board's reconcileOne is followed,
+// with nothing left to await, by loadBoardItems returning and settle()
+// flushing — so a controlled (non-network) test cannot observe a moment
+// between "this board's writer exists" and "the DOM shows it" for exactly one
+// board; settle()'s own flush always lands first. Two boards make the window
+// OBSERVABLE without timing tricks: RACE_BOARD's items fetch resolves
+// immediately and SLOW_BOARD's is held open by a promise this test controls,
+// so loadBoardItems — and therefore afterLogin, and therefore settle() —
+// cannot proceed until the test says so. Everything asserted below happens
+// strictly BETWEEN RACE_BOARD's own paint and settle().
 //
 // THE FIX THIS PINS: reconcileOne() now receives (and immediately attaches)
 // the writer loadBoardItems already built for that one board, instead of
 // waiting for settle()'s bulk hand-off. See main.ts's LoadBoardOptions.onBoard
 // and BoardView.reconcileOne.
+//
+// A SEPARATE, NARROWER GAP THIS FILE DOES NOT PIN, reported instead of
+// shipped as an untested "fix": a live run against wss://relay.3dl.network,
+// reproducing ready-fd2's STEP 2/5 (open a board this SAME identity already
+// opened earlier in the SAME session — so ready-fe4's cache paints it before
+// any relay round-trip starts), still showed the exact "Read-only: no board
+// finished loading." text for roughly as long as that round-trip took, even
+// with this fix applied. Diagnostic instrumentation (reverted) confirmed the
+// writer and the DOM update land TOGETHER, atomically, the instant this
+// board's own fetch resolves — so nothing in main.ts is delaying it further;
+// the remaining width is the real network latency between "cache paint" and
+// "this board's own verified answer", which no internal repaint timing can
+// close without either not painting the cache (the property ready-fe4 shipped
+// and this item requires kept) or authorizing a write before verification (a
+// security regression). scripts/live-write-roundtrip.mjs's and
+// scripts/live-roundtrip-both-ways.mjs's openBoard() were corrected instead:
+// ".card" stopped being proof of a REAL (non-cached) load the moment caching
+// shipped, and both now wait for the left-tree node's own `data-board-state`
+// to leave "stale" — an existing, purpose-built signal (render.ts: "it is how
+// a live run can check... that what the page says about a board is what the
+// load found"), not a new sleep or retry.
 import { describe, expect, it, vi } from "vitest";
 import { afterLogin, type BoardDeps, type Identity } from "./main";
 import { authTransition } from "./lib/auth";

@@ -647,6 +647,26 @@ async function openBoard(cdp, origin, coord, esbuild, secretHex, opts = {}) {
       90000,
     );
   }
+  // ready-c7b: ".card" alone is no longer proof this board's own load is real.
+  // ready-fe4 paints from a CACHE the instant this identity has opened `coord`
+  // before in this session (line ~1076 of this file does exactly that, ahead
+  // of the ready-fd2 steps below), so ".card" can be satisfied by a stale,
+  // unverified snapshot before this call's own relay round-trip ever lands —
+  // main.ts correctly refuses to write against that snapshot. The left-tree
+  // node's `data-board-state` attribute exists FOR EXACTLY THIS (render.ts:
+  // "it is how a live run can check, per board, that what the page says about
+  // a board is what the load found") and flips off "stale" the instant this
+  // board's REAL fold — and with it, its writer — lands (main.ts's
+  // reconcileOne, flushed immediately for a single-board open). Waiting for it
+  // here is not a retry or a longer timeout on the ORIGINAL condition; it is
+  // the condition ready-fd2's steps actually need and ".card" stopped
+  // guaranteeing once caching shipped.
+  await waitFor(
+    cdp,
+    `document.querySelector('[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
+    `${coord}'s own (non-cached) load`,
+    90000,
+  );
   return { cards: await cdp.evaluate("return document.querySelectorAll('.card').length;") };
 }
 
