@@ -327,7 +327,11 @@ async function openBoard(cdp, origin, coord, esbuild, secretHex) {
   // see the matching comment in live-write-roundtrip.mjs's openBoard.
   await waitFor(
     cdp,
-    `document.querySelector('[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
+    // ".node" specifically — see the matching comment in
+    // live-write-roundtrip.mjs's openBoard: an unscoped selector can match
+    // buildBoardStatus's degraded-board row instead, which carries
+    // data-board-coord but never data-board-state.
+    `document.querySelector('.node[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
     `${coord}'s own (non-cached) load`,
     90000,
   );

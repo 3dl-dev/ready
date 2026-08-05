@@ -663,7 +663,13 @@ async function openBoard(cdp, origin, coord, esbuild, secretHex, opts = {}) {
   // guaranteeing once caching shipped.
   await waitFor(
     cdp,
-    `document.querySelector('[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
+    // ".node" specifically: buildBoardStatus's degraded-board row ALSO carries
+    // data-board-coord (render.ts:757, "for the same reason the tree node
+    // does") but never data-board-state, and it renders before the tree node
+    // in DOM order — an unscoped selector matches IT first and reads
+    // undefined, which is trivially !== "stale" and defeats this wait
+    // entirely. Verified via a scratch jsdom probe before trusting this live.
+    `document.querySelector('.node[data-board-coord=${JSON.stringify(coord)}]')?.dataset.boardState !== "stale"`,
     `${coord}'s own (non-cached) load`,
     90000,
   );
