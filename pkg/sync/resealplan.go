@@ -63,6 +63,13 @@ type CoordPlan struct {
 	ItemID  string `json:"item_id"`
 	EventID string `json:"event_id"`
 	Author  string `json:"author"`
+	// RelayCreatedAt is the created_at of the card the RELAY is serving at this
+	// coordinate right now. It is the only floor a replacement must actually beat:
+	// latest-wins is decided on what the relay holds, and the local log cannot see
+	// another machine's newer card (ready-500). An executor stamps strictly above
+	// this, so it is carried on the plan rather than re-fetched by the caller —
+	// re-fetching would open a window in which the two disagree.
+	RelayCreatedAt int64 `json:"relay_created_at"`
 	// Reseal is true when this coordinate would be re-sealed; when false,
 	// SkipReason names which of the constants above applies.
 	Reseal     bool   `json:"reseal"`
@@ -159,11 +166,12 @@ func BuildResealPlan(ctx context.Context, relayURL, owner, boardD, boardCoord st
 
 	for c, e := range winners {
 		cp := CoordPlan{
-			Coord:      c,
-			ItemID:     tagValue(e, "d"),
-			EventID:    e.ID,
-			Author:     e.PubKey,
-			BrokenRefs: refsByEventID[e.ID],
+			Coord:          c,
+			ItemID:         tagValue(e, "d"),
+			EventID:        e.ID,
+			Author:         e.PubKey,
+			RelayCreatedAt: e.CreatedAt,
+			BrokenRefs:     refsByEventID[e.ID],
 		}
 		n, serr := marshaledEventSize(e)
 		if serr != nil {
