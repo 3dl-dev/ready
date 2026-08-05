@@ -14,6 +14,7 @@ package main
 // real cobra command, and re-reads the relay to check the result.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -118,7 +119,7 @@ func runSweep(t *testing.T, f *sweepFixture, args ...string) (string, error) {
 func resetSweepFlags(t *testing.T) {
 	t.Helper()
 	fl := confidentialResealCmd.Flags()
-	for _, name := range []string{"dry-run", "limit", "relay"} {
+	for _, name := range []string{"dry-run", "limit", "relay", "include-quarantined"} {
 		f := fl.Lookup(name)
 		if f == nil {
 			t.Fatalf("confidentialResealCmd has no --%s flag", name)
@@ -132,7 +133,7 @@ func resetSweepFlags(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		for _, name := range []string{"dry-run", "limit", "relay"} {
+		for _, name := range []string{"dry-run", "limit", "relay", "include-quarantined"} {
 			if f := fl.Lookup(name); f != nil {
 				_ = f.Value.Set(f.DefValue)
 			}
@@ -387,5 +388,205 @@ func TestResealSweep_RefusesABoardThatWasNeverConfidential(t *testing.T) {
 	}
 	if n, _ := f.relayPlaintextCount(t); n == 0 {
 		t.Error("the refusal still sealed the board's cards")
+	}
+}
+
+// newQuarantinedFixture builds a confidential board and then writes a PLAINTEXT card
+// onto it AFTER the cutover — the exact shape the fold quarantines (ready-710), and
+// the exact shape a live test harness left on two live boards. The card goes to the
+// log and the relay; no item for it ever enters the projection.
+func newQuarantinedFixture(t *testing.T, author *nostr.Key) (*sweepFixture, string) {
+	t.Helper()
+	f := newSweepFixture(t, map[string]string{"a": "PLAINTEXT ordinary card"})
+
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	signer := k
+	if author != nil {
+		signer = author
+	}
+	itemID := f.boardD + "-quar"
+	// AFTER the cutover (which enableConfidential just set), so shouldQuarantine
+	// keeps it out of the fold — but within the log's admissible-created_at window,
+	// since AppendUnique rejects a far-future stamp as a replay defense.
+	post := time.Now().Unix() + 2
+	card, err := rdSync.BuildCardEvent(signer, rdSync.CardSpec{
+		ItemID: itemID, Title: "PLAINTEXT written past the cutover", Status: "active",
+		Priority: "p2", Type: "task", BoardD: f.boardD, BoardAuthor: f.owner,
+	}, post)
+	if err != nil {
+		t.Fatalf("build post-cutover plaintext card: %v", err)
+	}
+	n, aerr := rdSync.NewNostrLog(rdSync.NostrLogPath(f.dir)).AppendUnique([]*nostr.Event{card})
+	if aerr != nil {
+		t.Fatalf("append: %v", aerr)
+	}
+	if n != 1 {
+		t.Fatalf("the fixture card was not appended to the log (added=%d) — the premise is that the log HOLDS it while the fold refuses to project it", n)
+	}
+	f.relay.seed(card)
+
+	// The premise: the relay serves it, the projection does not know it exists.
+	if _, byID, perr := nostrProjectAllItems(); perr != nil {
+		t.Fatalf("project: %v", perr)
+	} else if byID[itemID] != nil {
+		t.Fatalf("fixture does not model the defect: %s IS in the projection, so it is not quarantined", itemID)
+	}
+	return f, itemID
+}
+
+// TestResealSweep_QuarantinedCardStaysReadableUnlessOptedIn: by default a card the
+// fold will not project is NAMED and left alone, and the board is reported dirty.
+// Sealing it promotes it into the projection, which is a real consequence and must
+// not happen because someone ran the ordinary command.
+func TestResealSweep_QuarantinedCardStaysReadableUnlessOptedIn(t *testing.T) {
+	f, itemID := newQuarantinedFixture(t, nil)
+
+	out, err := runSweep(t, f)
+	if err == nil {
+		t.Fatalf("the sweep reported a board clean while the relay still serves a quarantined plaintext card:\n%s", out)
+	}
+	if !strings.Contains(out, "UNPROJECTABLE") {
+		t.Errorf("the quarantined coordinate was not named: err=%v\n%s", err, out)
+	}
+	if n, _ := f.relayPlaintextCount(t); n != 1 {
+		t.Errorf("relay serves %d plaintext card(s), want the 1 quarantined one left alone", n)
+	}
+	if _, byID, _ := nostrProjectAllItems(); byID[itemID] != nil {
+		t.Error("the default run promoted a quarantined card into the projection")
+	}
+}
+
+// TestResealSweep_IncludeQuarantinedSealsItFromItsOwnBytes: opted in, the card is
+// sealed from its own plaintext bytes, the relay stops serving it readable, and the
+// promotion is reported rather than silent.
+func TestResealSweep_IncludeQuarantinedSealsItFromItsOwnBytes(t *testing.T) {
+	f, itemID := newQuarantinedFixture(t, nil)
+
+	out, err := runSweep(t, f, "include-quarantined", "true")
+	if err != nil {
+		t.Fatalf("opted-in sweep failed: %v\n%s", err, out)
+	}
+	if after, titles := f.relayPlaintextCount(t); after != 0 {
+		t.Fatalf("relay still serves %d readable card(s) (%v):\n%s", after, titles, out)
+	}
+	if !strings.Contains(out, "PROMOTED") {
+		t.Errorf("the promotion into the projection was not reported:\n%s", out)
+	}
+	// The free text must be gone from the REPLACEMENT, not merely re-tagged. Checked
+	// on the winning event for the coordinate — the storingRelay keeps superseded
+	// events, where a real relay evicts them on addressable replacement, so asserting
+	// over every stored copy would assert against a state no reader ever sees.
+	f.relay.mu.Lock()
+	defer f.relay.mu.Unlock()
+	var winner *nostr.Event
+	for _, e := range f.relay.events {
+		if e.Kind != rdSync.KindCard || tagVal1(e, "d") != itemID {
+			continue
+		}
+		if winner == nil || e.CreatedAt > winner.CreatedAt {
+			winner = e
+		}
+	}
+	if winner == nil {
+		t.Fatal("no card for the quarantined coordinate on the relay at all")
+	}
+	if tagVal1(winner, "enc") == "" {
+		t.Fatalf("the winning card at the quarantined coordinate is still PLAINTEXT: %s", winner.ID)
+	}
+	if strings.Contains(tagVal1(winner, "title"), "PLAINTEXT written past the cutover") {
+		t.Fatalf("the sealed replacement still carries the title in the clear: %s", winner.ID)
+	}
+	if strings.Contains(winner.Content, "past the cutover") {
+		t.Fatalf("the sealed replacement's Content is not ciphertext: %s", winner.ID)
+	}
+}
+
+// TestResealSweep_NeverOffersAnotherKeysQuarantinedCard and
+// TestResealQuarantinedCard_RefusesAnotherKeysCard cover the same security property
+// at the two layers that must BOTH hold, because either alone is one refactor away
+// from being the only thing standing between a stranger's cleartext and the
+// projection.
+//
+// The property: the quarantine exists to keep a hostile writer's cleartext OUT of
+// the fold. Sealing such a card under the owner's key would launder it straight in —
+// it would become a well-formed confidential card and start folding. Being able to
+// seal your OWN quarantined card must never become a way to bless someone else's.
+func TestResealSweep_NeverOffersAnotherKeysQuarantinedCard(t *testing.T) {
+	stranger, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	f, itemID := newQuarantinedFixture(t, stranger)
+
+	out, err := runSweep(t, f, "include-quarantined", "true")
+	if err == nil {
+		t.Fatalf("the sweep reported clean while a stranger's cleartext card is still readable on the relay:\n%s", out)
+	}
+	if _, byID, _ := nostrProjectAllItems(); byID[itemID] != nil {
+		t.Fatal("a stranger's quarantined cleartext was laundered into the projection")
+	}
+}
+
+// TestResealQuarantinedCard_RefusesAnotherKeysCard drives the seal function DIRECTLY.
+//
+// It exists because the sweep-level test above cannot fail for the reason that
+// matters: BuildResealPlan already classifies a foreign-authored card as
+// SkipForeignAuthor, so it never reaches the quarantined path at all, and deleting
+// resealQuarantinedCard's own author check leaves that test green. (Verified: it
+// does.) The refusal inside the function is the layer that survives someone widening
+// the plan later, so it is tested where it actually lives.
+func TestResealQuarantinedCard_RefusesAnotherKeysCard(t *testing.T) {
+	f, _ := newQuarantinedFixture(t, nil)
+	stranger, err := nostr.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	strangerCard, err := rdSync.BuildCardEvent(stranger, rdSync.CardSpec{
+		ItemID: f.boardD + "-stranger", Title: "cleartext from a key that is not the owner",
+		Status: "active", Priority: "p2", Type: "task", BoardD: f.boardD, BoardAuthor: f.owner,
+	}, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("build stranger card: %v", err)
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		t.Fatalf("publisher: %v", err)
+	}
+
+	out, err := resealQuarantinedCard(f.dir, pub, f.owner, f.boardD, strangerCard, strangerCard.CreatedAt)
+	if err == nil {
+		t.Fatalf("resealQuarantinedCard sealed a card signed by another key (outcome %+v) — that promotes a stranger's cleartext into the projection", out)
+	}
+	if !errors.Is(err, errCardForeignAuthor) {
+		t.Errorf("refusal does not classify as a foreign-author refusal, so a sweep cannot tell it from a real failure: %v", err)
+	}
+}
+
+// TestResealQuarantinedCard_RefusesAnAlreadySealedCard: a malformed-but-SEALED card
+// is not this path's business. It may be an attacker's, and re-sealing it would mint
+// a new event id on every run and never converge.
+func TestResealQuarantinedCard_RefusesAnAlreadySealedCard(t *testing.T) {
+	f, _ := newQuarantinedFixture(t, nil)
+	k, err := nostrKey()
+	if err != nil {
+		t.Fatalf("nostrKey: %v", err)
+	}
+	sealed, err := rdSync.BuildCardEvent(k, rdSync.CardSpec{
+		ItemID: f.boardD + "-sealed", Title: "already sealed", Status: "active",
+		Priority: "p2", Type: "task", BoardD: f.boardD, BoardAuthor: f.owner,
+		Enc: &rdSync.Envelope{CEK: [32]byte{9, 9, 9}, Epoch: 1},
+	}, time.Now().Unix())
+	if err != nil {
+		t.Fatalf("build sealed card: %v", err)
+	}
+	pub, ok, err := nostrPublisher()
+	if err != nil || !ok {
+		t.Fatalf("publisher: %v", err)
+	}
+	if _, err := resealQuarantinedCard(f.dir, pub, f.owner, f.boardD, sealed, sealed.CreatedAt); err == nil {
+		t.Fatal("resealQuarantinedCard re-sealed an already-sealed card; that mints a new id every run and never converges")
 	}
 }

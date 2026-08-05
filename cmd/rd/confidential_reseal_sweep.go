@@ -58,6 +58,9 @@ type resealSweepResult struct {
 	// Unprojectable names coordinates whose card IS in the local log but which the
 	// fold does not project, so no item exists to re-seal. They stay readable.
 	Unprojectable []string
+	// Promoted names quarantined coordinates sealed from their own bytes under
+	// --include-quarantined. Each one now FOLDS where it did not before.
+	Promoted []string
 }
 
 var confidentialResealCmd = &cobra.Command{
@@ -91,6 +94,7 @@ board that other projects kept writing to converges rather than drifting.`,
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		limit, _ := cmd.Flags().GetInt("limit")
 		relayFlag, _ := cmd.Flags().GetString("relay")
+		includeQuarantined, _ := cmd.Flags().GetBool("include-quarantined")
 
 		dir, ok := readyProjectDir()
 		if !ok {
@@ -203,11 +207,25 @@ board that other projects kept writing to converges rather than drifting.`,
 				//     cannot run without a projected item. It is a disposition, not
 				//     a transient — so it is NAMED and the board is reported dirty,
 				//     never skipped quietly.
-				if _, held := rdSync.WinningCardEvent(localEvents, coord, cp.ItemID); !held {
+				held, ok := rdSync.WinningCardEvent(localEvents, coord, cp.ItemID)
+				if !ok {
 					return fmt.Errorf("HALTED at %s: the relay serves a plaintext card for it and this machine's log holds none — the log is behind the relay; `rd sync` and re-run", cp.ItemID)
 				}
-				res.Unprojectable = append(res.Unprojectable, cp.ItemID)
-				fmt.Printf("    %s  UNPROJECTABLE — the log holds this card but the fold does not project it, so it cannot be re-sealed and stays readable (ready-3e3)\n", cp.ItemID)
+				if !includeQuarantined {
+					res.Unprojectable = append(res.Unprojectable, cp.ItemID)
+					fmt.Printf("    %s  UNPROJECTABLE — the log holds this card but the fold does not project it, so it cannot be re-sealed and stays readable; --include-quarantined seals it from its own bytes\n", cp.ItemID)
+					continue
+				}
+				out, qerr := resealQuarantinedCard(dir, pub, boardAuthor, boardD, held, cp.RelayCreatedAt)
+				if qerr != nil {
+					return fmt.Errorf("HALTED at %s (%d of %d re-sealed so far; re-run to resume): %w", cp.ItemID, res.Sealed, len(todo), qerr)
+				}
+				if out.RelayRejected {
+					return fmt.Errorf("HALTED at %s: the sealed replacement was dead-lettered on size, so the relay still serves the plaintext", cp.ItemID)
+				}
+				res.Promoted = append(res.Promoted, cp.ItemID)
+				res.Sealed++
+				fmt.Printf("    %s  quarantined plaintext sealed from its own bytes — it now folds into the projection where it did not before\n", cp.ItemID)
 				continue
 			}
 			out, rerr := resealCard(dir, pub, boardAuthor, boardD, item, resealOptions{RelayCardCreatedAt: cp.RelayCreatedAt})
@@ -257,6 +275,9 @@ board that other projects kept writing to converges rather than drifting.`,
 		}
 		if len(res.Unprojectable) > 0 {
 			fmt.Printf("  UNPROJECTABLE (in the log, not in the fold — cannot be re-sealed): %v\n", res.Unprojectable)
+		}
+		if len(res.Promoted) > 0 {
+			fmt.Printf("  PROMOTED (%d quarantined card(s) sealed from their own bytes — they now fold into the projection): %v\n", len(res.Promoted), res.Promoted)
 		}
 		if res.PlaintextAfter > 0 {
 			remaining := map[string]int{}
@@ -313,6 +334,7 @@ func formatSkipped(m map[string]int) string {
 func init() {
 	confidentialResealCmd.Flags().Bool("dry-run", false, "print exactly which coordinates would be re-sealed; publish nothing")
 	confidentialResealCmd.Flags().Int("limit", 0, "re-seal at most N coordinates this run (0 = all); the pass is resumable, so a limited run is a partial one, not a different one")
+	confidentialResealCmd.Flags().Bool("include-quarantined", false, "also seal PLAINTEXT cards the fold quarantines (owner-signed only), building the replacement from the card's own bytes. Each one starts folding into the projection afterwards — opt in deliberately")
 	confidentialResealCmd.Flags().String("relay", "", "relay to plan and verify against (default: the first configured read relay)")
 	confidentialCmd.AddCommand(confidentialResealCmd)
 }
