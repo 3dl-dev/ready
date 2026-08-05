@@ -269,3 +269,85 @@ func shortID(id string) string {
 	}
 	return id[:12]
 }
+
+// resealQuarantinedCard seals a PLAINTEXT card the fold will not project, building
+// the replacement from that card's own bytes rather than from a projected item.
+//
+// WHY IT IS NEEDED. On a confidential board the fail-closed fold gate (ready-710)
+// quarantines a plaintext card that is not grandfathered — one published after the
+// board's cutover, or any of them when a withheld grant collapses the cutover to
+// zero. A quarantined card never becomes an item, so resealCard cannot reach it,
+// while a relay keeps serving its cleartext to anyone. Measured on the live
+// portfolio: 68 such coordinates on one board, 1 on another.
+//
+// WHY SEALING FROM THE EVENT'S OWN BYTES IS SAFE HERE. resealCard insists on the
+// projected item because a projection can carry the "[encrypted]" placeholder for
+// an item this machine could not decrypt, and sealing THAT destroys the original in
+// latest-wins (ready-76b). A quarantined PLAINTEXT card has no ciphertext at all —
+// its bytes on the wire are the free text — so there is no placeholder to mistake
+// for content.
+//
+// TWO GUARDS THIS PATH MUST STILL CARRY, because promoting a card out of quarantine
+// makes it FOLD where it did not before:
+//
+//   - OWNER-SIGNED ONLY. The quarantine's security purpose is to stop a hostile
+//     writer's cleartext entering the projection. Sealing another key's quarantined
+//     card would launder exactly that, so a foreign author is refused here as it is
+//     in resealCard — with a separate check, because this path never reaches the
+//     item-based one.
+//   - ALREADY-SEALED REFUSED. A malformed-but-SEALED card is not this path's
+//     business; it may be an attacker's, and re-sealing it would mint a new id
+//     forever. SealPlaintextCard rejects it, and so does the caller's plan.
+func resealQuarantinedCard(dir string, pub *rdSync.Publisher, boardAuthor, boardD string, plaintext *nostr.Event, relayCreatedAt int64) (*resealOutcome, error) {
+	if plaintext == nil {
+		return nil, fmt.Errorf("reseal quarantined: no card event")
+	}
+	itemID := tagVal1(plaintext, "d")
+	coord := rdSync.BoardCoord(boardAuthor, boardD)
+	if !boardIsConfidential(dir) {
+		return nil, fmt.Errorf("refusing to re-seal %s: board %s is PUBLIC", itemID, coord)
+	}
+	signer := pub.Key.PubKeyHex()
+	if plaintext.PubKey != signer {
+		return nil, fmt.Errorf("refusing to re-seal quarantined card %s: it is signed by %s, not by %s — sealing another key's quarantined cleartext would promote it into the projection, which is precisely what the quarantine exists to prevent: %w",
+			itemID, shortKey(plaintext.PubKey), shortKey(signer), errCardForeignAuthor)
+	}
+	env, err := boardConfidentialEnvelope(dir, pub, boardAuthor, boardD)
+	if err != nil {
+		return nil, err
+	}
+	if env == nil {
+		return nil, fmt.Errorf("refusing to re-seal %s: board %s yielded no sealing key", itemID, coord)
+	}
+
+	// Strictly above BOTH the local copy and the one the relay serves — the same
+	// floor resealCard applies, for the same ready-500 reason.
+	floor := plaintext.CreatedAt
+	if relayCreatedAt > floor {
+		floor = relayCreatedAt
+	}
+	createdAt := nostrNextCreatedAt(pub.Log, rdSync.ItemDriftScope(itemID))
+	if createdAt <= floor {
+		createdAt = floor + 1
+	}
+
+	sealed, err := rdSync.SealPlaintextCard(pub.Key, plaintext, env, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	res, err := pub.PublishEvents(context.Background(), []*nostr.Event{sealed})
+	if err != nil {
+		return nil, fmt.Errorf("publishing sealed replacement for quarantined %s: %w", itemID, err)
+	}
+	return &resealOutcome{
+		ItemID:                   itemID,
+		OriginalEventID:          plaintext.ID,
+		OriginalCreatedAt:        plaintext.CreatedAt,
+		SealedEventID:            sealed.ID,
+		SealedCreatedAt:          sealed.CreatedAt,
+		Epoch:                    env.Epoch,
+		RelayRejected:            res.Rejected,
+		SupersededRelayCreatedAt: relayCreatedAt,
+		RelayFloorObserved:       relayCreatedAt > 0,
+	}, nil
+}

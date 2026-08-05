@@ -78,39 +78,11 @@ func ProjectSealedWireSize(e *nostr.Event) (SealedSizeProjection, error) {
 		return out, err
 	}
 
-	// The free text that moves into the sealed blob, read off the card itself.
-	var labels []string
-	for _, tg := range e.Tags {
-		if len(tg) > 1 && tg[0] == "l" {
-			labels = append(labels, tg[1])
-		}
-	}
-	payload, err := json.Marshal(cardPayload{
-		Title:     tagValue(e, "title"),
-		Context:   e.Content,
-		WaitingOn: tagValue(e, "waiting_on"),
-		Labels:    labels,
-	})
-	if err != nil {
-		return out, fmt.Errorf("sync: sealed-size projection: marshal payload: %w", err)
-	}
 	var throwawayCEK, throwawayLTK [32]byte
-	sealedContent, err := sealContent(throwawayCEK, payload)
+	sealedContent, tags, err := sealPlaintextCardParts(e, throwawayCEK, &throwawayLTK, &Envelope{Epoch: cekEpochSizeCeiling})
 	if err != nil {
-		return out, fmt.Errorf("sync: sealed-size projection: seal payload: %w", err)
+		return out, fmt.Errorf("sync: sealed-size projection: %w", err)
 	}
-
-	tags := make([][]string, 0, len(e.Tags)+2)
-	for _, tg := range e.Tags {
-		if len(tg) > 0 && (tg[0] == "title" || tg[0] == "waiting_on" || tg[0] == "l") {
-			continue
-		}
-		tags = append(tags, tg)
-	}
-	for _, label := range labels {
-		tags = append(tags, []string{"l", labelToken(throwawayLTK, label)})
-	}
-	tags = append(tags, encMarkerTags(&Envelope{Epoch: cekEpochSizeCeiling})...)
 
 	k, err := nostr.GenerateKey()
 	if err != nil {
@@ -138,3 +110,99 @@ func ProjectSealedWireSize(e *nostr.Event) (SealedSizeProjection, error) {
 // double digits carries a byte more than one that has not, and a projection must
 // not under-report because the board happens to be on epoch 1 today.
 const cekEpochSizeCeiling = 999999
+
+// sealPlaintextCardParts turns a PLAINTEXT card event into the content and tag set
+// its sealed replacement carries: the free text (title, context, waiting_on, labels)
+// moves into the sealed blob, every CLEAR routing tag survives untouched, labels
+// come back as HMAC tokens, and the enc markers are appended.
+//
+// It is shared by the size projection and by the real sealer (SealPlaintextCard) on
+// purpose. Those two must agree exactly — a projection that measured a different
+// shape than the sealer produces would be a size guard measuring the wrong event,
+// which is the failure mode ready-c3e exists to prevent.
+func sealPlaintextCardParts(e *nostr.Event, cek [32]byte, ltk *[32]byte, env *Envelope) (string, [][]string, error) {
+	var labels []string
+	for _, tg := range e.Tags {
+		if len(tg) > 1 && tg[0] == "l" {
+			labels = append(labels, tg[1])
+		}
+	}
+	payload, err := json.Marshal(cardPayload{
+		Title:     tagValue(e, "title"),
+		Context:   e.Content,
+		WaitingOn: tagValue(e, "waiting_on"),
+		Labels:    labels,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal payload: %w", err)
+	}
+	sealedContent, err := sealContent(cek, payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("seal payload: %w", err)
+	}
+	tags := make([][]string, 0, len(e.Tags)+2)
+	for _, tg := range e.Tags {
+		if len(tg) > 0 && (tg[0] == "title" || tg[0] == "waiting_on" || tg[0] == "l") {
+			continue
+		}
+		tags = append(tags, tg)
+	}
+	// Matches BuildCardEvent exactly (pkg/sync/nostrwire.go): with an LTK the clear
+	// l value is an owner-keyed HMAC token; WITHOUT one, NO clear l tag is emitted at
+	// all, because a plaintext label tag on a confidential board leaks the label. The
+	// label rides in the sealed blob either way. The size projection passes a
+	// non-nil throwaway LTK deliberately, so it measures the LARGER form.
+	if ltk != nil {
+		for _, label := range labels {
+			tags = append(tags, []string{"l", labelToken(*ltk, label)})
+		}
+	}
+	tags = append(tags, encMarkerTags(env)...)
+	return sealedContent, tags, nil
+}
+
+// SealPlaintextCard builds the sealed replacement for a PLAINTEXT card event, from
+// that event's own bytes, signed by k and stamped at createdAt.
+//
+// WHY THIS EXISTS SEPARATELY FROM resealCard. The ordinary re-seal path rebuilds the
+// card from the PROJECTED item, and must: a projected item has had the fold's
+// overlays applied, and re-sealing an item this machine could not decrypt would seal
+// the literal "[encrypted]" placeholder as the card's content and destroy the
+// original in latest-wins (ready-76b).
+//
+// But a card the fold QUARANTINES never becomes an item at all — on a confidential
+// board a plaintext card published after the cutover is dropped from the projection
+// (ready-710, fail-closed), while a relay keeps serving its cleartext to anyone. The
+// item-based path cannot reach those coordinates, so without this they stay readable
+// forever.
+//
+// Sealing from the event's own bytes is SAFE HERE FOR THE REASON THE GENERAL CASE IS
+// NOT: the source card is plaintext. There is no ciphertext to mis-decrypt and no
+// placeholder to mistake for content — the bytes on the wire ARE the free text. The
+// caller is still responsible for the two checks this cannot make: that the card is
+// signed by the key doing the sealing (an owner must never launder another writer's
+// quarantined cleartext into the projection), and that the replacement is stamped
+// strictly above what the relay serves.
+func SealPlaintextCard(k *nostr.Key, e *nostr.Event, env *Envelope, createdAt int64) (*nostr.Event, error) {
+	if e == nil || k == nil {
+		return nil, fmt.Errorf("sync: seal plaintext card: nil event or key")
+	}
+	if e.Kind != KindCard {
+		return nil, fmt.Errorf("sync: seal plaintext card: event %s is kind %d, not a kind-%d card", e.ID, e.Kind, KindCard)
+	}
+	if tagValue(e, tagEnc) != "" {
+		return nil, fmt.Errorf("sync: seal plaintext card: %s is already sealed", tagValue(e, "d"))
+	}
+	if env == nil {
+		return nil, fmt.Errorf("sync: seal plaintext card: no sealing envelope for %s", tagValue(e, "d"))
+	}
+	content, tags, err := sealPlaintextCardParts(e, env.CEK, env.LTK, env)
+	if err != nil {
+		return nil, fmt.Errorf("sync: seal plaintext card %s: %w", tagValue(e, "d"), err)
+	}
+	sealed := &nostr.Event{Kind: e.Kind, CreatedAt: createdAt, Tags: tags, Content: content}
+	if err := sealed.Sign(k); err != nil {
+		return nil, fmt.Errorf("sync: seal plaintext card %s: sign: %w", tagValue(e, "d"), err)
+	}
+	return sealed, nil
+}
