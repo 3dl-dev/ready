@@ -156,6 +156,7 @@ func Build() (*File, error) {
 		b.vItemTimestampAboveFloat64SafeBound,
 		b.vItemContextContainsTimestampBytePattern,
 		b.vCreatedTagRejectsNonCanonicalShapes,
+		b.vDepEdgeArrayOrderIsDeterministic,
 	} {
 		if err := fn(); err != nil {
 			return nil, err
@@ -167,8 +168,12 @@ func Build() (*File, error) {
 		Spec:    "docs/design/board-fold-spec.md",
 		Note: "rd board-fold conformance vectors. Each case replays `events` through the LIVE fold " +
 			"(pkg/sync.ProjectItems, spec §1.1) with `options`, then applies the pkg/views predicates, " +
-			"and MUST reproduce `expect` exactly: items field-for-field, views as SETS (never as ordered " +
-			"lists — rendered order is not a total order, spec §15.7). Expectations are hand-authored from " +
+			"and MUST reproduce `expect` exactly: items field-for-field — INCLUDING the order of an item's " +
+			"own `blocks` / `blocked_by` arrays, which spec §8.1a fixes as ascending and which " +
+			"`dep_edge_arrays_are_sorted_not_visit_order` is built to catch you getting wrong — and views as " +
+			"SETS. Views are sets because this suite does not reproduce rd's rendered item order, NOT because " +
+			"that order is nondeterministic: spec §15.7 records that it is a strict total order. " +
+			"Expectations are hand-authored from " +
 			"the spec, not dumped from an implementation run. Regeneration is reproducible EXCEPT for the " +
 			"confidential vectors, whose sealed Content carries a fresh random AEAD nonce per run (event " +
 			"ids and schnorr signatures are deterministic), so those events differ byte-for-byte on every " +
@@ -368,7 +373,9 @@ func idsIn(blobs []json.RawMessage) []string {
 	return out
 }
 
-// sameSet compares two id lists as SETS (spec §15.7 forbids order assertions).
+// sameSet compares two id lists as SETS. §15.7 no longer forbids order
+// assertions — it explicitly permits them — but this harness does not produce
+// rd's rendered order to assert against; see the package doc in vectors.go.
 func sameSet(a, b []string) bool {
 	as := append([]string(nil), a...)
 	bs := append([]string(nil), b...)
