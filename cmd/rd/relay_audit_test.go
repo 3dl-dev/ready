@@ -70,6 +70,17 @@ type resealFixture struct {
 
 func newResealFixture(t *testing.T) *resealFixture {
 	t.Helper()
+	return newResealFixtureSeeding(t, true)
+}
+
+// newResealFixtureSeeding builds the fixture above, choosing WHICH version of
+// the re-sealed coordinate the relay serves. seedSealed=true is the converged
+// re-seal; seedSealed=false is the re-seal that was published locally but never
+// reached the relay, which still serves the PLAINTEXT original — the state the
+// whole ready-336 pass exists to eliminate, and the one an audit must never
+// wave through as "superseded".
+func newResealFixtureSeeding(t *testing.T, seedSealed bool) *resealFixture {
+	t.Helper()
 	dir, owner := setupNostrNativeProject(t)
 	boardD := projectPrefix(dir)
 	boardCoord := rdSync.BoardCoord(owner, boardD)
@@ -132,9 +143,14 @@ func newResealFixture(t *testing.T) *resealFixture {
 
 	relay := newStoringRelay(t)
 	t.Cleanup(relay.close)
-	// The relay converged on the re-seal (serves the SEALED replacement, not the
-	// plaintext original) and never received the missing item at all.
-	relay.seed(boardDef, sealedCard)
+	// The relay either converged on the re-seal (serves the SEALED replacement)
+	// or never received it (still serves the PLAINTEXT original). Either way it
+	// never received the missing item at all.
+	served := sealedCard
+	if !seedSealed {
+		served = plainCard
+	}
+	relay.seed(boardDef, served)
 
 	return &resealFixture{
 		dir: dir, owner: owner, boardD: boardD, boardCoord: boardCoord, relay: relay,
@@ -244,6 +260,37 @@ func TestRelayAuditCmd_ResealedCoordinateAloneExitsClean(t *testing.T) {
 	}
 	if !sliceContains(a.SupersededCoords, f.supersededTag) {
 		t.Fatalf("SupersededCoords = %v, want it to contain the re-sealed coordinate %s even though the audit exits clean", a.SupersededCoords, f.supersededTag)
+	}
+}
+
+// TestRelayAuditCmd_ResealThatNeverLandedIsStaleNotSuperseded is the case the
+// re-seal pass actually depends on being loud. Local history for a re-sealed
+// coordinate looks IDENTICAL in both worlds — plaintext original, sealed
+// replacement, append-only log — so `localHadPlaintext` is true either way. The
+// only thing that separates "the plaintext is gone from the relay" from "the
+// relay is STILL SERVING THE PLAINTEXT to strangers" is which event the relay
+// hands back. A classifier keyed on local history alone would call both
+// superseded and report the still-leaking coordinate as a clean, deliberate
+// change — the exact failure ready-336 exists to prevent, dressed as success.
+//
+// So: relay serves the plaintext original, local winner is the sealed
+// replacement. That must be STALE, must fail the audit, and must NOT appear as
+// superseded.
+func TestRelayAuditCmd_ResealThatNeverLandedIsStaleNotSuperseded(t *testing.T) {
+	f := newResealFixtureSeeding(t, false)
+
+	a, err := runRelayAuditJSON(t, f)
+	if err == nil {
+		t.Fatal("relay audit exited clean although the relay is still serving the PLAINTEXT card for a coordinate the local log has re-sealed")
+	}
+	if a.Match {
+		t.Fatalf("Match=true although the relay still serves plaintext for a re-sealed coordinate: %+v", a)
+	}
+	if !sliceContains(a.StaleCoords, f.supersededTag) {
+		t.Fatalf("StaleCoords = %v, want it to contain %s — the relay retained the plaintext predecessor", a.StaleCoords, f.supersededTag)
+	}
+	if sliceContains(a.SupersededCoords, f.supersededTag) {
+		t.Fatalf("a re-seal that never reached the relay was reported as SUPERSEDED (%v) — a still-readable plaintext card must never be classified as a deliberate, completed change: %+v", a.SupersededCoords, a)
 	}
 }
 
