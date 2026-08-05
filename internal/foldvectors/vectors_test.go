@@ -77,9 +77,12 @@ func TestFoldConformanceVectors(t *testing.T) {
 				}
 			}
 
-			// View membership is compared as a SET: rd's rendered order is not a
-			// total order (spec §15.7), so an ordered assertion here would be a
-			// flake, not a check.
+			// View membership is compared as a SET. Not because rd's order is
+			// nondeterministic — §15.7 retired that claim — but because Run
+			// applies the view predicates to id-sorted items rather than to
+			// `sortByPriorityETA`'s output. Item CONTENT order, including the
+			// blocks/blocked_by arrays §8.1a sorts, IS asserted above, in the
+			// field-for-field item comparison.
 			for name, want := range v.Expect.Views {
 				if !sameSet(want, gotViews[name]) {
 					t.Errorf("view %q: want %v, got %v", name, sorted(want), sorted(gotViews[name]))
@@ -126,7 +129,14 @@ func TestEveryVectorCitesALiveSpecClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spec: %v", err)
 	}
-	clausePattern := regexp.MustCompile(`\*\*§([0-9]+\.[0-9]+)`)
+	// The trailing `[a-z]?` matters: the spec numbers inserted clauses with a
+	// letter suffix (§8.1a, §9.8a, §11.11a-c, §11.13a, §16.11a — seven of them
+	// as of ready-eb9). Without it those clauses parse as their unsuffixed
+	// neighbour, so `known` never contains them and any vector citing one is
+	// rejected as citing a clause that "does not exist" — which is how
+	// dep_edge_arrays_are_sorted_not_visit_order, citing the very clause it
+	// pins, first failed this check.
+	clausePattern := regexp.MustCompile(`\*\*§([0-9]+\.[0-9]+[a-z]?)`)
 	known := map[string]bool{}
 	for _, m := range clausePattern.FindAllStringSubmatch(string(raw), -1) {
 		known[m[1]] = true

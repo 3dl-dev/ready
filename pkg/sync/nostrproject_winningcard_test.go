@@ -73,7 +73,16 @@ func TestWinningCardEvent_LatestWinsTieBreakAuthorAndVerification(t *testing.T) 
 
 	t.Run("a forged event never wins", func(t *testing.T) {
 		forged := *newer
-		forged.Sig = "00" + forged.Sig[2:]
+		// tamperSigHex XORs the first byte, so the signature ALWAYS changes.
+		// The previous form, `"00" + Sig[2:]`, was a silent no-op on the 1-in-256
+		// signatures that already begin with 00: the "forged" event was then
+		// byte-identical to the genuine one, so it SHOULD win on created_at and
+		// this subtest failed as a false alarm. Same defect, same fix as
+		// boardarchive_test.go's — see tamperSigHex's own comment there.
+		forged.Sig = tamperSigHex(t, newer.Sig)
+		if forged.Sig == newer.Sig {
+			t.Fatalf("test fixture bug: tampered sig equals the genuine one (%s), nothing was forged", newer.Sig)
+		}
 		win, ok := WinningCardEvent([]*nostr.Event{older, &forged}, coord, "x-1")
 		if !ok || win.ID != older.ID {
 			t.Fatalf("a forged later event won: win=%v ok=%v — a relay answer is untrusted input", win, ok)

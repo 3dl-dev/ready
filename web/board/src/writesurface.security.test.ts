@@ -749,7 +749,17 @@ describe("ready-c6b — WRITE SURFACE: a partially-accepted publish", () => {
     return {
       async signEvent(e: { created_at: number; kind: number; tags: string[][]; content: string }) {
         const good = sign(OWNER_SEC)(e);
-        return { ...good, sig: "00" + good.sig.slice(2) };
+        // Corrupt the first byte to a value it is NOT already, so the signature
+        // is guaranteed to change. Overwriting it with a CONSTANT "00" was a
+        // 1-in-256 flake: a genuine signature whose first hex byte is already
+        // "00" came back BYTE-IDENTICAL, still verified, and the anti-tautology
+        // assertion below ("every published event fails BIP-340 verification")
+        // failed on a correct fixture. Measured at 0.43% of signatures over a
+        // 3,000-signature sample (1/256 = 0.39%), which is why it passed
+        // locally and failed in CI. Flipping relative to the observed byte
+        // makes the corruption unconditional.
+        const first = good.sig.slice(0, 2) === "00" ? "01" : "00";
+        return { ...good, sig: first + good.sig.slice(2) };
       },
     };
   }

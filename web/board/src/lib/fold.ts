@@ -381,6 +381,27 @@ function applyDepAndGateStatus(items: Map<string, Item>): void {
     for (const dep of item.blocked_by ?? []) edges.push({ blockerID: dep, blockedID: id });
     item.blocked_by = undefined; // rebuilt below from validated edges only
   }
+  // DETERMINISTIC EDGE ORDER (spec §8.1a) — mirrors nostrproject.go's sort.
+  // Without this the arrays are populated in the order this client happens to
+  // REACH the edges in: `items` is a JS Map, so its iteration is insertion
+  // order (the order events were folded), and a card's raw `i` tags are drained
+  // in tag order. Both are deterministic per input yet DIFFERENT from rd's,
+  // so the same event set projected here and by rd produced `blocks` /
+  // `blocked_by` arrays with the same members in a different order — the two
+  // implementations disagreeing on the contract while every conformance vector
+  // stayed green, because until `dep_edge_arrays_are_sorted_not_visit_order`
+  // no vector carried an item with more than one edge on a side.
+  edges.sort((x, y) =>
+    x.blockedID !== y.blockedID
+      ? x.blockedID < y.blockedID
+        ? -1
+        : 1
+      : x.blockerID < y.blockerID
+        ? -1
+        : x.blockerID > y.blockerID
+          ? 1
+          : 0,
+  );
   for (const e of edges) {
     const blocker = items.get(e.blockerID);
     const blocked = items.get(e.blockedID);

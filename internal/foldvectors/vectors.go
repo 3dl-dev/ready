@@ -19,10 +19,25 @@
 //     string / number / bool / array / object. `null` appears only where it is
 //     semantically meaningful (a null event exercises spec §3.1; a null
 //     `options.trusted` means "read-trust gate disabled", spec §3.4).
-//   - View expectations are SETS, never ordered lists. rd's rendered order is not
-//     a total order (spec §15.7 — `sortByPriorityETA` ties and sorts an
-//     unstable map iteration), so asserting order would be asserting a flake.
-//     Ids inside a view are emitted sorted only so the file diffs cleanly.
+//   - View expectations are SETS, never ordered lists — but NOT for the reason
+//     this comment used to give. The old reason ("rd's rendered order is not a
+//     total order, so asserting order would be asserting a flake") is FALSE as
+//     of ready-f5f: `sortByPriorityETA` is now a strict total order over
+//     (priority, ETA, ID) and spec §15.7 explicitly lifts the no-ordering
+//     caveat. The reason today is narrower and mechanical: this harness applies
+//     the view predicates to items sorted BY ID (see Run), not to the slice
+//     `sortByPriorityETA` would produce, and that sort lives in package main
+//     (`cmd/rd/ready.go`) where neither this package nor an independent client
+//     can reach it. Making view ORDER part of the cross-client contract means
+//     first making the sort importable and holding every client to it — a real
+//     change to what the board must implement, tracked separately, not
+//     something to infer from this comment.
+//   - Item CONTENT arrays are a different matter and ARE order-asserted:
+//     `blocks` / `blocked_by` are compared field-for-field in the order the
+//     fold emits them, which spec §8.1a fixes as ascending. That is pinned by
+//     `dep_edge_arrays_are_sorted_not_visit_order`; before it, every vector
+//     carried at most ONE entry per edge array, so the contract could not tell
+//     a sorted implementation from an unsorted one.
 package foldvectors
 
 import (
@@ -280,7 +295,9 @@ type Expect struct {
 	// JSON is FIELD-FOR-FIELD equal to this (extra or missing fields both fail).
 	Items []json.RawMessage `json:"items"`
 	// Views maps each of the eight view names to the SET of item ids in that
-	// view (emitted sorted; compared as a set — see the package doc).
+	// view (emitted sorted; compared as a set — see the package doc for why the
+	// set comparison is a limit of this harness, not a statement that rd's
+	// order is nondeterministic).
 	Views map[string][]string `json:"views"`
 	// LabelViews maps a label atom to the SET of item ids carrying it
 	// (views.LabelFilter, spec §13.12). Empty when the case does not exercise it.
@@ -387,7 +404,9 @@ func Run(v Vector) (items []json.RawMessage, viewSets map[string][]string, label
 }
 
 // idsOf returns the sorted item ids of a filtered slice. Sorted because view
-// membership is a SET (spec §15.7 — rendered order is not a total order).
+// membership is compared as a SET — see the package doc for why that is a
+// property of this harness (it never runs `sortByPriorityETA`) and no longer a
+// claim that rd's rendered order is nondeterministic, which §15.7 retired.
 func idsOf(in []*state.Item) []string {
 	out := make([]string, 0, len(in))
 	for _, it := range in {
