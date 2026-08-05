@@ -120,10 +120,10 @@ func TestLiveScriptReceipts_ArePresentWellFormedAndMatchTheirSource(t *testing.T
 			if err != nil {
 				t.Fatalf("read %s: %v", script, err)
 			}
-			declared := strings.Count(string(src), "results.push(")
-			if declared == 0 {
+			if !strings.Contains(string(src), "results.push(") {
 				t.Fatalf("found no `results.push(` in %s — this test's coupling to the script's assertion set has broken and is no longer checking anything", script)
 			}
+			declared := declaredChecks(string(src), r.Mode)
 			if declared != r.Total {
 				t.Errorf("%s declares %d checks but its receipt records %d.\nThe script's assertion set changed since the last live run, so the receipt describes a script that no longer exists.\nRe-run `node scripts/%s` to regenerate it.", script, declared, r.Total, script)
 			}
@@ -150,4 +150,71 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// declaredChecks estimates how many results a live script's run pushes, from
+// its source, without executing it. A literal count of "results.push(" is
+// not that number for two reasons that are both real in these two scripts as
+// written, measured against an actual passing receipt (2026-08-05, PUBLIC
+// mode, wss://relay.3dl.network) rather than assumed:
+//
+//   - REUSABLE PUSH WRAPPERS. live-write-roundtrip.mjs routes six of its
+//     seven basic operations plus two gate-resolution checks through one
+//     helper, check(...), which contains exactly one results.push( in its
+//     OWN body but is called eight times; live-roundtrip-both-ways.mjs does
+//     the same with record(...), called nine times. A literal count sees ONE
+//     "results.push(" for what a run actually pushes many times over — 12
+//     literal occurrences for an actual, legitimate 18 or 19.
+//   - MODE-CONDITIONAL CHECKS. live-write-roundtrip.mjs's ready-191 wire
+//     assertion (pushed with `n: "C"`) runs only `if (CONFIDENTIAL)`. This
+//     repo's default live mode is PUBLIC (`rd init --public`), which never
+//     reaches it, so a public receipt legitimately carries one fewer check
+//     than a confidential one — the count has to know which the RECEIPT
+//     claims (r.Mode), not just what the source could theoretically push.
+//
+// Both adjustments are named to THIS repo's current two scripts rather than
+// implemented as a general JS parser: a real drift (a new results.push( call,
+// a removed check() invocation, a wrapper renamed without updating this
+// table) still changes the count and still fails the comparison this feeds —
+// which is the property the surrounding test exists to hold.
+func declaredChecks(src string, mode string) int {
+	direct := strings.Count(src, "results.push(")
+
+	// wrapper.invokeSubstr must count real invocations only. "check(" never
+	// matches this file's own definition (`const check = async (...) => {`
+	// has no "check(" substring); "record(" DOES also match its definition
+	// (`function record(name, ok, detail = "") {`), so that one occurrence
+	// is subtracted back out below.
+	wrappers := []struct {
+		invokeSubstr  string
+		definedAsCall bool
+	}{
+		{"check(", false},
+		{"record(", true},
+	}
+	for _, w := range wrappers {
+		n := strings.Count(src, w.invokeSubstr)
+		if n == 0 {
+			continue
+		}
+		invocations := n
+		if w.definedAsCall {
+			invocations--
+		}
+		if invocations <= 1 {
+			// Nothing to adjust: a single call is what the literal
+			// results.push( count inside it already represents.
+			continue
+		}
+		// The wrapper's own results.push( is already counted once in
+		// `direct`; replace that one occurrence with how many times it is
+		// actually invoked.
+		direct += invocations - 1
+	}
+
+	if strings.Contains(src, `n: "C"`) && mode != "confidential" {
+		direct--
+	}
+
+	return direct
 }
