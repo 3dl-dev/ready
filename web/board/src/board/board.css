@@ -83,6 +83,23 @@
   border-radius: var(--radius);
   padding: 9px 12px;
 }
+/* When the notice runs long it renders as a <details>: the first sentence (the
+   "how much did I read?" summary) stays; the per-board withholding detail sits
+   behind the disclosure so it cannot own the top of the page (ready-6ec). */
+details.confidential-notice > summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-weight: 520;
+}
+details.confidential-notice > summary:hover { color: var(--ink); }
+.confidential-notice-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
 
 /* ready-27b: one row per board this view could not show in full. Same token
    vocabulary as .confidential-notice above — it is the same kind of statement,
