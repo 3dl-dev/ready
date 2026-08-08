@@ -177,28 +177,51 @@ details.confidential-notice > summary:hover { color: var(--ink); }
   gap: 6px;
   flex-wrap: wrap;
 }
-.gate-item { display: contents; }
+/* Each gate is ONE self-contained card: its header (id / title / age) and its
+   resolve control (reason + Approve / Reject) stack INSIDE the card. It used to
+   be display:contents, which made the button and the control separate flex
+   children of .gate-list — so at portfolio scale reason-inputs and buttons
+   wrapped in between unrelated gates, a jumble that read as broken next to the
+   real cards. The card owns the border and ground; nothing floats loose. */
+.gate-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 320px;
+  max-width: 480px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--gate-line);
+  border-radius: 6px;
+  padding: 9px 11px;
+}
+@media (prefers-color-scheme: dark) { .gate-item { background: rgba(0, 0, 0, 0.18); } }
+:root[data-theme="light"] .gate-item { background: rgba(255, 255, 255, 0.5); }
+:root[data-theme="dark"] .gate-item { background: rgba(0, 0, 0, 0.18); }
+.gate-item:focus-within { border-color: var(--gate); }
 .gate-item-button {
   display: flex;
   gap: 9px;
   align-items: baseline;
   text-align: left;
-  padding: 8px 11px;
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid var(--gate-line);
-  border-radius: 5px;
+  padding: 0;
+  background: none;
+  border: 0;
   font: inherit;
   color: inherit;
   cursor: pointer;
-  flex: 1 1 280px;
+  width: 100%;
 }
-@media (prefers-color-scheme: dark) { .gate-item-button { background: rgba(0, 0, 0, 0.18); } }
-:root[data-theme="light"] .gate-item-button { background: rgba(255, 255, 255, 0.5); }
-:root[data-theme="dark"] .gate-item-button { background: rgba(0, 0, 0, 0.18); }
-.gate-item-button:hover { border-color: var(--gate); }
-.gate-item-button:focus-visible { outline: 2px solid var(--gate); outline-offset: 1px; }
+.gate-item-button:hover .gate-item-title { color: var(--gate); }
+.gate-item-button:focus-visible { outline: 2px solid var(--gate); outline-offset: 2px; border-radius: 3px; }
 .gate-item-id { font-family: var(--mono); font-size: 11px; color: var(--gate); flex: none; }
-.gate-item-title { font-size: 13px; color: var(--ink); font-weight: 520; }
+.gate-item-title {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .gate-item-age {
   margin-left: auto;
   font-family: var(--mono);
@@ -207,20 +230,18 @@ details.confidential-notice > summary:hover { color: var(--ink); }
   flex: none;
 }
 /* ready-186: the rail's ACTIONABLE half — a required reason, then Approve /
-   Reject. Sits beside its gate item (.gate-item is display:contents, so both
-   are flex children of .gate-list) and wraps under it on a narrow viewport. */
+   Reject — now a single row UNDER its own gate's header, inside the same card. */
 .gate-resolve {
   display: flex;
   gap: 6px;
   align-items: center;
-  flex: 1 1 260px;
   flex-wrap: wrap;
 }
 .gate-reason-input {
   font: inherit;
   font-size: 12px;
   padding: 5px 9px;
-  flex: 1 1 120px;
+  flex: 1 1 140px;
   min-width: 0;
   background: var(--panel);
   color: var(--ink);
@@ -244,6 +265,15 @@ details.confidential-notice > summary:hover { color: var(--ink); }
   font-size: 13.5px;
 }
 .gate-rail.empty .gate-rail-dot { background: var(--ink-3); animation: none; }
+/* Loading, not clear: the board is still reading (some board is "from cache"),
+   so the rail says so with a pulsing dot rather than the flat "nothing to do"
+   grey — it must not read as a settled all-clear before the fold has run. */
+.gate-rail.empty.loading .gate-rail-heading { color: var(--ink-3); font-style: italic; }
+.gate-rail.empty.loading .gate-rail-dot {
+  background: var(--ink-3);
+  animation: gate-beat 2.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .gate-rail.empty.loading .gate-rail-dot { animation: none; } }
 
 /* ── 3-pane body ─────────────────────────────────────────────────────── */
 /* Two tracks until something is selected; the detail track only exists when

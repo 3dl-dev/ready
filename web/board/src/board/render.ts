@@ -856,6 +856,19 @@ export class BoardWorkspace {
     return list;
   }
 
+  /**
+   * The board paints from each board's cached projection (state "stale", "from
+   * cache") BEFORE it has read the relay, and reconciles board by board. While
+   * any board is still being read the page is LOADING, not empty — so its
+   * terminal zero-states ("Nothing needs you right now", "No items yet",
+   * "0 open") would lie, reading as a settled empty board when nothing has
+   * arrived. This says "still reading" so those states can show a loading
+   * variant instead (ready-...).
+   */
+  private isLoading(): boolean {
+    return this.boards.some((b) => b.state === "stale");
+  }
+
   /** Open = every item that is not in a terminal status. The tally counts what
    * the viewer could act on, not what the fold happened to return. */
   private openCount(): number {
@@ -879,13 +892,17 @@ export class BoardWorkspace {
     // "290 shown" on a board displaying 175 cards, because a terminal item
     // survives every filter and then has no column (views.ts columnize).
     const shown = this.scopedItems().filter((i) => !isTerminal(i)).length;
+    // While loading, a 0 count is "not read yet", not "none" — show a "…" so the
+    // header doesn't read as a settled-empty board before the fold has run.
+    const loading = this.isLoading();
+    const count = (n: number): string => (loading && n === 0 ? "…" : String(n));
     const tally = el("div", { className: "tally" });
     tally.append(
-      el("b", { textContent: String(this.openCount()) }),
+      el("b", { textContent: count(this.openCount()) }),
       " open · ",
       el("b", { textContent: String(this.projectCount()) }),
       " projects · ",
-      el("b", { textContent: String(shown) }),
+      el("b", { textContent: count(shown) }),
       " shown",
     );
     header.append(tally);
@@ -931,12 +948,17 @@ export class BoardWorkspace {
   private buildGateRail(): HTMLElement {
     const gated = this.items.filter(gatesFilter());
     if (gated.length === 0) {
-      // .empty's textContent is exactly the one quiet line — the dot and the
-      // heading carry no other text (render.test.ts asserts the whole string).
-      const clear = el("div", { className: "gate-rail empty" }, [
+      // Loading is not clear: while the board is still reading, say so rather
+      // than assert the all-clear state. Once folded (no stale board), it is the
+      // real "nothing to do" line render.test.ts pins.
+      const loading = this.isLoading();
+      const clear = el("div", { className: `gate-rail empty${loading ? " loading" : ""}` }, [
         el("div", { className: "gate-rail-head" }, [
           el("span", { className: "gate-rail-dot" }),
-          el("h2", { className: "gate-rail-heading", textContent: "Nothing needs you right now" }),
+          el("h2", {
+            className: "gate-rail-heading",
+            textContent: loading ? "Checking what needs you…" : "Nothing needs you right now",
+          }),
         ]),
       ]);
       return clear;
@@ -1259,7 +1281,9 @@ export class BoardWorkspace {
           className: "empty",
           textContent:
             this.items.length === 0
-              ? "No items on these boards yet."
+              ? this.isLoading()
+                ? "Loading your boards…"
+                : "No items on these boards yet."
               : "Nothing matches. Clear a filter.",
         }),
       );
