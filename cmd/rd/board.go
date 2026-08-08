@@ -41,8 +41,8 @@ package main
 //
 // The three opt-ins became escape hatches, all of them on the FOR-ME side:
 //
-//	rd board                 -> whole portfolio, decrypted:
-//	                            #pk=<viewer>&relays=<list>&keys=<base64url blob>
+//	rd board                 -> whole portfolio, decrypted AND WRITABLE:
+//	                            #sk=<secret>&relays=<list>&keys=<base64url blob>
 //	rd board --no-key        -> the same portfolio link carrying NO key material.
 //	rd board --this-board    -> only THIS directory's pinned board:
 //	                            #board=<coord>&relays=<list>[&pk=&cek=]
@@ -478,21 +478,24 @@ var boardCmd = &cobra.Command{
   rd board
 
 That is the whole command. It covers EVERY board your key can read — not just
-this directory's — and it carries the read keys for them, so confidential
-boards open decrypted with no browser extension and nothing to paste:
+this directory's — and it is WRITE-CAPABLE: it carries your signing key so the
+browser signs your changes with no extension, and the read keys so confidential
+boards open decrypted, nothing to paste:
 
-  https://<board-host>#pk=<you>&relays=<relay-list>&keys=<your-read-keys>
+  https://<board-host>#sk=<your-secret>&relays=<relay-list>&keys=<your-read-keys>
 
-Because it carries those keys the link is a BEARER CREDENTIAL for your entire
-portfolio, so the command says so on stderr every single time. The URL itself
-is the only thing on stdout, so ` + "`rd board | pbcopy`" + ` still copies a clean link.
+Because it carries your signing key the link is a WRITE BEARER CREDENTIAL for
+your entire portfolio — anyone who opens it can make changes as you — so the
+command says so on stderr every single time. The URL itself is the only thing on
+stdout, so ` + "`rd board | pbcopy`" + ` still copies a clean link.
 
 If you want something narrower:
 
-  rd board --no-key        the same portfolio link with NO keys in it. Safe to
-                            paste anywhere; a confidential board's titles then
-                            read as [encrypted] unless the browser has a NIP-07
-                            extension holding your key.
+  rd board --no-key        a READ-ONLY portfolio link with NO keys in it — no
+                            signing key, so it cannot write, and safe to share.
+                            A confidential board's titles then read as
+                            [encrypted] unless the browser has a NIP-07 extension
+                            holding your key.
   rd board --this-board    just this directory's board, not the portfolio:
                             https://<board-host>#board=<coord>&relays=<relay-list>
                             (plus this board's read key unless --no-key).

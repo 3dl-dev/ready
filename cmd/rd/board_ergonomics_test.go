@@ -109,10 +109,11 @@ func TestBoardCmd_BareCommand_IsTheWholePortfolioDecrypted(t *testing.T) {
 	}
 
 	v := portfolioFragment(t, out)
-	// PORTFOLIO, not one board: pk= with no board= is the shape that means "open
-	// everything this viewer can see".
-	if got := v.Get("pk"); got != owner.PubKeyHex() {
-		t.Errorf("fragment pk=%q, want the minting key's pubkey %q", got, owner.PubKeyHex())
+	// PORTFOLIO, not one board: sk= with no board= is the shape that means "open
+	// everything this viewer can see AND write to it" (ready-f947: `rd board` is
+	// the owner's own write-capable link).
+	if got := v.Get("sk"); got != owner.SecretHex() {
+		t.Errorf("fragment sk=%q, want the minting key's secret %q", got, owner.SecretHex())
 	}
 	if got := v.Get("board"); got != "" {
 		t.Errorf("`rd board` carries board=%q — the default must be the whole portfolio, not this directory's board", got)

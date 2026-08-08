@@ -469,20 +469,19 @@ func TestBoardURL_NoSecretMaterial(t *testing.T) {
 		}
 	}
 
-	// rd board (own board) carries NO rd1_ token (see
-	// TestBoardCmd_OwnBoard_PlainURL_NoToken for the dedicated rejection
-	// test), so it is checked by scanning the raw URL line directly rather
-	// than via extractToken/decodeNostrClaimToken (which requires a "#rd1_"
-	// fragment the own-board form must never have).
-	out := captureStdoutPipe(t, func() {
-		if err := boardCmd.RunE(boardCmd, nil); err != nil {
-			t.Fatalf("rd board: %v", err)
-		}
-	})
+	// ready-f947: BARE `rd board` is now the owner's WRITE-CAPABLE link and
+	// DELIBERATELY carries the signing secret (sk=) — see TestBoardPortfolio_*
+	// for that shape. The secret-free shape is `rd board --no-key`, and THAT is
+	// what must never leak a secret: a read-only link is the one you share. It
+	// carries no rd1_ token, so it is scanned by the raw URL line directly.
+	out, _, err := tryBoardCmd(t, boardFlags{noKey: true})
+	if err != nil {
+		t.Fatalf("rd board --no-key: %v", err)
+	}
 	ownLine := strings.ToLower(findURLLine(t, out))
 	for _, bad := range forbidden {
 		if strings.Contains(ownLine, strings.ToLower(bad)) {
-			t.Errorf("rd board (own board): URL contains forbidden secret-shaped material %q — url: %s", bad, ownLine)
+			t.Errorf("rd board --no-key: URL contains forbidden secret-shaped material %q — url: %s", bad, ownLine)
 		}
 	}
 
@@ -673,7 +672,7 @@ func TestBoardCmd_Help_URLShapeMatchesEmittedURL(t *testing.T) {
 		wantParam string // the fragment's FIRST parameter, as emitted
 		wantDoc   string // the shape --help must document for it
 	}{
-		{"bare `rd board` (portfolio)", boardFlags{}, "#pk=", "<board-host>#pk="},
+		{"bare `rd board` (portfolio, write-capable)", boardFlags{}, "#sk=", "<board-host>#sk="},
 		{"`rd board --this-board`", boardFlags{thisBoard: true}, "#board=", "<board-host>#board="},
 	} {
 		out, _, err := tryBoardCmd(t, c.flags)

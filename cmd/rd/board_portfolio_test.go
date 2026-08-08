@@ -258,8 +258,8 @@ func TestBoardPortfolio_ReachesBoardsBeyondThePinnedOne(t *testing.T) {
 	out, _ := runBoardPortfolioCmd(t, true)
 	v := portfolioFragment(t, out)
 
-	if got := v.Get("pk"); got != owner.PubKeyHex() {
-		t.Errorf("fragment pk=%q, want the minting key's pubkey %q", got, owner.PubKeyHex())
+	if got := v.Get("sk"); got != owner.SecretHex() {
+		t.Errorf("fragment sk=%q, want the minting key's secret %q (ready-f947: `rd board` is write-capable)", got, owner.SecretHex())
 	}
 	if got := v.Get("board"); got != "" {
 		t.Errorf("a portfolio link carries board=%q — the whole point is that it names no single board", got)
@@ -372,7 +372,9 @@ func TestBoardPortfolio_FragmentParamAllowlist(t *testing.T) {
 	out, _ := runBoardPortfolioCmd(t, true)
 	v := portfolioFragment(t, out)
 
-	allowed := map[string]bool{"pk": true, "relays": true, "keys": true}
+	// ready-f947: the write-capable default carries sk= (the signing secret) in
+	// place of pk=. Still exactly three parameters.
+	allowed := map[string]bool{"sk": true, "relays": true, "keys": true}
 	for k := range v {
 		if !allowed[k] {
 			t.Errorf("portfolio fragment carries unexpected parameter %q — every parameter in a key-bearing link must be a deliberate choice with a consumer", k)
@@ -382,11 +384,11 @@ func TestBoardPortfolio_FragmentParamAllowlist(t *testing.T) {
 		t.Errorf("portfolio fragment carries ltk=%q — the label-token key has NO reader in web/board", got)
 	}
 	// The blob is LAST in the fragment. Truncation then eats blob bytes (which
-	// the decoder rejects loudly) rather than pk=/relays= (which would leave an
-	// unrecognizable fragment and only a bare login form). See portfolioURL.
+	// the decoder rejects loudly) rather than sk=/relays= (which would leave an
+	// unrecognizable fragment and only a bare login form). See portfolioURLWritable.
 	frag := findURLLine(t, out)
 	frag = frag[strings.Index(frag, "#")+1:]
-	if !strings.Contains(frag, "&keys=") || strings.Index(frag, "keys=") < strings.Index(frag, "pk=") {
+	if !strings.Contains(frag, "&keys=") || strings.Index(frag, "keys=") < strings.Index(frag, "sk=") {
 		t.Errorf("keys= is not the LAST fragment parameter: %q", frag)
 	}
 }
@@ -443,14 +445,17 @@ func TestBoardPortfolio_NoReadableBoards_EmbedsNothing(t *testing.T) {
 	if got := v.Get("keys"); got != "" {
 		t.Errorf("keys=%q emitted for a key that can read no confidential board", got)
 	}
-	if got := v.Get("pk"); got == "" {
-		t.Error("pk= is missing — it is public, and it is what opens the page with nothing to paste")
+	// ready-f947: even with no confidential boards, `rd board` carries sk= (the
+	// signing secret) — it is the owner's write-capable link — so it IS a bearer
+	// credential and MUST warn. The read-only-with-no-secret shape is --no-key.
+	if got := v.Get("sk"); got == "" {
+		t.Error("sk= is missing — `rd board` is the owner's write-capable link and must carry the signing key")
 	}
-	if !strings.Contains(errOut, "no keys embedded") {
-		t.Errorf("stderr does not explain that no keys were embedded; stderr = %q", errOut)
+	if !strings.Contains(errOut, "No read keys are embedded") {
+		t.Errorf("stderr does not explain that no read keys were embedded; stderr = %q", errOut)
 	}
-	if strings.Contains(errOut, "WARNING") {
-		t.Errorf("a key-free link must not print the bearer-credential warning; stderr = %q", errOut)
+	if !strings.Contains(errOut, "WARNING") || !strings.Contains(errOut, "SIGNING KEY") {
+		t.Errorf("a link carrying sk= must warn it is a WRITE bearer credential; stderr = %q", errOut)
 	}
 }
 
