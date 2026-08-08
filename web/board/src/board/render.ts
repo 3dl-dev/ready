@@ -365,9 +365,11 @@ export class BoardWorkspace {
    */
   setItems(items: Item[]): void {
     const focus = this.captureFocusedField();
+    const scroll = this.captureScroll();
     this.items = items;
     this.render();
     this.restoreFocusedField(focus);
+    this.restoreScroll(scroll);
   }
 
   /**
@@ -385,11 +387,13 @@ export class BoardWorkspace {
    */
   setBoards(boards: BoardRef[]): void {
     const focus = this.captureFocusedField();
+    const scroll = this.captureScroll();
     this.boards = boards;
     this.boardTitles = new Map(boards.map((b) => [b.coord, b.title]));
     this.boardByCoord = new Map(boards.map((b) => [b.coord, b]));
     this.render();
     this.restoreFocusedField(focus);
+    this.restoreScroll(scroll);
   }
 
   /**
@@ -401,9 +405,44 @@ export class BoardWorkspace {
    */
   setNotice(notice: string | undefined): void {
     const focus = this.captureFocusedField();
+    const scroll = this.captureScroll();
     this.notice = notice;
     this.render();
     this.restoreFocusedField(focus);
+    this.restoreScroll(scroll);
+  }
+
+  /**
+   * The board re-renders on every live fold (setItems) and every board-state
+   * reconcile (setBoards), each of which does render()'s replaceChildren() — a
+   * fresh .board-center / .left-tree whose scrollTop is 0. During the first
+   * minute those calls arrive in a stream, so a reader scrolled halfway down the
+   * board was yanked back to the top again and again (ready-...). Capturing the
+   * two independent scroll positions before the rebuild and restoring them after
+   * keeps the view where the reader put it — the page updates under them without
+   * moving what they are looking at.
+   */
+  private scroller(): Element {
+    return document.scrollingElement ?? document.documentElement;
+  }
+
+  private captureScroll(): { page: number; center: number; tree: number } {
+    // The page itself is the scroll container (the shell grows with content), so
+    // that is the one that must survive replaceChildren — the panes are captured
+    // too so the fix still holds if the layout is ever made pane-scrolling.
+    return {
+      page: this.scroller().scrollTop,
+      center: this.container.querySelector(".board-center")?.scrollTop ?? 0,
+      tree: this.container.querySelector(".left-tree")?.scrollTop ?? 0,
+    };
+  }
+
+  private restoreScroll(s: { page: number; center: number; tree: number }): void {
+    this.scroller().scrollTop = s.page;
+    const center = this.container.querySelector<HTMLElement>(".board-center");
+    const tree = this.container.querySelector<HTMLElement>(".left-tree");
+    if (center) center.scrollTop = s.center;
+    if (tree) tree.scrollTop = s.tree;
   }
 
   private captureFocusedField(): FocusedField | undefined {
@@ -440,7 +479,9 @@ export class BoardWorkspace {
       const next = [...scope.querySelectorAll("input")].find((n) => n.classList.contains(f.cls));
       if (!next) continue;
       next.value = f.value;
-      next.focus();
+      // preventScroll: refocusing must not scroll the field into view — that
+      // would fight restoreScroll and yank the board (ready-...).
+      next.focus({ preventScroll: true });
       if (f.start !== null && f.end !== null) next.setSelectionRange(f.start, f.end);
       return;
     }
@@ -925,7 +966,7 @@ export class BoardWorkspace {
       this.setQuery(find.value);
       const next = this.container.querySelector<HTMLInputElement>("input.find");
       if (next) {
-        next.focus();
+        next.focus({ preventScroll: true });
         if (caret !== null) next.setSelectionRange(caret, caret);
       }
     });
@@ -1409,12 +1450,16 @@ export class BoardWorkspace {
         list.push(item);
         groups.set(key, list);
       }
-      // Most gated first, then largest — the prototype's project-lane order:
-      // the lane that needs a human decision should not be below the fold.
-      const gateCount = (key: string): number =>
-        items.filter((i) => this.projectKeyOf(i) === key && gatesFilter()(i)).length;
+      // MOST RECENTLY ACTIVE FIRST (ready-...). The prototype led with the most-
+      // gated project so a decision was never below the fold — but gates now live
+      // in their own banner at the very top, surfaced regardless of lane order, so
+      // the lanes are free to answer the question a reader actually has scrolling
+      // the board: "what have I touched lately?". A project stale for a week no
+      // longer floats to the top just because it carries gates. Ties break on
+      // name so the order is total (stable across re-renders).
+      const lastActive = (its: Item[]): number => its.reduce((m, i) => Math.max(m, i.updatedAt), 0);
       return [...groups.entries()]
-        .sort(([a, ia], [b, ib]) => gateCount(b) - gateCount(a) || ib.length - ia.length || a.localeCompare(b))
+        .sort(([a, ia], [b, ib]) => lastActive(ib) - lastActive(ia) || a.localeCompare(b))
         .map(([key, its]) => ({ key, label: this.projectNameOf(key), items: its }));
     }
     // epic
