@@ -195,6 +195,52 @@ describe("board-status reports degraded outcomes, not load progress (ready-c0f)"
   });
 });
 
+// The board paints from cache (boards "from cache" / state "stale") before it
+// has read the relay. While that is true the page is LOADING, and must not show
+// its terminal zero-states — "Nothing needs you right now", "No items yet",
+// "0 open" — which read as a settled empty board when nothing has arrived.
+describe("loading vs settled-empty states", () => {
+  const c = (n: string) => `30301:owner:${n}`;
+  const withStale = (): BoardRef[] => [
+    { coord: c("ready"), title: "ready" },
+    { coord: c("loading"), title: "loading", state: "stale", detail: "being read now" },
+  ];
+
+  it("while a board is still being read, shows LOADING states, not zero-states", () => {
+    ws = mountBoardWorkspace(container, [], { boards: withStale() });
+    expect(container.querySelector(".gate-rail-heading")?.textContent).toBe("Checking what needs you…");
+    expect(container.querySelector(".gate-rail.loading")).not.toBeNull();
+    expect(container.querySelector(".swimlanes .empty")?.textContent).toBe("Loading your boards…");
+    expect(container.querySelector(".tally")?.textContent).toContain("… open");
+    expect(container.querySelector(".tally")?.textContent).toContain("… shown");
+  });
+
+  it("once no board is still loading, shows the real settled zero-states", () => {
+    ws = mountBoardWorkspace(container, [], { boards: [{ coord: c("ready"), title: "ready" }] });
+    expect(container.querySelector(".gate-rail-heading")?.textContent).toBe("Nothing needs you right now");
+    expect(container.querySelector(".gate-rail.loading")).toBeNull();
+    expect(container.querySelector(".swimlanes .empty")?.textContent).toBe("No items on these boards yet.");
+    expect(container.querySelector(".tally")?.textContent).toBe("0 open · 1 projects · 0 shown");
+  });
+});
+
+// Each gate is ONE self-contained card: its header button and its resolve
+// control are CHILDREN of the same .gate-item, not display:contents siblings
+// that wrapped between unrelated gates.
+describe("the gate rail is a stack of self-contained cards", () => {
+  it("a gate's button and its resolve control live in the SAME .gate-item card", () => {
+    const gated = makeItem({ id: "g1", status: "waiting", waitingType: "gate", gateMsgId: "m1", gate: "design" });
+    ws = mountBoardWorkspace(container, [gated]);
+    const card = container.querySelector(".gate-item");
+    expect(card).not.toBeNull();
+    // both the header and the resolve control are inside this one card
+    expect(card!.querySelector(".gate-item-button")).not.toBeNull();
+    expect(card!.querySelector(".gate-resolve")).not.toBeNull();
+    // and there is exactly one card per gate — not a header + a loose control
+    expect(container.querySelectorAll(".gate-list > .gate-item").length).toBe(1);
+  });
+});
+
 describe("board identity: names, never coordinates", () => {
   const COORD = "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:dontguess";
 
