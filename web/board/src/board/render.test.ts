@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeItem } from "./testitem";
 import type { Item } from "./types";
-import { applyGateResolution, mountBoardWorkspace, type BoardWorkspace } from "./render";
+import { applyGateResolution, mountBoardWorkspace, type BoardRef, type BoardWorkspace } from "./render";
 import type { BoardWriter } from "./write";
 import { unimplementedWriter, WriteNotImplementedError } from "./write";
 
@@ -114,6 +114,60 @@ describe("page chrome (docs/design/board-prototype.html)", () => {
       boards: [{ coord: "30301:owner:ready", title: "ready" }],
     });
     expect(container.querySelector(".board-foot")?.textContent).toContain("1 board");
+  });
+});
+
+// ready-c0f — THE BOARD-STATUS LIST REPORTS DEGRADED OUTCOMES, NOT LOAD PROGRESS.
+//
+// buildBoardStatus once listed every board whose state was not "open". At
+// portfolio scale that swept in every board still painting from cache ("stale",
+// ready-fe4) — 263 of them on the live `ready` owner — and rendered a
+// full-sentence banner for each, an ~11.5k-px wall that buried the gate rail and
+// every card ~14 screens down, so the page read as nothing like the design.
+// Load-in-progress is not a degraded outcome; it is carried, quietly, by the
+// board's own tree node "from cache" marker. Only the four genuinely-degraded
+// outcomes earn a row.
+describe("board-status reports degraded outcomes, not load progress (ready-c0f)", () => {
+  const coord = (n: string) => `30301:owner:${n}`;
+  const anchor = (): Item => makeItem({ id: "anchor", status: "active", boardCoord: coord("ready"), project: "" });
+
+  it("a board still loading ('stale', from cache) gets NO status row — only its tree marker", () => {
+    const boards: BoardRef[] = [
+      { coord: coord("ready"), title: "ready" },
+      { coord: coord("loading"), title: "loading", state: "stale", detail: "being read now" },
+    ];
+    ws = mountBoardWorkspace(container, [anchor()], { boards });
+
+    // No banner for the still-loading board — this is the 263-row wall the old
+    // `state !== "open"` predicate produced.
+    expect(container.querySelector(`.board-status-row[data-board-coord="${coord("loading")}"]`)).toBeNull();
+    // ...but its transient state is still visible on its own tree node.
+    const node = container.querySelector(`.node[data-board-coord="${coord("loading")}"]`);
+    expect(node?.getAttribute("data-board-state")).toBe("stale");
+    expect(node?.textContent).toContain("from cache");
+  });
+
+  it("a genuinely-degraded board (sealed) still gets a named status row", () => {
+    const boards: BoardRef[] = [
+      { coord: coord("ready"), title: "ready" },
+      { coord: coord("secret"), title: "secret board", state: "sealed", detail: "no read key reached this session" },
+    ];
+    ws = mountBoardWorkspace(container, [anchor()], { boards });
+
+    const row = container.querySelector(`.board-status-row[data-board-coord="${coord("secret")}"]`);
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("secret board");
+  });
+
+  it("a portfolio of many still-loading boards grows NO status wall at all", () => {
+    const boards: BoardRef[] = [{ coord: coord("ready"), title: "ready" }];
+    for (let i = 0; i < 50; i++) {
+      boards.push({ coord: coord(`b${i}`), title: `b${i}`, state: "stale", detail: "being read now" });
+    }
+    ws = mountBoardWorkspace(container, [anchor()], { boards });
+
+    expect(container.querySelectorAll(".board-status-row").length).toBe(0);
+    expect(container.querySelector(".board-status")).toBeNull();
   });
 });
 

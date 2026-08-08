@@ -69,6 +69,29 @@ const BOARD_STATE_LABEL: Record<NonNullable<BoardRef["state"]>, string> = {
   stale: "from cache",
 };
 
+/**
+ * The board states that earn a full-sentence STATUS ROW (buildBoardStatus,
+ * ready-27b) — a board the page genuinely could not read in full and about
+ * which the reader may need to act.
+ *
+ * "stale" is deliberately NOT here (ready-c0f). A board painted from cache
+ * before its own fold has run (ready-fe4) is not a degraded OUTCOME, it is load
+ * in progress — and its transient state is already carried, quietly, by its own
+ * tree node's "from cache" marker, which is exactly where the ready-fe4 comment
+ * on buildFooter says it belongs. Sweeping it into the status list (via the old
+ * `state !== "open"` predicate) meant a portfolio of hundreds of boards painted
+ * hundreds of "still reading" banners at first load — an ~11.5k-px wall that
+ * buried the gate rail and every card ~14 screens down, so the board read as
+ * nothing like the design. Only the four genuinely-degraded outcomes below get
+ * a row; "open" and "stale" get none.
+ */
+const REPORTABLE_BOARD_STATES: ReadonlySet<NonNullable<BoardRef["state"]>> = new Set([
+  "withholding",
+  "sealed",
+  "unreadable-grant",
+  "failed",
+]);
+
 export interface WorkspaceOptions {
   /** The logged-in identity, for the "yours" status-line/detail rendering. */
   viewerId?: string;
@@ -759,7 +782,9 @@ export class BoardWorkspace {
    * the page says about a board must be checkable per board, from outside.
    */
   private buildBoardStatus(): HTMLElement | null {
-    const degraded = this.boards.filter((b) => b.state !== undefined && b.state !== "open");
+    const degraded = this.boards.filter(
+      (b) => b.state !== undefined && REPORTABLE_BOARD_STATES.has(b.state),
+    );
     if (degraded.length === 0) return null;
     const list = el("ul", { className: "board-status" });
     for (const b of degraded) {
