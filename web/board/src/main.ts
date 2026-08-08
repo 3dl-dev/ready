@@ -41,6 +41,7 @@ import type { Nip07Signer } from "./lib/publish";
 import { deriveLevels } from "./lib/rolegrant";
 import { decodeNpub, encodeNpub } from "./lib/npub";
 import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
+import { localSigner } from "./lib/localsigner";
 import type { PortfolioKeys } from "./lib/portfoliokeys";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
 import {
@@ -92,6 +93,14 @@ export type { BoardLoadState, BoardStatus } from "./lib/boardstate";
 export interface Identity {
   pubkey: string;
   auth: AuthTransition;
+  /**
+   * ready-f947: the owner's SIGNING secret, present ONLY on a write-capable
+   * (`sk=`) session — the deliberate opt-out of "no key in the browser". When
+   * set, the board signs and decrypts locally (localSigner / localNip44Provider)
+   * with no NIP-07 extension, and `auth` is `method:"local"` so canSign() is
+   * true. Absent for every extension, npub-read-only, and `pk=`-link session.
+   */
+  secret?: string;
 }
 
 /**
@@ -157,7 +166,16 @@ export interface BoardDeps {
 export const defaultDeps: BoardDeps = {
   loadRelays: () => loadOwnBoardsRelays(),
   fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
-  keyUnwrapper: (identity) => (canSign(identity.auth) ? nip07KeyUnwrapper(nip44Provider()) : neverUnwraps),
+  // A local-key (sk=) session decrypts via the CEKs its link carries (keys=), the
+  // same as a read-only link, so it unwraps no grants and never touches the
+  // raw-secret NIP-44 path — neverUnwraps. Every other signing session (an
+  // extension) unwraps through window.nostr.nip44 (ready-f947).
+  keyUnwrapper: (identity) =>
+    identity.secret
+      ? neverUnwraps
+      : canSign(identity.auth)
+        ? nip07KeyUnwrapper(nip44Provider())
+        : neverUnwraps,
   subscribeEvents: (relays, filter, opts) => subscribeToRelays(relays, filter, opts),
   cacheStorage: () => browserCacheStorage(),
 };
@@ -575,7 +593,13 @@ export async function loadBoardItems(
       // wrong for every board but one.
       const writer = new NostrBoardWriter({
         signerPubkey: identity.pubkey,
-        signer: canSign(identity.auth) ? nip07Signer() : undefined,
+        // ready-f947: a local-key session signs with its own secret and no
+        // extension; every other signing session still reaches window.nostr.
+        signer: identity.secret
+          ? localSigner(identity.secret)
+          : canSign(identity.auth)
+            ? nip07Signer()
+            : undefined,
         board: { ownerPubkey: b.ownerPubkey, boardD: b.boardD, title: b.title },
         relays,
         snapshot: events,
@@ -1901,6 +1925,31 @@ export function main(deps: BoardDeps = defaultDeps): void {
   // names its viewer in pk=, and it also opens read-only for exactly the reasons
   // above. Its keys buy MORE reading (every board, not one) and still zero
   // signing, so the identity it mints is the same read-only shape.
+  // ready-f947: a WRITE-CAPABLE link (`sk=`) mints a SIGNING session — the owner
+  // opted into carrying their own key ("browser plugins are DOA"). This is the
+  // sanctioned counter-case to the read-only branch below: `method:"local"` makes
+  // canSign() true, so loadBoardItems builds the writer WITH a signer (localSigner),
+  // and the "(read-only)" marker drops. It applies ONLY when the fragment actually
+  // carried a secret — a `pk=`-only link has no `secret` and still opens read-only,
+  // so a read link shared with someone else cannot sign.
+  const writable =
+    (fragment.kind === "portfolio" || fragment.kind === "board") && fragment.secret !== undefined
+      ? { secret: fragment.secret, viewer: fragment.viewer }
+      : undefined;
+  if (writable && writable.viewer) {
+    // fragment.ts already derived the viewer pubkey from the secret (and refused
+    // a link whose sk= and pk= disagree), so this branch does no crypto itself —
+    // keeping xOnlyPubkey out of main.ts and localsigner.ts the sole path to a
+    // signing primitive (schnorrsign.test.ts).
+    const identity: Identity = {
+      pubkey: writable.viewer,
+      auth: authTransition({ type: "login", method: "local" }),
+      secret: writable.secret,
+    };
+    void afterLogin(root, identity, fragment, deps);
+    return;
+  }
+
   const linkViewer = fragment.kind === "portfolio" || fragment.kind === "board" ? fragment.viewer : undefined;
   if (linkViewer) {
     const identity: Identity = {

@@ -86,14 +86,21 @@ describe("schnorrSign (BIP-340 default signing)", () => {
   });
 });
 
-describe("the shipped bundle cannot reach a signing primitive", () => {
-  // Static reachability: walk main.ts's import graph and assert schnorrsign.ts
-  // never appears. The board must never contain code that can sign with a key
-  // the page holds — that is the whole NIP-07 security model.
-  it("main.ts's import graph excludes schnorrsign.ts", () => {
+describe("the signing primitive has exactly one entry point (ready-f947)", () => {
+  // The board CAN now sign — the owner opted into a write-capable (sk=) link,
+  // deliberately replacing the "no key in the browser" model. What must NOT
+  // erode is auditability: the signing primitive (schnorrSign / signNostrEvent)
+  // has exactly ONE importer in main.ts's whole graph — localsigner.ts — so a
+  // reviewer asking "where can this page sign?" reads one small file. Pubkey
+  // DERIVATION (xOnlyPubkey) is not signing and may be imported anywhere;
+  // fragment.ts uses it only to learn which pubkey an sk= link opens as.
+  const SIGNING_EXPORTS = ["schnorrSign", "signNostrEvent"];
+
+  it("only localsigner.ts imports a SIGNING export of schnorrsign.ts", () => {
     const srcDir = path.resolve(import.meta.dirname, "..");
     const seen = new Set<string>();
     const queue = [path.join(srcDir, "main.ts")];
+    const signingImporters: string[] = [];
     while (queue.length > 0) {
       const file = queue.pop()!;
       if (seen.has(file)) continue;
@@ -104,14 +111,17 @@ describe("the shipped bundle cannot reach a signing primitive", () => {
       } catch {
         continue;
       }
-      for (const m of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
-        const rel = m[1];
+      for (const m of text.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s+"(\.[^"]+)"/g)) {
+        const names = m[1].split(",").map((n) => n.trim().split(/\s+as\s+/)[0].trim());
+        const rel = m[2];
         const base = path.resolve(path.dirname(file), rel);
         const cand = base.endsWith(".ts") ? base : `${base}.ts`;
         queue.push(cand);
+        if (cand.endsWith("schnorrsign.ts") && names.some((n) => SIGNING_EXPORTS.includes(n))) {
+          signingImporters.push(path.basename(file));
+        }
       }
     }
-    const reached = [...seen].filter((f) => f.endsWith("schnorrsign.ts"));
-    expect(reached).toEqual([]);
+    expect([...new Set(signingImporters)].sort()).toEqual(["localsigner.ts"]);
   });
 });
