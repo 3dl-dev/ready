@@ -314,6 +314,10 @@ export class BoardWorkspace {
   /** Whether the degraded-board status list is showing all rows or just the
    * first BOARD_STATUS_CAP behind a "+N more" disclosure (ready-412). */
   private boardStatusExpanded = false;
+  /** Whether the "Waiting on you" gate rail is folded to its one-line banner
+   * (default) or expanded to the overlay of gate cards (ready-...). Collapsed by
+   * default so gates folding in during load never push the board or reflow it. */
+  private gateRailExpanded = false;
   private readonly onKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && this.selectedId !== undefined) {
       this.closeDetail();
@@ -964,17 +968,29 @@ export class BoardWorkspace {
       return clear;
     }
 
-    const rail = el("div", { className: "gate-rail" });
-    rail.append(
-      el("div", { className: "gate-rail-head" }, [
-        el("span", { className: "gate-rail-dot" }),
-        el("h2", { className: "gate-rail-heading", textContent: "Waiting on you" }),
-        el("span", {
-          className: "gate-rail-sub",
-          textContent: `${gated.length} of ${this.openCount()} — the only ones that cannot move without your decision.`,
-        }),
-      ]),
+    // A FOLDABLE BANNER, not a growing wall (ready-...). Collapsed, the rail is
+    // one fixed-height line — so gates folding in over the first minute only tick
+    // the count, they never push the board down or reflow the view under a reader
+    // who is just looking. Expanding is a deliberate act, and even then the list
+    // OVERLAYS the board (CSS: .gate-rail.open .gate-list is absolute) rather than
+    // shoving it. The list is always in the DOM; only its display is folded.
+    const rail = el("div", { className: `gate-rail${this.gateRailExpanded ? " open" : ""}` });
+    const head = el("button", { className: "gate-rail-head", type: "button" });
+    head.setAttribute("aria-expanded", String(this.gateRailExpanded));
+    head.append(
+      el("span", { className: "gate-rail-dot" }),
+      el("span", { className: "gate-rail-heading", textContent: "Waiting on you" }),
+      el("span", {
+        className: "gate-rail-sub",
+        textContent: `${gated.length} of ${this.openCount()} — the only ones that cannot move without your decision.`,
+      }),
+      el("span", { className: "gate-rail-caret", textContent: this.gateRailExpanded ? "Hide" : "Show" }),
     );
+    head.addEventListener("click", () => {
+      this.gateRailExpanded = !this.gateRailExpanded;
+      this.render();
+    });
+    rail.append(head);
 
     const list = el("ul", { className: "gate-list" });
     for (const item of gated) {
