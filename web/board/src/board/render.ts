@@ -746,7 +746,7 @@ export class BoardWorkspace {
     const top = el("div", { className: "board-top" });
     top.append(this.buildHeader());
     if (this.notice) {
-      top.append(el("p", { className: "confidential-notice", textContent: this.notice }));
+      top.append(this.buildNotice(this.notice));
     }
     const boardStatus = this.buildBoardStatus();
     if (boardStatus) top.append(boardStatus);
@@ -795,6 +795,31 @@ export class BoardWorkspace {
    * The row carries data-board-coord for the same reason the tree node does: what
    * the page says about a board must be checkable per board, from outside.
    */
+  /**
+   * The confidentiality notice is a full, honest account of what this session
+   * could and could not read — and on a large portfolio it runs to a paragraph
+   * of several hundred words (every board with an unestablished cutover is named
+   * in it). Rendered flat it takes the whole top of the page before a single
+   * card (ready-6ec). So it collapses: the first sentence — the summary that
+   * answers "how much of this did I actually read?" — stays visible, and the
+   * rest (the per-board withholding detail) sits behind a disclosure. The full
+   * text is still one textContent read away, which is also the test contract.
+   */
+  private buildNotice(notice: string): HTMLElement {
+    const cut = notice.indexOf(". ");
+    const head = cut >= 0 ? notice.slice(0, cut + 1) : notice;
+    const rest = cut >= 0 ? notice.slice(cut + 1) : "";
+    if (rest.trim() === "") {
+      return el("p", { className: "confidential-notice", textContent: notice });
+    }
+    const details = el("details", { className: "confidential-notice" });
+    details.append(
+      el("summary", { className: "confidential-notice-summary", textContent: head }),
+      el("div", { className: "confidential-notice-body", textContent: rest }),
+    );
+    return details;
+  }
+
   private buildBoardStatus(): HTMLElement | null {
     const degraded = this.boards.filter(
       (b) => b.state !== undefined && REPORTABLE_BOARD_STATES.has(b.state),
