@@ -169,6 +169,30 @@ describe("board-status reports degraded outcomes, not load progress (ready-c0f)"
     expect(container.querySelectorAll(".board-status-row").length).toBe(0);
     expect(container.querySelector(".board-status")).toBeNull();
   });
+
+  it("caps the degraded list so a hundred sealed boards cannot rebuild the wall (ready-412)", () => {
+    // The failure this guards: as the client folds through hundreds of boards,
+    // each that resolves degraded appends a banner. Without a cap that is the
+    // ready-c0f wall again, a few seconds after load.
+    const boards: BoardRef[] = [{ coord: coord("ready"), title: "ready" }];
+    for (let i = 0; i < 30; i++) {
+      boards.push({ coord: coord(`sealed${i}`), title: `sealed board ${i}`, state: "sealed", detail: "no read key" });
+    }
+    ws = mountBoardWorkspace(container, [anchor()], { boards });
+
+    // Only the cap is shown, plus a single disclosure — never all 30.
+    expect(container.querySelectorAll(".board-status-row").length).toBe(6);
+    const more = container.querySelector(".board-status-more") as HTMLElement;
+    expect(more).not.toBeNull();
+    expect(more.textContent).toContain("24 more");
+
+    // ...and it expands on demand, then collapses again.
+    more.click();
+    expect(container.querySelectorAll(".board-status-row").length).toBe(30);
+    expect((container.querySelector(".board-status-more") as HTMLElement).textContent).toBe("Show fewer");
+    (container.querySelector(".board-status-more") as HTMLElement).click();
+    expect(container.querySelectorAll(".board-status-row").length).toBe(6);
+  });
 });
 
 describe("board identity: names, never coordinates", () => {

@@ -119,6 +119,17 @@ const GRIP_WIDTH = 5;
 const RESPONSIVE_BREAKPOINT = 1000;
 /** Cards shown per column before the "Show all N" disclosure (prototype CAP). */
 const CARD_CAP = 6;
+/**
+ * Degraded-board STATUS ROWS shown before the rest collapse behind a single
+ * "+N more" disclosure (ready-412). The status list has no cap in the prototype
+ * because the prototype's portfolio was 26 clean boards; a real owner discovers
+ * hundreds, and as the client folds through them over the first ~minute, each
+ * board that resolves to a degraded outcome (sealed / unreadable-grant / failed
+ * / withholding) appends a row — so an uncapped list rebuilds the very wall
+ * ready-c0f removed, just a few seconds later. Every board is still named in the
+ * left tree with its own state marker; this cap only bounds the banner stack.
+ */
+const BOARD_STATUS_CAP = 6;
 /** An item untouched for this long reads as stale (prototype `stale()`). */
 const STALE_DAYS = 7;
 
@@ -300,6 +311,9 @@ export class BoardWorkspace {
   private detailWidth: number;
   private transientError?: string;
   private expanded = new Set<string>();
+  /** Whether the degraded-board status list is showing all rows or just the
+   * first BOARD_STATUS_CAP behind a "+N more" disclosure (ready-412). */
+  private boardStatusExpanded = false;
   private readonly onKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && this.selectedId !== undefined) {
       this.closeDetail();
@@ -787,7 +801,8 @@ export class BoardWorkspace {
     );
     if (degraded.length === 0) return null;
     const list = el("ul", { className: "board-status" });
-    for (const b of degraded) {
+    const shown = this.boardStatusExpanded ? degraded : degraded.slice(0, BOARD_STATUS_CAP);
+    for (const b of shown) {
       list.append(
         el("li", { className: `board-status-row board-status-${b.state!}`, dataset: { boardCoord: b.coord } }, [
           el("b", { className: "board-status-name", textContent: b.title }),
@@ -795,6 +810,23 @@ export class BoardWorkspace {
           el("span", { className: "board-status-detail", textContent: b.detail ?? "" }),
         ]),
       );
+    }
+    // The rest collapse behind ONE disclosure row, so the banner stack cannot
+    // grow into a wall as hundreds of boards fold (ready-412). Each hidden board
+    // is still named, with its own state marker, in the left tree.
+    if (degraded.length > BOARD_STATUS_CAP) {
+      const hidden = degraded.length - BOARD_STATUS_CAP;
+      const toggle = el("button", {
+        className: "board-status-more more",
+        textContent: this.boardStatusExpanded
+          ? "Show fewer"
+          : `+${hidden} more board${hidden === 1 ? "" : "s"} not shown in full — each is named in the tree`,
+      });
+      toggle.addEventListener("click", () => {
+        this.boardStatusExpanded = !this.boardStatusExpanded;
+        this.render();
+      });
+      list.append(el("li", { className: "board-status-more-row" }, [toggle]));
     }
     return list;
   }
