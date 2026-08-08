@@ -256,6 +256,40 @@ describe("the gate rail is a stack of self-contained cards", () => {
   });
 });
 
+describe("project lanes and scroll stability", () => {
+  const DAY = 86400 * 1e9;
+
+  it("orders project lanes by MOST-RECENT activity, not by gate count", () => {
+    const now = Date.now() * 1e6;
+    const items = [
+      // "stale" project: touched a week ago, and carries a gate — which used to
+      // float it to the top under the old gated-first order.
+      makeItem({ id: "s1", project: "stale", status: "waiting", waitingType: "gate", gateMsgId: "m", gate: "design", updatedAt: now - 8 * DAY }),
+      // "fresh" project: touched yesterday, no gate.
+      makeItem({ id: "f1", project: "fresh", status: "active", updatedAt: now - 1 * DAY }),
+    ];
+    ws = mountBoardWorkspace(container, items, {
+      boards: [{ coord: "stale", title: "stale" }, { coord: "fresh", title: "fresh" }],
+    });
+    const laneNames = [...container.querySelectorAll(".swimlane .lane-name")].map((n) => n.textContent);
+    expect(laneNames.indexOf("fresh")).toBeLessThan(laneNames.indexOf("stale"));
+    expect(laneNames[0]).toBe("fresh");
+  });
+
+  it("preserves the page scroll position across a live re-render", () => {
+    const items = Array.from({ length: 30 }, (_, i) =>
+      makeItem({ id: `i${i}`, status: "active", project: "ready", updatedAt: Date.now() * 1e6 - i * 1000 }),
+    );
+    ws = mountBoardWorkspace(container, items, { boards: [{ coord: "ready", title: "ready" }] });
+    const scroller = document.scrollingElement ?? document.documentElement;
+    scroller.scrollTop = 250;
+    // a live fold arrives — the board rebuilds (replaceChildren), but the reader
+    // stays where they scrolled to instead of being yanked to the top.
+    ws.setItems([...items, makeItem({ id: "new", status: "active", project: "ready" })]);
+    expect((document.scrollingElement ?? document.documentElement).scrollTop).toBe(250);
+  });
+});
+
 describe("board identity: names, never coordinates", () => {
   const COORD = "30301:a9f766ae56bbf466d2d361e5b1788b7cd689fd8e3b418e35b002b313f478db25:dontguess";
 
