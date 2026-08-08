@@ -41,7 +41,7 @@ import type { Nip07Signer } from "./lib/publish";
 import { deriveLevels } from "./lib/rolegrant";
 import { decodeNpub, encodeNpub } from "./lib/npub";
 import { parseAndStripFragment, type ParsedFragment } from "./lib/fragment";
-import { localSigner, localNip44Provider } from "./lib/localsigner";
+import { localSigner } from "./lib/localsigner";
 import type { PortfolioKeys } from "./lib/portfoliokeys";
 import { loadOwnBoardsRelays } from "./lib/relayconfig";
 import {
@@ -166,9 +166,13 @@ export interface BoardDeps {
 export const defaultDeps: BoardDeps = {
   loadRelays: () => loadOwnBoardsRelays(),
   fetchEvents: (relays, filter, opts) => fetchEventsFromRelays(relays, filter, opts),
+  // A local-key (sk=) session decrypts via the CEKs its link carries (keys=), the
+  // same as a read-only link, so it unwraps no grants and never touches the
+  // raw-secret NIP-44 path — neverUnwraps. Every other signing session (an
+  // extension) unwraps through window.nostr.nip44 (ready-f947).
   keyUnwrapper: (identity) =>
     identity.secret
-      ? nip07KeyUnwrapper(localNip44Provider(identity.secret))
+      ? neverUnwraps
       : canSign(identity.auth)
         ? nip07KeyUnwrapper(nip44Provider())
         : neverUnwraps,

@@ -20,8 +20,6 @@
 // against the same KAT-validated primitive (schnorrsign.ts) that rd signs with.
 import { signNostrEvent } from "./schnorrsign";
 import type { Nip07Signer } from "./publish";
-import type { Nip44Provider } from "./keyunwrap";
-import { open } from "./nip44";
 
 export function localSigner(secretHex: string): Nip07Signer {
   return {
@@ -39,20 +37,11 @@ export function localSigner(secretHex: string): Nip07Signer {
   };
 }
 
-/**
- * localNip44Provider is the read-side counterpart: it unwraps a confidential
- * board's grant with the owner's own secret, using nip44.open — the same NIP-44
- * v2 primitive the extension path reaches through window.nostr.nip44.decrypt. It
- * lets a write-capable (local-key) session decrypt grants with no extension,
- * exactly as it signs with none. Returns the plaintext string keyunwrap.ts
- * expects; a decrypt that fails throws, which keyunwrap treats as "not for us".
- */
-export function localNip44Provider(secretHex: string): Nip44Provider {
-  return {
-    async decrypt(counterpartyPubHex, ciphertext) {
-      const plaintext = open(secretHex, counterpartyPubHex, ciphertext);
-      if (plaintext === null) throw new Error("nip44: decryption failed");
-      return new TextDecoder().decode(plaintext);
-    },
-  };
-}
+// NOTE — DECRYPTION IS NOT HERE, ON PURPOSE. A write-capable link carries the
+// board CEKs in keys= (exactly as the read link does), so a local-key session
+// decrypts confidential boards through applyFragmentKeys and seals its writes
+// with those CEKs — it never needs the raw-secret NIP-44 derivation (nip44.ts)
+// the extension path uses for grant unwrapping. Keeping nip44.ts out of a local
+// signer keeps it out of the shipped bundle, which is the property
+// dist_test.go's TestDist_NoRawSecretKeyCryptoInBundle guards. A local session's
+// keyUnwrapper is therefore neverUnwraps (main.ts), the same as a read-only link.
