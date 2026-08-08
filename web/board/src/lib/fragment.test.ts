@@ -7,6 +7,7 @@
 // parseFragment decodes exactly what `rd board share` / `rd invite` mint.
 import { describe, expect, it, vi } from "vitest";
 import { parseFragment, parseAndStripFragment } from "./fragment";
+import { xOnlyPubkey } from "./schnorrsign";
 import { bytesToHex } from "./sha256";
 import { portfolioKeyVectors } from "./portfoliovectors.fixtures";
 
@@ -167,6 +168,48 @@ describe("parseFragment — `rd board --with-key` key material", () => {
 // these keys through main(), is main.fragmentkey.test.ts's "A CEK CANNOT REACH
 // A SIGNING SESSION".
 // ---------------------------------------------------------------------------
+// ready-f947 — a WRITE-CAPABLE link carries the owner's signing secret in sk=.
+// The invariant that must survive: sk= produces a session that CAN sign, and
+// pk= WITHOUT sk= (a link you might share for reading) still cannot.
+describe("parseFragment — ready-f947: sk= is the write-capable signal", () => {
+  const SECRET = "0000000000000000000000000000000000000000000000000000000000000042";
+  const PUB = xOnlyPubkey(SECRET);
+  const BOARD = "#board=30301%3Aabc123%3Amyboard";
+
+  it("sk= with no board= is a WRITABLE portfolio, opening as the secret's own pubkey", () => {
+    const parsed = parseFragment(`#sk=${SECRET}&relays=wss%3A%2F%2Fr.test`);
+    if (parsed.kind !== "portfolio") throw new Error("expected a portfolio fragment");
+    expect(parsed.secret).toBe(SECRET);
+    expect(parsed.viewer).toBe(PUB);
+  });
+
+  it("sk= on a single board is a WRITABLE board link", () => {
+    const parsed = parseFragment(`${BOARD}&sk=${SECRET}`);
+    if (parsed.kind !== "board") throw new Error("expected a board fragment");
+    expect(parsed.secret).toBe(SECRET);
+    expect(parsed.viewer).toBe(PUB);
+  });
+
+  it("THE INVARIANT: pk= WITHOUT sk= carries NO secret — a shared read link cannot sign", () => {
+    const parsed = parseFragment(`#pk=${PUB}&relays=wss%3A%2F%2Fr.test`);
+    if (parsed.kind !== "portfolio") throw new Error("expected a portfolio fragment");
+    expect(parsed.secret).toBeUndefined();
+    expect(parsed.viewer).toBe(PUB);
+  });
+
+  it("sk= alongside a matching pk= is accepted; a MISMATCHED pk= is a damaged link", () => {
+    const ok = parseFragment(`#sk=${SECRET}&pk=${PUB}`);
+    if (ok.kind !== "portfolio") throw new Error("expected portfolio");
+    expect(ok.secret).toBe(SECRET);
+    const wrongPk = "d".repeat(64);
+    expect(() => parseFragment(`#sk=${SECRET}&pk=${wrongPk}`)).toThrow(/sk= and pk= name different keys/);
+  });
+
+  it("a malformed sk= throws instead of opening as a half-key", () => {
+    expect(() => parseFragment(`#sk=nothex`)).toThrow(/sk= is not 64 hex/);
+  });
+});
+
 describe("parseFragment — ready-de7: cek= without pk= is refused", () => {
   const CEK1 = "a".repeat(64);
   const CEK2 = "b".repeat(64);
@@ -175,15 +218,17 @@ describe("parseFragment — ready-de7: cek= without pk= is refused", () => {
   const BOARD = "#board=30301%3Aabc123%3Amyboard";
 
   it("a one-epoch key link with no viewer throws instead of degrading to a login form", () => {
-    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}`)).toThrow(/pk= is missing/);
+    // ready-f947: sk= is now a second way to name the viewer, so the message
+    // names both — the rule (a CEK needs a viewer) is unchanged.
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}`)).toThrow(/pk=\/sk= is missing/);
   });
 
   it("the same holds for every held epoch, and with a legacy ltk alongside", () => {
-    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}%2C2%3A${CEK2}`)).toThrow(/pk= is missing/);
-    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}&ltk=${LTK}`)).toThrow(/pk= is missing/);
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}%2C2%3A${CEK2}`)).toThrow(/pk=\/sk= is missing/);
+    expect(() => parseFragment(`${BOARD}&cek=1%3A${CEK1}&ltk=${LTK}`)).toThrow(/pk=\/sk= is missing/);
     // Order in the query string must not matter: URLSearchParams is a map, but
     // a reader of this file should not have to know that to trust the rule.
-    expect(() => parseFragment(`${BOARD}&relays=wss%3A%2F%2Fr.test&cek=1%3A${CEK1}`)).toThrow(/pk= is missing/);
+    expect(() => parseFragment(`${BOARD}&relays=wss%3A%2F%2Fr.test&cek=1%3A${CEK1}`)).toThrow(/pk=\/sk= is missing/);
   });
 
   it("ANTI-TAUTOLOGY: the SAME link with pk= parses, keeps both epochs, and names the viewer", () => {

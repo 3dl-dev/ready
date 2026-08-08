@@ -90,6 +90,7 @@
 
 import { hexToBytes } from "./sha256";
 import { decodePortfolioKeys, type PortfolioKeys } from "./portfoliokeys";
+import { xOnlyPubkey } from "./schnorrsign";
 
 const RD1_PREFIX = "rd1_";
 const NOSTR_CLAIM_VERSION = 3;
@@ -143,6 +144,14 @@ export type ParsedFragment =
        * justifies applyFragmentKeys skipping the grant checks. `keys.ltk` alone
        * is exempt (see the throw in parseFragment): it decrypts nothing. */
       keys?: FragmentKeys;
+      /** ready-f947: the owner's SIGNING secret, from `sk=`. Present only on a
+       * write-capable link (`rd board --writable`) — the deliberate opt-out of
+       * "the board never accepts a secret key". Its presence, and ONLY its
+       * presence, is what makes main.ts mint a signing (`method:"local"`) session
+       * instead of the read-only one `pk=` alone produces; a link that names only
+       * `pk=` is still read-only, so a read-only link shared with someone else
+       * cannot sign. When set, `viewer` is xOnlyPubkey(secret). */
+      secret?: string;
       /** ready-280: relay=candidates dropped by parseRelays because a browser
        * on THIS page's origin cannot open them (see parseRelays). Present only
        * when at least one entry was dropped, so the common case (every relay
@@ -165,6 +174,9 @@ export type ParsedFragment =
       /** Per-board secret key material from `keys=`, keyed by board coordinate.
        * Absent for `rd board --portfolio` without --with-key. */
       keys?: PortfolioKeys;
+      /** ready-f947: the owner's SIGNING secret, from `sk=` — see the "board"
+       * variant's field of the same name. A `--portfolio --writable` link. */
+      secret?: string;
       /** ready-280, see the "board" variant's field of the same name. */
       droppedRelays?: string[];
     }
@@ -218,6 +230,21 @@ export function parseFragment(hash: string, secure = true): ParsedFragment {
   const pk = params.get("pk");
   const portfolioParam = params.get("keys");
 
+  // ready-f947 — a WRITE-CAPABLE link carries the owner's signing secret in `sk=`.
+  // It derives its own viewer pubkey; if the link also names `pk=`, the two must
+  // agree (a link that says one key and holds another is damaged). `sk=` is the
+  // ONLY writable signal — `pk=` alone is unchanged and still mints a read-only
+  // session (main.ts), so a read-only link shared with someone else cannot sign.
+  const skRaw = params.get("sk");
+  const secret = skRaw !== null ? decodeHexKeyParam("sk", skRaw) : undefined;
+  const secretViewer = secret !== undefined ? xOnlyPubkey(secret) : undefined;
+  const declaredPk = pk !== null ? decodeHexKeyParam("pk", pk) : undefined;
+  if (secret !== undefined && declaredPk !== undefined && declaredPk !== secretViewer) {
+    throw new Error("fragment: sk= and pk= name different keys — the link is inconsistent");
+  }
+  // The pubkey this link opens as: from sk= (a writable link) or pk= (read-only).
+  const viewerHex = secretViewer ?? declaredPk;
+
   if (board) {
     // A SINGLE-BOARD link must not also carry portfolio key material: the two
     // shapes scope keys differently (one implicit coordinate vs. explicit
@@ -229,7 +256,8 @@ export function parseFragment(hash: string, secure = true): ParsedFragment {
     const { kept, dropped } = parseRelays(params, secure);
     const out: ParsedFragment = { kind: "board", board, relays: kept };
     if (dropped.length > 0) out.droppedRelays = dropped;
-    if (pk !== null) out.viewer = decodeHexKeyParam("pk", pk);
+    if (viewerHex !== undefined) out.viewer = viewerHex;
+    if (secret !== undefined) out.secret = secret;
     const keys = decodeKeyParams(params.get("cek"), params.get("ltk"));
     if (keys) {
       // ready-de7 — A cek= WITHOUT pk= IS REFUSED, because pk= is what makes the
@@ -273,22 +301,23 @@ export function parseFragment(hash: string, secure = true): ParsedFragment {
       // withholds more, never less (confidentiality.ts). `ceks` non-empty is
       // exactly "cek= was present": decodeKeyParams throws on a cek= that
       // decodes to no keys.
-      if (keys.ceks.length > 0 && pk === null) {
-        throw new Error("fragment: cek= is present but pk= is missing — the link is incomplete");
+      if (keys.ceks.length > 0 && viewerHex === undefined) {
+        throw new Error("fragment: cek= is present but pk=/sk= is missing — the link is incomplete");
       }
       out.keys = keys;
     }
     return out;
   }
 
-  // PORTFOLIO: pk= with no board=. See the ParsedFragment "portfolio" variant.
-  if (pk !== null) {
+  // PORTFOLIO: pk= (or sk=) with no board=. See the "portfolio" variant.
+  if (viewerHex !== undefined) {
     const { kept, dropped } = parseRelays(params, secure);
     const out: ParsedFragment = {
       kind: "portfolio",
       relays: kept,
-      viewer: decodeHexKeyParam("pk", pk),
+      viewer: viewerHex,
     };
+    if (secret !== undefined) out.secret = secret;
     if (dropped.length > 0) out.droppedRelays = dropped;
     if (portfolioParam !== null) out.keys = decodePortfolioKeys(portfolioParam);
     return out;
@@ -423,10 +452,22 @@ export function parseAndStripFragment(loc: Location = window.location): ParsedFr
   // context, so a scheme this code does not recognize fails CLOSED (relays
   // filtered to wss:// only) rather than open.
   const secure = loc.protocol !== "http:";
+  let parsed: ParsedFragment | undefined;
   try {
-    return parseFragment(loc.hash, secure);
+    parsed = parseFragment(loc.hash, secure);
+    return parsed;
   } finally {
-    if (loc.hash !== "") {
+    // ready-f947: a WRITE-CAPABLE (sk=) link is the one fragment we KEEP in the
+    // URL, so a refresh re-establishes the signing session instead of dropping to
+    // the login prompt — the owner opted into carrying their key on the link, and
+    // this is what makes "just reload" work without any browser storage. Every
+    // other fragment is still stripped: one-time claim tokens especially, and
+    // read-only cek=/pk= links (they carry no secret, so `secret` is undefined).
+    const carriesSecret =
+      parsed !== undefined &&
+      (parsed.kind === "board" || parsed.kind === "portfolio") &&
+      parsed.secret !== undefined;
+    if (loc.hash !== "" && !carriesSecret) {
       const url = loc.pathname + loc.search;
       window.history.replaceState(null, "", url);
     }
