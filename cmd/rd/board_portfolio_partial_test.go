@@ -1105,7 +1105,7 @@ func TestBoardCmd_CompletenessFlagsRejectedWhereTheyClaimNothing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s must be accepted on the link that makes the claim: %v", c.name, err)
 			}
-			if !strings.Contains(out, "#pk=") {
+			if !strings.Contains(out, "#sk=") {
 				t.Errorf("%s printed no portfolio link:\n%s", c.name, out)
 			}
 		})
@@ -1140,7 +1140,7 @@ func TestBoardPortfolio_GatherFilterIsScopedToSelfNotEveryGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rd board --portfolio --with-key: %v\nstderr:\n%s", err, errOut)
 	}
-	if !strings.Contains(out, "#pk=") {
+	if !strings.Contains(out, "#sk=") {
 		t.Fatalf("no portfolio link printed:\n%s", out)
 	}
 

@@ -621,6 +621,25 @@ func portfolioURL(host, viewer string, relays []string, blob string) string {
 	return host + "#" + strings.Join(parts, "&")
 }
 
+// portfolioURLWritable is the OWNER's own, WRITE-CAPABLE portfolio link
+// (ready-f947). `rd board` mints a link for the owner to use, and the owner
+// wants to write from the browser with no extension, so this shape carries the
+// signing secret in sk= (not just the public pk=). keys= still carries the read
+// keys for decryption. sk= goes FIRST for the same reason pk= did: a fragment
+// truncated in transit loses its tail (the big keys= blob) and fails loudly
+// rather than silently dropping the identity. This link SIGNS as well as reads —
+// a write bearer credential — so its warning (portfolioKeyWarning) says so.
+func portfolioURLWritable(host, secret string, relays []string, blob string) string {
+	parts := []string{"sk=" + url.QueryEscape(secret)}
+	if len(relays) > 0 {
+		parts = append(parts, "relays="+url.QueryEscape(strings.Join(relays, ",")))
+	}
+	if blob != "" {
+		parts = append(parts, "keys="+blob)
+	}
+	return host + "#" + strings.Join(parts, "&")
+}
+
 // runBoardPortfolio is what bare `rd board` runs (ready-1df): ONE URL covering
 // every board this key can read, carrying their read keys.
 //
@@ -718,15 +737,25 @@ func runBoardPortfolio(cmd *cobra.Command, dir string, withKey, strict, allowPar
 			return err
 		}
 	}
-	fmt.Println(portfolioURL(host, keys.viewer, relays, blob))
+	// ready-f947: `rd board` is the OWNER's own link, and the owner writes from
+	// the browser with no extension, so the default carries the SIGNING SECRET in
+	// sk= — a write bearer credential. `rd board --no-key` remains the read-only
+	// public shape (pk=, no keys) for sharing.
+	k, kerr := nostrKey()
+	if kerr != nil {
+		return kerr
+	}
+	fmt.Println(portfolioURLWritable(host, k.SecretHex(), relays, blob))
 
+	// ready-f947: the default link ALWAYS carries sk= now, so it is ALWAYS a write
+	// bearer credential — the warning fires even when no read keys are embedded.
 	switch {
 	case keys.carriesSecret():
 		fmt.Fprintln(errOut, portfolioKeyWarning(keys.boardCount(), gather))
 	case gather.lostRelay():
-		fmt.Fprintln(errOut, "WARNING: PARTIAL — no keys embedded, but "+gather.shortfallSummary()+", so this is not a statement that you hold no read keys. Boards known only to that relay were never seen. Re-run when the relay is reachable and serving in full.")
+		fmt.Fprintln(errOut, "WARNING: this link is PARTIAL and CARRIES YOUR SIGNING KEY (sk=) — anyone who opens it can MAKE CHANGES AS YOU (a WRITE bearer credential). No read keys are embedded, but "+gather.shortfallSummary()+", so this is not a statement that you hold no read keys; boards known only to that relay were never seen. Re-run when the relay is reachable and serving in full. Treat it like a password. (For a read-only link to share, use `rd board --no-key`.)")
 	default:
-		fmt.Fprintln(errOut, "NOTE: no keys embedded — this key holds no read key for any confidential board, so there is nothing to decrypt. Ask each board's owner to run: rd grant "+keys.viewer)
+		fmt.Fprintln(errOut, "WARNING: this link CARRIES YOUR SIGNING KEY (sk=) — anyone who opens it can MAKE CHANGES AS YOU on every board (a WRITE bearer credential). No read keys are embedded (this key holds none for any confidential board, so there is nothing to decrypt). Treat it like a password. (For a read-only link to share, use `rd board --no-key`.)")
 	}
 	return nil
 }
@@ -771,10 +800,10 @@ func portfolioKeyWarning(n int, g portfolioGather) string {
 		boards = "board"
 	}
 	if g.lostRelay() {
-		return fmt.Sprintf("WARNING: this link is PARTIAL and CARRIES THE READ KEYS FOR %d CONFIDENTIAL %s in its fragment — anyone who opens it can read every title on %s. It is NOT your whole portfolio: %s, so boards known only to there are MISSING from this link and from the count. Re-run when that relay is reachable and serving in full to get the complete link. It is still a bearer credential for %s: treat it like a password — do not paste it into chat, a ticket, or any shared channel.",
-			n, strings.ToUpper(boards), pluralBoards(n), g.shortfallSummary(), pluralBoards(n))
+		return fmt.Sprintf("WARNING: this link is PARTIAL and CARRIES YOUR SIGNING KEY plus the read keys for %d CONFIDENTIAL %s in its fragment — anyone who opens it can read every title on %s AND MAKE CHANGES AS YOU (a WRITE bearer credential, not just read). It is NOT your whole portfolio: %s, so boards known only to there are MISSING from this link and from the count. Re-run when that relay is reachable and serving in full to get the complete link. Treat it like a password — do not paste it into chat, a ticket, or any shared channel. (For a read-only link to share, use `rd board --no-key`.)",
+			n, strings.ToUpper(boards), pluralBoards(n), g.shortfallSummary())
 	}
-	return fmt.Sprintf("WARNING: this link CARRIES THE READ KEYS FOR ALL %d CONFIDENTIAL %s THIS GATHER COULD FIND in its fragment — anyone who opens it can read every title in your ENTIRE PORTFOLIO, not just one board. It is a bearer credential, and a far wider one than a single-board `rd board --this-board` link. %s Treat it like a password: do not paste it into chat, a ticket, or any shared channel.",
+	return fmt.Sprintf("WARNING: this link CARRIES YOUR SIGNING KEY plus the read keys for ALL %d CONFIDENTIAL %s THIS GATHER COULD FIND in its fragment — anyone who opens it can read every title in your ENTIRE PORTFOLIO AND MAKE CHANGES AS YOU on every board, not just one board (a WRITE bearer credential). %s Treat it like a password: do not paste it into chat, a ticket, or any shared channel. (For a read-only link to share, use `rd board --no-key`.)",
 		n, strings.ToUpper(boards), g.scopeClause())
 }
 
