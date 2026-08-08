@@ -92,7 +92,26 @@ const CHROME =
 
 const argv = process.argv.slice(2);
 const KEEP = argv.includes("--keep");
-const RELAY = argv.includes("--relay") ? argv[argv.indexOf("--relay") + 1] : "wss://relay.3dl.network";
+// PROD POLLUTION GUARD (ready-736). Publishes REAL boards (kind 30301) with the
+// owner's key and never tears them down; a bare run used to DEFAULT to the prod
+// relay — the no-opt-in hole that accreted the `b4359*`/`c4359*` boards. The
+// relay must now be chosen explicitly, and targeting prod requires --allow-prod.
+const relayArg = argv.includes("--relay") ? argv[argv.indexOf("--relay") + 1] : process.env.RD_NOSTR_RELAY_URL;
+if (!relayArg) {
+  console.error(
+    "Refusing to run: pick a relay with --relay wss://… (or RD_NOSTR_RELAY_URL).\n" +
+      "This script creates real, un-torn-down boards and must never default to the prod relay.",
+  );
+  process.exit(2);
+}
+const RELAY = relayArg;
+if (new URL(RELAY).host.endsWith("relay.3dl.network") && !argv.includes("--allow-prod")) {
+  console.error(
+    `Refusing to pollute the production relay (${RELAY}) without --allow-prod — every board this\n` +
+      "creates persists there forever (no teardown). Use a throwaway/local relay, or pass --allow-prod on purpose.",
+  );
+  process.exit(2);
+}
 const CONFIDENTIAL = argv.includes("--confidential");
 
 const RUN = Date.now().toString(36);
