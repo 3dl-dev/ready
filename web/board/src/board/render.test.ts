@@ -239,6 +239,21 @@ describe("the gate rail is a stack of self-contained cards", () => {
     // and there is exactly one card per gate — not a header + a loose control
     expect(container.querySelectorAll(".gate-list > .gate-item").length).toBe(1);
   });
+
+  it("folds to a banner by default and expands on click, without dropping the cards", () => {
+    const gated = makeItem({ id: "g1", status: "waiting", waitingType: "gate", gateMsgId: "m1", gate: "design" });
+    ws = mountBoardWorkspace(container, [gated]);
+    // Collapsed by default: no .open, so the list is out of flow (CSS) and gates
+    // folding in never push the board. The head is the toggle.
+    expect(container.querySelector(".gate-rail")!.classList.contains("open")).toBe(false);
+    expect(container.querySelector(".gate-rail-head")!.getAttribute("aria-expanded")).toBe("false");
+    // The cards stay in the DOM even when folded — nothing is lost, it is display only.
+    expect(container.querySelector('.gate-item[data-id="g1"]')).not.toBeNull();
+    // Clicking the head expands it.
+    container.querySelector<HTMLElement>(".gate-rail-head")!.click();
+    expect(container.querySelector(".gate-rail")!.classList.contains("open")).toBe(true);
+    expect(container.querySelector(".gate-rail-head")!.getAttribute("aria-expanded")).toBe("true");
+  });
 });
 
 describe("board identity: names, never coordinates", () => {
