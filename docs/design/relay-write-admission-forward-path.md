@@ -1,6 +1,6 @@
 ---
 title: Relay write-admission — closing the grant→relay forward path (and reconciling the cosmos relay + vibrant open+PoW)
-status: DRAFT (design, needs Baron ruling on §6)
+status: RULED — Option A (interim NIP-86 sync bridge) chosen (Baron, 2026-08-19); B remains the end-state direction. See §6.
 epic: ready-a14 (nostr identity & trust)
 builds-on: docs/design/nostr-identity-model.md, docs/design/identity-reconciliation-ready-vs-dontguess.md (GAP-1), docs/design/confidential-boards-envelope.md
 date: 2026-08-19
@@ -67,7 +67,7 @@ This unifies every existing write model as one of four capability sources, and �
 
 ## 6. Open decisions (Baron)
 
-1. **A-interim vs straight-to-B.** Ship the NIP-86 sync bridge now (forward path works, allowlist is a cache), or invest directly in relay-side grant verification (single source of truth)?
+1. **A-interim vs straight-to-B.** — **RULED: A (interim NIP-86 sync bridge), Baron 2026-08-19.** Ship the forward path now with the allowlist as a grant cache; B (relay derives admission from grants) remains the end-state direction, built later on the same grant source. Decisions 2–3 below apply to B and are deferred with it. One sub-decision A itself surfaces: **where the admin key for `sync-allowlist --apply` lives** — the reconcile must sign NIP-86 calls (as `cmd/admitkey` does), so the owner running sync needs an admitted admin secret. Options: reuse the owner key as admin (simplest, already the pattern), or a dedicated relay-ops admin key distributed to sync runners. Settle this at implementation start (tracked on ready-3279's children).
 2. **Grant verification locus for B.** Relay reads 39301s from its own store on the write path (self-contained, but the relay must learn ready's owner-rooted grant semantics), vs. a relay-adjacent projector that maintains the registry from grants (keeps grant semantics out of the relay, but is Option A wearing a hat).
 3. **Multi-tenant owner roots.** The relay is one process over many boards/tenants (ready, dontguess, vibrant). For B it must resolve "who is the authoritative owner of board X" per write. Pin owners per board-coordinate from the 30301 author, or maintain a per-tenant root config?
 
